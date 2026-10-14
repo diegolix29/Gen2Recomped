@@ -73,6 +73,13 @@ local FALLBACK_LAYOUT = {
   pitch = 24, iconX = 174, cursorX = 204, firstY = 20,
 }
 
+-- The cartridge's effects: SE_CONFIRM_sseq_3 is the ROM's SEQ_SE_DP_SELECT.
+local function se(self, name, opts)
+  local data = self.game and self.game.data or self.data
+  local ok, Sound = pcall(require, "src.core.Sound")
+  if ok and type(Sound) == "table" and Sound.playSe and data then return Sound.playSe(data, name, opts) end
+end
+
 function Gen4StartMenu:uiSize() return W, H end
 function Gen4StartMenu:wantsFillScale() return true end
 function Gen4StartMenu:wantsEdgeBleed() return false end
@@ -146,6 +153,18 @@ function Gen4StartMenu.new(game, opts)
   end
 
   self.index = 1
+  for i, row in ipairs(self.rows) do
+    if row.id == game.gen4StartMenuCursor then self.index = i end
+  end
+  self.frame, self.swellFrom = 0, nil
+  -- field_control.c:332 (and StartMenu_OpenFromScript, start_menu.c:329):
+  -- the field plays SEQ_SE_DP_WIN_OPEN as it opens the menu. Coming back
+  -- from a row's screen the cartridge's menu task simply resumes, silently.
+  if game.gen4StartMenuReturning then
+    game.gen4StartMenuReturning = nil
+  else
+    se(self, "SEQ_SE_DP_WIN_OPEN")
+  end
   return self
 end
 
@@ -227,7 +246,12 @@ function Gen4StartMenu:close()
 end
 
 function Gen4StartMenu:reopen()
-  return function() Screens.push(self.game, "StartMenu") end
+  return function()
+    self.game.gen4StartMenuReturning = true
+    Screens.push(self.game, "StartMenu")
+    -- if the push landed on another version's menu, do not leave the mark
+    self.game.gen4StartMenuReturning = nil
+  end
 end
 
 function Gen4StartMenu:select()
@@ -309,18 +333,80 @@ function Gen4StartMenu:update()
   if not input then return end
   local count = #self.rows
   if count == 0 then return self:close() end
+  self.frame = (self.frame or 0) + 1
+  local before = self.index
+  -- StartMenu_Select -> Menu_ProcessInputWithSound(menu, SEQ_SE_DP_SELECT78)
+  -- (start_menu.c:690, menu.c:120-156): A and the cancel keys play
+  -- SE_CONFIRM_sseq_3, a cursor move that lands plays SELECT78
   if input:wasPressed("up") then
     self.index = (self.index - 2) % count + 1
   elseif input:wasPressed("down") then
     self.index = self.index % count + 1
   elseif input:wasPressed("a") then
+    se(self, "SEQ_SE_DP_SELECT")
     self:select()
   elseif input:wasPressed("b") or input:wasPressed("start") then
+    se(self, "SEQ_SE_DP_SELECT")
     self:close()
+  end
+  if self.index ~= before then
+    se(self, "SEQ_SE_DP_SELECT78")
+    -- StartMenu_ChangeActiveMenuIcon: the new row's icon swells, then wiggles
+    self.swellFrom = self.frame
+    local row = self.rows[self.index]
+    self.game.gen4StartMenuCursor = row and row.id
   end
 end
 
 -- ------------------------------------------------------------------- draw --
+
+-- THE ICONS (Gen4StartMenuArt): animation icon * 3 + 0 (still, PALETTE_
+-- GRAYSCALE) on every row but the cursor's, whose icon runs 1 (the swell,
+-- SRT 1 -> 1.3 -> 1) once it arrives and then 2 (the wiggle, +-10 degrees,
+-- looping) in PALETTE_COLORED. The field's sprite clock is 30 Hz, so each
+-- NANR frame is two of the port's.
+function Gen4StartMenu:iconFrame(row, selected)
+  local data = self.game.data or {}
+  local anims = ((data.gen4_start_menu_ink or {}).anims) or {}
+  local art = data.gen4_start_menu_art or {}
+  local seq, t = row.icon * 3, 0
+  if selected then
+    local since = (self.frame or 0) - (self.swellFrom or -1000)
+    local swell = anims[row.icon * 3 + 2]
+    local swellLen = 0
+    for _, f in ipairs((swell or {}).frames or {}) do swellLen = swellLen + (f.duration or 1) * 2 end
+    if self.swellFrom and since < swellLen then seq, t = row.icon * 3 + 1, since
+    else seq, t = row.icon * 3 + 2, since - swellLen end
+  end
+  local a = anims[seq + 1]
+  local frame = { cell = row.icon }
+  if a and a.frames and #a.frames > 0 then
+    local total = 0
+    for _, f in ipairs(a.frames) do total = total + (f.duration or 1) * 2 end
+    local k = math.max(0, math.floor(t))
+    if a.mode == 2 or a.mode == 4 then k = k % math.max(1, total) end
+    frame = a.frames[#a.frames]
+    for _, f in ipairs(a.frames) do
+      local d = (f.duration or 1) * 2
+      if k < d then frame = f; break end
+      k = k - d
+    end
+  end
+  local rec = art[("icon_%02d_%d"):format(frame.cell or row.icon, selected and 1 or 0)]
+  return rec, frame
+end
+
+function Gen4StartMenu:drawIcon(row, selected, x, y)
+  local rec, frame = self:iconFrame(row, selected)
+  local image = rec and self:imgAt(rec.path)
+  if not image then return false end
+  local g = love.graphics
+  g.setColor(1, 1, 1, 1)
+  local rot = (frame.rot or 0) * 2 * math.pi / 65536
+  local sx, sy = frame.sx or 1, frame.sy or 1
+  g.draw(image, x + (frame.x or 0), y + (frame.y or 0), rot, sx, sy, -(rec.originX or -16), -(rec.originY or -16))
+  return true
+end
 
 function Gen4StartMenu:drawPanel()
   local g = love.graphics
@@ -354,7 +440,7 @@ function Gen4StartMenu:drawPanel()
       end
     end
 
-    local icon = self:icon(row.icon)
+    local icon = not (row.icon and self:drawIcon(row, selected, L.iconX, y)) and self:icon(row.icon)
     if icon then
       local iw, ih = icon:getDimensions()
       -- Grey when it is not the row you are on, colour when it is: the
@@ -366,16 +452,11 @@ function Gen4StartMenu:drawPanel()
       g.setColor(1, 1, 1, 1)
     end
 
+    -- The words: the list menu over the window at tile (20, 1), drawn by
+    -- Menu_New(template, 28, 4, ...) -- left-aligned 28 pixels in, 4 down,
+    -- one row every 24 (16 + lineSpacing 8).
     local label = row.label or ""
-    local width = Font.width(label)
-    -- Right-aligned into the panel, clear of the icon column: the icons are
-    -- centred at 174 and the panel ends at panelX + panelW, so the words sit in
-    -- what is left rather than on top of the pictures.
-    local right = L.panelX + L.panelW - 6
-    local x = right - width
-    local floor = L.iconX + 14
-    if x < floor then x = floor end
-    Font.draw(label, x, y - 6)
+    Font.draw(label, L.panelX + 28, L.panelY + 4 + (i - 1) * L.pitch)
   end
   g.setColor(1, 1, 1, 1)
 end

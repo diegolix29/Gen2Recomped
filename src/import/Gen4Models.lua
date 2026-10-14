@@ -392,6 +392,18 @@ function Gen4Models.sheet(data, opts)
   opts = opts or {}
   local parsed = Gen4Models.parse(data)
   if not parsed then return nil end
+  -- `opts.color0Transparent`: the field draws these with colour 0 clear
+  -- whatever the texture's own bit 29 says (Black / White's character
+  -- billboards: Cheren's sheet leaves the bit off and came out on a solid
+  -- green square). Palette formats only -- 2, 3 and 4 are the ones with an
+  -- index 0 to clear.
+  if opts.color0Transparent then
+    for _, texture in ipairs(parsed.textures) do
+      if texture.format == 2 or texture.format == 3 or texture.format == 4 then
+        texture.transparent0 = true
+      end
+    end
+  end
 
   -- Which size the most decodable textures agree on.
   local tally, best, bestCount = {}, nil, 0

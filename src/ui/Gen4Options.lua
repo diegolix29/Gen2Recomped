@@ -72,6 +72,13 @@ local VISIBLE = 7
 
 local FRAME_TYPES = 20
 
+-- options_menu.c's effects: SE_CONFIRM_sseq_3 is the ROM's SEQ_SE_DP_SELECT.
+local function se(self, name, opts)
+  local data = self.game and self.game.data or self.data
+  local ok, Sound = pcall(require, "src.core.Sound")
+  if ok and type(Sound) == "table" and Sound.playSe and data then return Sound.playSe(data, name, opts) end
+end
+
 function Gen4Options:uiSize() return W, H end
 function Gen4Options:wantsFillScale() return true end
 function Gen4Options:wantsEdgeBleed() return false end
@@ -181,6 +188,12 @@ function Gen4Options.new(game, opts)
   if #self.rows == 0 then
     Logger.warn("gen4 options: this dataset carries no OPTION vocabulary")
   end
+  -- what the cartridge rows held on entry, for ChangesWereMade
+  self.opened = {}
+  local options = (game.save and game.save.options) or {}
+  for _, row in ipairs(self.rows) do
+    if row.binding then self.opened[row.binding.field] = options[row.binding.field] end
+  end
   return self
 end
 
@@ -238,7 +251,20 @@ function Gen4Options:valueText(row)
   return values[self:choiceOf(row)] or values[1] or ""
 end
 
+function Gen4Options:changesWereMade()
+  local options = (self.game.save and self.game.save.options) or {}
+  for field, was in pairs(self.opened or {}) do
+    if options[field] ~= was then return true end
+  end
+  return false
+end
+
+-- OptionsMenu_Main STATE_HANDLE_INPUT: leaving with nothing changed plays
+-- SE_CONFIRM_sseq_3 (options_menu.c:240). With changes the cartridge asks
+-- first and plays SEQ_SE_DP_SAVE on YES (options_menu.c:271); this screen
+-- applies each change as it is made and has no prompt, so that path is silent.
 function Gen4Options:close()
+  if not self:changesWereMade() then se(self, "SEQ_SE_DP_SELECT") end
   self.game.stack:pop()
   if self.onCancel then self.onCancel() end
 end
@@ -261,20 +287,24 @@ function Gen4Options:update()
   if not input then return end
   local n = #self.rows + 1                  -- the rows, then CLOSE
   local row = self.rows[self.index]
+  -- ProcessMainInput: every cursor move and every choice change plays
+  -- SE_CONFIRM_sseq_3 (options_menu.c:894/898/910/919); CLOSE has no choices
   if input:wasPressed("down") then
     self.index = self.index % n + 1
+    se(self, "SEQ_SE_DP_SELECT")
   elseif input:wasPressed("up") then
     self.index = (self.index - 2) % n + 1
+    se(self, "SEQ_SE_DP_SELECT")
   elseif input:wasPressed("right") then
-    self:cycle(row, 1)
+    if row then self:cycle(row, 1); se(self, "SEQ_SE_DP_SELECT") end
   elseif input:wasPressed("left") then
-    self:cycle(row, -1)
+    if row then self:cycle(row, -1); se(self, "SEQ_SE_DP_SELECT") end
   elseif input:wasPressed("a") then
     if self.index > #self.rows then return self:close() end
     if row and row.engine and row.engine.activate then
       return pcall(row.engine.activate, self.game)
     end
-    self:cycle(row, 1)
+    if row then self:cycle(row, 1); se(self, "SEQ_SE_DP_SELECT") end
   elseif input:wasPressed("b") or input:wasPressed("start") then
     self:close()
   end

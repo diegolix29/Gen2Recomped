@@ -114,8 +114,13 @@ end
 
 -- Decode one script from `at` (1-based).  Returns the instruction list and a
 -- reason the walk stopped: "end", "variable", "unknown" or "overrun".
-function Gen4Script.decode(data, at)
+--
+-- `ops` is the command table, Platinum's by default; HeartGold and SoulSilver
+-- pass Gen4HgssScriptOps, whose opcodes are different numbers entirely.
+function Gen4Script.decode(data, at, ops)
   if type(data) ~= "string" or type(at) ~= "number" then return nil, "bad arguments" end
+  local Ops = ops or Ops
+  local JUMPS = Ops.JUMPS or Gen4Script.JUMPS
   local out, pc = {}, at
   local stopped = "overrun"
   while pc + 1 <= #data do
@@ -146,7 +151,7 @@ function Gen4Script.decode(data, at)
 
     -- A jump's operand is the LAST one, signed, and measured from the byte
     -- after it -- which is pc + size, since the operand ends the instruction.
-    local jump = Gen4Script.JUMPS[op]
+    local jump = JUMPS[op]
     if jump then
       local rel = i32(data, pc + size - 4)
       if rel then instruction.target = pc + size + rel end
@@ -160,10 +165,10 @@ function Gen4Script.decode(data, at)
 end
 
 -- Every script in one member, keyed by entry-point position.
-function Gen4Script.decodeAll(data)
+function Gen4Script.decodeAll(data, ops)
   local out = {}
   for _, at in ipairs(Gen4Script.entries(data)) do
-    local instructions, stopped = Gen4Script.decode(data, at)
+    local instructions, stopped = Gen4Script.decode(data, at, ops)
     out[#out + 1] = { at = at, instructions = instructions, stopped = stopped }
   end
   return out

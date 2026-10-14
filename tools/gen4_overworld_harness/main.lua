@@ -314,8 +314,22 @@ function love.load()
     -- party is a test that cannot fail.
     if os.getenv("PARTY") then
       local Pokemon = require("src.pokemon.Pokemon")
-      Game.save.party = { Pokemon.new(Data, tonumber(os.getenv("PARTY")),
+      Game.save.party = { Pokemon.new(Data, tonumber(os.getenv("PARTY"):match("^%d+")),
                                       tonumber(os.getenv("PARTYLEVEL") or "12")) }
+      -- PARTY=495,515: more than one (the rest at the same level)
+      for id in os.getenv("PARTY"):gmatch(",(%d+)") do
+        Game.save.party[#Game.save.party + 1] = Pokemon.new(Data, tonumber(id),
+          tonumber(os.getenv("PARTYLEVEL") or "12"))
+      end
+      -- PARTYMOVES=15,33: the lead's moves (a field-move test: Cut, Surf...)
+      if os.getenv("PARTYMOVES") then
+        local mon = Game.save.party[1]
+        mon.moves = {}
+        for id in os.getenv("PARTYMOVES"):gmatch("%d+") do
+          local m = Data.moves and Data.moves[tonumber(id)]
+          mon.moves[#mon.moves + 1] = { id = tonumber(id), pp = m and m.pp or 10 }
+        end
+      end
     end
     -- HURT THE PARTY FIRST, so "it healed" is a change and not a constant.
     -- A heal test on a full-health party passes whether or not anything runs.
@@ -389,8 +403,138 @@ function love.load()
     -- once guarded its presses behind `if Game.input then` with a nil input
     -- and reported a stall as though presses had been tried.
     local pressEvery = tonumber(os.getenv("PRESS") or "0")
+    -- WALKSEQ="up:5,left:3,...": hold each direction until the player has
+    -- moved that many cells (the map's cell changes, so a script's pause
+    -- just waits), then the next; WALK applies after the last
+    local seq = {}
+    for dir, n in (os.getenv("WALKSEQ") or ""):gmatch("(%a+):(%d+)") do seq[#seq + 1] = { dir, tonumber(n) } end
+    local seqAt, seqMoved, seqCell = 1, 0, nil
+    local finalHeld = held
+    -- WALKTO="x,y;x,y": walk to each cell in turn by a breadth-first path
+    -- over the engine's own Collision.canMove (people included), re-planned
+    -- every step; a target that cannot be reached is skipped after a while
+    local targets = {}
+    for x, y in (os.getenv("WALKTO") or ""):gmatch("(%-?%d+),(%-?%d+)") do targets[#targets + 1] = { tonumber(x), tonumber(y) } end
+    local tAt, tStuck, tLastCell, tMap = 1, 0, nil, nil
+    -- REPEL=<steps>: keep wild encounters off a story run (the cartridge's
+    -- own repel rule -- nothing below the lead's level appears)
+    if os.getenv("REPEL") and Game.save then Game.save.repelSteps = tonumber(os.getenv("REPEL")) end
+    local Collision = require("src.world.Collision")
+    local DIRS = { up = { 0, -1 }, down = { 0, 1 }, left = { -1, 0 }, right = { 1, 0 } }
+    local function planStep(ow, tx, ty)
+      local p, map = ow.player, ow.map
+      if not (p and map and p.cellX) then return nil end
+      local sx, sy = p.cellX, p.cellY
+      if sx == tx and sy == ty then return "here" end
+      local key = function(x, y) return x * 4096 + y end
+      local prev, q, head = { [key(sx, sy)] = false }, { { sx, sy } }, 1
+      local ents = ow.cast or ow.entities or ow.npcs or {}
+      while head <= #q and head < 6000 do
+        local c = q[head]; head = head + 1
+        for dname, d in pairs(DIRS) do
+          local nx, ny = c[1] + d[1], c[2] + d[2]
+          local k = key(nx, ny)
+          if prev[k] == nil then
+            local mover = { cellX = c[1], cellY = c[2], elevation = p.elevation, facing = dname }
+            local ok = Collision.canMove(map, ents, mover, dname)
+            if ok or (nx == tx and ny == ty) then
+              prev[k] = { c[1], c[2], dname }
+              if nx == tx and ny == ty then
+                local cx, cy, first = nx, ny, dname
+                while true do
+                  local pr = prev[key(cx, cy)]
+                  if not pr then break end
+                  first = pr[3]
+                  if pr[1] == sx and pr[2] == sy then break end
+                  cx, cy = pr[1], pr[2]
+                end
+                return first
+              end
+              if ok then q[#q + 1] = { nx, ny } end
+            end
+          end
+        end
+      end
+      return nil
+    end
     for i = 1, ticks do
-      pressA = pressEvery > 0 and (i % pressEvery == 0)
+      -- PRESS_UNTIL=n: stop pressing after tick n (a press would re-talk to
+      -- whatever is ahead once the walk starts)
+      pressA = pressEvery > 0 and (i % pressEvery == 0) and i <= (tonumber(os.getenv("PRESS_UNTIL") or "") or math.huge)
+      -- STRENGTH=1: Strength active (as the boulder's field-move script leaves it)
+      if os.getenv("STRENGTH") and OW and i == 1 then OW.strengthActive = true end
+      -- USE_ITEM=<id> USE_ITEM_AT=<tick>: use an item from the bag (as the
+      -- bag's USE does -- BagMenu.useItem)
+      if os.getenv("USE_ITEM") and OW and i == (tonumber(os.getenv("USE_ITEM_AT") or "") or 5) then
+        local id = tonumber(os.getenv("USE_ITEM")) or os.getenv("USE_ITEM")
+        local okU, errU = pcall(require("src.ui.BagMenu").useItem, Game, nil, id,
+          { close = function() end, items = {}, index = 1, refresh = function() end })
+        print(("[item] used %s: %s onBike=%s repel=%s"):format(tostring(id), okU and "ok" or tostring(errU),
+          tostring(Game.save.onBike), tostring(Game.save.repelSteps)))
+      end
+      -- DWWARPTEST=1: open the Distortion World warp (DoDWWarp) at tick 2
+      if os.getenv("DWWARPTEST") and OW and i == 2 then
+        Game.stack:push(require("src.ui.Gen4DistortionWarp").new(Game, function() print("[dwwarp] done") end))
+      end
+      -- ITEMAUDIT=1: every item with a field-use function, used from the bag
+      -- out of battle (on the lead when it needs a target); lists refusals
+      if os.getenv("ITEMAUDIT") and OW and i == 3 then
+        local IE = require("src.inventory.ItemEffects")
+        local refused = {}
+        for id, it in pairs(Game.data.items or {}) do
+          if type(it) == "table" and tonumber(it.fieldUseFunc) and it.fieldUseFunc ~= 0 then
+            local target = IE.needsTarget(id, it) and Game.save.party[1] or nil
+            local okU, kind, msgs = pcall(IE.use, Game.data, Game.save, id, target, nil, nil, OW)
+            local line = type(msgs) == "table" and tostring(msgs[1]) or tostring(msgs)
+            if not okU then refused[#refused + 1] = ("%s(%s,f%d): ERROR %s"):format(it.name, tostring(id), it.fieldUseFunc, tostring(kind))
+            elseif kind == "failed" and (line:find("OAK") or line:find("time to use") or line:find("Rowan")) then
+              refused[#refused + 1] = ("%s(%s,f%d): %s"):format(it.name, tostring(id), it.fieldUseFunc, line:gsub("\n", " "))
+            end
+          end
+        end
+        table.sort(refused)
+        for _, r in ipairs(refused) do print("[audit] " .. r) end
+        print(("[audit] %d refused"):format(#refused))
+      end
+      -- SURFING=1: start on the water (a Waterfall test)
+      if os.getenv("SURFING") and OW and i == 1 then OW.player.surfing = true end
+      if targets[tAt] and OW and OW.player then
+        local t = targets[tAt]
+        local d = planStep(OW, t[1], t[2])
+        local cell = tostring(OW.map and OW.map.id) .. ":" .. tostring(OW.player.cellX) .. "," .. tostring(OW.player.cellY)
+        local st = Game.stack and Game.stack.states
+        local busy = (OW.runner and OW.runner.isRunning and OW.runner:isRunning())
+                     or (#(OW.scriptMoves or {}) > 0)
+                     or (st and st[#st] ~= OW)   -- a battle, a box, a menu
+        if cell == tLastCell and not busy then tStuck = tStuck + 1 elseif cell ~= tLastCell then tStuck = 0 end
+        tLastCell = cell
+        -- a door target is a solid cell: reaching it is the map changing
+        local mapNow = OW.map and OW.map.id
+        if tMap and mapNow ~= tMap then d = "here" end
+        tMap = mapNow
+        if d == "here" or tStuck > 600 then
+          if tStuck > 600 then print(("[walkto] gave up on %d,%d at %s"):format(t[1], t[2], cell)) end
+          tAt, tStuck = tAt + 1, 0
+          held = targets[tAt] and nil or finalHeld
+        else
+          held = d
+        end
+      elseif seq[seqAt] then
+        local p = OW.player
+        local cell = p and (tostring(OW.map and OW.map.id) .. ":" .. tostring(p.cellX) .. "," .. tostring(p.cellY))
+        -- "holdright:60" holds a direction for that many TICKS instead of
+        -- cells (a press at a panel the player cannot walk into)
+        -- "wait:30" holds nothing for that many ticks (A presses still land
+        -- on whatever the player faces)
+        local isHold = seq[seqAt][1]:match("^hold(%a+)$") or seq[seqAt][1] == "wait"
+        if isHold then seqMoved = seqMoved + 1
+        elseif seqCell and cell ~= seqCell then seqMoved = seqMoved + 1 end
+        seqCell = cell
+        if seqMoved >= seq[seqAt][2] then seqAt, seqMoved = seqAt + 1, 0 end
+        local cur = seq[seqAt] and seq[seqAt][1]
+        if cur == "wait" then held = nil
+        else held = cur and (cur:match("^hold(%a+)$") or cur) or finalHeld end
+      end
       if thenMap and i == thenAt then
         local okM, errM = pcall(OW.setMap, OW, thenMap,
                                 tonumber(os.getenv("THEN_X") or "10"),
@@ -537,6 +681,12 @@ function love.load()
     -- step inside that and paints into a surface nobody had set up.  A
     -- harness that skips it is not testing what the player sees.
     print("party after:  " .. partyHp())
+    -- SHOW_VARS=0x40D7,0x40D9: the story vars a scene was meant to set
+    for v in (os.getenv("SHOW_VARS") or ""):gmatch("[^,]+") do
+      local G4 = require("src.script.Gen4Commands")
+      local id = tonumber(v)
+      print(("var %s = %s"):format(v, tostring(id and G4.getVar and G4.getVar(Game.save, id))))
+    end
     -- DUMPNPCS=1: every object on the map and whether it stands there
     if os.getenv("GIFT") then
       local MG = require("src.pokemon.Gen4MysteryGift")

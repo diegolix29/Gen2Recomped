@@ -202,9 +202,13 @@ local function problemWith(S, d, warp, i)
     end
   end
   if isGen2(S) then
-    local fires = cellEntrance(S, d, warp.x, warp.y)
+    -- the class comes back already formatted ("$12", or a tile for an adopted
+    -- tileset); `cls` was never in scope here, so every inert warp raised --
+    -- an imported Gen 1 map, whose warps sit on Gen 1 door cells, took the
+    -- whole warps list down on the frame it arrived
+    local fires, what = cellEntrance(S, d, warp.x, warp.y)
     if fires == false then
-      return string.format("inert - cell is $%02X, not a door", cls)
+      return "inert - cell is " .. tostring(what or "?") .. ", not a door"
     end
   end
   return nil

@@ -127,6 +127,20 @@ for required in tools/rom_manifest_gold.json tools/rom_manifest_crystal.json \
   [ -e "$GAME_SRC/$required" ] || fail "staged lovegame/ is missing $required"
 done
 
+# The offline translator (aarch64 only -- this is the handheld's CPU).
+# worker.lua reads translation/rom-translate out of the game and copies it to
+# the save directory before running it.
+if [ -f "$ROOT/translation/rom-translate" ]; then
+  if file -b "$ROOT/translation/rom-translate" | grep -q "aarch64"; then
+    mkdir -p "$GAME_SRC/translation"
+    cp "$ROOT/translation/rom-translate" "$GAME_SRC/translation/"
+  else
+    say "translation/rom-translate is not aarch64; the port ships without it"
+  fi
+fi
+[ -n "${REQUIRE_TRANSLATOR:-}" ] && { [ -f "$GAME_SRC/translation/rom-translate" ] \
+  || fail "REQUIRE_TRANSLATOR is set and no aarch64 translator was packed"; }
+
 # Portable marker: saves + ROM cache live next to the game on the SD card.
 : > "$GAME_SRC/portable.txt"
 

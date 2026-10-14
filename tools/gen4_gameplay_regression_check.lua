@@ -59,7 +59,7 @@ package.loaded['src.core.Strings']=function(s) return s end
 local BagMenu=require('src.ui.Gen4BagMenu')
 local used,pops,rebuilds=0,0,0
 package.loaded['src.ui.BagMenu']={useItem=function(_,_,_,list) used=used+1; list:close() end}
-local bag=setmetatable({game={stack={pop=function() pops=pops+1 end}},rows={{id=4}},index=1,
+local bag=setmetatable({game={stack={pop=function() pops=pops+1 end}},battle={},rows={{id=4}},index=1,
  rebuild=function() rebuilds=rebuilds+1 end},BagMenu)
 bag:choose();bag:choose();bag:close()
 check(used==1 and pops==1 and rebuilds==0,'one use closes battle bag and blocks repeated action')

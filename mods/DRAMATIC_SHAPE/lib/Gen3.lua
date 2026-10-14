@@ -3797,7 +3797,11 @@ function Gen3.forMap(map)
   local function overlay(from)
     if type(from) ~= "table" then return end
     for k, v in pairs(from) do
-      if (k == "joinery" or k == "roof_bands") and type(v) == "table" then
+      -- the art lists merge too: a map naming its own buildings must not
+      -- take away the ones its tileset names (Saffron's Dojo and the gate
+      -- houses every Kanto route shares)
+      if (k == "joinery" or k == "roof_bands" or k == "building_art"
+          or k == "doorless_art" or k == "elevation_art") and type(v) == "table" then
         local entries = type(profile[k]) == "table" and profile[k] or {}
         for meta, model in pairs(v) do entries[meta] = model end
         profile[k] = entries
@@ -3811,6 +3815,11 @@ function Gen3.forMap(map)
     overlay(spec_.tilesets[ctx.secondaryName])
   end
   if spec_ and spec_.maps then overlay(spec_.maps[ctx.mapName]) end
+  -- ...AND A PROFILE MAY SAY A MAP IS OUT IN THE OPEN.  The generated table
+  -- reads map.json's map_type, and Emerald types its event islands (Faraway,
+  -- Birth, Navel Rock) INDOOR -- so Faraway Island's jungle was meshed as a
+  -- room: every tree on a dirt plinth a course over the path.
+  if profile.outdoor ~= nil then ctx.outdoor = profile.outdoor and true or false end
   -- METATILE PINS, primary then secondary then the map: most general to most
   -- specific, each overlaying the last, the same order as the profile itself.
   local pins = nil
@@ -3849,6 +3858,24 @@ function Gen3.forMap(map)
         if n and what then t[n] = what end
       end
       ctx.buildingArt = next(t) and t or nil
+    end
+    local dl = profile.doorless_art
+    if type(dl) == "table" then
+      local t = {}
+      for id, on in pairs(dl) do
+        local n = tonumber(id)
+        if n and on then t[n] = true end
+      end
+      ctx.doorlessArt = next(t) and t or nil
+    end
+    local ev = profile.elevation_art
+    if type(ev) == "table" then
+      local t = {}
+      for id, on in pairs(ev) do
+        local n = tonumber(id)
+        if n and on then t[n] = true end
+      end
+      ctx.elevationArt = next(t) and t or nil
     end
   end
 
@@ -4773,8 +4800,7 @@ function Gen3.forMap(map)
       local an = Gen3.analyse(map.tileset)
       local st = an and an.stats and an.stats[mm]
       if not (st and (st.solid or 0) >= 0.9) then return false end
-      local counts = ctx.metatileCounts()
-      return (counts[mm] or 0) <= RARE_BUILD
+      return ctx.metatileBespoke(mm)
     end
     -- THE BUILDING'S OWN ART, as this function reads it everywhere else:
     -- "a building's art is BESPOKE -- the Mart's metatiles appear once or
@@ -4786,8 +4812,7 @@ function Gen3.forMap(map)
     local function bespokeCell(cx, cy)
       local mm = ctx.metatileAt(cx, cy)
       if mm == nil then return false end
-      local counts = ctx.metatileCounts()
-      return (counts[mm] or 0) <= RARE_BUILD
+      return ctx.metatileBespoke(mm)
     end
     -- ...and drawn ABOVE THE PLAYER, filling its cell, and bespoke: the
     -- three-part test for "a row of this building you walk behind".
@@ -4922,6 +4947,45 @@ function Gen3.forMap(map)
       return metaCounts
     end
 
+    -- ...AND A TILE THAT TILES ONLY INSIDE ONE BUILDING IS STILL BESPOKE.
+    --
+    -- MOTIVATED BY LAVENDER TOWN'S POKEMON TOWER, (15..21, 0..6): its window
+    -- band 723 is laid three wide on three storeys -- nine copies, over the
+    -- RARE_BUILD four -- so the trim read the tower's whole upper body as
+    -- landscape and kept one row of it: a two-course box under a tower
+    -- painted flat.  Rock and trees tile across the map; a building's
+    -- repeated band never leaves the building.  Every copy inside one
+    -- building-sized box (twelve cells either way) is the building's own.
+    local metaBox = nil
+    function ctx.metatileClustered(m)
+      if m == nil then return false end
+      if not metaBox then
+        metaBox = {}
+        for cy = 0, height - 1 do
+          for cx = 0, width - 1 do
+            local mm = ctx.metatileAt(cx, cy)
+            if mm then
+              local b = metaBox[mm]
+              if not b then metaBox[mm] = { cx, cy, cx, cy }
+              else
+                if cx < b[1] then b[1] = cx end
+                if cy < b[2] then b[2] = cy end
+                if cx > b[3] then b[3] = cx end
+                if cy > b[4] then b[4] = cy end
+              end
+            end
+          end
+        end
+      end
+      local b = metaBox[m]
+      return b ~= nil and (b[3] - b[1]) < 12 and (b[4] - b[2]) < 12
+    end
+    function ctx.metatileBespoke(m)
+      if m == nil then return false end
+      local counts = ctx.metatileCounts()
+      return (counts[m] or 0) <= RARE_BUILD or ctx.metatileClustered(m)
+    end
+
     -- (`RARE_BUILD` used to be declared here.  It moved above `runAbove`,
     -- which now needs it -- see A DOORWAY YOU WALK INTO IS STILL A DOORWAY
     -- IN A BUILDING.  Same value, same readers.)
@@ -4965,7 +5029,25 @@ function Gen3.forMap(map)
         warps = rec and rec.warps or nil
         if not warps and type(map.def) == "table" then warps = map.def.warps end
       end
-      if type(warps) ~= "table" then return built end
+      -- a map with no warps can still draw a building whose door is on the
+      -- next map (the doorless passes at the end); it just has no doors
+      if type(warps) ~= "table" then
+        if not (ctx.doorlessArt or ctx.elevationArt) then return built end
+        warps = {}
+      end
+      -- A CAVE MOUTH IS NOT A FRONT DOOR.  Rock Tunnel's south entrance on
+      -- Route 10 opens into the rock above it, and founded as a building that
+      -- rock -- 101 cells of it -- stood as one block 144px tall over the
+      -- river, walling the route off from the camera.  A warp into a map the
+      -- cartridge types as a cave leads into the landscape, not a house.
+      do
+        local kept = {}
+        for _, wp in ipairs(warps) do
+          local dest = maps and maps.maps and maps.maps[tostring(wp.destMap)]
+          if not (dest and dest.kind == "cave") then kept[#kept + 1] = wp end
+        end
+        warps = kept
+      end
       -- WHERE THE ROOF IS, THE BUILDING IS.
       --
       -- `runAbove` walks blocked cells, and outdoors that walk does not stop
@@ -5336,7 +5418,7 @@ function Gen3.forMap(map)
                   if mm and ctx.buildingArt and ctx.buildingArt[mm] then
                     break
                   end
-                  if mm and (counts[mm] or 0) > RARE_BUILD then t = t + 1
+                  if mm and not ctx.metatileBespoke(mm) then t = t + 1
                   else break end
                 end
               end
@@ -6016,6 +6098,48 @@ function Gen3.forMap(map)
               end
               cells = keep
             end
+            -- ...AND A BUILDING THAT GOES ON ABOVE ITS AWNING IS STILL THAT
+            -- BUILDING.  Lavender's Pokemon Tower states a roof only on the
+            -- awning over its door (825, row 5); the five storeys above it
+            -- are blocked, solid, and the tower's own art (Gen3's
+            -- `metatileBespoke`), and the footprint stopped at the awning: a
+            -- one-row building under a tower painted flat.  Each column of
+            -- the finished footprint climbs on through cells that are
+            -- building -- never foliage, never another footprint -- and the
+            -- climb only counts when it is two rows or more.
+            if #cells > 0 and ctx.outdoor then
+              local an = Gen3.analyse(map.tileset)
+              local colTop, inSet = {}, {}
+              for _, c in ipairs(cells) do
+                inSet[c[2] * 8192 + c[1]] = true
+                if colTop[c[1]] == nil or c[2] < colTop[c[1]] then colTop[c[1]] = c[2] end
+              end
+              local grown = {}
+              local function buildingArt(cx, y)
+                local mm = ctx.metatileAt(cx, y)
+                local st = mm and an and an.stats and an.stats[mm]
+                return blockedCell(cx, y) and st and (st.solid or 0) >= 0.9
+                       and ctx.metatileBespoke(mm) and not foliageCell(cx, y)
+                       and built.cell[y * 8192 + cx] == nil
+              end
+              for cx, top in pairs(colTop) do
+                local y = top - 1
+                local add = {}
+                while y >= 0 and #add < 8 and buildingArt(cx, y) do
+                  add[#add + 1] = { cx, y }
+                  y = y - 1
+                end
+                if #add >= 2 then
+                  for _, c in ipairs(add) do grown[#grown + 1] = c end
+                end
+              end
+              for _, c in ipairs(grown) do
+                if not inSet[c[2] * 8192 + c[1]] then
+                  cells[#cells + 1] = c
+                  inSet[c[2] * 8192 + c[1]] = true
+                end
+              end
+            end
             if #cells > 0 then
               -- HOW MANY ROWS OF THIS BUILDING ARE DRAWN ABOVE THE PLAYER.
               --
@@ -6234,6 +6358,213 @@ function Gen3.forMap(map)
                                  overheadRows = 0, roofed = true }
             end
           end
+        end
+      end
+    end
+    -- A DOOR ON ANY FACE OF ART THE PROFILE NAMES AS A BUILDING.
+    --
+    -- Everything above finds a building NORTH of its door, which is how a
+    -- house is drawn.  A route gate is entered on whichever face the road
+    -- meets: Saffron's south gate from the north, its east and west gates
+    -- from the side.  Where the profile's `building_art` names the cells
+    -- beside such a door, the connected mass of them is the building.  No
+    -- art test, no guess: only ids a map's profile has written down.
+    if ctx.buildingArt then
+      for _, wp in ipairs(warps) do
+        local wx, wy = tonumber(wp.x), tonumber(wp.y)
+        if wx and wy and built.cell[wy * 8192 + wx] == nil then
+          local function named(x, y)
+            if x < 0 or y < 0 or x >= width or y >= height then return false end
+            if built.cell[y * 8192 + x] ~= nil then return false end
+            local mm = ctx.metatileAt(x, y)
+            return mm ~= nil and ctx.buildingArt[mm] ~= nil
+          end
+          local seed = nil
+          for _, d in ipairs({ { 0, -1 }, { 0, 1 }, { -1, 0 }, { 1, 0 } }) do
+            if not seed and named(wx + d[1], wy + d[2]) then seed = { wx + d[1], wy + d[2] } end
+          end
+          if seed then
+            local cells, seen, queue, head = {}, { [seed[2] * 8192 + seed[1]] = true }, { seed }, 1
+            while head <= #queue and #queue <= 160 do
+              local c = queue[head]; head = head + 1
+              cells[#cells + 1] = c
+              for _, d in ipairs({ { 0, -1 }, { 0, 1 }, { -1, 0 }, { 1, 0 } }) do
+                local nx, ny = c[1] + d[1], c[2] + d[2]
+                local k = ny * 8192 + nx
+                if not seen[k] and named(nx, ny) then
+                  seen[k] = true
+                  queue[#queue + 1] = { nx, ny }
+                end
+              end
+            end
+            if #cells >= 4 then
+              -- the stated door is the bottom-middle cell, the convention
+              -- the doorless pass above uses: its {0,1} is the street a
+              -- house stands on, which is what every reader of `door` wants
+              local x0, x1, yb = 1e9, -1e9, -1
+              for _, c in ipairs(cells) do
+                if c[2] > yb then yb = c[2] end
+                if c[1] < x0 then x0 = c[1] end
+                if c[1] > x1 then x1 = c[1] end
+              end
+              local id = #built.list + 1
+              for _, c in ipairs(cells) do built.cell[c[2] * 8192 + c[1]] = id end
+              built.list[id] = { cells = cells, door = { x0 + math.floor((x1 - x0) / 2), yb },
+                                 warp = { wx, wy },
+                                 overheadRows = 0, roofed = true }
+            end
+          end
+        end
+      end
+    end
+    local function foundDoorless(art, minRows, elevation)
+      -- ...AND A FRONT-VIEW MASS NEEDS NO DOOR AT ALL.  Every connected
+      -- run of `elevation` art no building has claimed is a building of its
+      -- own, stood up whole (see Structures' stand-up rule).
+      for cy = 0, height - 1 do
+        for cx = 0, width - 1 do
+          local k0 = cy * 8192 + cx
+          local m0 = ctx.metatileAt(cx, cy)
+          if built.cell[k0] == nil and m0 and art[m0]
+             and blockedCell(cx, cy) then
+            local cells, queue, head, seen = {}, { { cx, cy } }, 1, { [k0] = true }
+            while head <= #queue and #queue <= 200 do
+              local c = queue[head]; head = head + 1
+              cells[#cells + 1] = c
+              for _, d in ipairs({ { 0, -1 }, { 0, 1 }, { -1, 0 }, { 1, 0 } }) do
+                local nx, ny = c[1] + d[1], c[2] + d[2]
+                local k = ny * 8192 + nx
+                local mm = (nx >= 0 and ny >= 0 and nx < width and ny < height) and ctx.metatileAt(nx, ny)
+                if not seen[k] and mm and art[mm]
+                   and built.cell[k] == nil and blockedCell(nx, ny) then
+                  seen[k] = true
+                  queue[#queue + 1] = { nx, ny }
+                end
+              end
+            end
+            local yt, ybb = 1e9, -1
+            for _, c in ipairs(cells) do if c[2] < yt then yt = c[2] end; if c[2] > ybb then ybb = c[2] end end
+            if #cells >= 4 and ybb - yt + 1 >= minRows then
+              local x0, x1, yb = 1e9, -1e9, -1
+              for _, c in ipairs(cells) do
+                if c[2] > yb then yb = c[2] end
+                if c[1] < x0 then x0 = c[1] end
+                if c[1] > x1 then x1 = c[1] end
+              end
+              local id = #built.list + 1
+              for _, c in ipairs(cells) do built.cell[c[2] * 8192 + c[1]] = id end
+              built.list[id] = { cells = cells, door = { x0 + math.floor((x1 - x0) / 2), yb },
+                                 overheadRows = 0, roofed = not elevation, elevation = elevation }
+            end
+          end
+        end
+      end
+    end
+    -- ...AND EVERY DOOR A BUILDING HOLDS WIDENS IT, NOT ONLY THE FIRST.
+    --
+    -- MOTIVATED BY LAVENDER TOWN'S SOUTH HOUSES, doors (5,16) and (10,16):
+    -- the first door's widening walked five cells each way and swallowed
+    -- the second house's door, so the second warp found its door already
+    -- claimed and grew nothing -- and the second house's east two columns
+    -- were never a building at all.  They stood as low rock: a sunken step
+    -- in the roof.  From every warp whose door is inside a building, walk
+    -- each of the building's rows outward through blocked cells wearing art
+    -- the building already wears.
+    if ctx.outdoor then
+      for _, wp in ipairs(warps) do
+        local wx, wy = tonumber(wp.x), tonumber(wp.y)
+        local id = wx and wy and built.cell[wy * 8192 + wx]
+        if not id and wx and wy then
+          for dy = 1, 2 do id = id or built.cell[(wy - dy) * 8192 + wx] end
+        end
+        local bl = id and built.list[id]
+        if bl then
+          local art, rows = {}, {}
+          for _, c in ipairs(bl.cells) do
+            local m = ctx.metatileAt(c[1], c[2])
+            if m then art[m] = true end
+            rows[c[2]] = true
+          end
+          for y in pairs(rows) do
+            for _, dir in ipairs({ -1, 1 }) do
+              local x = wx
+              for _ = 1, 6 do
+                x = x + dir
+                if x < 0 or x >= width then break end
+                local k = y * 8192 + x
+                local owner = built.cell[k]
+                if owner and owner ~= id then break end
+                if not owner then
+                  local m = ctx.metatileAt(x, y)
+                  if not (m and art[m] and blockedCell(x, y)) then break end
+                  built.cell[k] = id
+                  bl.cells[#bl.cells + 1] = { x, y }
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+    if ctx.elevationArt then foundDoorless(ctx.elevationArt, 6, true) end
+    -- ...AND A BUILDING WHOSE DOOR IS ON THE NEXT MAP.  The Sevii harbours
+    -- stand on the sea map below their island, and their door warp is on
+    -- the island: the map that draws them has no warp at all, so nothing
+    -- founded them and each came out as a stepped tower of rock.
+    if ctx.doorlessArt then
+      -- ...AND A DOORED BUILDING GIVES BACK THE CELLS IT GREW INTO.  Its
+      -- widening walks along matching rows, and Celadon's Pokemon Centre
+      -- took three columns of the apartment block beside it.  Art a map
+      -- names as doorless belongs to no doored building -- unless that
+      -- building's own door is drawn in it (the Condominiums').
+      for id, bl in ipairs(built.list) do
+        if bl.door and not bl.elevation then
+          local dx, dy = bl.door[1], bl.door[2]
+          local above = ctx.metatileAt(dx, dy - 1)
+          local own = ctx.metatileAt(dx, dy)
+          local function ownArt(m)
+            return m ~= nil and (ctx.doorlessArt[m] or (ctx.elevationArt and ctx.elevationArt[m]))
+          end
+          if not (ownArt(above) or ownArt(own)) then
+            local keep = {}
+            for _, c in ipairs(bl.cells) do
+              local m = ctx.metatileAt(c[1], c[2])
+              if m and ctx.doorlessArt[m] then
+                built.cell[c[2] * 8192 + c[1]] = nil
+              else
+                keep[#keep + 1] = c
+              end
+            end
+            bl.cells = keep
+          end
+        end
+      end
+      foundDoorless(ctx.doorlessArt, 1, false)
+    end
+    -- ...AND WHERE THE PROFILE SAYS SO, A BUILDING IS ITS ART AND NOTHING
+    -- ELSE.  The north-of-door walk climbs every blocked row above a door,
+    -- and Verdanturf's Battle Tent stands against the cliff with a column
+    -- of trees beside it: the walk took both, 48 cells for a 25-cell tent,
+    -- and the tent stood as a cliff-high slab.  `art_footprint` is opt-in:
+    -- elsewhere a profile may name only part of a building on purpose.
+    if ctx.profile and ctx.profile.art_footprint and ctx.buildingArt then
+      for _, bl in ipairs(built.list) do
+        local keep, named = {}, 0
+        for _, c in ipairs(bl.cells) do
+          local m = ctx.metatileAt(c[1], c[2])
+          if m and ctx.buildingArt[m] then
+            named = named + 1
+            keep[#keep + 1] = c
+          end
+        end
+        if named >= 4 and named < #bl.cells then
+          for _, c in ipairs(bl.cells) do
+            local m = ctx.metatileAt(c[1], c[2])
+            if not (m and ctx.buildingArt[m]) then
+              built.cell[c[2] * 8192 + c[1]] = nil
+            end
+          end
+          bl.cells = keep
         end
       end
     end

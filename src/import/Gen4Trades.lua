@@ -110,9 +110,13 @@ function Gen4Trades.otGender(value)
 end
 
 -- Every trade, as rows the runtime reads. `names` is the decoded bank.
-function Gen4Trades.all(narc, names)
+-- `count` is the cartridge's trade count, Platinum's 4 by default; the
+-- name bank holds the nicknames first and the OT names after them, so the
+-- count is also where the OT names start (HGSS: 13, NPC_TRADE_OT_NUM).
+function Gen4Trades.all(narc, names, count)
+  count = count or Gen4Trades.COUNT
   local out = {}
-  for id = 0, Gen4Trades.COUNT - 1 do
+  for id = 0, count - 1 do
     local parsed = narc and Gen4Trades.parse(narc:get(id))
     if parsed then
       local ivs = {}
@@ -122,7 +126,7 @@ function Gen4Trades.all(narc, names)
         species = parsed.species,
         request = parsed.requestedSpecies,
         nickname = names and names[Gen4Trades.nicknameEntry(id) + 1] or nil,
-        otName = names and names[Gen4Trades.otNameEntry(id) + 1] or nil,
+        otName = names and names[count + id + 1] or nil,
         otId = parsed.otID,
         otGender = Gen4Trades.otGender(parsed.otGender),
         item = parsed.heldItem,

@@ -221,12 +221,24 @@ function Gen4Maps.land(data)
   local permSize, objSize = u32(data, 0), u32(data, 4)
   local modelSize, bdhcSize = u32(data, 8), u32(data, 12)
   if not bdhcSize then return nil, "land chunk header is truncated" end
-  if 16 + permSize + objSize + modelSize + bdhcSize ~= #data then
-    return nil, ("land chunk sizes (%d+%d+%d+%d+16) do not add up to %d bytes")
-      :format(permSize, objSize, modelSize, bdhcSize, #data)
-  end
   local at = 16
   local out = {}
+  -- HEARTGOLD AND SOULSILVER ADD A SECTION: after the four sizes, u16 0x1234
+  -- and a u16 size, then that many bytes of background-sound data (the
+  -- ambient sounds a chunk plays), and only then the permissions. Recognised
+  -- by the magic AND by the sizes adding up with it, never by the version.
+  if 16 + permSize + objSize + modelSize + bdhcSize ~= #data and #data >= 20
+     and u16(data, 16) == 0x1234 then
+    local bgsSize = u16(data, 18)
+    if 20 + bgsSize + permSize + objSize + modelSize + bdhcSize == #data then
+      out.backgroundSounds = data:sub(21, 20 + bgsSize)
+      at = 20 + bgsSize
+    end
+  end
+  if at + permSize + objSize + modelSize + bdhcSize ~= #data then
+    return nil, ("land chunk sizes (%d+%d+%d+%d+%d) do not add up to %d bytes")
+      :format(permSize, objSize, modelSize, bdhcSize, at, #data)
+  end
   out.permissions = data:sub(at + 1, at + permSize); at = at + permSize
   out.objectData = data:sub(at + 1, at + objSize); at = at + objSize
   out.model = data:sub(at + 1, at + modelSize); at = at + modelSize

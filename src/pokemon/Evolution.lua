@@ -19,6 +19,15 @@ local Strings = require("src.core.Strings")
 local Evolution = {}
 
 Evolution.METHODS = {
+  -- Gen4 NARC records retain their numeric target and parameter. Keep these
+  -- methods usable for installed caches as well as fresh imports.
+  level = {
+    check = function(game, mon, evo, trigger)
+      return trigger.kind == "levelup" and not Evolution.holdsEverstone(game, mon)
+        and mon.level >= (tonumber(evo.param) or 0)
+    end,
+    describe = function(evo) return Strings("Level %d", evo.param or 0) end,
+  },
   LEVEL = {
     check = function(game, mon, evo, trigger)
       if Evolution.holdsEverstone(game, mon) then return false end
@@ -280,7 +289,7 @@ function Evolution.pendingFor(game, mon, trigger)
       else
         should = method.check(game, mon, evo, trigger)
       end
-      if should then return evo.species, evo end
+      if should then return evo.species or evo.target, evo end
     end
   end
   return nil
@@ -323,7 +332,7 @@ function Evolution.createShedinja(game, mon, fromSpecies)
       -- Emerald copies the evolved Ninjask after learning its moves. Unlike
       -- FRLG/Gen4, Emerald does not require or consume a spare Poke Ball.
       local extra = copy(mon)
-      extra.species, extra.nickname = row.species, def.name
+      extra.species, extra.nickname = row.species, nil  -- shown as the species name, in the player's language
       extra.item, extra.heldItem, extra.mail = nil, nil, nil
       extra.markings, extra.ribbons, extra.status = 0, {}, nil
       extra.stats = Stats.calcGen3(def, extra.level, extra.ivs, extra.evs, extra.nature)
@@ -342,6 +351,11 @@ end
 function Evolution.apply(game, mon, newSpecies, via, evo)
   local newDef = game.data.pokemon[newSpecies]
   assert(newDef, "evolve into unknown species " .. tostring(newSpecies))
+  if require("src.core.GameVersion").isGen4() and game.save then
+    pcall(function() require("src.pokemon.Gen4GameRecords").evolved(game.save) end)
+  elseif require("src.core.GameVersion").isGen3() and game.save then
+    require("src.pokemon.Gen3GameStats").increment(game.save, 14)      -- GAME_STAT_EVOLVED_POKEMON
+  end
   -- `xor a / ld [wTempMonItem], a` (evolve.asm:164): an item-gated TRADE
   -- evolution eats the item it needed.  A KING'S ROCK is not returned to the
   -- bag and is not still on the POLITOED afterwards.

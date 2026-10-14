@@ -180,6 +180,8 @@ end
 -- mon can still fight.  Switch to the first (lowest-index) such backup,
 -- matching EnemySendOutFirstMon (core.asm:1292-1341).
 function TrainerAI.switchAction(battle)
+  -- BATTLE ARENA: ShouldSwitch answers FALSE for BATTLE_TYPE_ARENA
+  if battle.arena then return nil end
   local alive = {}
   for i, mon in ipairs(battle.enemyParty or {}) do
     if mon.hp > 0 and i ~= battle.enemyIndex then

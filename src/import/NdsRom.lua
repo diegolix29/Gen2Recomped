@@ -271,8 +271,16 @@ end
 
 -- The ARM9 binary, which is where the tables that are NOT in the filesystem
 -- live -- and in Gen 4 that is a great many of them.
+--
+-- DECOMPRESSED WHEN IT IS STORED PACKED (HeartGold and SoulSilver; see
+-- NdsBlz), once per open ROM, so every reader sees the binary the game runs.
 function NdsRom:arm9()
-  return readAt(self, self:u32(H.ARM9_ROM) or 0, self:u32(H.ARM9_SIZE) or 0)
+  if self._arm9 then return self._arm9 end
+  local raw = readAt(self, self:u32(H.ARM9_ROM) or 0, self:u32(H.ARM9_SIZE) or 0)
+  local ok, Blz = pcall(require, "src.import.NdsBlz")
+  if ok and raw then raw = Blz.arm9(raw, self:u32(H.ARM9_RAM) or 0x02000000) end
+  self._arm9 = raw
+  return raw
 end
 
 -- One ARM9 overlay's bytes, by overlay id.  The overlay table entry is 32
@@ -286,7 +294,17 @@ function NdsRom:overlay(index)
   if not (at and index and index >= 0 and index < n) then return nil end
   local fileId = self:u32(at + index * 32 + 0x18)
   if not fileId then return nil end
-  return self:readId(fileId), {
+  -- COMPRESSED WHEN THE ENTRY SAYS SO: bit 24 of the flags word at +0x1C is
+  -- the SDK's "this overlay is BLZ-packed" (its low 24 bits the packed size).
+  -- 127 of HeartGold's 129 overlays carry it and none of Platinum's 122, so a
+  -- reader scanning for a table in Platinum sees exactly what it always did.
+  local flags = self:u32(at + index * 32 + 0x1C) or 0
+  local bytes = self:readId(fileId)
+  if bytes and math.floor(flags / 16777216) % 2 == 1 then
+    local unpacked = require("src.import.NdsBlz").decompress(bytes)
+    if unpacked then bytes = unpacked end
+  end
+  return bytes, {
     ram = self:u32(at + index * 32 + 0x04),
     size = self:u32(at + index * 32 + 0x08),
     fileId = fileId,

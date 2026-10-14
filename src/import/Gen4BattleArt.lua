@@ -244,6 +244,216 @@ local function partyImages(rom, out)
   end
 end
 
+-- ---------------------------------------------------------------------------
+-- THE BATTLE PARTY LIST'S OTHER PAGES (battle_party.c
+-- ScreenBackgroundDataMemberIndexes: member pairs { BG2, BG3 }).
+--
+--   bsummary_bg/_fg     SUMMARY           members 4 / 5
+--   bmoves_bg/_fg       CHECK MOVES       members 2 / 3, palette row 12 swapped
+--                                         for row 13 (LoadScreenPaletteData)
+--   bmovesum_bg/_fg     a move's summary  members 6 / 7
+--   brestore_bg/_fg     restore which PP  members 8 / 9
+--   blearn_bg/_fg       learn a move      members 10 / 11
+--   bconfirm_bg/_fg     forget this move  members 14 / 15
+--   bparty_prev_<s> / bparty_next_<s>     member 20 (5s, 49) / (5s, 54), 5x5
+--   bparty_small_1/_2   SUMMARY / CHECK MOVES pressing (0,44) / pressed (13,39)
+--   bparty_movebtn_<s>  member 21: (0,51) (16,51) (0,57) (16,57), 16x6
+--   bparty_learnbtn_<s> the same forced onto palette 10 (MOVE_TO_LEARN)
+--   bparty_msbtn_<s>    the move summary's move buttons, member 20 (5s, 59) 5x2
+--   bparty_confirm_<s>  FORGET / CANCEL bar, member 20 (0, 24 + 5s) 26x5
+--   bsummary_exp        tiles 22..30 (the EXP bar's 0..8 px fills) in the
+--                       palette member 4 has at (10, 8)
+-- ---------------------------------------------------------------------------
+Gen4BattleArt.PARTY_PAGES = {
+  bsummary = { 4, 5 }, bmoves = { 2, 3, swap = true }, bmovesum = { 6, 7 },
+  brestore = { 8, 9 }, blearn = { 10, 11 }, bconfirm = { 14, 15 },
+}
+
+local function partyPages(rom, out)
+  local G = require("src.import.Gen4Graphics")
+  local member = opener(rom, Gen4BattleArt.PARTY_PATH)
+  if not member then return end
+  local sheet = G.tiles(member(Gen4BattleArt.PARTY_TILES))
+  local pal = G.palette(member(Gen4BattleArt.PARTY_PALETTE))
+  if not (sheet and pal) then return end
+  local swapped = {}
+  for i, c in ipairs(pal) do swapped[i] = c end
+  for i = 1, 16 do swapped[12 * 16 + i] = pal[13 * 16 + i] end
+  local function screen(i, p)
+    local map = G.tilemap(member(i))
+    if not map then return nil end
+    local cells = {}
+    for n = 1, 32 * 24 do cells[n] = map.cells[n] or { tile = 0, palette = 0 } end
+    return G.compose({ width = 256, height = 192, cells = cells }, sheet, p)
+  end
+  for key, m in pairs(Gen4BattleArt.PARTY_PAGES) do
+    local p = m.swap and swapped or pal
+    out[key .. "_bg"], out[key .. "_fg"] = screen(m[1], p), screen(m[2], p)
+  end
+  local function block(mapIndex, x0, y0, w, h, forcePal)
+    local map = G.tilemap(member(mapIndex))
+    if not map then return nil end
+    local cells = {}
+    for r = 0, h - 1 do
+      for c = 0, w - 1 do
+        local src = map.cells[(y0 + r) * 32 + x0 + c + 1] or { tile = 0, palette = 0 }
+        cells[#cells + 1] = { tile = src.tile, flipX = src.flipX, flipY = src.flipY,
+                              palette = forcePal or src.palette }
+      end
+    end
+    return G.compose({ width = w * 8, height = h * 8, cells = cells }, sheet, pal)
+  end
+  for s = 0, 3 do
+    out["bparty_prev_" .. s] = block(20, 5 * s, 49, 5, 5)
+    out["bparty_next_" .. s] = block(20, 5 * s, 54, 5, 5)
+  end
+  out.bparty_small_1 = block(20, 0, 44, 13, 5)
+  out.bparty_small_2 = block(20, 13, 39, 13, 5)
+  local mv = { { 0, 51 }, { 16, 51 }, { 0, 57 }, { 16, 57 } }
+  for s = 0, 3 do
+    out["bparty_movebtn_" .. s] = block(21, mv[s + 1][1], mv[s + 1][2], 16, 6)
+    out["bparty_learnbtn_" .. s] = block(21, mv[s + 1][1], mv[s + 1][2], 16, 6, 10)
+  end
+  for s = 0, 2 do
+    out["bparty_msbtn_" .. s] = block(20, 5 * s, 59, 5, 2)
+    out["bparty_confirm_" .. s] = block(20, 0, 24 + 5 * s, 26, 5)
+  end
+  local bgMap = G.tilemap(member(4))
+  local at = bgMap and bgMap.cells[8 * 32 + 10 + 1]
+  local cells = {}
+  for n = 0, 8 do cells[n + 1] = { tile = 22 + n, palette = at and at.palette or 0 } end
+  out.bsummary_exp = G.compose({ width = 9 * 8, height = 8, cells = cells }, sheet, pal)
+end
+
+-- ---------------------------------------------------------------------------
+-- THE BATTLE BAG (src/battle_sub_menus/battle_bag*.c), b_bag_gra.narc: tiles
+-- 2, palette 3 (rows 0..11), member 0 the 512x512 BG2 (screen-block order),
+-- member 1 the 32-wide button store.  SetupBackgroundScroll shows the menu at
+-- (0,0), the pocket at (256,0) and USE at (0,256), and USE recolours
+-- (2,35) 28x4 and (2,40) 28x8 to palette 8 + pocket.
+--
+--   bbag_menu / bbag_pocket / bbag_use_<p>     the three 256x192 views
+--   bbag_pocketbtn_<p>_<s>   16x9 from (0, 9s), colour 0, the pocket's 4x4
+--                            icon from (20 + 4s, 47 + 4p) at column 6
+--   bbag_last_<s>            26x5 from (0, 27 + 5s), colour 3 (s = 3: the
+--                            pressed data in colour 5, DISABLED)
+--   bbag_usebtn_<p>_<s>      the same bar in colour 8 + p
+--   bbag_cancel_<s>          5x5 from (5s, 57), colour 2
+--   bbag_item_<p>_<s>        16x6 from (16, 6s), colour 8 + p; _off is s 3
+--                            in colour 5
+--   bbag_prev_<s> / bbag_next_<s>   5x5 from (5s, 47) / (5s, 52), colour 2
+--                            (s = 3 in colour 5)
+-- ---------------------------------------------------------------------------
+Gen4BattleArt.BAG_PATH = "/battle/graphic/b_bag_gra.narc"
+
+local function bagImages(rom, out)
+  local G = require("src.import.Gen4Graphics")
+  local member = opener(rom, Gen4BattleArt.BAG_PATH)
+  if not member then return end
+  local sheet = G.tiles(member(2))
+  local pal = G.palette(member(3))
+  local big = G.tilemap(member(0))
+  local store = G.tilemap(member(1))
+  if not (sheet and pal and big and store) then return end
+  local function at(x, y)
+    local blockN = (y >= 32 and 2 or 0) + (x >= 32 and 1 or 0)
+    return big.cells[blockN * 1024 + (y % 32) * 32 + (x % 32) + 1] or { tile = 0, palette = 0 }
+  end
+  local function view(x0, y0, recolour)
+    local cells = {}
+    for r = 0, 23 do
+      for c = 0, 31 do
+        local src = at(x0 + c, y0 + r)
+        local p = src.palette
+        if recolour then p = recolour(x0 + c, y0 + r) or p end
+        cells[#cells + 1] = { tile = src.tile, flipX = src.flipX, flipY = src.flipY, palette = p }
+      end
+    end
+    return G.compose({ width = 256, height = 192, cells = cells }, sheet, pal)
+  end
+  out.bbag_menu = view(0, 0)
+  out.bbag_pocket = view(32, 0)
+  for p = 0, 3 do
+    out["bbag_use_" .. p] = view(0, 32, function(x, y)
+      if x >= 2 and x < 30 and ((y >= 35 and y < 39) or (y >= 40 and y < 48)) then return 8 + p end
+    end)
+  end
+  local function block(x0, y0, w, h, colour, overlay)
+    local cells = {}
+    for r = 0, h - 1 do
+      for c = 0, w - 1 do
+        local src = store.cells[(y0 + r) * 32 + x0 + c + 1] or { tile = 0, palette = 0 }
+        cells[#cells + 1] = { tile = src.tile, flipX = src.flipX, flipY = src.flipY, palette = colour }
+      end
+    end
+    if overlay then overlay(cells, w) end
+    return G.compose({ width = w * 8, height = h * 8, cells = cells }, sheet, pal)
+  end
+  for p = 0, 3 do
+    for s = 0, 2 do
+      out[("bbag_pocketbtn_%d_%d"):format(p, s)] = block(0, 9 * s, 16, 9, 0, function(cells, w)
+        for r = 0, 3 do
+          for c = 0, 3 do
+            local src = store.cells[(47 + 4 * p + r) * 32 + 20 + 4 * s + c + 1] or { tile = 0 }
+            cells[r * w + 6 + c + 1] = { tile = src.tile, flipX = src.flipX, flipY = src.flipY, palette = 0 }
+          end
+        end
+      end)
+      out[("bbag_usebtn_%d_%d"):format(p, s)] = block(0, 27 + 5 * s, 26, 5, 8 + p)
+      out[("bbag_item_%d_%d"):format(p, s)] = block(16, 6 * s, 16, 6, 8 + p)
+    end
+  end
+  out.bbag_item_off = block(16, 18, 16, 6, 5)
+  for s = 0, 2 do
+    out["bbag_last_" .. s] = block(0, 27 + 5 * s, 26, 5, 3)
+    out["bbag_cancel_" .. s] = block(5 * s, 57, 5, 5, 2)
+    out["bbag_prev_" .. s] = block(5 * s, 47, 5, 5, 2)
+    out["bbag_next_" .. s] = block(5 * s, 52, 5, 5, 2)
+  end
+  out.bbag_last_3 = block(0, 37, 26, 5, 5)
+  out.bbag_prev_3 = block(15, 47, 5, 5, 5)
+  out.bbag_next_3 = block(15, 52, 5, 5, 5)
+end
+
+-- the bag's two window palettes: row 0 (palette 0, TEXT_COLOR(3,2,1)) and
+-- row 4 (palette 4, TEXT_COLOR(1,2,0)), 0-based index -> { r, g, b }
+local function bagInk(rom)
+  local G = require("src.import.Gen4Graphics")
+  local member = opener(rom, Gen4BattleArt.BAG_PATH)
+  local pal = member and G.palette(member(3))
+  if not pal then return nil end
+  local out = {}
+  for _, r in ipairs({ 0, 4 }) do
+    local t = {}
+    for i = 0, 15 do
+      local c = pal[r * 16 + i + 1]
+      t[i] = c and { c[1], c[2], c[3] } or { 0, 0, 0 }
+    end
+    out["row" .. r] = t
+  end
+  return out
+end
+
+-- The party pages' text palette 13: pl_font member 6 with entries 7-8 taken
+-- from row 9's 10-11 and 3-4 from row 9's 12-13 (battle_party.c
+-- LoadGraphicsData), 0-based index -> { r, g, b }
+local function partyInk13(rom)
+  local G = require("src.import.Gen4Graphics")
+  local member = opener(rom, Gen4BattleArt.PARTY_PATH)
+  local pal = member and G.palette(member(Gen4BattleArt.PARTY_PALETTE))
+  local font = opener(rom, "/graphic/pl_font.narc")
+  local fpal = font and G.palette(font(6))
+  if not (pal and fpal) then return nil end
+  local t = {}
+  for i = 0, 15 do
+    local c = fpal[i + 1]
+    t[i] = c and { c[1], c[2], c[3] } or { 0, 0, 0 }
+  end
+  local function r9(i) local c = pal[9 * 16 + i + 1] return c and { c[1], c[2], c[3] } end
+  t[7], t[8], t[3], t[4] = r9(10) or t[7], r9(11) or t[8], r9(12) or t[3], r9(13) or t[4]
+  return t
+end
+
 -- the windows' palette (row 9 of member 23), 0-based index -> { r, g, b }
 local function partyInk(rom)
   local G = require("src.import.Gen4Graphics")
@@ -262,6 +472,10 @@ function Gen4BattleArt.images(rom)
   local out = {}
   local okP, errP = pcall(partyImages, rom, out)
   if not okP then print("gen4 battle art: the battle party list did not extract: " .. tostring(errP)) end
+  local okPg, errPg = pcall(partyPages, rom, out)
+  if not okPg then print("gen4 battle art: the battle party pages did not extract: " .. tostring(errPg)) end
+  local okB, errB = pcall(bagImages, rom, out)
+  if not okB then print("gen4 battle art: the battle bag did not extract: " .. tostring(errB)) end
   local ok, err = walk(rom, function(set, sheet, bank, anim, colours)
     for s, seq in ipairs(anim.sequences or {}) do
       local frames = seq.frames or {}
@@ -321,6 +535,10 @@ function Gen4BattleArt.data(rom)
   end
   local okP, r9 = pcall(partyInk, rom)
   if okP and r9 then out.partyInk = r9 end
+  local okB, bi = pcall(bagInk, rom)
+  if okB and bi then out.bagInk = bi end
+  local ok13, i13 = pcall(partyInk13, rom)
+  if ok13 and i13 then out.partyInk13 = i13 end
   return out
 end
 

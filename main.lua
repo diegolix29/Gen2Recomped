@@ -867,11 +867,8 @@ end
 function love.touchpressed(id, x, y, dx, dy, pressure)
   -- The dismissal that matters on a phone: there is no keyboard behind this.
   if bootReport then return dismissBootReport() end
-  -- THE EDITOR SEES TOUCHES NOW, and only for the gestures a mouse cannot
-  -- make. It is driven by SDL's synthesized mouse events -- one finger is a
-  -- pointer and always has been -- so these handlers track contact points and
-  -- act on TWO of them (pinch to zoom) and nothing else. Returning without
-  -- consuming keeps every existing single-finger path exactly as it was.
+  -- Android supplies both the pointer coordinates and pinch contacts here;
+  -- iOS keeps its synthesized mouse selection path alongside pinch gestures.
   if editorMode then
     if EditorApp.touchpressed then EditorApp.touchpressed(id, x, y) end
     return
@@ -956,6 +953,7 @@ function love.mousepressed(x, y, button, istouch)
     return Importer:mousepressed(x, y, button)
   end
   if editorMode and EditorApp.mousepressed then
+    -- Android editors use their touch pointer directly, including its position.
     if istouch and love.system.getOS() == "Android" then return end
     return EditorApp.mousepressed(x, y, button)
   end
@@ -1010,13 +1008,13 @@ function love.mousemoved(x, y, dx, dy, istouch)
     if love.system.getOS() == "Android" then return end
     return TouchEditor.mousemoved(x, y)
   end
-  if editorMode or Importer then return end
-  if mouseTouch then
-    if Game and love.mouse.isDown(1) then pcall(function() Game:touchmoved("mouse", x, y) end) end
+  if editorMode then
+    if not istouch and EditorApp.mousemoved then EditorApp.mousemoved(x, y, dx, dy) end
     return
   end
-  if Game and Game.mousemoved and not istouch then 
-    Game:mousemoved(x, y, dx, dy, istouch) 
+  if Importer then return end
+  if Game and not istouch and (mouseTouch or Game:hasPointerScreen()) and love.mouse.isDown(1) then
+    Game:touchmoved("mouse", x, y)
   end
 end
 
@@ -1196,6 +1194,9 @@ function love.quit()
   end
   if package.loaded["src.update.Check"] then
     pcall(package.loaded["src.update.Check"].shutdown)
+  end
+  if package.loaded["src.translation.Service"] then
+    pcall(package.loaded["src.translation.Service"].shutdown)
   end
   if package.loaded["src.net.Fetch"] then
     pcall(package.loaded["src.net.Fetch"].shutdown)

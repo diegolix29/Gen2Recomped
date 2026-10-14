@@ -865,7 +865,8 @@ local function grassCutout(path)
   img:setWrap("repeat", "repeat")
   grassCutouts[path] = img
   return img
-end
+end
+
 -- One standing card per TILE, not per triangle: a chunk's grass is merged into
 -- quads that span two tiles as often as one, so the triangles are grouped back
 -- onto the tile grid the cartridge measured (`tileUnits`, 16).
@@ -1016,7 +1017,8 @@ local function addGrassCards(self, shape, vertices, positions, tileUnits)
     lo = lo, hi = hi,
   }
   return true
-end
+end
+
 -- ---------------------------------------------------------------------------
 -- SPLITTING A WALL COURSE INTO ITS SIDING AND ITS GLASS
 -- ---------------------------------------------------------------------------
@@ -1855,7 +1857,10 @@ function Gen4Model.new(record)
         -- will be drawn several times their own size, and smoothing them turns
         -- a Poke Ball's seam into a smear.
         image:setFilter("nearest", "nearest")
-        image:setWrap("repeat", "repeat")
+        -- the material's own edge mode (Gen4ModelPack.wrapOf); repeat when
+        -- the cache says nothing, which is what every model assumed before
+        local wrap = shape.wrap
+        image:setWrap(wrap and wrap[1] or "repeat", wrap and wrap[2] or "repeat")
       end
     end
 
@@ -1899,17 +1904,38 @@ function Gen4Model.new(record)
     -- (which knows the map) and by screens that have no map at all, and a
     -- model with no light must keep drawing exactly as it did.
     local shade = record.shade
+    -- ...and the map's fog, which paints every shape that has not opted out
+    -- (Gen4ModelPack `noFog`) in its colour
+    local fog = record.fog
     -- The shape's own box, kept while the vertices are still here.  It is what
     -- `framing` works from: the header states a bounding box too, but it does
     -- not agree with the geometry on two thirds of this cartridge's models, so
     -- the measured one is the one to trust.
     local lo = { math.huge, math.huge, math.huge }
     local hi = { -math.huge, -math.huge, -math.huge }
+    -- A CACHE OLDER THAN THE `unlit` FLAG still has lightmapped shapes, and
+    -- they are the ones whose vertices carry BAKED COLOURS. Reported from
+    -- play: "the indoors of buildings are missing their lighting and appear
+    -- dark in platinum". Every shape of the Jubilife Pokemon Center's room
+    -- issues COLOR and no NORMAL (vertex colours 132..255), and shaded with
+    -- the decoder's resting normal its floor came out at 0.61 x 0.774 of its
+    -- texture -- under half. A shape lit by NORMAL commands issues no COLOR,
+    -- so its vertices stay pure white: a non-white vertex is the lightmap.
+    local unlit = shape.unlit
+    if unlit == nil and shade and lit then
+      for i = 0, count - 1 do
+        local at = i * stride
+        local r, g, b = shape.vertices:byte(at + 11, at + 13)
+        if (r and r < 255) or (g and g < 255) or (b and b < 255) then unlit = true; break end
+      end
+    end
     for i = 0, count - 1 do
       local at = i * stride
       local r, g, b = shape.vertices:byte(at + 11, at + 13)
       r, g, b = r or 255, g or 255, b or 255
-      if shade and lit then
+      -- ...not on a shape with no NORMALs (Gen4ModelPack `unlit`):
+      -- its vertex colours ARE its lighting
+      if shade and lit and not unlit then
         -- The normal, back out of its three signed bytes.  Absent on a cache
         -- imported before the stride changed, and `s8` answers nil there --
         -- which leaves the colour alone rather than multiplying it by a
@@ -1923,6 +1949,9 @@ function Gen4Model.new(record)
           g = g * (lg or 1)
           b = b * (lb or 1)
         end
+      end
+      if fog and not shape.noFog then
+        r, g, b = (fog[1] or 0) * 255, (fog[2] or 0) * 255, (fog[3] or 0) * 255
       end
       local x = s16(shape.vertices, at) / FX16 * self.posScale
       local y = s16(shape.vertices, at + 2) / FX16 * self.posScale
@@ -2240,7 +2269,8 @@ function Gen4Model.new(record)
                     if b.area > (wallBand and wallBand.area or 0) then
                       wallBand = b
                     end
-                  end                end
+                  end
+                end
               end
             end
           end
@@ -2532,10 +2562,14 @@ function Gen4Model:draw(viewProjection, pose, materials, yCut, spread, depthComp
   -- uniform reads as zero, and relying on that is how the texture matrix once
   -- collapsed every model to a single texel.
   shader:send("billboardYaw", tonumber(Gen4Model.billboardYaw) or 0)
+  -- a caller's TINT (Gen4Model.drawTint, set around one draw): Giratina's
+  -- shadow is the field-effect model drawn as a dark translucent silhouette
+  local tint = Gen4Model.drawTint
   for _, shape in ipairs(self.shapes) do
     -- Per shape, because a model mixes opaque walls with a translucent shadow
     -- and one colour for the whole model would make one of them wrong.
-    g.setColor(1, 1, 1, shapeAlpha(shape))
+    if tint then g.setColor(tint[1], tint[2], tint[3], shapeAlpha(shape) * (tint[4] or 1))
+    else g.setColor(1, 1, 1, shapeAlpha(shape)) end
     local place = pose[shape.index]
     if shape.matrixSlots and pose.stack then
       -- A display list can restore a different joint for every vertex.

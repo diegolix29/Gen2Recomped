@@ -28,8 +28,9 @@
 
 local ModGens = {}
 
-ModGens.GENERATIONS = { 1, 2, 3, 4 }
-ModGens.COUNT = 4
+-- Five since Black and White: Gen 5 gets its own chip like every other.
+ModGens.GENERATIONS = { 1, 2, 3, 4, 5 }
+ModGens.COUNT = 5
 
 -- Built from COUNT rather than written out, so that adding a generation is the
 -- two lines above and not a hunt for every literal triple.  It used to be
@@ -232,7 +233,7 @@ function ModGens.gensOf(value)
   return gens
 end
 
-ModGens.LABELS = { "GEN 1", "GEN 2", "GEN 3", "GEN 4" }
-ModGens.SHORT = { "G1", "G2", "G3", "G4" }
+ModGens.LABELS = { "GEN 1", "GEN 2", "GEN 3", "GEN 4", "GEN 5" }
+ModGens.SHORT = { "G1", "G2", "G3", "G4", "G5" }
 
 return ModGens

@@ -290,6 +290,11 @@ L.waitstate = function(_, s) emit(s, { "g3_wait_state" }) end
 local STRING_VAR_RAM = {
   [0x02021CD0] = 1, [0x02021CF0] = 2, [0x02021D04] = 3, [0x02021D18] = 4,
   [0x02021C40] = 1, [0x02021C54] = 2, [0x02021C68] = 3, [0x02021C7C] = 4,
+  -- Emerald's gStringVar4 is NOT beside the other three: it is the 1000-byte
+  -- buffer at 0x02021FC4 (read off the Battle Tower room's `loadword 0`).
+  -- Without it every Emerald `msgbox gStringVar4` -- the Frontier trainers'
+  -- intros, among others -- lowered to nothing and was never shown.
+  [0x02021FC4] = 4,
 }
 L.loadword = function(ir, s)
   if ir[2] == 0 and type(ir[3]) == "string" then s.lastText = ir[3] end

@@ -82,6 +82,7 @@ function Game:load()
   self.renderer = Renderer
   Renderer:init()
 
+  require("src.translation.Service").install(Data,require("src.core.GameVersion").get(),SaveData.loadOptions())
   require("src.render.Font").load(Data)
   -- menu cursor/border/geometry constants; field.theme restyles them
   require("src.ui.Theme").load(Data)
@@ -205,8 +206,13 @@ function Game:bootConfig()
     if type(items) == "table" then
       local id = items.POTION and "POTION" or nil
       if not id then
+        -- STRING KEYS ONLY: Gen 4's table carries every item under ITEM_nnn
+        -- AND its bare number, and a bag is keyed by the string.  Taking the
+        -- number (whenever `pairs` met it first) was dropped by newGame's
+        -- copy, which fell back to the literal "POTION" -- an id Platinum does
+        -- not have, quarantined off the first Continue.
         for key, def in pairs(items) do
-          if type(def) == "table"
+          if type(key) == "string" and type(def) == "table"
              and tostring(def.name or ""):upper():gsub("[^%a]", "") == "POTION" then
             id = key
             break
@@ -227,6 +233,7 @@ function Game:makeTitleState()
   local title = factory.new(self, {
     onNewGame = function()
       while self.stack:top() do self.stack:pop() end
+      if self.overworld then self.overworld.fadeOverlay = nil end
       -- New Game keeps the standalone options.lua preferences
       self.save = SaveData.newGame(self:bootConfig())
       -- no bucket carry-over: mod state from an abandoned session must
@@ -286,6 +293,12 @@ end
 function Game:returnToTitle()
   require("src.core.Music").stop()
   while self.stack:top() do self.stack:pop() end
+  -- THE OVERWORLD OUTLIVES THE STACK, and a fade it had up is popped with
+  -- everything else while `fadeOverlay` still names it. The next script fade
+  -- then found an overlay, did not push it, and waited on a screen that never
+  -- updates -- Platinum's Battle Tower "Rest" (fade, save, OS_ResetSystem)
+  -- froze the resumed challenge's first fade that way.
+  if self.overworld then self.overworld.fadeOverlay = nil end
   self.stack:push(self:makeTitleState())
 end
 
@@ -466,6 +479,17 @@ end
 function Game:recenterLookPointer()
   if not lookPointerWanted(self) then return end
   if not (love.mouse and love.mouse.setPosition) then return end
+  -- NO WARP IN RELATIVE MODE. Reported from play: "first person and third
+  -- person wont let me look around unless the window isnt active". With the
+  -- window focused the pointer is in relative mode, where SDL reports
+  -- unbounded deltas and the edge cannot be hit -- but every motion still
+  -- warped to the centre and armed `lookWarping`, and love.mousemoved threw
+  -- the NEXT motion away as the warp's echo: the look was eaten. Unfocused,
+  -- relative mode was off, nothing warped, and the look worked.
+  if self.lookRelative and love.mouse.getRelativeMode then
+    local ok, rel = pcall(love.mouse.getRelativeMode)
+    if ok and rel then return end
+  end
   local w, h = 0, 0
   if love.graphics and love.graphics.getDimensions then
     w, h = love.graphics.getDimensions()
@@ -627,6 +651,9 @@ function Game.worldBgBattleDim(stack)
   for i = #(stack and stack.states or {}), 1, -1 do
     local state = stack.states[i]
     if state and state.bgMode and state:bgMode() == "world" then
+      -- not when a mod is fighting the battle ON the map: the world is the
+      -- battle then, and dimming it blacks out the fight (BattleState:worldStaged)
+      if state.worldStaged and state:worldStaged() then return nil end
       return state.BG_WORLD_DIM or 0.55
     end
   end
@@ -877,6 +904,13 @@ Game.centerClassicZones = centerClassicZones
 
 function Game:draw()
   local closeDraw = FrameProfile.section("draw: whole frame")
+  local screenLayout=require('src.ui.SecondScreen')
+  Renderer.splitViewport=nil
+  if screenLayout.combined(self) then
+    local w,h=love.graphics.getDimensions()
+    w,h=screenLayout.mainSize(self,w,h)
+    Renderer.splitViewport={w=w,h=h}
+  end
 
   -- A specialized lower-screen state (battle menu, mining, Poketch screen)
   -- claims the panel by calling SecondScreen.draw during _draw(). If nothing
@@ -894,7 +928,7 @@ function Game:draw()
 
   do
     local okSS, SS = pcall(require, "src.ui.SecondScreen")
-    if okSS and SS.mode and SS.mode(self) == "display"
+    if okSS and SS.mode and (SS.mode(self) == "display" or SS.combined(self))
        and not self.secondScreenDrawnThisFrame then
       local okP, Poketch = pcall(require, "src.ui.Gen4Poketch")
       if okP and Poketch and Poketch.new then
@@ -914,6 +948,10 @@ function Game:draw()
     end
   end
 
+  if screenLayout.combined(self) then
+    screenLayout.composeWindow(self)
+    TouchControls:draw()
+  end
   closeDraw()
   -- THE SECOND PANEL'S FRAME LEAVES LAST.
   --
@@ -1109,7 +1147,7 @@ function Game:_draw()
     ModRuntime.call("render.hud", function() end, self, viewport)
   end
   -- on-screen mobile controls: pure screen-space, over the finished frame
-  TouchControls:draw()
+  if not Renderer.splitViewport then TouchControls:draw() end
 end
 
 -- overworld survey zoom: wheel up / '=' zooms in, wheel down / '-' out
@@ -1849,6 +1887,8 @@ end
 -- entry chunks wrote before any save existed, while NEW GAME and
 -- CONTINUE replace the backing outright.
 function Game:adoptSave(save, seedBuckets)
+  -- species-name nicknames show in the player's language (see the function)
+  pcall(require("src.translation.Service").normalizeNicknames, self.data, save)
   -- Platinum Pokemon made before they carried friendship get their base value
   if require("src.core.GameVersion").isGen4() then
     pcall(function() require("src.pokemon.Gen4Friendship").migrate(self.data, save) end)
@@ -2023,10 +2063,35 @@ function Game:restoreSave(loaded, recovered)
   for _, box in ipairs(loaded.boxes or {}) do
     for _, mon in ipairs(box) do stamp(loaded, mon) end
   end
-  -- rebuild the state stack from the save
+  -- A SAVE MADE INSIDE A BATTLE TOWER CHALLENGE ("Rest") continues from the
+  -- lobby spot BT_FUNC_SET_COMMUNICATION_CLUB_ACCESSIBLE marked
+  -- (FieldTask_LoadSavedGameMap's special location)
+  if require("src.core.GameVersion").get() == "platinum" then
+    require("src.script.Gen4BattleTowerCommands").applySpecialLocation(loaded)
+  end
+  -- ...and Emerald's: a SaveGameFrontier save continues in the lobby
+  if require("src.core.GameVersion").get() == "emerald" then
+    require("src.script.Gen3BattleFrontier").applyContinue(loaded)
+  end
+  -- rebuild the state stack from the save (and drop a fade the overworld
+  -- still names from before -- see returnToTitle)
   while self.stack:top() do self.stack:pop() end
+  if self.overworld then self.overworld.fadeOverlay = nil end
   self.stack:push(self.overworld, loaded.player.map,
                   loaded.player.x, loaded.player.y, loaded.player.facing)
+  -- Platinum's Journal (FieldTask_LoadSavedGameMap): opened first when two
+  -- days or more have gone by, then today's page is taken and titled here
+  if require("src.core.GameVersion").get() == "platinum" then
+    local J = require("src.pokemon.Gen4Journal")
+    if J.openOnContinue(loaded) then
+      -- the pages as they were: today's is not added until after it closes
+      local pages = {}
+      for i, p in ipairs(J.state(loaded).pages) do pages[i] = p end
+      self.stack:push(require("src.ui.Gen4Journal").new(self, { save = loaded, pages = pages }))
+    end
+    local def = self.data and self.data.maps and self.data.maps[loaded.player.map]
+    J.title(loaded, def and def.header)
+  end
   self.saveReport = report
   if not SaveData.emptyReport(report) then
     -- the report screen is a Screens id so mods (or the ui milestone) own

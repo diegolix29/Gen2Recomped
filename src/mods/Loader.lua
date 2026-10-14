@@ -692,6 +692,37 @@ function Loader:_api(mod)
     -- and not a door: nothing about it reaches the loader, the process
     -- environment or the dev-mode require shim.
     developer = loader.dev == true,
+    -- THE ENGINE'S OWN MODULES, by name.
+    --
+    -- A mod chunk already runs under the engine's searcher, so plain `require`
+    -- reaches them -- but that is a fact about the loader that no mod should
+    -- have to discover, and a mod that wraps `require` for its own libs (this
+    -- is common) loses it.  Named here so the seam is a documented field
+    -- rather than a coincidence.  Read-only in the sense that matters: it
+    -- returns the same module table the engine holds, so a mod that mutates
+    -- one is changing the engine, exactly as it always was.
+    engineRequire = engineRequire,
+    -- 1 to 5.  The one field worth reaching for before anything else.
+    generation = hostGen,
+    -- the version id the launcher started: "red", "crystal", "emerald",
+    -- "platinum", "heartgold", "soulsilver", "black", "white", "prism",
+    -- "polishedcrystal"
+    gameVersion = hostId,
+    -- ...and the same three plus the trimmings, for a mod that would rather
+    -- read one table than three fields.  `name` is what the game calls
+    -- itself, not an id to branch on -- branch on `generation` or `version`.
+    host = {
+      generation = hostGen,
+      version = hostId,
+      name = hostInfo and hostInfo.displayName or hostId,
+      label = hostInfo and hostInfo.label or hostId,
+      engine = engineVersion,
+      modApi = (function()
+        local okE, V = pcall(require, "src.core.Version")
+        return okE and V and V.modApi or nil
+      end)(),
+      developer = loader.dev == true,
+    },
     -- a deep copy: what a mod does to its own view never reaches the loader
     manifest = Merge.deepCopy(mod.manifest),
     content = {},

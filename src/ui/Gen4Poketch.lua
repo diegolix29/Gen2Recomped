@@ -24,20 +24,27 @@ Gen4Poketch.__index = Gen4Poketch
 
 local W, H = 256, 192
 
+-- A cartridge sound effect by its SDAT symbol name (Sound_PlayEffect).
+-- Nothing happens headless or without audio.
+local function se(self, name, opts)
+  local data = self.game and self.game.data
+  local ok, Sound = pcall(require, "src.core.Sound")
+  if ok and type(Sound) == "table" and Sound.playSe and data then return Sound.playSe(data, name, opts) end
+end
+
+-- PoketchSystem_PlaySoundEffect, which every app goes through: silent while
+-- the app is changing (the shutter is up or down).
+local function appSe(self, name)
+  if self.shutter then return end
+  return se(self, name)
+end
+
 -- The watch face inside the bottom screen.  The cartridge's own `poketch_border`
 -- is a full-screen picture with the face cut out of it, so the apps draw into
 -- the hole rather than being placed against nothing.
 local FACE = { x = 16, y = 16, w = 192, h = 160 }
 local TYPES = {'NORMAL','FIRE','WATER','ELECTRIC','GRASS','ICE','FIGHTING','POISON',
   'GROUND','FLYING','PSYCHIC','BUG','ROCK','GHOST','DRAGON','DARK','STEEL'}
-local function centered(text,cx,y,width)
-  text=tostring(text)
-  if width and Font.fit then text=Font.fit(text,width) end
-  Font.draw(text,cx-math.floor(Font.width(text)/2),y)
-end
-
--- Where the digital watch's four digits sit, and the colon between them.
-local DIGIT = { x = 66, y = 74, w = 24, h = 32, gap = 4, colon = 12 }
 
 -- NOT OPAQUE.  The Poketch is a second screen, not a screen that replaces the
 -- first: on the corner mode the world is still there behind it, and on swap the
@@ -183,7 +190,7 @@ function Gen4Poketch:sprite(id, set, seq, x, y, opts)
   local f = self:animFrame(set, seq, (self.ticks or 0) - clock.start)
   local o = opts or {}
   if f.rot then
-    o = { rot = -f.rot * 2 * math.pi / 65536, keepColour = o.keepColour }
+    o = { rot = f.rot * 2 * math.pi / 65536, keepColour = o.keepColour }
   end
   return self:drawCell(set, f.cell, x + (f.x or 0), y + (f.y or 0), o)
 end
@@ -287,9 +294,19 @@ function Gen4Poketch:cycle(delta)
       self:store().app=index
       self.appState = nil
       self.spriteClock = nil
+      self.alarmWasRinging = nil
       return
     end
   end
+end
+
+-- A press of the bezel's up/down button (poketch_system.c
+-- PoketchSystem_OnButtonEvent): the button goes in with SEQ_SE_DP_DENSI01
+-- (PoketchGraphics_*BtnReleased_Task), or only half way with
+-- SEQ_SE_DP_DENSI04 while the app is still changing (*BtnHalfPressed_Task).
+function Gen4Poketch:bezel(delta)
+  if self.shutter then se(self, "SEQ_SE_DP_DENSI04") else se(self, "SEQ_SE_DP_DENSI01") end
+  return self:cycle(delta)
 end
 
 function Gen4Poketch:updatePresentation(dt)
@@ -315,8 +332,8 @@ function Gen4Poketch:update(dt)
   local input = self.game.input
   if not input then return end
 
-  if input:wasPressed("r") or input:wasPressed("right") then return self:cycle(1) end
-  if input:wasPressed("left") then return self:cycle(-1) end
+  if input:wasPressed("r") or input:wasPressed("right") then return self:bezel(1) end
+  if input:wasPressed("left") then return self:bezel(-1) end
   if input:wasPressed("b") or input:wasPressed("l")
      or input:wasPressed("start") then
     return self:close()
@@ -341,11 +358,14 @@ end
 function Gen4Poketch:activate()
   local app, s = self:app(), self:store()
   local name = app and app.name
-  if name == "Counter" then s.counter = ((s.counter or 0) + 1) % 10000
+  if name == "Counter" then
+    s.counter = ((s.counter or 0) + 1) % 10000
+    appSe(self, "SEQ_SE_DP_POKETCH_010")
   elseif name == "Coin Toss" then
     if not self.coinAnimation then
       s.coin=love.math.random(2)==1 and 'heads' or 'tails'
       self.coinAnimation={y=144,speed=-10.5,ticks=0,accumulator=0}
+      appSe(self, "SEQ_SE_DP_DENSI09")       -- coin_toss Task_TossCoin, state 0
     end
   elseif name == "Stopwatch" then s.stopwatchRunning = not s.stopwatchRunning
   elseif name == "Kitchen Timer" then
@@ -353,9 +373,13 @@ function Gen4Poketch:activate()
   elseif name == "Roulette" then
     local r = self:rouletteState()
     if r.phase == 'idle' then self:rouletteButton(1) elseif r.phase == 'spin' then self:rouletteButton(2) end
-  elseif name == "Color Changer" then s.color = ((s.color or 0) + 1) % 8
+  elseif name == "Color Changer" then
+    s.color = ((s.color or 0) + 1) % 8
+    appSe(self, "SEQ_SE_DP_POKETCH_003")     -- color_changer Task_UpdateColor
   elseif name == "Dowsing Machine" then self:startDowsing(112,101)
-  elseif name == "Alarm Clock" then s.alarmEnabled = not s.alarmEnabled
+  elseif name == "Alarm Clock" then
+    -- the switch's other half: EDIT while set, SET while editing
+    if s.alarmEnabled then self:alarmTouch(192, 120) else self:alarmTouch(192, 88) end
   elseif name == "Matchup Checker" then self:matchupTouch(112, 148)
   end
 end
@@ -403,21 +427,27 @@ function Gen4Poketch:touchpressed(id, px, py)
   if self.pointer~=nil then return true end
   self.pointer = id
   self.held = { x = x, y = y, start = self.ticks or 0, tapped = true }
-  if x >= 224 and y >= 32 and y < 160 then self.held = nil; self:cycle(y < 96 and -1 or 1); return true end
+  if x >= 224 and y >= 32 and y < 160 then self.held = nil; self:bezel(y < 96 and -1 or 1); return true end
   if x < FACE.x or x >= FACE.x + FACE.w or y < FACE.y or y >= FACE.y + FACE.h then return true end
+  -- POKETCH_SYSTEM_MAIN_BUTTON_SCREEN: a touch while the app is changing beeps
+  if self.shutter then se(self, "SEQ_SE_DP_BEEP") end
   local name = (self:app() or {}).name
   local s = self:store()
   if name == 'Calculator' then
     for i, r in ipairs(CALC_RECTS) do
       if inRect(x, y, r[1] * 8, r[2] * 8, (r[1] + r[3]) * 8, (r[2] + r[4]) * 8) then
         self.calcPressed = i
+        appSe(self, "SEQ_SE_DP_POKETCH_003")   -- calculator Task_PressButton
         self:calculate(CALC_KEYS[i])
         break
       end
     end
   elseif name == 'Memo Pad' and x >= 180 and x < 204 and y >= 24 and y < 88 then
+    -- memo_pad ButtonCallback: only a change of tool runs CHANGE_TOOL
+    if not s.memoErasing then appSe(self, "SEQ_SE_DP_POKETCH_003") end
     s.memoErasing = true
   elseif name == 'Memo Pad' and x >= 180 and x < 204 and y >= 104 and y < 168 then
+    if s.memoErasing then appSe(self, "SEQ_SE_DP_POKETCH_003") end
     s.memoErasing = false
   elseif name == 'Memo Pad' or name == 'Dot Artist' then
     self:doodle(x, y)
@@ -443,9 +473,15 @@ function Gen4Poketch:touchpressed(id, px, py)
       end
     end
   elseif name == 'Pedometer' then
-    if x >= 80 and x < 148 and y >= 104 and y < 152 then s.steps = 0; self.buttonDown = true end
+    if x >= 80 and x < 148 and y >= 104 and y < 152 then
+      s.steps = 0; self.buttonDown = true
+      appSe(self, "SEQ_SE_DP_POKETCH_010")     -- Task_UpdateButtonSprite, pressed
+    end
   elseif name=='Counter' then
-    if x>=80 and x<148 and y>=104 and y<152 then s.counter = ((s.counter or 0) + 1) % 10000; self.buttonDown = true end
+    if x>=80 and x<148 and y>=104 and y<152 then
+      s.counter = ((s.counter or 0) + 1) % 10000; self.buttonDown = true
+      appSe(self, "SEQ_SE_DP_POKETCH_010")     -- Task_UpdateButtonSprite, pressed
+    end
   elseif name == 'Stopwatch' then
     -- stopwatch/main.c: one circular button, centre (112, 112), radius 39
     if (x - 112) ^ 2 + (y - 112) ^ 2 < 39 * 39 then self:stopwatchPress() end
@@ -484,7 +520,13 @@ function Gen4Poketch:touchpressed(id, px, py)
     local mon=index and (name~='Pokémon History' and (self.game.save.party or {}) or (s.history or {}))[index]
     if mon and not mon.isEgg then
       require('src.core.Sound').playCry(self.game.data,mon.species)
+    elseif name == 'Pokémon List' and not mon then
+      -- party_status State_UpdateApp: a tap off the icons refreshes the list
+      appSe(self, "SEQ_SE_DP_POKETCH_010")
     end
+  elseif name == 'Day-Care Checker' then
+    -- daycare_checker Task_ReloadDaycareState: every tap reloads it
+    appSe(self, "SEQ_SE_DP_DENSI12")
   elseif name == 'Digital Watch' or name == 'Analog Watch' then
     -- digital_watch/main.c ToggleBacklight: the light is on while the
     -- screen is held
@@ -548,7 +590,10 @@ end
 -- that theme -- `applyLCDPalette` reads it.
 function Gen4Poketch:colorTouch(x, y)
   if y >= 136 and y < 160 and x >= 48 and x < 184 then
-    self:store().color = math.min(7, math.floor((x - 48) / 16))
+    local color = math.min(7, math.floor((x - 48) / 16))
+    -- CheckColorChanged -> Task_UpdateColor
+    if color ~= (self:store().color or 0) then appSe(self, "SEQ_SE_DP_POKETCH_003") end
+    self:store().color = color
   end
 end
 
@@ -736,6 +781,7 @@ function Gen4Poketch:updateCoin(dt)
     a.y=a.y+a.speed; a.speed=a.speed+0.6875
     if a.speed>0 and a.y>=144 then
       a.speed=-a.speed*0.56; a.y=144
+      appSe(self, "SEQ_SE_DP_DENSI10")     -- every bounce, the last one too
       if a.speed>=-2 then self.coinAnimation=nil; break end
     end
   end
@@ -833,6 +879,7 @@ function Gen4Poketch:stopwatchPress()
   st.wasRunning = s.stopwatchRunning
   s.stopwatchRunning = false
   st.sequence, st.t, st.holding, st.held = 1, 0, true, 0
+  appSe(self, "SEQ_SE_DP_POKETCH_010")       -- Task_HandleTimerTransition
 end
 
 function Gen4Poketch:stopwatchRelease()
@@ -855,11 +902,18 @@ function Gen4Poketch:updateStopwatch(tick30)
   end
   if st.sequence == 3 or st.sequence == 4 then
     st.blinkT = (st.blinkT or 0) + 1
-    if st.blinkT > (st.sequence == 3 and 6 or 3) then st.blinkT = 0; st.blink = ((st.blink or 0) + 1) % 3 end
+    if st.blinkT > (st.sequence == 3 and 6 or 3) then
+      st.blinkT = 0; st.blink = ((st.blink or 0) + 1) % 3
+      -- Task_HandleBegin/SpeedUpButtonBlinking: a tick with every blink
+      appSe(self, "SEQ_SE_DP_POKETCH_010")
+    end
   end
   if st.sequence == 4 then
     st.t = st.t + 1
-    if st.t >= 90 then st.sequence, st.t, st.blinkT, st.blink = 5, 0, 0, 0 end
+    if st.t >= 90 then
+      st.sequence, st.t, st.blinkT, st.blink = 5, 0, 0, 0
+      appSe(self, "SEQ_SE_DP_POKETCH_006")   -- Task_BeginExplosion
+    end
   elseif st.sequence == 5 then
     st.t = st.t + 1
     st.blinkT = (st.blinkT or 0) + 1
@@ -943,6 +997,12 @@ end
 
 function Gen4Poketch:timerButton(which)
   local s, mode = self:store(), self:timerMode()
+  -- kitchen_timer/main.c: a button that does something in this state clicks
+  -- (POKETCH_003; START clicks in edit even with no time set), one that does
+  -- nothing beeps; RESET always clicks
+  local live = (which == 1 and (mode == 'edit' or mode == 'paused' or mode == 'silenced'))
+    or (which == 2 and (mode == 'running' or mode == 'sounding')) or which == 3
+  if live then appSe(self, "SEQ_SE_DP_POKETCH_003") else appSe(self, "SEQ_SE_DP_BEEP") end
   if which == 1 then          -- START
     if mode == 'edit' then
       local total = s.timerDuration or 0
@@ -1031,10 +1091,18 @@ function Gen4Poketch:alarmRinging()
   return s.alarmEnabled and now.hour == (s.alarmHour or 0) and now.min == (s.alarmMinute or 0)
 end
 
+-- alarm_clock/main.c: flipping the switch clicks (Task_ShowCurrentTime /
+-- Task_EnterEditMode play POKETCH_003); pressing the half already down beeps.
 function Gen4Poketch:alarmTouch(x, y)
   local s = self:store()
-  if inRect(x, y, 176, 72, 208, 104) then s.alarmEnabled = true; return end
-  if inRect(x, y, 176, 104, 208, 136) then s.alarmEnabled = false; return end
+  if inRect(x, y, 176, 72, 208, 104) then
+    appSe(self, s.alarmEnabled and "SEQ_SE_DP_BEEP" or "SEQ_SE_DP_POKETCH_003")
+    s.alarmEnabled = true; return
+  end
+  if inRect(x, y, 176, 104, 208, 136) then
+    appSe(self, s.alarmEnabled and "SEQ_SE_DP_POKETCH_003" or "SEQ_SE_DP_BEEP")
+    s.alarmEnabled = false; return
+  end
   if s.alarmEnabled then return end
   if inRect(x, y, 64, 112, 80, 128) then s.alarmHour = ((s.alarmHour or 0) + 1) % 24
   elseif inRect(x, y, 64, 160, 80, 176) then s.alarmHour = ((s.alarmHour or 0) - 1) % 24
@@ -1276,9 +1344,9 @@ Gen4Poketch.lumShader = lumShader
 function Gen4Poketch:iconImage(mon)
   local data = self.game.data
   local icons = data.icons or {}
-  local species = mon.isEgg and 'EGG' or mon.species
-  local entry = (icons.bySpecies or {})[species] or ((data.pokemon or {})[mon.species] or {}).icon
-  if mon.isEgg and not entry then entry = (icons.bySpecies or {})[mon.species] end
+  -- an egg's icon follows the species table: 494 the egg, 495 Manaphy's
+  local species = mon.isEgg and (mon.species == 490 and 495 or 494) or mon.species
+  local entry = (icons.bySpecies or {})[species] or (not mon.isEgg and ((data.pokemon or {})[mon.species] or {}).icon)
   local path = type(entry) == 'table' and entry.image or entry
   if type(path) ~= 'string' then return nil end
   if self.cache[path] == nil then
@@ -1403,6 +1471,8 @@ function Gen4Poketch:updateFriendship()
     elseif touched then fc.tapOnMon, fc.tap, fc.tapT = true, 'first', 0
     else
       fc.tap = 'jump'
+      -- each icon's jump reset plays SEQ_SE_DP_POKETCH_010, all on this tick
+      if #fc.mons > 0 then appSe(self, "SEQ_SE_DP_POKETCH_010") end
       for _, m in ipairs(fc.mons) do m.action, m.jump, m.jumpPhase, m.cooldown = 'jump', 0, 0, 0 end
       fc.jumping = #fc.mons
     end
@@ -1582,7 +1652,7 @@ function Gen4Poketch:drawDaycare()
     local seq = (gender == 'male' or gender == 0) and 10 or (gender == 'female' or gender == 1) and 11 or 12
     self:sprite('dcg' .. i, 'daycare_checker', seq, at[5], 40)
   end
-  if egg then self:drawMonIcon({ species = 'EGG', isEgg = true }, 112, 136, { seq = 4, id = 'dcegg' }) end
+  if egg then self:drawMonIcon({ species = 0, isEgg = true }, 112, 136, { seq = 4, id = 'dcegg' }) end
 end
 
 -- ----------------------------------------------------- Pokemon history --
@@ -1610,6 +1680,7 @@ end
 -- and by 15 -- the importer bakes that in.
 function Gen4Poketch:startDowsing(x,y)
   self.dowsingResult=require('src.pokemon.Gen4PoketchState').dowsing(self.game,x,y)
+  appSe(self, "SEQ_SE_DP_POKETCH_009")       -- dowsing_machine State_UpdateApp
   self.dowsingStart = self.ticks or 0
   self.spriteClock = self.spriteClock or {}
   self.spriteClock.radar, self.spriteClock.items = nil, nil
@@ -1665,6 +1736,13 @@ end
 
 function Gen4Poketch:rouletteButton(which)
   local r, s = self:rouletteState(), self:store()
+  -- roulette/main.c: idle, START and CLEAR click and STOP beeps; spinning,
+  -- STOP clicks and the others beep; while it runs down nothing answers
+  if r.phase == 'idle' then
+    appSe(self, which == 2 and "SEQ_SE_DP_BEEP" or "SEQ_SE_DP_POKETCH_003")
+  elseif r.phase == 'spin' or r.phase == 'spinup' then
+    appSe(self, which == 2 and "SEQ_SE_DP_POKETCH_003" or "SEQ_SE_DP_BEEP")
+  end
   if which == 1 and r.phase == 'idle' then
     r.phase, r.speed = 'spinup', 336; r.angle = r.angle + 336
   elseif which == 2 and (r.phase == 'spin' or r.phase == 'spinup') then
@@ -1717,7 +1795,10 @@ function Gen4Poketch:updateRoulette()
     r.angle = r.angle + r.speed
   elseif r.phase == 'stopping' then
     if r.speed > 80 then r.speed = r.speed - 80; r.angle = r.angle + r.speed
-    else r.speed, r.phase = 0, 'idle' end
+    else
+      r.speed, r.phase = 0, 'idle'
+      appSe(self, "SEQ_SE_DP_POKETCH_011")     -- Task_StopSpinner
+    end
   end
   r.angle = r.angle % 65536
   self:store().roulette = r.angle * 360 / 65536
@@ -1735,7 +1816,7 @@ end
 
 function Gen4Poketch:drawRoulette()
   local r = self:rouletteState()
-  self:drawCell('roulette', 0, 96, 96, { rot = -r.angle * 2 * math.pi / 65536 })
+  self:drawCell('roulette', 0, 96, 96, { rot = r.angle * 2 * math.pi / 65536 })
   local spinning = r.phase ~= 'idle'
   local p = r.pressed
   self:drawCell('roulette', self:animFrame('roulette', (spinning or p == 1) and 2 or 1, 0).cell, 187, 50)
@@ -1769,6 +1850,7 @@ function Gen4Poketch:moveTesterTouch(x, y)
       s.moveTester[slot] = (s.moveTester[slot] - 1 + delta) % (slot == 3 and 18 or 17) + 1
       self.appState = self.appState or {}
       self.appState.mtPressed = i
+      appSe(self, "SEQ_SE_DP_POKETCH_003")   -- move_tester Task_ButtonPressed
       return
     end
   end
@@ -1837,10 +1919,11 @@ end
 
 local MATCHUP_LEVEL = { [70] = 0, [50] = 1, [20] = 2, [0] = 3 }
 local MATCHUP_SCRIPTS = {
-  [3] = { { 'fwd', 16, 16 }, { 'wait', 16 }, { 'flip' }, { 'back', 16, 16 } },
-  [2] = { { 'fwd', 16, 16 } },
-  [1] = { { 'fwd', 16, 16 }, { 'fwd', 16, 16 } },
-  [0] = { { 'fwd', 16, 16 }, { 'fwd', 16, 16 }, { 'fwd', 16, 16 }, { 'wait', 16 },
+  [3] = { { 'fwd', 16, 16 }, { 'wait', 16 }, { 'flip' }, { 'se', "SEQ_SE_DP_POKETCH_013" }, { 'back', 16, 16 } },
+  [2] = { { 'fwd', 16, 16 }, { 'se', "SEQ_SE_DP_POKETCH_012" } },
+  [1] = { { 'fwd', 16, 16 }, { 'se', "SEQ_SE_DP_POKETCH_012" }, { 'fwd', 16, 16 }, { 'se', "SEQ_SE_DP_POKETCH_012" } },
+  [0] = { { 'fwd', 16, 16 }, { 'se', "SEQ_SE_DP_POKETCH_012" }, { 'fwd', 16, 16 }, { 'se', "SEQ_SE_DP_POKETCH_012" },
+          { 'fwd', 16, 16 }, { 'se', "SEQ_SE_DP_POKETCH_012" }, { 'wait', 16 }, { 'se', "SEQ_SE_DP_POKETCH_014" },
           { 'set', 'left', 7 }, { 'set', 'right', 8 }, { 'set', 'meter', 4 }, { 'wait', 16 } },
 }
 
@@ -1849,6 +1932,9 @@ function Gen4Poketch:matchupTouch(x, y)
   local party, s = self:matchupParty(), self:store()
   local pair = s.matchup or {1,2}; s.matchup = pair
   if x >= 92 and x < 132 then
+    -- matchup_checker State_UpdateApp: CHECK needs two Pokemon, else it beeps
+    if #party < 2 then appSe(self, "SEQ_SE_DP_BEEP"); return end
+    appSe(self, "SEQ_SE_DP_POKETCH_010")       -- Task_PressButton
     s.compatibility = require('src.pokemon.Gen4PoketchState').compatibility(
       self.game.data, party[pair[1]], party[pair[2]])
     local level = MATCHUP_LEVEL[s.compatibility] or 3
@@ -1885,6 +1971,7 @@ function Gen4Poketch:updateMatchup()
       m.state, m.timer, m.target, m.step = 'move', cmd[2], m.offset + dist, dist / cmd[2]
     elseif cmd[1] == 'wait' then m.state, m.timer = 'wait', cmd[2]
     elseif cmd[1] == 'flip' then m.left, m.right = 6, 5
+    elseif cmd[1] == 'se' then appSe(self, cmd[2])   -- ANIM_COMMAND_PLAY_SOUND
     elseif cmd[1] == 'set' then m[cmd[2]] = cmd[3] end
   end
 end
@@ -1992,6 +2079,18 @@ function Gen4Poketch:updateApp()
   elseif name == 'Friendship Checker' then if tick30 then self:updateFriendship() end
   elseif name == 'Roulette' then if tick30 then self:updateRoulette() end
   elseif name == 'Matchup Checker' then if tick30 then self:updateMatchup() end
+  elseif name == 'Kitchen Timer' then
+    -- Task_BeatHands: SEQ_SE_DP_DENSI11 with each beat, every 8 ticks
+    if self:timerMode() == 'sounding' and (self.ticks or 0) % 16 == 0 then appSe(self, "SEQ_SE_DP_DENSI11") end
+  elseif name == 'Alarm Clock' then
+    -- State_AlarmBlaring: Task_SoundAlarm clicks as it starts ringing, and
+    -- Task_ShowCurrentTime as the minute runs out while it is still set
+    local ringing = self:alarmRinging() and true or false
+    if self.alarmWasRinging ~= nil and ringing ~= self.alarmWasRinging
+       and (ringing or self:store().alarmEnabled) then
+      appSe(self, "SEQ_SE_DP_POKETCH_003")
+    end
+    self.alarmWasRinging = ringing
   end
 end
 
@@ -2099,7 +2198,7 @@ function Gen4Poketch:drawLCD(app)
     if body then
       body(self)
     elseif not face then
-      local label = app.name or Strings("APP")
+      local label = app.name and require("src.translation.Service").name(app.name) or Strings("APP")
       Font.draw(label, FACE.x + 8, FACE.y + 8)
       Font.draw(Strings("NOT BUILT YET"), FACE.x + 8, FACE.y + 24)
     end

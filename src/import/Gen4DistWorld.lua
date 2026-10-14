@@ -324,6 +324,32 @@ function Gen4DistWorld.mapFile(member)
       steps = s32(member, o + 20),
     }
   end
+  at = at + sizes[3]
+
+  -- THE GHOST PROPS: the floating stepping stones and rocks that fade in and
+  -- out by GROUP.  DistWorldGhostPropHeader {int templateCount, int
+  -- triggerCount, u32 defaultVisiblePropGroups}, then 12-byte templates
+  -- {u32 groupID, u16 propKind, s16 tileX, tileY, tileZ}, then 20-byte triggers
+  -- {u32 groupID, s16 playerDir, s16 showProp, DistWorldBounds} -- and the
+  -- three account for the section exactly, which is the check.
+  if sizes[4] >= 12 then
+    local nT, nG = s32(member, at), s32(member, at + 4)
+    if nT and nG and nT >= 0 and nG >= 0 and 12 + nT * 12 + nG * 20 == sizes[4] then
+      out.ghostDefaultVisible = u32(member, at + 8)
+      out.ghostProps, out.ghostTriggers = {}, {}
+      local o = at + 12
+      for _ = 1, nT do
+        out.ghostProps[#out.ghostProps + 1] = { group = u32(member, o), propKind = u16(member, o + 4),
+          x = s16(member, o + 6), y = s16(member, o + 8), z = s16(member, o + 10) }
+        o = o + 12
+      end
+      for _ = 1, nG do
+        out.ghostTriggers[#out.ghostTriggers + 1] = { group = u32(member, o), playerDir = s16(member, o + 4),
+          show = s16(member, o + 6) ~= 0, bounds = bounds(member, o + 8) }
+        o = o + 20
+      end
+    end
+  end
 
   return out
 end
@@ -534,6 +560,92 @@ Gen4DistWorld.EVENT_CMD_NAMES = {
   "hideGiratinaRoomPlatforms", "clearPuzzleFlag",
 }
 
+-- THE TWO PARAMETER BLOCKS THE PLATFORMS NEED, which the runtime moves rafts
+-- and shuttles with (src/world/Gen4DistPlatforms.lua):
+--
+--   CmdParamsMovePlatform  u16 platformIndex, u16 movePlayer, u16 dummy04,
+--                          s16 finalTile{X,Y,Z}Offset, VecFx32 posDelta (24)
+--   CmdParamsSetMapObjectAnimation  u32 mapObjLocalID, u32 movementAction (8)
+--
+-- Other kinds keep only their name.
+function Gen4DistWorld.readCmdParams(kind, bin, o)
+  if kind == 1 then
+    local function fx(at)
+      local v = s32(bin, at)
+      return v and v / 4096
+    end
+    return {
+      platformIndex = u16(bin, o), movePlayer = u16(bin, o + 2),
+      offsetX = s16(bin, o + 6), offsetY = s16(bin, o + 8), offsetZ = s16(bin, o + 10),
+      deltaX = fx(o + 12), deltaY = fx(o + 16), deltaZ = fx(o + 20),
+    }
+  elseif kind == 0 then
+    return { localId = u32(bin, o), movementAction = u32(bin, o + 4) }
+  -- CmdParamsAddMapObjWithLocalID { u16 mapHeaderID, u16 localID }
+  elseif kind == 2 then
+    return { header = u16(bin, o), localId = u16(bin, o + 2) }
+  -- CmdParamsCascadeUp / Down: { u32 axis, u16 dir, s16 finishingPosFix{X,Y,Z},
+  -- s16 finalPosOffset{X,Y,Z}, s16 mapLoadPosOffset{X,Y,Z}, VecFx32 posDelta }
+  elseif kind == 4 or kind == 10 then
+    local function fx(at) local v = s32(bin, at); return v and v / 4096 end
+    return { axis = u32(bin, o), dir = u16(bin, o + 4),
+      fixX = s16(bin, o + 6), fixY = s16(bin, o + 8), fixZ = s16(bin, o + 10),
+      finalX = s16(bin, o + 12), finalY = s16(bin, o + 14), finalZ = s16(bin, o + 16),
+      loadX = s16(bin, o + 18), loadY = s16(bin, o + 20), loadZ = s16(bin, o + 22),
+      deltaX = fx(o + 24), deltaY = fx(o + 28), deltaZ = fx(o + 32) }
+  -- one u32: StartScript's script id, the progress value, the Giratina
+  -- animation flag, a puzzle flag index
+  elseif kind == 5 then return { scriptId = u32(bin, o) }
+  elseif kind == 6 then return { progress = u32(bin, o) }
+  elseif kind == 8 then return { anim = u32(bin, o) }
+  elseif kind == 9 or kind == 17 then return { flag = u32(bin, o) }
+  -- DistWorldGiratinaShadowTemplate { s16 initialTile{X,Y,Z}, s8 rotAnglesIndex,
+  -- u8 soundKind, VecFx32 scale, VecFx32 posDelta, int movementAnimSteps }
+  elseif kind == 7 then
+    local function fx(at) local v = s32(bin, at); return v and v / 4096 end
+    local rot = u8(bin, o + 6); if rot >= 128 then rot = rot - 256 end
+    return { x = s16(bin, o), y = s16(bin, o + 2), z = s16(bin, o + 4), rot = rot, sound = u8(bin, o + 7),
+      scaleX = fx(o + 8), scaleY = fx(o + 12), scaleZ = fx(o + 16),
+      deltaX = fx(o + 20), deltaY = fx(o + 24), deltaZ = fx(o + 28), steps = s32(bin, o + 32) }
+  end
+end
+
+-- sGiratinaShadowExternal: the one flyby a SCRIPT starts (1F's,
+-- StartDistortionWorldGiratinaShadowEvent 0) rather than an event.  Same
+-- 36-byte template the events carry; found by its first record's tile
+-- (6, 297, 42), which is 1F's sky.  Returns the list of templates.
+function Gen4DistWorld.findExternalShadows(bin)
+  for o = 0, #bin - 36, 4 do
+    if s16(bin, o) == 6 and s16(bin, o + 2) == 297 and s16(bin, o + 4) == 42 then
+      local t = Gen4DistWorld.readCmdParams(7, bin, o)
+      if t and t.steps and t.steps > 0 and t.steps < 1000 then return { t } end
+    end
+  end
+end
+
+-- sBoulderFallLocations: { u32 mapHeaderID, s16 tileX, s16 tileZ, u32 flagIndex }
+-- up to MAP_HEADER_INVALID.  Found by its first record -- B5F's pit at
+-- (0x4C, 0x44), whose boulder falls to B6F (flag INVALID, 17) -- since nothing
+-- points at it from a table this module already reads.
+function Gen4DistWorld.findBoulderFalls(bin)
+  for o = 0, #bin - 12, 4 do
+    if u32(bin, o) == 579 and s16(bin, o + 4) == 0x4C and s16(bin, o + 6) == 0x44 and u32(bin, o + 8) == 17 then
+      local out = {}
+      local at = o
+      while true do
+        local h = u32(bin, at)
+        if not h or h < 573 or h > 583 then break end
+        local flag = u32(bin, at + 8)
+        out[#out + 1] = { header = h, x = s16(bin, at + 4), z = s16(bin, at + 6),
+                          flag = (flag >= 0x80000000) and -1 or flag }
+        at = at + 12
+        if #out > 64 then break end
+      end
+      return out, o
+    end
+  end
+end
+
 -- A coordinate event: position, a flag condition, and a NULL-terminated
 -- command list.  The command PARAMETERS are a union behind a pointer and are
 -- not decoded here -- only the kinds, which is what says what the event does.
@@ -546,13 +658,16 @@ local function readEvents(bin, ram, ptr)
     local cmds = u32(bin, o + 12)
     if not cmds or cmds == 0 then break end
     if not inOverlay(ram, #bin, cmds) then break end
-    local list = {}
+    local list, params = {}, {}
     local co = cmds - ram
     local j = 0
     while true do
       local kind = u32(bin, co + j * Gen4DistWorld.EVENT_CMD_BYTES)
       if not kind or kind >= Gen4DistWorld.EVENT_CMD_END then break end
       list[#list + 1] = Gen4DistWorld.EVENT_CMD_NAMES[kind] or kind
+      local pp = u32(bin, co + j * Gen4DistWorld.EVENT_CMD_BYTES + 4)
+      local args = pp and inOverlay(ram, #bin, pp) and Gen4DistWorld.readCmdParams(kind, bin, pp - ram)
+      if args then params[#list] = args end
       j = j + 1
       if j > 64 then break end
     end
@@ -563,6 +678,7 @@ local function readEvents(bin, ram, ptr)
       flagCond = u16(bin, o + 8),
       flagCondVal = u16(bin, o + 10),
       commands = list,
+      params = next(params) and params or nil,
     }
     k = k + 1
     if k > 256 then break end

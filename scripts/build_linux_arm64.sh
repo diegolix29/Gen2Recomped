@@ -99,6 +99,17 @@ then
   cp "$ICON_SRC" "$IN_DIR/icon.png"
 fi
 cp "$GAME_LOVE" "$IN_DIR/game.love"
+# The offline translator, when one for this architecture was built: the game
+# looks for it at <dir of game.love>/translation/rom-translate.
+rm -rf "$IN_DIR/translation"
+if [ -f "$ROOT/translation/rom-translate" ]; then
+  if file -b "$ROOT/translation/rom-translate" | grep -q "aarch64"; then
+    mkdir -p "$IN_DIR/translation"
+    cp "$ROOT/translation/rom-translate" "$IN_DIR/translation/"
+  else
+    warn "translation/rom-translate is not an aarch64 binary; not packing it"
+  fi
+fi
 
 # --------------------------------------------------------------- downloads
 # Fetched on the host and checksum-pinned here so the container never needs

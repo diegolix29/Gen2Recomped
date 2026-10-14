@@ -201,10 +201,54 @@ function Gen4ModelPack.pack(model)
       -- to.  A shadow polygon is 9.
       alpha = (material and material.alpha and material.alpha < 31)
               and material.alpha or nil,
+      -- HOW THE TEXTURE MEETS ITS EDGES, from the material's texture
+      -- parameter: bits 16 / 17 repeat S / T, 18 / 19 mirror them, and
+      -- neither is CLAMP. Only when it is not plain repeat, which is what the
+      -- renderer assumes. HGSS's starter balls show why it matters: their
+      -- highlight, `tt_bl_hl2`, is one small spot with parameter 0 -- clamped
+      -- -- and repeated it tiled the whole ball in white dots.
+      wrap = Gen4ModelPack.wrapOf(material),
+      -- NO NORMALS, NO LIGHTING: the DS computes a lit colour only from the
+      -- NORMAL command, and a shape whose display list never issued one
+      -- (HeartGold / SoulSilver's lightmapped `_lm` geometry, which issues
+      -- COLOR) shows its baked vertex colours as they are. Shaded with the
+      -- decoder's resting normal, Falkner's gym came out at a third of its
+      -- brightness. Platinum's terrain issues NORMAL and is unaffected.
+      unlit = Gen4ModelPack.hasNoNormals(shape) or nil,
+      -- OUT OF THE FOG: polyAttr bit 15 is the DS's per-material fog enable.
+      -- Written only when it is CLEAR, which is rare -- Morty's gym fogs the
+      -- whole room to black and its candle spots (`dun_spot`) shine through.
+      noFog = (material and material.polyAttr
+               and math.floor(material.polyAttr / 0x8000) % 2 == 0) or nil,
     }
   end
 
   return out
+end
+
+-- hasNoNormals(shape) -> true when no vertex of it was given a NORMAL
+function Gen4ModelPack.hasNoNormals(shape)
+  local vs = shape and shape.vertices
+  if type(vs) ~= "table" or #vs == 0 then return false end
+  for _, v in ipairs(vs) do
+    if not v.noNormal then return false end
+  end
+  return true
+end
+
+-- wrapOf(material) -> { s, t } in LOVE's words, or nil for repeat / repeat
+function Gen4ModelPack.wrapOf(material)
+  local p = material and material.texImageParam
+  if not p then return nil end
+  local function axis(repeatBit, mirrorBit)
+    local rep = math.floor(p / 2 ^ repeatBit) % 2 == 1
+    local mir = math.floor(p / 2 ^ mirrorBit) % 2 == 1
+    if not rep then return "clamp" end
+    return mir and "mirroredrepeat" or "repeat"
+  end
+  local ws, wt = axis(16, 18), axis(17, 19)
+  if ws == "repeat" and wt == "repeat" then return nil end
+  return { ws, wt }
 end
 
 -- unpack(packed) -> vertices, triangles

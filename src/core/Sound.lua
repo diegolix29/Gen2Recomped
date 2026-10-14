@@ -315,6 +315,173 @@ function Sound.playId(data, id)
   return Sound.play(data, name)
 end
 
+-- ---------------------------------------------------------------------------
+-- GEN 4 SOUND EFFECTS: `Sound_PlayEffect(SEQ_SE_...)`, by the cartridge's name.
+--
+-- A DS sound effect is a sequence like any song: an SSEQ in the SDAT, played
+-- by NitroAudio over the same banks and wave archives the BGM uses, on one of
+-- the SE players.  The importer (Gen4Audio.catalogue) files every sequence the
+-- SDAT's SYMB block names under that name AND its id in data.audio.sfx, so the
+-- vocabulary is the ROM's own: "SEQ_SE_DP_SELECT", "SEQ_SE_DP_CARD5", 1500.
+--
+-- The decomp spells the same effects as file constants -- `SEQ_SE_DP_DECIDE_sseq`
+-- or, for a file several entries share, `SE_CONFIRM_sseq_3` (the 4th SEQ entry
+-- whose file is SE_CONFIRM.sseq; nitrosfx's -naix numbering).  Those resolve
+-- too, so a screen can be ported with the constant its C uses: the suffix
+-- picks the Nth sequence sharing the anchor's FAT file, read off the ROM.
+-- A FAT file has no name in the ROM, so the few files the decomp RENAMED (its
+-- file name is no sequence's SYMB name) are anchored here to a sequence that
+-- plays them; every other constant is read straight off the ROM's names and
+-- FAT ids.  tools/gen4_sound_effects_check.lua resolves all 1013 decomp
+-- constants against res/sound/pl_sound_data.json to keep this table honest.
+-- ---------------------------------------------------------------------------
+local DECOMP_FILE_ANCHOR = {
+  SE_CONFIRM = "SEQ_SE_DP_SELECT",
+  SE_DP_VS_SEEKER_BEEP = "SEQ_SE_DP_UG_005",
+  SE_PARTY_GAUGE_ARROW_IN = "SEQ_SE_DP_TB_START",
+  SE_PARTY_GAUGE_BALL_IN = "SEQ_SE_DP_TB_KON",
+  SE_PARTY_GAUGE_BALL_EMPTY = "SEQ_SE_DP_TB_KARA",
+  BATTLE_WILD_POKEMON = "SEQ_BA_POKE", BATTLE_GYM_LEADER = "SEQ_BA_GYM",
+  BATTLE_LAKE_GUARDIAN = "SEQ_BA_DPOKE1", BATTLE_TRAINER = "SEQ_BA_TRAIN",
+  BATTLE_CYRUS = "SEQ_BA_AKAGI", BATTLE_DIALGA_PALKIA = "SEQ_BA_DPOKE2",
+  BATTLE_CHAMPION = "SEQ_BA_CHANP", BATTLE_GALACTIC_GRUNT = "SEQ_BA_GINGA",
+  BATTLE_RIVAL = "SEQ_BA_RIVAL", BATTLE_ARCEUS = "SEQ_BA_SECRET1",
+  BATTLE_LEGENDARY = "SEQ_BA_SECRET2", VICTORY_WILD_POKEMON = "SEQ_WINPOKE",
+  VICTORY_TRAINER = "SEQ_WINTRAIN", VICTORY_GYM_LEADER = "SEQ_WINTGYM",
+  VICTORY_CHAMPION = "SEQ_WINCHAMP", VICTORY_GALACTIC_GRUNT = "SEQ_WINGINGA",
+  VICTORY_CYRUS = "SEQ_WINAKAGI", VICTORY_ELITE_FOUR = "SEQ_WINTENNO",
+  BATTLE_GALACTIC_CMDR = "SEQ_BA_GINGA3", CONTEST_DRESSING_ROOM = "SEQ_CON_TEST",
+  BATTLE_ELITE_FOUR = "SEQ_BA_TENNO", BATTLE_GIRATINA = "SEQ_PL_BA_GIRA",
+  BATTLE_FRONTIER_BRAIN = "SEQ_PL_BA_BRAIN", VICTORY_FRONTIER_BRAIN = "SEQ_PL_WINBRAIN",
+  BATTLE_REGI_TRIO = "SEQ_PL_BA_REGI",
+}
+
+local function nativeDef(def)
+  return type(def) == "table" and def.nds ~= nil and def or nil
+end
+
+-- sequences grouped by the FAT file they play, per SDAT (weak: a re-import
+-- drops it with the archive)
+local sharedFiles = setmetatable({}, { __mode = "k" })
+local function archiveOf(data)
+  local ok, arc = pcall(function()
+    return require("src.audio.NitroAudio").archive(data)
+  end)
+  return ok and arc or nil
+end
+local function filesOf(arc)
+  local byFile = sharedFiles[arc]
+  if byFile then return byFile end
+  local Sdat = require("src.import.Gen4Sdat")
+  byFile = { byId = {} }
+  for i = 0, Sdat.count(arc, Sdat.SEQ) - 1 do
+    local seq = Sdat.sequence(arc, i)
+    if seq then
+      local list = byFile[seq.file] or {}
+      list[#list + 1] = i
+      byFile[seq.file], byFile.byId[i] = list, seq
+    end
+  end
+  sharedFiles[arc] = byFile
+  return byFile
+end
+
+-- Sound.seDef(data, key) -> the native def, or nil.  key: a SYMB name, a
+-- sequence id, or a decomp `<file>_sseq[_N]` constant.
+function Sound.seDef(data, key)
+  local sfx = data and data.audio and data.audio.sfx
+  if not sfx or key == nil then return nil end
+  local direct = nativeDef(sfx[key])
+  if direct or type(key) ~= "string" then return direct end
+  local base, n = key:match("^(.-)_sseq_(%d+)$")
+  if not base then base = key:match("^(.-)_sseq$"); n = base and 0 end
+  if not base then return nil end
+  n = tonumber(n)
+  local anchor = nativeDef(sfx[base])
+    or nativeDef(sfx[DECOMP_FILE_ANCHOR[base] or false])
+  if not anchor then return nil end
+  local arc = archiveOf(data)
+  local byFile = arc and filesOf(arc)
+  local seq = byFile and byFile.byId[tonumber(anchor.nds)]
+  local list = seq and byFile[seq.file]
+  if not list then return n == 0 and nativeDef(sfx[base]) or nil end
+  return nativeDef(sfx[list[n + 1] or false])
+end
+
+function Sound.seName(data, key)
+  local def = Sound.seDef(data, key)
+  return def and (def.name or def.nds)
+end
+
+-- THE SE PLAYERS.  Each SEQ INFO record names a player, and an SE player has
+-- room for few sequences (PLAYER_SE_* hold one): a new effect takes the slot
+-- of the lowest-priority one sounding when its own priority is at least that
+-- (NNS_SndArcPlayerStartSeq), and otherwise does not start.
+local playerSlots = {}
+local function playerFor(data, def)
+  local arc = archiveOf(data)
+  if not arc then return nil end
+  local seq = filesOf(arc).byId[tonumber(def.nds)]
+  if not seq or not seq.player then return nil end
+  local info = require("src.import.Gen4Sdat").player(arc, seq.player)
+  return seq.player, info and info.maxSequences or 0, seq.playerPriority or 64
+end
+local function sounding(src)
+  local ok, playing = pcall(src.isPlaying, src)
+  return ok and playing
+end
+
+-- Sound.playSe(data, key[, opts]) -> the started source, or nil.
+-- opts.pitch: a playback-rate factor (Sound_SetPitchForHandle callers).
+-- opts.handle: an explicit sound handle (Sound_PlaySequenceWithPlayer), so one
+--   effect can sound several times at once on separate players; it bypasses
+--   the SE player slots because the caller picked its player itself.
+function Sound.playSe(data, key, opts)
+  local def = Sound.seDef(data, key)
+  if not def then return nil end
+  local name = def.name or def.nds
+  if opts and opts.handle ~= nil then
+    local src = playPath(data, ("%s#%s"):format(tostring(name), tostring(opts.handle)), def)
+    if not src then return nil end
+    if src.setPitch then pcall(src.setPitch, src, opts.pitch or 1) end
+    played("sfx", name)
+    return src
+  end
+  local player, room, priority = playerFor(data, def)
+  local slots = player and room and room > 0 and (playerSlots[player] or {})
+  if slots then
+    for i = #slots, 1, -1 do
+      if slots[i].name == name or not sounding(slots[i].src) then table.remove(slots, i) end
+    end
+    if #slots >= room then
+      local low = 1
+      for i = 2, #slots do if slots[i].priority < slots[low].priority then low = i end end
+      if priority < slots[low].priority then return nil end
+      pcall(slots[low].src.stop, slots[low].src)
+      table.remove(slots, low)
+    end
+  end
+  local src = Sound.play(data, name)
+  if not src then return nil end
+  if src.setPitch then pcall(src.setPitch, src, opts and opts.pitch or 1) end
+  if slots then
+    slots[#slots + 1] = { name = name, src = src, priority = priority }
+    playerSlots[player] = slots
+  end
+  return src
+end
+
+function Sound.isSePlaying(data, key, handle)
+  local name = Sound.seName(data, key)
+  if name ~= nil and handle ~= nil then name = ("%s#%s"):format(tostring(name), tostring(handle)) end
+  return name ~= nil and Sound.isPlaying(name)
+end
+
+function Sound.stopSe(data, key)
+  local name = Sound.seName(data, key)
+  if name ~= nil then Sound.stop(name) end
+end
+
 -- Play a move's sound with its MoveSoundTable pitch/tempo modifiers
 -- (data/moves/sfx.asm; GetMoveSound loads them into wFrequencyModifier/
 -- wTempoModifier and the battle sound engine applies them to every
@@ -443,7 +610,7 @@ function Sound.playCry(data, species, opts)
   local def = cries and cries[species]
   if not def and type(species) == "number" then
     local mon = data.pokemon and data.pokemon[species]
-    def = cries and mon and cries[mon.name]
+    def = cries and mon and cries[mon.translationSourceName or mon.name]
   end
   if not def then return nil end
   local key = "cry:" .. tostring(species)

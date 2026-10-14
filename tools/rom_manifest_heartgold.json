@@ -1,0 +1,13 @@
+{
+  "format": 4,
+  "generation": 4,
+  "romSha1": "4fcded0e2713dc03929845de631d0932ea2b5a37",
+  "gameCode": "IPKE",
+  "title": "POKEMON HG",
+  "notes": [
+    "A Nintendo DS cartridge is a filesystem: every extraction stage opens a file by",
+    "its path (or, for most of this game, by its numbered /a/x/y/z path), so this",
+    "manifest carries only which dump is this game -- RomImporter reads romSha1.",
+    "Decomp: pret/pokeheartgold (pokeheartgold.us.nds)."
+  ]
+}

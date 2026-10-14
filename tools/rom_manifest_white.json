@@ -1,0 +1,13 @@
+{
+  "format": 4,
+  "generation": 5,
+  "romSha1": "bc696a0dfb448c7b3a8a206f0f8214411a039208",
+  "gameCode": "IRAO",
+  "title": "POKEMON W",
+  "notes": [
+    "A Nintendo DS cartridge is a filesystem: every extraction stage opens a file by",
+    "its path (or, for most of this game, by its numbered /a/x/y/z path), so this",
+    "manifest carries only which dump is this game -- RomImporter reads romSha1.",
+    "Decomp: squiddonaut/pokeblack (the same engine; White is not built by it)."
+  ]
+}

@@ -213,6 +213,18 @@ end
 function Gen4Encounters.timedGrass(area, hour)
   local band = Gen4Encounters.timedBand(hour)
   if not band then return nil end
+  -- HEARTGOLD / SOULSILVER: a whole table per band (parseHgss)
+  if area and type(area.timed) == "table" and type(area.grass) == "table" then
+    local species = area.timed[band]
+    if type(species) ~= "table" then return nil end
+    local out = {}
+    for i, s in ipairs(area.grass) do
+      local sp = tonumber(species[i])
+      out[i] = { level = s.level, minLevel = s.minLevel, maxLevel = s.maxLevel, chance = s.chance,
+                 species = (sp and sp > 0) and sp or s.species }
+    end
+    return out
+  end
   local pair = area and area[band]
   local slots = area and area.grass
   if type(pair) ~= "table" or type(slots) ~= "table" then return nil end
@@ -231,10 +243,89 @@ function Gen4Encounters.timedGrass(area, hour)
   return out
 end
 
-function Gen4Encounters.all(archive)
+-- ---------------------------------------------------------------------------
+-- HEARTGOLD AND SOULSILVER
+-- ---------------------------------------------------------------------------
+--
+-- /fielddata/encountdata/g_enc_data.narc (HeartGold) and s_enc_data.narc
+-- (SoulSilver): one EncounterData of 0xC4 bytes per area, a DIFFERENT record
+-- from Platinum's 424 (pokeheartgold include/wild_encounter.h):
+--
+--   00 u8 rates: walking, surfing, rock smash, old rod, good rod, super rod
+--   06 2 padding
+--   08 u8 levels[12] -- ONE level per grass slot, shared by the three times
+--   14 u16 species_morn[12]   2C u16 species_day[12]   44 u16 species_nite[12]
+--   5C u16 hoennSounds[2]     60 u16 sinnohSounds[2]
+--   64 surf[5]  78 rockSmash[2]  80 oldRod[5]  94 goodRod[5]  A8 superRod[5]
+--      each { u8 minLevel, u8 maxLevel, u16 species } -- MINIMUM FIRST here,
+--      the opposite of Platinum's water slots
+--   BC u16 landSwarm  BE surfSwarm  C0 nightFish  C2 fishSwarm
+--
+-- THE WHOLE GRASS TABLE CHANGES WITH THE TIME, not two slots of it:
+-- EncSlotArray_Init_Land (src/field/encounter_check.c) takes all twelve species
+-- from species_morn, species_day (day and evening) or species_nite (night and
+-- late night) -- the same hour bands as Platinum's TimeOfDayForHour, so
+-- `timedBand` answers for both and `timedGrass` reads `timed` when it is here.
+--
+-- The rolls (EncounterSlot_WildMonSlotRoll_*): grass and surf as Platinum's;
+-- FISHING is 40/30/15/10/5, not 60/30/5/4/1; rock smash is 80/20.
+Gen4Encounters.HGSS_RECORD_BYTES = 0xC4
+Gen4Encounters.HGSS_FISH_RATES = { 40, 30, 15, 10, 5 }
+Gen4Encounters.HGSS_ROCK_SMASH_RATES = { 80, 20 }
+
+local function u16(s, o) local a, b = s:byte(o + 1, o + 2); return (a or 0) + (b or 0) * 256 end
+
+local function hgssBlock(record, at, n, rate, chances)
+  local out = { rate = rate, slots = {} }
+  for i = 0, n - 1 do
+    local o = at + i * 4
+    out.slots[i + 1] = { minLevel = u8(record, o), maxLevel = u8(record, o + 1),
+                         species = u16(record, o + 2), chance = chances[i + 1] }
+  end
+  return out
+end
+
+function Gen4Encounters.parseHgss(record)
+  if type(record) ~= "string" or #record < Gen4Encounters.HGSS_RECORD_BYTES then
+    return nil, ("encounter record is %d bytes, expected %d")
+      :format(type(record) == "string" and #record or -1, Gen4Encounters.HGSS_RECORD_BYTES)
+  end
+  local function species(at)
+    local t = {}
+    for i = 0, Gen4Encounters.GRASS_SLOTS - 1 do t[i + 1] = u16(record, at + i * 2) end
+    return t
+  end
+  local timed = { morning = species(0x14), day = species(0x2C), night = species(0x44) }
+  local grass = {}
+  for i = 0, Gen4Encounters.GRASS_SLOTS - 1 do
+    local level = u8(record, 0x08 + i)
+    -- the base table is the morning's, as Platinum's is
+    grass[i + 1] = { level = level, minLevel = level, maxLevel = level,
+                     species = timed.morning[i + 1], chance = Gen4Encounters.GRASS_RATES[i + 1] }
+  end
+  return {
+    family = "hgss",
+    grassRate = u8(record, 0),
+    grass = grass,
+    timed = timed,
+    hoennSounds = { u16(record, 0x5C), u16(record, 0x5E) },
+    sinnohSounds = { u16(record, 0x60), u16(record, 0x62) },
+    surf = hgssBlock(record, 0x64, 5, u8(record, 1), Gen4Encounters.WATER_RATES),
+    rockSmash = hgssBlock(record, 0x78, 2, u8(record, 2), Gen4Encounters.HGSS_ROCK_SMASH_RATES),
+    oldRod = hgssBlock(record, 0x80, 5, u8(record, 3), Gen4Encounters.HGSS_FISH_RATES),
+    goodRod = hgssBlock(record, 0x94, 5, u8(record, 4), Gen4Encounters.HGSS_FISH_RATES),
+    superRod = hgssBlock(record, 0xA8, 5, u8(record, 5), Gen4Encounters.HGSS_FISH_RATES),
+    hgssSwarm = { land = u16(record, 0xBC), surf = u16(record, 0xBE),
+                  nightFish = u16(record, 0xC0), fish = u16(record, 0xC2) },
+  }
+end
+
+-- all(archive, family) -- family "hgss" reads the HeartGold/SoulSilver record
+function Gen4Encounters.all(archive, family)
+  local parse = family == "hgss" and Gen4Encounters.parseHgss or Gen4Encounters.parse
   local out = {}
   for i = 0, archive.count - 1 do
-    local a = Gen4Encounters.parse(archive:get(i))
+    local a = parse(archive:get(i))
     if a then a.id = i; out[i] = a end
   end
   return out

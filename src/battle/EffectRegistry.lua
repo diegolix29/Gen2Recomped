@@ -23,6 +23,8 @@ local EffectRegistry = {}
 -- branches it to PlayPlayerMoveAnimation instead, so it pays the animation
 -- rather than the hold -- the same condition that gates cancelMoveAnim.
 local function missBeat(battle, record)
+  -- BATTLE ARENA: a miss is -2 skill (src/battle/Gen3Arena.lua)
+  if battle.arenaOutcome then battle.arenaOutcome.failed = true end
   if record and record.explode then return end
   battle:waitNext(Timing.MOVE_STATUS_OR_MISS)
 end
@@ -203,6 +205,12 @@ function EffectRegistry.runDamaging(battle, ctx, record)
         highCrit = record and record.highCrit or nil })
   end
 
+  if battle.arenaOutcome then
+    battle.arenaOutcome.typeMult = info.typeMult
+    -- an ability that made it do nothing speaks against the user's skill
+    -- (BattleArena_DeductSkillPoints)
+    if info.typeMult == 0 and info.ability then battle.arenaOutcome.ability = true end
+  end
   if info.typeMult == 0 then
     -- type immunity zeros damage and sets wMoveMissed in Gen 1, so no anim
     if not (record and record.explode) then battle:cancelMoveAnim() end

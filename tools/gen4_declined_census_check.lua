@@ -118,8 +118,8 @@ local MERGES = {
   -- (the nine Stark Mountain and League rooms are walkable without it), and
   -- it is now the subject's only row.
   ["platform lift"]                          = "persisted map features",
-  -- ONE JOURNAL. Two rows, one word of prose apart.
-  ["journal entry"] = "journal",
+  -- ("journal entry" -> "journal" is gone: `givejournal` and
+  -- `createjournalevent` lower to g4_give_journal and g4_journal_event now.)
   -- ("shard move tutor" -> "move tutor" is gone: the shard tutors and
   -- Route 210's Draco Meteor tutor both lower to real commands now.)
   -- ONE APPEARANCE SYSTEM, which the trainer card derives a class from.
@@ -153,7 +153,7 @@ local KNOWN = {
   ["field map teardown, which the warp owns here"] = true,
   ["giratina shadow event"] = true, ["giratina's forms"] = true,
   ["great marsh lookout"] = true, ["great marsh safari game"] = true,
-  ["hall of fame healing animation"] = true, ["journal"] = true,
+  ["hall of fame healing animation"] = true,
   ["jubilife lottery"] = true, ["lake guardian containment units"] = true,
   ["lift's current-floor window"] = true, ["mailbox"] = true,
   ["menu anchor side"] = true, ["move tutor"] = true, ["slot machine"] = true, ["contest camera flashes"] = true, ["contest attire"] = true,
@@ -174,6 +174,10 @@ local KNOWN = {
   ["trainer appearance"] = true, ["trainer card"] = true,
   ["trainer encounter jingle"] = true, ["trainer score records"] = true,
   ["tv broadcast system"] = true, ["underground"] = true,
+  -- the Battle Tower's multi rooms: the link players' shared-state handshake
+  -- (`clearreceivedtempdataallplayers`, which with nobody linked has nothing
+  -- to clear) and ScrCmd_MoveCamera's half-tile nudge of a hidden player
+  ["link play"] = true, ["half-tile camera nudge"] = true,
 }
 
 -- ---------------------------------------------------------------------------

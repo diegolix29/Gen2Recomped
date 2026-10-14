@@ -226,6 +226,64 @@ function Gen4BoxArt.images(rom)
     end
   end
 
+  -- THE BOTTOM SCREEN (ov19_021DCF88, every mode but COMPARE): sub BG tiles
+  -- 127 under palette 128 (three rows at sub BG 0); SUB_3 map 124 (the
+  -- backdrop with the two dial wells), SUB_2 map 125 (512 x 256: the dial's
+  -- cover, scrolled to 0 / -128 / 128) and SUB_1 map 126 (512 x 256: the two
+  -- dial faces, "SELECT BOX" / "MARKINGS", scrolled to 0 / -96 / 88).
+  local subSheet, subPal = G.tiles(member(127)), G.palette(member(128))
+  if subSheet and subPal then
+    for key, m in pairs({ sub_bg = 124, sub_cover = 125, sub_dials = 126 }) do
+      local map = G.tilemap(member(m))
+      if map then out[key] = G.compose(map, subSheet, subPal) end
+    end
+  end
+  -- sub OBJ palette 144 (Graphics_LoadPartialPaletteFromOpenNARC at sub OBJ
+  -- 0, through the sprite list's palette proxy: no explicit palette, so each
+  -- OAM entry's own row is the one used)
+  local subObj = G.palette(member(144))
+  local function cellsOf(tiles, cells, anims, colours, prefix, forceRow)
+    local sh, bank, an = G.tiles(member(tiles)), Cells.parse(member(cells), G), Anim.parse(member(anims), G)
+    if not (sh and bank and an and colours) then return end
+    for i, cell in ipairs(bank.cells) do
+      out[prefix .. (i - 1)] = assemble(cell, sh, forceRow and row(colours, forceRow) or colours, bank, forceRow ~= nil)
+    end
+  end
+  -- the two corner buttons (NCGR/NCER/NANR 138/139/140): sequence 0 cell 0
+  -- (up), 1 cells 1 x 8 then 2 x 8 (pressed), 2 cells 3 / 4; the right one
+  -- is the same sprite flipped (Sprite_SetFlipMode 1)
+  cellsOf(138, 139, 140, subObj, "sub_button_")
+  -- the markings dial's eight buttons (141/142/143): cell 2t off, 2t + 1 lit
+  -- -- OFF, ITEM, circle, triangle, square, heart, star, diamond
+  cellsOf(141, 142, 143, subObj, "sub_mark_")
+
+  -- COMPARE MODE'S BOTTOM SCREEN (ov19_021DEC04): tiles 132, palette 133
+  -- (four rows at sub BG 0), maps 129 (battle stats), 130 (contest) and 131
+  -- (moves) on SUB_1 / SUB_2 / SUB_3, one shown per compare mode; sprites
+  -- 134/135/136 over palette 137 (three rows at sub OBJ 0), each with an
+  -- explicit palette -- the left button 0, the right 1 (flipped), the toggle
+  -- 2, the contest dots their slot's 0 / 1.
+  local cmpSheet, cmpPal = G.tiles(member(132)), G.palette(member(133))
+  if cmpSheet and cmpPal then
+    for key, m in pairs({ cmp_battle = 129, cmp_contest = 130, cmp_moves = 131 }) do
+      local map = G.tilemap(member(m))
+      if map then out[key] = G.compose(map, cmpSheet, cmpPal) end
+    end
+  end
+  local cmpObj = G.palette(member(137))
+  if cmpObj then
+    local sh, bank = G.tiles(member(134)), Cells.parse(member(135), G)
+    if sh and bank then
+      local function one(cell, pal, key)
+        local c = bank.cells[cell + 1]
+        if c then out[key] = assemble(c, sh, row(cmpObj, pal), bank, true) end
+      end
+      for c = 0, 2 do one(c, 0, "cmp_left_" .. c); one(c, 1, "cmp_right_" .. c) end
+      for c = 3, 5 do one(c, 2, "cmp_toggle_" .. c) end
+      one(6, 0, "cmp_dot_0"); one(7, 1, "cmp_dot_1")
+    end
+  end
+
   -- font_special_chars in the preview's two colour pairs
   local font = opener(rom, Gen4BoxArt.FONT_PATH)
   local special = font and G.tiles(font(require("src.import.Gen4SpecialChars").MEMBER))
@@ -305,7 +363,22 @@ function Gen4BoxArt.data(rom)
     local _, _, p = Gen4BoxArt.wallpaperMembers(n)
     papers[n] = G.palette(member(p))
   end
-  return Gen4BoxArt.ink(pal, papers, G.palette(member(27)))
+  local ink = Gen4BoxArt.ink(pal, papers, G.palette(member(27)))
+  -- the bottom screen: ov19_021DE350's box names TEXT_COLOR(1, 2, 0) in
+  -- window palette 2 of member 128; compare mode's words TEXT_COLOR(15, 14, 0)
+  -- in palettes 0 (left windows) and 1 (right) of member 133; SUB backdrop
+  -- colour 0 of each
+  local function pair(p, r, a, b)
+    local x, y = p and p[r * 16 + a + 1], p and p[r * 16 + b + 1]
+    return x and y and { { x[1], x[2], x[3] }, { y[1], y[2], y[3] } } or nil
+  end
+  local sub, cmp = G.palette(member(128)), G.palette(member(133))
+  ink.subName = pair(sub, 2, 1, 2)
+  ink.subBackdrop = sub and sub[1] and { sub[1][1], sub[1][2], sub[1][3] }
+  ink.cmpLeft = pair(cmp, 0, 15, 14)
+  ink.cmpRight = pair(cmp, 1, 15, 14)
+  ink.cmpBackdrop = cmp and cmp[1] and { cmp[1][1], cmp[1][2], cmp[1][3] }
+  return ink
 end
 
 return Gen4BoxArt

@@ -39,6 +39,33 @@ Cook.isOpaque = true
 Cook.BANK = 464
 Cook.FINGER_RADIUS = 40
 
+-- THE POT'S SOUNDS are overlay083's (ov83_0223B5A0.c), off each frame's stir
+-- record (ov83_0223C3E8):
+--   * a turn of the batter: NM01 / NM04_2 / NM07_2 by phase (ov83_0223C90C)
+--   * an overflow: NM02 / NM05 by phase; a burn: NM03 / NM03 / NM08 -- the
+--     first slow stretch's warning plays nothing (ov83_0223C6D4)
+--   * a new direction drawn: NM12_2 (ov83_0223C758); the arrow coming up as
+--     the batter turns the wrong way: NM12_2 (ov83_0223C558)
+--   * a frame the group stirs in sync: NM11 (ov83_0223C7FC)
+--   * the end: NM07_2, NM08, NM11, NM12_2 stopped and NM13 (ov83_0223BCEC)
+--   * the results, two panels a second apart: NM14 each (ov83_0223BF74)
+-- Not here: the Berries dropping into the pot (NM10 / NM10_2, ov83_0223B9EC;
+-- NM09 as each lands, ov83_0223D6A8.c), which this screen does not animate.
+local function se(self, name, opts)
+  local data = self.game and self.game.data
+  local ok, Sound = pcall(require, "src.core.Sound")
+  if ok and type(Sound) == "table" and Sound.playSe and data then return Sound.playSe(data, name, opts) end
+end
+local function stopSe(self, name)
+  local data = self.game and self.game.data
+  local ok, Sound = pcall(require, "src.core.Sound")
+  if ok and type(Sound) == "table" and Sound.stopSe and data then return Sound.stopSe(data, name) end
+end
+
+local TURN_SE = { "SEQ_SE_DP_NM01", "SEQ_SE_DP_NM04_2", "SEQ_SE_DP_NM07_2" }
+local OVERFLOW_SE = { "SEQ_SE_DP_NM02", "SEQ_SE_DP_NM05", "SEQ_SE_DP_NM05" }
+local BURN_SE = { "SEQ_SE_DP_NM03", "SEQ_SE_DP_NM03", "SEQ_SE_DP_NM08" }
+
 function Cook:uiSize() return 256, 192 end
 function Cook:wantsFillScale() return true end
 
@@ -176,6 +203,39 @@ function Cook:start(item)
   self.fingerAngle = -math.pi / 2
   self.fingerSpeed = 0
   self.finger = nil
+  self.lastAngle, self.arrowState = self.stir.angle % 65536, 0
+end
+
+-- ov83_0223C3E8's sounds, after one frame of the stir (`before`: the record
+-- going in)
+function Cook:frameSounds(s, before)
+  local phase = math.max(1, math.min(3, s.phase))
+  -- ov83_0223C90C: the batter's angle wrapped the way it spins
+  local angle = s.angle % 65536
+  if (s.velocity >= 0 and self.lastAngle > angle) or (s.velocity < 0 and self.lastAngle < angle) then
+    se(self, TURN_SE[phase])
+  end
+  self.lastAngle = angle
+  -- ov83_0223C758: a new draw of the direction (the countdown restarted)
+  local drew = s.dirCountdown > before.dirCountdown
+  if drew then
+    se(self, "SEQ_SE_DP_NM12_2")
+    self.arrowState = 0
+  else
+    -- ov83_0223C558: the arrow for the way it should turn, once as it comes up
+    local spin = s.velocity >= 0 and 0 or 1
+    if spin == s.dir or s.velocity == 0 then
+      self.arrowState = 0
+    elseif self.arrowState ~= s.dir + 1 then
+      self.arrowState = s.dir + 1
+      se(self, "SEQ_SE_DP_NM12_2")
+    end
+  end
+  -- ov83_0223C6D4
+  if s.event == "overflow" then se(self, OVERFLOW_SE[phase]) end
+  if s.event == "burn" then se(self, BURN_SE[phase]) end
+  -- ov83_0223C7FC: a frame stirred in sync
+  if (s.syncFrames or 0) > (before.syncFrames or 0) then se(self, "SEQ_SE_DP_NM11") end
 end
 
 function Cook:update(dt)
@@ -183,6 +243,15 @@ function Cook:update(dt)
   if self.mode == "choose" then
     self.mode = "waiting"
     return self:chooseBerry()
+  end
+  if self.mode == "result" and self.resultFrames then
+    -- ov83_0223BF74: the results come up a panel a second, NM14 with each
+    self.resultAcc = (self.resultAcc or 0) + (dt or 1 / 60) * 30
+    while self.resultAcc >= 1 do
+      self.resultAcc = self.resultAcc - 1
+      self.resultFrames = self.resultFrames + 1
+      if self.resultFrames == 31 or self.resultFrames == 62 then se(self, "SEQ_SE_DP_NM14") end
+    end
   end
   if self.mode == "closing" or self.mode == "result" then
     if input:wasPressed("a") or input:wasPressed("b") then
@@ -203,6 +272,7 @@ end
 -- One 30 Hz frame of finger then batter.
 function Cook:frame(input)
   local s = self.stir
+  local before = { dirCountdown = s.dirCountdown, syncFrames = s.syncFrames }
   local arcIn, rawArc = 0, 0
   if self.touch then
     local t = self.touch
@@ -255,6 +325,7 @@ function Cook:frame(input)
   else
     Stir.step(s, arcIn)
   end
+  if not s.done then self:frameSounds(s, before) end
   local game = self.game
   if s.event == "overflow" then self.message = line(game, 4)
   elseif s.event == "warn" then self.message = line(game, 3)
@@ -266,6 +337,13 @@ end
 
 function Cook:result()
   local game = self.game
+  -- ov83_0223BCEC: the stirring sounds cut, and the finishing one
+  stopSe(self, "SEQ_SE_DP_NM07_2")
+  stopSe(self, "SEQ_SE_DP_NM08")
+  stopSe(self, "SEQ_SE_DP_NM11")
+  stopSe(self, "SEQ_SE_DP_NM12_2")
+  se(self, "SEQ_SE_DP_NM13")
+  self.resultFrames, self.resultAcc = 0, 0
   local f = game.data.gen4_berry_flavors[self.berry]
   local berries = { { item = self.berry, flavors = f.flavors, smoothness = f.smoothness } }
   for _, p in ipairs(self.partners or {}) do

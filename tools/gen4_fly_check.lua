@@ -68,5 +68,22 @@ check(ow:find('require("src.world.Gen4Fly").onEnter(Game.data, Game.save, self.m
 local fly = io.open('src/world/Gen4Fly.lua'):read('a')
 check(fly:find('save.safari then return false', 1, true), 'and Fly is refused in a Safari Game')
 
+-- THE LANDING IS THE MAP'S OWN TILE: sSpawnLocations names matrix tiles
+-- (Jubilife's (180, 777)), and the town's map is cut out at (128, 736) --
+-- unconverted, every fly put the player in the void (reported from play)
+local inside, total = 0, 0
+for _, r in ipairs(rows) do
+  if r.fly and r.fly.map and data.maps[r.fly.map] then
+    local d = Fly.destinationFor(data, r.firstArrival)
+    local def = data.maps[r.fly.map]
+    total = total + 1
+    if d and d.x >= 0 and d.y >= 0 and d.x < def.width and d.y < def.height then inside = inside + 1 end
+  end
+end
+check(total > 0 and inside == total, ('every fly landing is inside its map (%d of %d)'):format(inside, total))
+local jub
+for _, r in ipairs(rows) do if r.fly and r.fly.map == 'C01' then jub = Fly.destinationFor(data, r.firstArrival) end end
+check(jub and jub.x == 52 and jub.y == 41, "Jubilife's landing is its own (52, 41), not the matrix's (180, 777)")
+
 print(('%d checks, %d failed'):format(PASS + FAIL, FAIL))
 if FAIL > 0 then os.exit(1) end

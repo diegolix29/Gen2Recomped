@@ -530,6 +530,14 @@ function Map.new(def, tilesetDef)
   self.signAt = {}
   for _, s in ipairs(def.signs or {}) do
     self.signAt[s.y * self.widthCells + s.x] = s
+    -- BLACK / WHITE's stacked floors (Clay's lift panels): several signs on
+    -- one cell, one per level -- kept as a list, picked by `gen5Level`
+    if def.gen5Lifts and s.gen5Level then
+      self.signLevels = self.signLevels or {}
+      local k = s.y * self.widthCells + s.x
+      self.signLevels[k] = self.signLevels[k] or {}
+      table.insert(self.signLevels[k], s)
+    end
   end
   return self
 end
@@ -585,6 +593,11 @@ end
 function Map.isPushable(objDef)
   if objDef.smashable then return false end
   if objDef.pushable ~= nil then return objDef.pushable end
+  -- GEN 4's boulders are named by their graphics, not SPRITE_BOULDER:
+  -- Platinum's OBJ_EVENT_GFX_STRENGTH_BOULDER ("strength_boulder") and
+  -- HeartGold/SoulSilver's "rock" (their Rock Smash rock is "breakrock").
+  -- Reported from play: "You can't push strength boulders around".
+  if objDef.spriteName == "strength_boulder" or objDef.spriteName == "rock" then return true end
   return objDef.sprite == "SPRITE_BOULDER"
 end
 
@@ -779,10 +792,19 @@ function Map:isUnderBridgeCell(cx, cy)
   return self:cellElevation(cx, cy) == ELEVATION_UNDER_BRIDGE
 end
 
--- what a mover's elevation becomes after landing on (cx,cy)
-function Map:elevationAfter(at, cx, cy)
+-- what a mover's elevation becomes after stepping from (px,py) onto (cx,cy)
+--
+-- ObjectEventUpdateElevation: the new tile's elevation, whatever it is --
+-- INCLUDING 0 -- unless the new tile or the one just left is 15 (multi-level),
+-- which leaves it alone.  0 is not "keep what you had": a mover standing on
+-- 0 is AT 0, and 0 matches anything (IsElevationMismatchAt), which is what
+-- carries you between levels.  Reported from play: "unable to walk down the
+-- stairs into the beach's low water" -- Mossdeep's stairs are 0 and the
+-- shallow water 3; keeping the upper ground's 4 on the stairs walled it off.
+function Map:elevationAfter(at, cx, cy, px, py)
   local there = self:cellElevation(cx, cy)
   if there == nil or there == ELEVATION_UNDER_BRIDGE then return at end
+  if px and py and self:cellElevation(px, py) == ELEVATION_UNDER_BRIDGE then return at end
   return there
 end
 
@@ -813,7 +835,41 @@ function Map:patchedImpassable(cx, cy)
   return patched ~= nil and patched ~= 0
 end
 
+-- BLACK / WHITE'S WATER is a behaviour, not a solid cell: 0x3D is river and
+-- pond (Striaton's river, the lake round Dragonspiral Tower), 0x3F the sea
+-- (Driftveil's harbour, 1,520 cells of Undella Bay), and 0x41 the BANK --
+-- solid to a walker, the cell a surfer crosses onto the water. The river's
+-- cells carry no collision bit at all, so without this a walker walked on
+-- it.
+local BW_WATER = { [0x3D] = true, [0x3F] = true, [0x41] = true }
+function Map:gen5WaterAt(cx, cy)
+  if not (self.def and self.def.gen5 and self.cellBehaviour) then return false end
+  return BW_WATER[self:cellBehaviour(cx, cy)] or false
+end
+
+-- PLATINUM'S WATER is a behaviour too: `sTileBehaviorFlags`' SURFABLE bit
+-- (pokeplatinum src/map_tile_behavior.c) -- river 0x10, sea 0x15, the
+-- waterfall 0x13 and the unnamed surfable rows -- and the three bridges over
+-- water, which a surfer passes under and a walker crosses on top of.  The
+-- water cells carry no collision bit; the cartridge keeps a walker off them
+-- because they are surfable.  Reported from play (an HM sweep): the player
+-- walked out onto Route 218's sea without surfing.
+local G4_SURFABLE = { [0x10] = true, [0x11] = true, [0x12] = true, [0x13] = true,
+  [0x14] = true, [0x15] = true, [0x19] = true, [0x22] = true, [0x2A] = true,
+  [0x50] = true, [0x51] = true, [0x52] = true, [0x53] = true }
+local G4_BRIDGE_OVER_WATER = { [0x73] = true, [0x78] = true, [0x7C] = true }
+Map.G4_SURFABLE, Map.G4_BRIDGE_OVER_WATER = G4_SURFABLE, G4_BRIDGE_OVER_WATER
+function Map:gen4WaterAt(cx, cy, forSurfer)
+  local def = self.def
+  if not (def and def.generation == 4 and def.cameraFamily ~= "hgss" and self.cellBehaviour) then return false end
+  if not self:inBounds(cx, cy) then return false end
+  local b = self:cellBehaviour(cx, cy)
+  return G4_SURFABLE[b] or (forSurfer and G4_BRIDGE_OVER_WATER[b]) or false
+end
+
 function Map:isWalkableCell(cx, cy)
+  if self.def and self.def.gen5 and self:inBounds(cx, cy) and self:gen5WaterAt(cx, cy) then return false end
+  if self.def and self.def.generation == 4 and self:gen4WaterAt(cx, cy) then return false end
   -- FIRST, and before the tileset gets a word in.
   --
   -- Reported from play, twice: "the regi caves still arent fixed i can walk
@@ -852,6 +908,11 @@ function Map:isWalkableCell(cx, cy)
     return self:blockAt(bx, by) ~= self.gen2BorderBlock
   end
   if self:patchedImpassable(cx, cy) then return false end
+  -- BLACK / WHITE'S DOORS AND HATCHES ARE SOLID, and a press into one is
+  -- what takes it (OverworldController.checkGen4EntranceWarp's gen5 branch).
+  -- Made passable here, Cold Storage's hatch at (5, 7) -- open floor on
+  -- the far side -- was walked straight over.
+  if self.def and self.def.gen5 then return false end
   return self:warpAtCell(cx, cy) ~= nil
 end
 
@@ -890,6 +951,10 @@ end
 -- (hash sets built in Map.new).  Tileset membership in water_tilesets.asm
 -- is checked by the caller.
 function Map:isWaterCell(cx, cy)
+  if self.def and self.def.gen5 then return self:gen5WaterAt(cx, cy) end
+  if self.def and self.def.generation == 4 and self.def.cameraFamily ~= "hgss" then
+    return self:gen4WaterAt(cx, cy, true)
+  end
   -- A GEN 3 MAP SAYS "WATER" WITH ITS ELEVATION, not with a tile list.
   --
   -- There is no waterTiles list for Hoenn and there cannot usefully be one:
@@ -1642,6 +1707,10 @@ function Map:isCounterCell(cx, cy)
   local t = self.tileset.behaviourBytes and self:cellBehaviour(cx, cy)
             or self:cellTile(cx, cy)
   if self.tileset.id=='TILESET_GEN4_STANDIN' and t==0x80 then return true end
+  -- Black / White's counter is behaviour 0xD4 (Gen5Field: a room's counters
+  -- are byte 4 = 0xD4) -- every Pokemon Center nurse and mart clerk is
+  -- spoken to across one
+  if self.tileset.id=='TILESET_GEN4_STANDIN' and t==0xD4 and self.def and self.def.gen5 then return true end
   for _, c in ipairs(self.tileset.counterTiles or {}) do
     if c == t then return true end
   end
@@ -1671,6 +1740,11 @@ function Map:warpAtCell(cx, cy)
 end
 
 function Map:signAtCell(cx, cy)
+  local leveled = self.signLevels and self.signLevels[cy * self.widthCells + cx]
+  if leveled and self.gen5Level then
+    for _, s in ipairs(leveled) do if s.gen5Level == self.gen5Level then return s end end
+    return nil
+  end
   return self.signAt[cy * self.widthCells + cx]
 end
 

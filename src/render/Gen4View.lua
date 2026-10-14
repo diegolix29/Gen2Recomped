@@ -372,6 +372,16 @@ function Gen4View:follow(x, z, facing, baseY)
     -- what keeps `screenToWorld` an identity, so a direction key means the
     -- same world direction it always did.
     self.yaw = 0
+    -- ...EXCEPT IN THE DISTORTION WORLD, whose camera records swing it round
+    -- a wall (src/world/Gen4DistSurface.lua).  `Camera_AdjustPositionAround-
+    -- Target` puts the eye at +sin(angleY) on x, this yaw's -sin, so the sign
+    -- turns; angleX lifts the eye's base angle towards the horizon.
+    local surface = Gen4View.surfaceAngles
+    if surface then
+      self.yaw = -rad(surface.yaw or 0)
+      e = rad((self.fieldPitch or 60) - (surface.pitch or 0))
+      horizontal = cos(e) * d
+    end
     self.x = x - sin(self.yaw) * horizontal
     self.z = z + cos(self.yaw) * horizontal
     self.y = baseY + sin(e) * d
@@ -412,6 +422,9 @@ function Gen4View:follow(x, z, facing, baseY)
     self.x = x - sin(f) * horizontal
     self.z = z + cos(f) * horizontal
     self.y = baseY + pivotY + sin(e) * radius
+    -- what the eye looks at, kept so the ground can pull the eye in along
+    -- this line when a wall stands on it (Gen4Ground:clearCameraLine)
+    self.pivotX, self.pivotY, self.pivotZ = x, baseY + pivotY, z
     -- LOOK AT THE PIVOT, which is what puts the player in the middle.
     --
     -- Reported from play: *"players not centered on the screen in third
@@ -515,6 +528,9 @@ local CLOCK_INDEX = { up = 1, right = 2, down = 3, left = 4 }
 -- "away from the eye" would always be "forward" -- tank controls, and a change
 -- to how the game plays for someone who only wanted a camera angle.
 function Gen4View:screenToWorld(dir)
+  -- the FIELD camera never orbits (its yaw is the Distortion World's record,
+  -- not the player's), so a kept orbit from third person must not turn keys
+  if self.mode == "field3d" then return dir end
   if not (self.orbiting and CLOCK_INDEX[dir]) then return dir end
   -- Yaw is 0 north and grows clockwise, so the number of quarter turns the
   -- camera has taken is the number the input takes with it.
@@ -534,6 +550,7 @@ end
 -- Turning the input one way and the artwork the other is not a coincidence:
 -- they are inverses because the camera sits between them.
 function Gen4View:worldToScreen(dir)
+  if self.mode == "field3d" then return dir end
   if not (self.orbiting and CLOCK_INDEX[dir]) then return dir end
   local quarters = math.floor((self.yaw or 0) / (math.pi / 2) + 0.5) % 4
   return CLOCKWISE[((CLOCK_INDEX[dir] - 1 - quarters) % 4) + 1]

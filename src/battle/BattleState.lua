@@ -582,6 +582,63 @@ function BattleState:battleStat(mon, key)
   return value
 end
 
+-- IS A MOD FIGHTING THIS BATTLE ON THE MAP ITSELF?
+--
+-- Reported from play: with BATTLE BG "world", DramaticShapes' map battles
+-- (and absol89's BATTLE_ART_VOXEL_GEN2 fork) went "almost everything black --
+-- only the HUD is visible". The world IS their battle: the arena, the
+-- billboards and the Pokemon are drawn in the world pass, so the
+-- BG_WORLD_DIM wash meant for a frozen map behind a paper field landed on the
+-- whole fight, and at night it left nothing but the boxes.
+--
+-- Two ways a mod says so, neither of which is `inWorld3DBattleStatus` above:
+--   * `exports.battleStage.state(battle)` (Battle Art's descriptor): a table
+--     with `staged` and `surfaceOwned` for THIS battle;
+--   * `exports.lib.require("OverworldBattle")`: DramaticShapes' own module,
+--     whose `battle()` is this battle while it stages one.
+-- Kept apart from worldBackdrop: that one also turns the windows to glass,
+-- which these mods style for themselves.
+function BattleState:worldStaged()
+  if self:worldBackdrop() then return true end
+  local frame = self.frame or 0
+  local last = self._stagedPolled
+  if last ~= nil and (frame - last) < BattleState.BACKDROP_POLL_FRAMES then
+    return self._stagedLive == true
+  end
+  self._stagedPolled = frame
+  local live = false
+  pcall(function()
+    local mods = self.game and self.game.mods
+    local exports = mods and mods.exports
+    if type(exports) ~= "table" then return end
+    for _, mod in pairs(exports) do
+      if type(mod) == "table" then
+        local stage = mod.battleStage
+        if type(stage) == "table" and type(stage.state) == "function" then
+          local ok, st = pcall(stage.state, self)
+          if ok and type(st) == "table" and st.staged and st.surfaceOwned then
+            live = true
+            return
+          end
+        end
+        local lib = mod.lib
+        if type(lib) == "table" and type(lib.require) == "function" then
+          local okR, OB = pcall(lib.require, "OverworldBattle")
+          if okR and type(OB) == "table" and type(OB.battle) == "function" then
+            local okB, b = pcall(OB.battle)
+            if okB and b ~= nil and (b == self or (type(b) == "table" and b.battle == self)) then
+              live = true
+              return
+            end
+          end
+        end
+      end
+    end
+  end)
+  self._stagedLive = live
+  return live
+end
+
 -- The style this battle's windows wear, or nil for the Game Boy's solid
 -- white paper.  Separate from worldBackdrop so a caller can override the
 -- look without re-deciding when it applies.
@@ -1051,6 +1108,9 @@ local function makeBattler(data, mon, isPlayer, save)
     -- while the tilemap still shows the prior condition until the next
     -- post-action HUD refresh (core.asm after Execute*Move)
     shownStatus = mon.status,
+    -- a sleep put on outside battle with its own count (the Battle Pike's
+    -- Kirlia: STATUS1_SLEEP, all three bits); spent, it is gone
+    sleepTurns = (mon.status == "SLP" and mon.sleepTurns) or nil,
     stages = {},
     -- volatile state; Transform/Conversion/Mimic override the cur* fields
     curStats = mon.stats,
@@ -1177,6 +1237,9 @@ local function markOwned(game, species)
     if not dex.owned[species] then
       -- new dex page registered (SFX_DEX_PAGE_ADDED)
       require("src.core.Sound").play(game.data, "Dex_Page_Added")
+      if require("src.core.GameVersion").isGen4() then
+        pcall(function() require("src.pokemon.Gen4GameRecords").newSpecies(game.save) end)
+      end
     end
     dex.owned[species] = true
   end
@@ -1381,6 +1444,10 @@ function BattleState.newWild(game, species, level, opts)
     local mapDef=map and map.def or (game.data.maps or {})[mapId]
     local Encounter=require('src.world.Encounter')
     form=Encounter.gen4Form(Encounter.forMap(game.data,mapDef,mapId),species)
+  end
+  if form==nil and require("src.core.GameVersion").get()=="polishedcrystal"
+     and game.data.pokemon[species] and game.data.pokemon[species].forms then
+    form=require("src.pokemon.PolishedUnown").choose(game.save)
   end
   local wild = Pokemon.new(game.data, species, level, nil, form)
   -- SYNCHRONIZE'S NATURE AND CUTE CHARM'S GENDER, decided with the slot (see
@@ -1639,6 +1706,14 @@ local function buildTrainerParty(game, oppClass, partyIndex, partyDef)
                      or TRAINER_DVS
   out = {}
   for _, slot in ipairs(partyDef) do
+    -- A SLOT THAT IS ALREADY A POKEMON (Platinum's Battle Tower, whose sets
+    -- carry the item, nature, EVs and ability a party row has no room for)
+    -- is handed over as it is
+    if type(slot.prebuilt) == "table" then
+      table.insert(out, slot.prebuilt)
+      goto continue
+    end
+    do
     local mon = Pokemon.new(game.data, slot.species, slot.level, nil, slot.form)
     -- fixed trainer DVs, recomputed stats.  A party slot that carries its OWN
     -- DVs and stat exp is a stored mon rather than a generated one -- the
@@ -1670,12 +1745,14 @@ local function buildTrainerParty(game, oppClass, partyIndex, partyDef)
     end
     mon.hp = mon.stats.hp
     table.insert(out, mon)
+    end
+    ::continue::
   end
   applySpecialMoves(game.data, oppClass, partyIndex, out)
   -- a party slot's own moves list wins over the legacy boss-move tables
   for i, slot in ipairs(partyDef) do
     local mon = out[i]
-    if mon and slot.moves then
+    if mon and slot.moves and not slot.prebuilt then
       mon.moves = {}
       for _, moveId in ipairs(slot.moves) do
         local mdef = game.data.moves[moveId]
@@ -1685,6 +1762,8 @@ local function buildTrainerParty(game, oppClass, partyIndex, partyDef)
   end
   return out
 end
+
+BattleState.buildTrainerParty = buildTrainerParty
 
 function BattleState:trainerLabel_()
   return self.trainerLabel or (self.trainer and self.trainer.name) or "?"
@@ -1815,7 +1894,17 @@ function BattleState:sendOutSecondPair()
   local game = self.game
   if not (game and game.save) then return end
 
-  if self:battlerAt(BattleState.POS.PLAYER_RIGHT) == nil then
+  -- A TAG BATTLE'S PARTNER stands in the right-hand slot with their own
+  -- team (`self.ally`, see BattleState:setAlly)
+  if self:battlerAt(BattleState.POS.PLAYER_RIGHT) == nil and self.ally then
+    local first = Party.firstHealthy(self.ally.party or {})
+    if first then
+      local b = makeBattler(game.data, first, true, nil)
+      b.ally = true
+      self:placeBattler(BattleState.POS.PLAYER_RIGHT, b)
+    end
+  end
+  if self:battlerAt(BattleState.POS.PLAYER_RIGHT) == nil and not self.ally then
     -- the next healthy one that is not already standing in the left slot
     local lead = self.player and self.player.mon
     local second = Party.firstHealthy(game.save.party, lead)
@@ -1973,6 +2062,37 @@ function BattleState.newEditorTrainer(game, party, look, name)
   end
   trainers[BattleState.EDITOR_TRAINER_CLASS] = def
   return BattleState.newTrainer(game, BattleState.EDITOR_TRAINER_CLASS, 1)
+end
+
+-- PLATINUM'S ESCORT WILD BATTLE (BATTLE_TYPE_AI_PARTNER, wild_encounters.c):
+-- the partner beside the player and, in the grass, a SECOND wild Pokemon
+-- beside the first.  Surfing draws only one, and the side fights alone.
+function BattleState:makeWildDouble(second, ally)
+  self.enemyParty = { self.enemy and self.enemy.mon, second }
+  self.double = true
+  if ally then self:setAlly(ally) end
+  if second then markSeen(self.game, second.species, second) end
+  self:sendOutSecondPair()
+end
+
+-- how many wild Pokemon are standing (the bag's "impossible to aim when
+-- there are two Pokemon!")
+function BattleState:wildFoesStanding()
+  local n = 0
+  if not self:isDouble() then return (self.enemy and self.enemy.mon and self.enemy.mon.hp > 0) and 1 or 0 end
+  for _, pos in ipairs({ BattleState.POS.OPPONENT_LEFT, BattleState.POS.OPPONENT_RIGHT }) do
+    local b = self:battlerAt(pos)
+    if b and b.mon and (b.mon.hp or 0) > 0 then n = n + 1 end
+  end
+  return n
+end
+
+-- A TAG BATTLE'S PARTNER: `ally` = { party = { mons }, name, pic, trainer }.
+-- The partner's Pokemon are not the player's: they take no experience (the
+-- exp loop walks the player's party) and are not written back anywhere.
+function BattleState:setAlly(ally)
+  self.ally = ally
+  self.double = true
 end
 
 function BattleState.newBattleTowerTrainer(game, opponent)
@@ -3123,7 +3243,7 @@ function BattleState:gen3MusicKind()
     local player = self.game and self.game.save and self.game.save.player
     local rival = player and player.rival
     if themes.rival and rival and self.trainer.name
-       and tostring(self.trainer.name):upper() == tostring(rival):upper() then
+       and tostring(self.trainer.translationSourceName or self.trainer.name):upper() == tostring(rival):upper() then
       self.isGymLeader = false
       return "rival"
     end
@@ -3165,7 +3285,7 @@ function BattleState:gen3MusicKind()
     if require("src.core.GameVersion").get() == "firered" then
       table_ = GEN3_LEGEND_MUSIC_FRLG
     end
-    local kind = table_[tostring((def and def.name) or species):upper()]
+    local kind = table_[tostring((def and (def.translationSourceName or def.name)) or species):upper()]
     if kind and themes[kind] then return kind end
   end
   return nil
@@ -3394,7 +3514,13 @@ function foesOf(battle, battler)
   -- a bare table may never have been syncSides'd; fall back to the two
   -- names every battle in this engine has always had
   if #out == 0 then
-    local other = battler.isPlayer and battle.enemy or battle.player
+    -- NOT `isPlayer and battle.enemy or battle.player`: with the enemy's left
+    -- slot emptied (it fainted, nothing on the bench) that idiom answers
+    -- battle.player -- the player's OWN lead -- and a move with no foe left
+    -- to hit went into the partner.  Reported from play: Marshtomp KO'd the
+    -- last foe and Hariyama's Arm Thrust then hit Marshtomp.
+    local other
+    if battler.isPlayer then other = battle.enemy else other = battle.player end
     if other and other.mon and (other.mon.hp or 0) > 0 then out[1] = other end
   end
   return out
@@ -3582,8 +3708,13 @@ function BattleState:enter()
       { kind = "battle", demo = self.demo, oakDemo = self.oakDemo,
         pokedudeDemo = self.pokedudeDemo ~= nil,
         battle = self })
-  self.playerBackPic = getImage(backPath,
-    namedPalette(self.data, "MEWMON"), backTrueColor)
+  local backPalette=namedPalette(self.data,"MEWMON")
+  if not self.demo and not backTrueColor then
+    local colors,key=require('src.render.PlayerPalette').of(self.data,self.game.save,
+      backPalette and backPalette.colors or require('src.render.PaletteFX').GRAYS)
+    if colors then backPalette={name='prism-player-'..key,colors=colors} end
+  end
+  self.playerBackPic = getImage(backPath,backPalette,backTrueColor)
   self.showPlayerBack = self.playerBackPic ~= nil
   -- ...AND THE OTHER THREE FRAMES OF THAT SHEET (#407).  The single pic is
   -- still what the placement and the scale are measured from; the strip is
@@ -3867,7 +3998,10 @@ function BattleState:fightLockedAction(battler)
   -- field on whichever machine happened to open its own FIGHT menu, which
   -- left the two peers holding boundTurns=0 against nil for the same
   -- battler and ended the match as a desync over a mirror of a mirror.
-  local opp = battler.isPlayer and self.enemy or self.player
+  -- (spelled out: `isPlayer and self.enemy or self.player` is the player's
+  -- own lead whenever the enemy's left slot is empty)
+  local opp
+  if battler.isPlayer then opp = self.enemy else opp = self.player end
   local bound = opp and opp.trappingTurns
                 and math.max(1, opp.trappingTurns) or nil
   if bound then
@@ -4111,6 +4245,9 @@ function BattleState:touchpressed(_, px, py)
   local kind, index = Gen4B.bottomHit(x, y, over)
   local input = self.game and self.game.input
   if not input then return true end
+  -- a tap hides the keypad cursor; the overlay press below must not be
+  -- swallowed as the "show the cursor" press, so it is marked as touch
+  if kind then self.gen4CursorActive = false; self.gen4TouchPress = true end
   if kind == "cancel" then
     input:overlayPressed("b")
     input:overlayReleased("b")
@@ -4173,6 +4310,27 @@ function BattleState:update(dt)
     end
   end
 
+  -- THE BOTTOM SCREEN'S CURSOR IS HIDDEN UNTIL A KEY IS PRESSED
+  -- (battle_subscreen.c BattleSystem_MenuKeys: an inactive cursor turns on at
+  -- the first A, B, X, Y or d-pad press, which does nothing else).  A tap
+  -- turns it off again (touchpressed below), and the bag and the party list
+  -- share the same flag, as the cartridge carries isCursorEnabled across.
+  if self.gen4TouchPress then
+    self.gen4TouchPress = nil
+  elseif input and self:gen4Layout() and not self.gen4CursorActive
+     and (self.phase == "menu" or self.phase == "moveSelect" or self.phase == "targetSelect") then
+    local presentation = Gen4Battle.menuPresentation(self, self.phase)
+    if presentation == "bottom" then
+      for _, k in ipairs({ "a", "b", "x", "y", "up", "down", "left", "right" }) do
+        if input:wasPressed(k) then
+          self.gen4CursorActive = true
+          require("src.ui.Gen4SubMenuCursor").sound("cursor", self.data)
+          return
+        end
+      end
+    end
+  end
+
   -- safety net: HP/status changed outside a queued drain (level-up heals,
   -- field effects, bag cures) snaps once the queue is idle
   if self.phase == "menu" then
@@ -4208,6 +4366,23 @@ function BattleState:update(dt)
   -- BATTLE_TYPE_POKEDUDE supplies its own controller.  It deliberately sits
   -- ahead of the ordinary menu/move input paths: the cartridge renders the
   -- same menus but feeds them prerecorded cursor choices at 64-frame beats.
+  -- A TAG BATTLE WITH ONLY THE PARTNER LEFT STANDING: nothing to ask the player
+  if self.ally and self.phase == "menu" and not self:battlerAt(BattleState.POS.PLAYER_LEFT) then
+    self:resolveTurn(nil)
+    return
+  end
+  -- BATTLE ARENA: a new pair hears the referee first (src/battle/Gen3Arena.lua)
+  if self.arena and self.phase == "menu" and require("src.battle.Gen3Arena").newPair(self) then
+    return
+  end
+  -- BATTLE PALACE: nobody gives orders (src/battle/Gen3Palace.lua)
+  if self.palace and self.phase == "menu" then
+    local who = self:choosingBattler()
+    local action = who and (self:lockedAction(who)
+      or require("src.battle.Gen3Palace").choose(self, who))
+    if action then self:chooseAction(action) end
+    return
+  end
   if self.pokedudeDemo and self.phase == "menu" then
     self:updatePokedudeMenu()
     return
@@ -6735,7 +6910,14 @@ function BattleState:accuracyRoll(move, user, target, accuracyRaw)
            accuracyRaw = accuracyRaw, weather = Weather.current(self) })
   end
   return Damage.accuracyRoll(self.ruleset, move, user, target, self.rng,
-                             accuracyRaw, self.data, Weather.current(self))
+                             accuracyRaw, self.data, Weather.current(self), self:deepFog())
+end
+
+-- FIELD_CONDITION_DEEP_FOG (the Battle Arcade's "Foggy battle", a foggy
+-- route's field weather): every move's hit rate x6/10, unless CLOUD NINE or
+-- AIR LOCK is on the field -- the cartridge tests it inside NO_CLOUD_NINE
+function BattleState:deepFog()
+  return self.field and self.field.deepFog and not Weather.suppressor(self) or false
 end
 
 function BattleState:accuracyRoll(def, attacker, defender, accuracy)
@@ -6960,6 +7142,7 @@ function BattleState:vanillaEnemyAction(battler)
   if not battler then return nil end
   local locked = self:lockedAction(battler)
   if locked then return locked end
+  if self.palace then return require("src.battle.Gen3Palace").choose(self, battler) end
   -- an ai_classes brain (or one on the trainer record) supersedes the
   -- class action and move scoring entirely
   if self.kind == "trainer" and self.trainer then
@@ -7006,7 +7189,8 @@ function BattleState:choosingSlotNow()
   if pos and self:battlerAt(pos) then return pos end
   for _, p in ipairs({ BattleState.POS.PLAYER_LEFT,
                        BattleState.POS.PLAYER_RIGHT }) do
-    if self:battlerAt(p) then return p end
+    local b = self:battlerAt(p)
+    if b and not b.ally then return p end
   end
   return BattleState.POS.PLAYER_LEFT
 end
@@ -7016,8 +7200,8 @@ function BattleState:chooseAction(action)
   local pos = self:choosingSlotNow()
   self.pendingActions = self.pendingActions or {}
   self.pendingActions[pos] = action
-  if pos ~= BattleState.POS.PLAYER_RIGHT
-     and self:battlerAt(BattleState.POS.PLAYER_RIGHT) then
+  local right = self:battlerAt(BattleState.POS.PLAYER_RIGHT)
+  if pos ~= BattleState.POS.PLAYER_RIGHT and right and not right.ally then
     -- ask the other one before anybody moves
     self.choosingSlot = BattleState.POS.PLAYER_RIGHT
     self.phase = "menu"
@@ -7041,6 +7225,8 @@ function BattleState:resolveTurn(playerAction)
   -- the bench to replace it; `actionFor` asks each surviving slot for its own
   local enemyAction = self:enemyAction(self.enemy)
   self.turnCount = (self.turnCount or 0) + 1
+  -- BATTLE ARENA: arenaTurnCounter
+  if self.arena then require("src.battle.Gen3Arena").turnStarted(self) end
   -- TURN-SCOPED FLAGS, cleared before anybody moves.  REVENGE reads
   -- hurtThisTurn, FAKE OUT reads turnsOut, and PROTECT and ENDURE only stand
   -- for the turn they were used on.
@@ -7168,6 +7354,12 @@ function BattleState:resolveTurn(playerAction)
       -- re-points at whoever is still standing rather than wasting the turn
       -- (MOVEEND / GetBattlerAtPosition).  In a single battle `entry[2]` is
       -- already the one foe and this changes nothing.
+      -- A DECIDED BATTLE RUNS NOTHING MORE.  The last foe fainting sets the
+      -- outcome there and then (gBattleOutcome), and RunTurnActionsFunctions
+      -- finishes every action still queued without running it.  Reported
+      -- from play: Marshtomp KO'd the last foe and Hariyama, moving after
+      -- it, "hit himself" with the Arm Thrust aimed at nobody.
+      if self.result then return end
       local target = entry[2]
       if target == nil then
         -- what the player aimed at, if they were asked; otherwise whoever
@@ -7193,6 +7385,9 @@ end
 -- double the two right-hand slots need theirs too: the player's from the
 -- second menu pass, the opponent's from the AI, run once per enemy slot.
 function BattleState:actionFor(battler, playerAction, enemyAction)
+  if battler.ally then
+    return self:lockedAction(battler) or require("src.battle.AllyAI").choose(self, battler, self.rng)
+  end
   if battler == self.player then return playerAction end
   if battler == self.enemy then return enemyAction end
   if battler.isPlayer then
@@ -7848,6 +8043,14 @@ function BattleState:endOfTurn()
   -- (player first, then enemy -- that order is the serial-connection one, not
   -- a speed check).
   Weather.upkeep(self)
+  -- TRICK ROOM's count (SIDE_COND_CHECK_STATE_TRICK_ROOM): one off each turn,
+  -- "The twisted dimensions returned to normal!" when it runs out
+  if self.field and (self.field.trickRoom or 0) > 0 then
+    self.field.trickRoom = self.field.trickRoom - 1
+    if self.field.trickRoom == 0 then
+      self:say(Strings("The twisted dimensions\nreturned to normal!"))
+    end
+  end
   -- Gen II HandleBetweenTurnEffects reaches held items only after weather and
   -- the associated faint checks.  HeldItems.endTurn keeps Leftovers, PP and
   -- healing-item phases in cartridge order and never revives a residual KO.
@@ -7874,6 +8077,8 @@ function BattleState:endOfTurn()
   self:gen3CountersTick()
   self:tickTokens()
   self:roamerFlees()
+  -- BATTLE ARENA: the third turn is over and both are standing -- judgment
+  if self.arena then require("src.battle.Gen3Arena").endOfTurn(self) end
   -- AND THE EMPTY PLACES ARE FILLED HERE, not when the mon fell.
   --
   -- HandleFaintedMonActions runs at the end of the turn and asks slot by
@@ -7882,6 +8087,17 @@ function BattleState:endOfTurn()
   -- nothing at all in a single battle, where the faint path fills the slot
   -- itself and there is nothing pending.
   self:fillEmptySlots()
+  -- BATTLE PALACE: the first time a Pokemon is at half HP or below (and
+  -- awake), its nature shows (VARIOUS_PALACE_FLAVOR_TEXT)
+  if self.palace then
+    local Palace = require("src.battle.Gen3Palace")
+    for _, b in activeBattlers(self) do
+      if b and b.mon and not b.palaceLow and Palace.isLow(b.mon) then
+        b.palaceLow = true
+        self:say(Palace.flavorLine(self, b, displayName(b)))
+      end
+    end
+  end
   Runtime.emit("battle.turn_ended", { battle = self, turn = self.turnCount or 0 })
 end
 
@@ -8965,12 +9181,22 @@ function BattleState:executeAction(user, target, action)
   if not isSwitch and not (target and target.mon and target.mon.hp > 0) then
     return
   end
+  -- BATTLE ARENA: BattleArena_AddMindPoints in HandleAction_UseMove -- the
+  -- move counts for what it was meant to be, whether or not it happens
+  if self.arena and action.id and not action.special then
+    require("src.battle.Gen3Arena").addMind(self, user, action.id)
+  end
 
   local function run()
     -- ghost battles: the ghost never attacks; its whole turn is the
     -- GetOutText (ExecuteEnemyMove -> PrintGhostText, core.asm:5462-5463)
     if self.ghost and not user.isPlayer then
       self:sayNext(self.data.text._GetOutText or Strings("GHOST: Get out...\nGet out..."))
+      return
+    end
+    -- BATTLE PALACE: the nature's choice was not the move's group
+    if action.special == "palaceFail" then
+      self:sayNext(require("src.battle.Gen3Palace").incapableLine(self, displayName(user)))
       return
     end
 
@@ -9887,7 +10113,9 @@ function BattleState:sideCanContinue(isPlayer)
   -- POSITION, and asked without one it answers the first trainer's team --
   -- so a two-opponent battle called itself over while the second trainer
   -- still had a full party sitting behind them.
-  for _, pos in ipairs(isPlayer and { BattleState.POS.PLAYER_LEFT }
+  for _, pos in ipairs(isPlayer and (self.ally and { BattleState.POS.PLAYER_LEFT,
+                                                     BattleState.POS.PLAYER_RIGHT }
+                                     or { BattleState.POS.PLAYER_LEFT })
                        or { BattleState.POS.OPPONENT_LEFT,
                             BattleState.POS.OPPONENT_RIGHT }) do
     for _, mon in ipairs(self:benchFor(isPlayer, pos)) do
@@ -9901,6 +10129,9 @@ end
 -- benches on the far side, one per trainer, and each slot draws from its own
 -- -- which is the difference between two trainers and one trainer's twins.
 function BattleState:benchFor(isPlayer, position)
+  if isPlayer and self.ally and position == BattleState.POS.PLAYER_RIGHT then
+    return self.ally.party or {}
+  end
   if isPlayer then return self.game.save.party or {} end
   if position == BattleState.POS.OPPONENT_RIGHT and self.enemyPartyB then
     return self.enemyPartyB
@@ -9970,14 +10201,17 @@ function BattleState:fillEmptySlots()
         end
       end
       if pick then
+        local allySlot = isPlayer and self.ally and pos == BattleState.POS.PLAYER_RIGHT
         self:placeBattler(pos, makeBattler(self.data, pick, isPlayer,
-                                           isPlayer and self.game.save or nil))
+                                           (isPlayer and not allySlot) and self.game.save or nil))
         self:syncSides()
         if not isPlayer then markSeen(self.game, pick.species, pick) end
         local who = self:battlerAt(pos)
+        if allySlot then who.ally = true end
         self:sayNext(Strings("%s sent\nout %s!",
-                             isPlayer and (self.game.save.player.name or "")
-                                       or self:trainerLabel_(),
+                             allySlot and (self.ally.name or "")
+                               or isPlayer and (self.game.save.player.name or "")
+                               or self:trainerLabel_(),
                              who.name))
         self:actNext(function() self:abilitySwitchIn(who) end)
       end
@@ -10009,6 +10243,9 @@ end
 -- -- and after IT fell there is no `self.enemy` to read at all, which is
 -- what the exp lookups below used to walk into.
 function BattleState:awardExp(fallen)
+  -- BATTLE_TYPE_FRONTIER pays no experience (Emerald's Battle Frontier and
+  -- tents, Platinum's Battle Tower)
+  if self.noExp then return end
   local foe = fallen or self.enemy
   if not (foe and foe.mon) then return end
   -- exp is split among the mons that fought this enemy
@@ -10474,8 +10711,53 @@ function BattleState:learnMove(mon, moveId)
   -- ordered insert so multi-level gains keep each level's checks
   -- between its own stat box and the next "grew to level" text
   self:uiNext(function()
-    return self:buildScreen("MoveLearnMenu", mon, moveId)
+    local screen = self:buildScreen("MoveLearnMenu", mon, moveId)
+    self:gen4LearnOnBottom(screen, mon, moveId)
+    return screen
   end)
+end
+
+-- PLATINUM ASKS WHICH MOVE TO FORGET ON THE BOTTOM SCREEN: after "Delete an
+-- older move?" YES the battle party list opens in BATTLE_PARTY_MODE_LEARN_MOVE
+-- (the four moves, the one to learn, FORGET / CANCEL) instead of the field's
+-- list.  The question, the refusal and the "1, 2 and... Poof!" are still the
+-- move-learn screen's; only the pick moves.  Same rule as the party list:
+-- the bottom screen up and the pages in the cache.
+function BattleState:gen4LearnOnBottom(screen, mon, moveId)
+  if not (screen and type(screen.update) == "function" and screen.mon == mon) then return end
+  if Gen4Battle.partyScreenId(self) ~= "Gen4BattleParty" then return end
+  local okP, P = pcall(require, "src.ui.Gen4BattleParty")
+  if not (okP and P.pagesAvailable(self.data or self.game.data)) then return end
+  local battle = self
+  local plainUpdate, plainDraw = screen.update, screen.draw
+  screen.update = function(s, dt)
+    if s.selecting and not s.gen4Asked then
+      s.gen4Asked = true
+      battle.game.stack:push(P.new(battle.game, {
+        battle = battle, mode = "learnMove", mon = mon, moveId = moveId,
+        onChoose = function(index)
+          s.gen4Asked = false
+          if not index then
+            if s.confirmAbandon then s:confirmAbandon() end
+            return
+          end
+          local old = mon.moves[index]
+          local def = battle.data.moves[moveId]
+          mon.moves[index] = { id = moveId, pp = def and def.pp }
+          local oldDef = old and battle.data.moves[old.id]
+          s.forgot = (oldDef and oldDef.name) or (old and old.id)
+          s:finish(true)
+        end,
+      }))
+      return
+    end
+    if s.gen4Asked then return end
+    return plainUpdate(s, dt)
+  end
+  screen.draw = function(s, ...)
+    if s.selecting then return end
+    if plainDraw then return plainDraw(s, ...) end
+  end
 end
 
 -- Map the battle was fought on (overworld wins; save.player.map is fallback).
@@ -10593,45 +10875,59 @@ function BattleState:openReplacementMenu()
   local game = self.game
   self.phase = "messages"
   self.afterQueue = "menu"
+  local function onSwitch(mon)
+    if Party.isEgg(mon) then
+      self:say(self:romText("_EggNoWillText", "An EGG can't\nbattle!"))
+      return -- the menu-phase guard reopens the menu
+    end
+    if mon.hp <= 0 then
+      self:say(self:romText("_NoWillText", "There's no will\nto fight!"))
+      return -- the menu-phase guard reopens the menu
+    end
+    self:restoreMimicked(self.player)
+    local previous = self.player
+    self.player = makeBattler(self.data, mon, true, game.save)
+    clearTrapping(self.enemy) -- SendOutMon clears foe trap
+    self:syncSides()
+    Runtime.emit("battle.battler_switched", {
+      battle = self, side = self.sides[1], battler = self.player,
+      previous = previous,
+    })
+    self:abilitySwitchOut(previous)
+    self:markParticipant()
+    self.nextInsert = 0
+    self.sendingOut = true
+    self:sayNext(self:sendOutText(self.player.name))
+    self:animNext("POOF_ANIM", false)
+    self:shinyAnim(self.player, false)
+    self:actNext(function()
+      self.sendingOut = false
+      -- SendOutMon (core.asm:1757-1762): poof, then the grow-in
+      self:startGrowIn(self.player)
+      require("src.core.Sound").playCry(self.data, self.player.mon.species)
+      HeldItems.onEntry(self, self.player)
+    end)
+    self:actNext(function() self:abilitySwitchIn(self.player) end)
+  end
+  -- BATTLE PALACE and BATTLE ARENA: the next one in the party goes out,
+  -- unasked (PlayerHandleChoosePokemon's arena arm returns the next slot)
+  if self.palace or self.arena then
+    self:act(function()
+      for _, mon in ipairs(game.save.party or {}) do
+        if mon.hp > 0 and not Party.isEgg(mon) and mon ~= (self.player and self.player.mon) then
+          onSwitch(mon)
+          return
+        end
+      end
+    end)
+    return
+  end
   self:ui(function()
     return self:buildScreen(Gen4Battle.partyScreenId(self) or "PartyMenu", {
       battle = self,
       -- ChooseNextMon: pick immediately (no SWITCH/STATS/CANCEL)
       forceSwitch = true,
-      onSwitch = function(mon)
-        if Party.isEgg(mon) then
-          self:say(self:romText("_EggNoWillText", "An EGG can't\nbattle!"))
-          return -- the menu-phase guard reopens the menu
-        end
-        if mon.hp <= 0 then
-          self:say(self:romText("_NoWillText", "There's no will\nto fight!"))
-          return -- the menu-phase guard reopens the menu
-        end
-        self:restoreMimicked(self.player)
-        local previous = self.player
-        self.player = makeBattler(self.data, mon, true, game.save)
-        clearTrapping(self.enemy) -- SendOutMon clears foe trap
-        self:syncSides()
-        Runtime.emit("battle.battler_switched", {
-          battle = self, side = self.sides[1], battler = self.player,
-          previous = previous,
-        })
-        self:abilitySwitchOut(previous)
-        self:markParticipant()
-        self.nextInsert = 0
-        self.sendingOut = true
-        self:sayNext(self:sendOutText(self.player.name))
-        self:animNext("POOF_ANIM", false)
-        self:shinyAnim(self.player, false)
-        self:actNext(function()
-          self.sendingOut = false
-          -- SendOutMon (core.asm:1757-1762): poof, then the grow-in
-          self:startGrowIn(self.player)
-          require("src.core.Sound").playCry(self.data, self.player.mon.species)
-          HeldItems.onEntry(self, self.player)
-        end)
-        self:actNext(function() self:abilitySwitchIn(self.player) end)
-      end,
+      onSwitch = onSwitch,
     })
   end)
 end
@@ -10929,6 +11225,25 @@ function BattleState:tryRun()
     self:act(function() self:endOfTurn() end)
     return
   end
+  -- A FRONTIER BATTLE CAN BE GIVEN UP (BattleScript_AskIfWantsToForfeitMatch:
+  -- BATTLE_TYPE_TRAINER with BATTLE_TYPE_FRONTIER asks rather than refuses)
+  if self.kind == "trainer" and self.forfeitable then
+    local Arena = require("src.battle.Gen3Arena")
+    local game = self.game
+    self:say(Arena.line(self, "forfeitAsk"))
+    self:ui(function()
+      local ChoiceBox = require("src.ui.ChoiceBox")
+      return ChoiceBox.new(game, function(yes)
+        if not yes then return end
+        local name = game.save and game.save.player and game.save.player.name or ""
+        self:say(name .. " " .. Arena.line(self, "forfeited"))
+        self.result = "lose"
+        self.forfeited = true
+        self.afterQueue = "finish"
+      end)
+    end)
+    return
+  end
   if self.kind == "trainer" then
     -- _NoRunningText is three lines in a two-line box, so the third arrives
     -- on a \v scroll (ContText: ▼ then a button press) rather than a \n.
@@ -10976,9 +11291,21 @@ end
 function BattleState:openItems()
   self.phase = "messages"
   self.afterQueue = "menu"
+  -- BATTLE_TYPE_FRONTIER (all but the Pyramid): "Items can't be used now."
+  if self.noItems then
+    self:say(Strings("Items can't be used now."))
+    return
+  end
   self:ui(function()
-    return self:buildScreen("BagMenu", { battle = self })
+    return self:buildScreen(Gen4Battle.bagScreenId(self) or "BagMenu", { battle = self })
   end)
+end
+
+-- Which screen picks an item's target in this battle: Platinum's battle party
+-- list in its USE ON WHICH POKeMON? mode when it is the party screen here
+-- (BagMenu's pickTargetAndUse asks), nil for the generation's party menu.
+function BattleState:gen4ItemTargetScreen()
+  return Gen4Battle.partyScreenId(self)
 end
 
 -- called by BagMenu after an item is used in battle (consumes the turn)
@@ -11748,7 +12075,10 @@ function BattleState:openParty()
             end
           end
         end
-        if standing then
+        if self.arena and mon.hp > 0 and not standing then
+          -- PARTY_ACTION_CANT_SWITCH: the menu opens, and nobody leaves
+          self:say(Strings("%s can't be switched\nout!", self.player and self.player.name or "?"))
+        elseif standing then
           self:say(Strings("%s is\nalready out!", standing.name))
         elseif chosen then
           -- gText_PkmnAlreadySelected: "{STR_VAR_1} has already been\nselected."
@@ -12892,6 +13222,10 @@ function BattleState:sgbBattlePals()
     -- back to the ROM pack for exactly this case.
     [4] = pals.EXPBAR or PaletteFX.pal(self.data, "EXPBAR"),
   }
+  if self.showPlayerBack and not self.demo then
+    local colors=require('src.render.PlayerPalette').of(self.data,self.game.save,out[2] or PaletteFX.GRAYS)
+    if colors then out[2]=colors end
+  end
   -- OG RED: the Game Boy Color drew the whole battle from one BG palette --
   -- white paper, black ink -- so every zone shares the same background and
   -- outline; only the two mid shades differ per element (green HP bar, red

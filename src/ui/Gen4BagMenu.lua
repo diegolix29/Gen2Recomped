@@ -51,8 +51,15 @@
 -- the touch screen.  Each is optional, and a missing one leaves its element
 -- out rather than drawing a likeness.
 --
--- WHAT AN ITEM DOES IS NOT REIMPLEMENTED HERE: using, giving and tossing live
--- in `BagMenu.useItem`, which Emerald's bag calls too.
+-- A ON AN ITEM opens the cartridge's action menu (MakeItemActionsMenu: USE /
+-- WALK / CHECK / OPEN / PLANT, GIVE, TRASH, REGISTER / DESELECT, CHECK TAG,
+-- CANCEL by pocket and item) in its own window, with "X is selected." -- or,
+-- in the TM pocket, the move's stats -- and TRASH asks how many and whether
+-- it is OK as the cartridge does.  SELECT picks an item up and the moving bar
+-- puts it down (Item_MoveInPocket).  The touch screen's pocket buttons, dial
+-- button (A) and dial (a turn of the ring scrolls) take taps through
+-- SecondScreen.toLocal.  WHAT AN ITEM DOES IS NOT REIMPLEMENTED HERE: USE
+-- and GIVE are `BagMenu.useItem` / `giveItem`, which Emerald's bag calls too.
 
 local Bag = require("src.inventory.Bag")
 local Font = require("src.render.Font")
@@ -184,6 +191,25 @@ local INK_ENTRIES = {
 function Gen4BagMenu:ink(which)
   local pair = (self.inkPairs and self.inkPairs[which]) or INK[which]
   Font.pushStyle({ text = pair[1], shadow = pair[2] })
+end
+
+-- THE CARTRIDGE'S SOUND EFFECTS (bag/main.c and menu.c Sound_PlayEffect), by
+-- their SDAT names: SE_CONFIRM_sseq_3 is SEQ_SE_DP_SELECT.
+local function se(self, name, opts)
+  local data = self.game and self.game.data
+  local ok, Sound = pcall(require, "src.core.Sound")
+  if ok and type(Sound) == "table" and Sound.playSe and data then return Sound.playSe(data, name, opts) end
+end
+
+-- ItemListMenuCursorCB (main.c 1090-1100): every move of the list's cursor,
+-- pad or dial, rustles the bag with the next of three sounds in turn
+local GASA = { "SEQ_SE_DP_GASA01", "SEQ_SE_DP_GASA02", "SEQ_SE_DP_GASA03" }
+function Gen4BagMenu:listStep(down)
+  if not self:moveCursor(down) then return false end
+  local i = self.cursorSoundIdx or 0
+  se(self, GASA[i + 1])
+  self.cursorSoundIdx = (i + 1) % 3
+  return true
 end
 
 function Gen4BagMenu:uiSize() return W, H end
@@ -436,6 +462,10 @@ end
 
 function Gen4BagMenu:movePocket(delta)
   if self.lockPocket then return end
+  -- CheckPocketChange_DPad: nothing at all in a one-pocket bag, else the
+  -- pocket swish (main.c 1293/1315)
+  if #self.pockets <= 1 then return end
+  se(self, "SEQ_SE_DP_BAG_030")
   self.cursors[self.pocket] = { self.listPos, self.cursorPos }
   self.pocket = (self.pocket - 1 + delta) % #self.pockets + 1
   local saved = self.cursors[self.pocket] or { 0, 1 }
@@ -449,8 +479,11 @@ end
 function Gen4BagMenu:choose()
   if self.closed then return end
   local row = self:selected()
+  if row and row.header then return end
+  -- ProcessItemListMenuInput: an item or CLOSE BAG, chosen by A or the dial's
+  -- button, says SE_CONFIRM (main.c 1265/1271)
+  se(self, "SEQ_SE_DP_SELECT")
   if not row or row.close then return self:close() end
-  if row.header then return end
 
   -- A bag opened to ANSWER A QUESTION hands the answer back and closes.
   if self.pick then
@@ -499,7 +532,7 @@ function Gen4BagMenu:pocketType() return self.pocket - 1 end
 -- TM pocket -- TRASH unless it is too important to part with; REGISTER or
 -- DESELECT for a registrable item; CANCEL last.
 function Gen4BagMenu:itemActions(id)
-  local def = (self.game.data.items or {})[id] or {}
+  local def = ((self.game.data or {}).items or {})[id] or {}
   local numeric = tonumber(def.id) or tonumber(id)
   local pocket = self:pocketType()
   local out = {}
@@ -553,6 +586,8 @@ function Gen4BagMenu:menuStep(delta, byDial)
   end
   if i == m.index then return false end
   m.index = i
+  -- TryMovingCursorAndPlaySound (menu.c 220), pad and dial alike
+  se(self, "SEQ_SE_DP_SELECT")
   -- the pad turns the dial with the cursor; the dial already turned itself
   if not byDial then self:rotateDial(delta < 0 and 18 or -18) end
   return true
@@ -579,7 +614,7 @@ function Gen4BagMenu:runAction(action)
   elseif action == "checkTag" then
     -- BAG_EXIT_CODE_CHECK_BERRY_TAG leaves for the berry's tag, which this
     -- port does not have: its words are the description, shown in the box
-    local def = (self.game.data.items or {})[id] or {}
+    local def = ((self.game.data or {}).items or {})[id] or {}
     self:say(def.description or "")
   else
     self:useSelected(id)
@@ -615,7 +650,10 @@ function Gen4BagMenu:trashCount(input)
   elseif input:wasPressed("down") then tr.n = tr.n - 1; if tr.n <= 0 then tr.n = tr.max end
   elseif input:wasPressed("left") then tr.n = math.max(1, tr.n - 10)
   elseif input:wasPressed("right") then tr.n = math.min(tr.max, tr.n + 10) end
-  if tr.n ~= before then self:rotateDial(tr.n > before and 18 or -18) end
+  if tr.n ~= before then
+    self:rotateDial(tr.n > before and 18 or -18)
+    se(self, "SEQ_SE_DP_BAG_004")   -- main.c 2372/2377
+  end
 end
 
 function Gen4BagMenu:resolveTrash(yes)
@@ -786,6 +824,7 @@ function Gen4BagMenu:shockwave(x, y) self.shock = { x = x, y = y, t = 0 } end
 function Gen4BagMenu:pressDial()
   self.dialPress = { t = 0 }
   self:shockwave(DIAL.x, DIAL.y)
+  se(self, "SEQ_SE_DP_BUTTON9")   -- StepDialButtonPressedAnim step 1, main.c 1689
 end
 
 -- CheckPocketChange_Touch: the pocket changes, and the button it was runs
@@ -813,6 +852,8 @@ function Gen4BagMenu:stepTouchAnims()
     if pp.t == POCKET_PRESS_AT then
       local at = (BUTTONS[#self:shownPockets()] or {})[pp.i]
       if at then self:shockwave(at[1] * 8 + 20, at[2] * 8 + 20) end
+      -- StepPocketSwitchPressedButtonAnim state 1, frame 3 (main.c 1629)
+      se(self, "SEQ_SE_DP_BUTTON9")
     end
     local held = self.pointer and self.pointer.x and self:pocketButtonAt(self.pointer.x, self.pointer.y)
     if pp.t >= POCKET_PRESS_DONE and held ~= pp.i then
@@ -912,12 +953,16 @@ function Gen4BagMenu:update()
       return
     end
     local m = self.menu
+    -- Menu_ProcessInput / _ProcessExternalInput: A (or the dial's button)
+    -- and B both say SE_CONFIRM (menu.c 72/77, 169/173)
     if input:wasPressed("up") then self:menuStep(-1)
     elseif input:wasPressed("down") then self:menuStep(1)
     elseif a then
+      se(self, "SEQ_SE_DP_SELECT")
       if m.kind == "yesno" then self:resolveTrash(m.index == 1)
       else self:runAction(m.rows[m.index]) end
     elseif input:wasPressed("b") then
+      se(self, "SEQ_SE_DP_SELECT")
       if m.kind == "yesno" then self:resolveTrash(false) else self.menu = nil end
     end
     return
@@ -928,14 +973,21 @@ function Gen4BagMenu:update()
     if self:stepDial(18) then
       self:drainDial(function(up)
         local tr = self.trash
+        local before = tr.n
         if up then tr.n = tr.n + 1; if tr.n > tr.max then tr.n = 1 end
         else tr.n = tr.n - 1; if tr.n <= 0 then tr.n = tr.max end end
+        -- CheckDialItemAmountChange: only a count that changed (main.c 3115/3129)
+        if tr.n ~= before then se(self, "SEQ_SE_DP_BAG_004") end
         return true
       end)
       return
     end
-    if a then self:confirmTrash()
-    elseif input:wasPressed("b") then self.trash = nil
+    -- ProcessItemCountInput_TrashCount: A and B say SE_CONFIRM (main.c
+    -- 2383/2390); the dial's button goes on with only its own BUTTON9
+    if a then
+      if input:wasPressed("a") then se(self, "SEQ_SE_DP_SELECT") end
+      self:confirmTrash()
+    elseif input:wasPressed("b") then se(self, "SEQ_SE_DP_SELECT"); self.trash = nil
     else self:trashCount(input) end
     return
   end
@@ -944,28 +996,31 @@ function Gen4BagMenu:update()
   -- put it down, B puts it back (A on CLOSE BAG moves it to the end)
   if self.moving then
     if self:stepDial(36) then
-      self:drainDial(function(up) return self:moveCursor(not up) end)
+      self:drainDial(function(up) return self:listStep(not up) end)
       return
     end
+    -- ProcessItemListInput_MovingItem: the dial's button, SELECT, A and B
+    -- all say SE_CONFIRM (main.c 1826/1834/1861/1871)
     if input:wasPressed("up") then
-      if self:moveCursor(false) then self:rotateDial(36) end
+      if self:listStep(false) then self:rotateDial(36) end
     elseif input:wasPressed("down") then
-      if self:moveCursor(true) then self:rotateDial(-36) end
-    elseif a or input:wasPressed("select") then self:placeMoving(false)
-    elseif input:wasPressed("b") then self:placeMoving(true) end
+      if self:listStep(true) then self:rotateDial(-36) end
+    elseif a or input:wasPressed("select") then se(self, "SEQ_SE_DP_SELECT"); self:placeMoving(false)
+    elseif input:wasPressed("b") then se(self, "SEQ_SE_DP_SELECT"); self:placeMoving(true) end
     return
   end
 
   if self:stepDial(36) then
-    self:drainDial(function(up) return self:moveCursor(not up) end)
+    self:drainDial(function(up) return self:listStep(not up) end)
     return
   end
   if input:wasPressed("select") and self:canMove() then
+    se(self, "SEQ_SE_DP_SELECT")   -- main.c 1226
     self:startMoving()
   elseif input:wasPressed("up") then
-    if self:moveCursor(false) then self:rotateDial(36) end
+    if self:listStep(false) then self:rotateDial(36) end
   elseif input:wasPressed("down") then
-    if self:moveCursor(true) then self:rotateDial(-36) end
+    if self:listStep(true) then self:rotateDial(-36) end
   elseif input:wasPressed("left") then
     self.pocketLit = nil
     self:movePocket(-1)
@@ -975,6 +1030,7 @@ function Gen4BagMenu:update()
   elseif a then
     self:choose()
   elseif input:wasPressed("b") or input:wasPressed("start") then
+    se(self, "SEQ_SE_DP_SELECT")   -- MENU_CANCEL, main.c 1265
     self:close()
   end
 end
@@ -1287,7 +1343,7 @@ end
 -- type and category icons at (64, 152) and (168, 152) -- the summary's own
 -- type sheet, which is the same pl_batt_obj art in the same palette rows
 function Gen4BagMenu:drawTMStats(id)
-  local def = (self.game.data.items or {})[id] or {}
+  local def = ((self.game.data or {}).items or {})[id] or {}
   local machine = def.machine
   local move = machine and machine.move and (self.game.data.moves or {})[machine.move]
   if type(move) ~= "table" then return end

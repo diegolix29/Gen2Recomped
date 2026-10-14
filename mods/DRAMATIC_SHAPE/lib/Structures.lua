@@ -365,7 +365,45 @@ local GEN3_MAX_LAND = 32
 -- footprint is 0 rows for 341 of them, 1 for one, and 5 and 6 for the two
 -- that are towers: Silph Co and the BATTLE TOWER.  Both now stand (48 -> 128,
 -- 64 -> 144); every other building in either region is unmoved.
-Structures.SHAPE_REV = "g3-eave-394"
+Structures.SHAPE_REV = "g3-event-islands-448"
+
+-- LEDGE TERRACES: whether a Gen 3 hop-down ledge raises the ground behind it
+-- into a terrace (Structures.standGen3Ledges).  OFF by default -- reported:
+-- "turn off the hoppable ledges raising the ground, make it an option".
+-- With it off the ledge keeps its own lip and the ground stays at the map's
+-- elevation.  The value is folded into `shapeRev()` so the disk cache keys
+-- the two worlds apart and a change rebuilds instead of reading the other.
+Structures.ledgeSetting = V.require("ModSetting").new(
+  "ledgeterraces", "LEDGE TERRACES", { false, true }, { "OFF", "ON" })
+function Structures.ledgeTerraces()
+  local ok, v = pcall(Structures.ledgeSetting.get, Structures.ledgeSetting)
+  return ok and v == true
+end
+
+-- THE NAME OF THE MAP A GEN 3 BUILDING'S DOOR LEADS TO, or nil: the
+-- building's door cell (Gen3.buildingsOf), the map's warp on that cell, and
+-- the destination's name from data/gen3_maps.lua ("CeruleanCity_Gym").
+local destNames = nil
+local function gen3BuildingDest(map, bldId)
+  local okS, bsp = pcall(Gen3.buildingsOf, map)
+  local rec = okS and bsp and bsp.list and bsp.list[bldId]
+  local door = rec and (rec.warp or rec.door)
+  if not door then return nil end
+  local warps = map.def and map.def.warps
+  if type(warps) ~= "table" then return nil end
+  for _, w in ipairs(warps) do
+    if tonumber(w.x) == door[1] and tonumber(w.y) == door[2] then
+      if destNames == nil then
+        local okM, m = pcall(V.data, "gen3_maps")
+        destNames = (okM and m and m.maps) or false
+      end
+      local d = destNames and destNames[tostring(w.destMap)]
+      return d and d.name or nil
+    end
+  end
+  return nil
+end
+
 -- one cell of world height: the step a building may straddle and still be
 -- treated as having one foundation
 local COURSE = 16
@@ -377,6 +415,10 @@ local cache = {}
 local atlasData = {}
 
 local function pixels(tileset, map)
+  if map then
+    local roofArt = V.require('PolishedAtlas').forMap(map)
+    if roofArt then return roofArt end
+  end
   local path = tileset.image
   -- A GEN 3 PAIR HAS NO SHEET ON DISK.  Its art is two baked metatile sheets
   -- that live only in the renderer, so `tileset.image` is nil -- and
@@ -672,6 +714,7 @@ local DIRS4 = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }
 -- four-connected everywhere in this file and stay so.
 local DIRS8 = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 },
                 { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } }
+
 
 local function keyOf(tx, ty)
   return (ty + 64) * 4096 + (tx + 64)
@@ -6986,6 +7029,7 @@ function Structures.foundGen3Buildings(S, map, x0, x1, y0, y1)
   -- warp data this pass does nothing and every run keeps its own measurement,
   -- so Gen 1, Gen 2 and Prism are untouched.
   local bldFacade, bldBase, bldOwnZ, levelled = {}, {}, {}, 0
+  local bldFlatFacade = {}
   local bldOverhead, bldRows, bldRoofRows = {}, {}, {}
   local bldRoofBands = {}
   -- ...AND NO BUILDING IS FOUNDED BELOW ITS OWN DOORSTEP.
@@ -7193,6 +7237,14 @@ function Structures.foundGen3Buildings(S, map, x0, x1, y0, y1)
           -- (g3-mart-182): before that its columns were never levelled
           -- together, so each kept its own art height and nothing repeated.
           local m = (e.run.h or 0) - (e.run.base or 0) + (e.run.rise or 0)
+          if e.run.gen3FlatTop then
+            -- A FLAT ROOFTOP'S FACADE WAS ALREADY LEVELLED by buildVolume
+            -- and is the building's: a column of it buildVolume met in
+            -- another region, unlevelled, must not out-vote it.
+            if bldFlatFacade[e.bld] == nil or m > bldFlatFacade[e.bld] then
+              bldFlatFacade[e.bld] = m
+            end
+          end
           if bldFacade[e.bld] == nil or m > bldFacade[e.bld] then
             bldFacade[e.bld] = m
           end
@@ -7204,7 +7256,12 @@ function Structures.foundGen3Buildings(S, map, x0, x1, y0, y1)
           -- over one blocked row and measured 32 against a drawing 96 tall --
           -- a box on the sand.  `ctx.buildings` counts those rows when it
           -- grows the footprint through them; each is a course of building.
-          if bldOverhead[e.bld] and bldOverhead[e.bld] > 0 then
+          -- ...BUT NOT FOR A FLAT ROOFTOP.  Its above-player rows are the
+          -- roof lying on top, already measured as roof by buildVolume; read
+          -- as facade, Saffron's Dojo and Gym grew a course per row and
+          -- stood as towers with their emblems stacked up the front.
+          if bldOverhead[e.bld] and bldOverhead[e.bld] > 0
+             and not e.run.gen3FlatTop then
             local want = m + bldOverhead[e.bld] * COURSE
             if want > bldFacade[e.bld] then bldFacade[e.bld] = want end
           end
@@ -7297,6 +7354,20 @@ function Structures.foundGen3Buildings(S, map, x0, x1, y0, y1)
       if z and (ownZ == nil or z > ownZ) then ownZ = z end
     end
     if e.bld and bldOwnZ[e.bld] then ownZ = bldOwnZ[e.bld] end
+    -- ...AND NEVER ABOVE THE FLOOR ITS DOOR OPENS ONTO.
+    --
+    -- MOTIVATED BY PEWTER CITY'S MART, (13..14, 15..18): a town of ONE
+    -- elevation level, its door opening onto the street at 0, and the
+    -- synthesized floor under its footprint reading 32 -- so it was founded
+    -- two courses up, and its facade, stretched from the street to that
+    -- plinth, wore its door and its MART sign three times over.  "Some marts
+    -- look like the doors are repeating their textures."  The Mossdeep rule
+    -- above (lowest cell, not highest) already says a building stands on its
+    -- door's floor where it can; this makes it the ceiling as well as the
+    -- floor whenever the door's floor is known.
+    if ownZ and e.bld and bldDoor[e.bld] and ownZ > bldDoor[e.bld] then
+      ownZ = bldDoor[e.bld]
+    end
     if ownZ then zBase = ownZ end
     -- the doorstep is a floor, not a suggestion
     if e.bld and bldDoor[e.bld] and zBase < bldDoor[e.bld] then
@@ -7319,7 +7390,10 @@ function Structures.foundGen3Buildings(S, map, x0, x1, y0, y1)
     end
 
     local measured = (run.h or 0) - (run.base or 0) + (run.rise or 0)
-    if e.bld and bldFacade[e.bld] and bldFacade[e.bld] ~= measured then
+    if e.bld and bldFlatFacade[e.bld] then
+      measured = bldFlatFacade[e.bld]
+      if (run.rise or 0) > 0 then run.rise = 0 end
+    elseif e.bld and bldFacade[e.bld] and bldFacade[e.bld] ~= measured then
       measured = bldFacade[e.bld]
       levelled = levelled + 1
     end
@@ -7512,6 +7586,151 @@ function Structures.foundGen3Buildings(S, map, x0, x1, y0, y1)
     run.base = zBase
     run.peak = measured + zBase
     run.h = measured - (run.rise or 0) + zBase
+    -- ...AND A KANTO CENTRE OR MART IS TWO CELLS OF WALL UNDER ITS HIP.
+    --
+    -- Reported: "the fronts of the pc and marts textures aren't right and
+    -- the pokeball tile is repeating ... the doors are repeating their
+    -- textures too".  Both are drawn as a hip roof over a wall band two
+    -- cells deep -- sign, emblem plate, door -- and neither states its roof
+    -- on the above-player layer, so nothing above could tell roof from wall:
+    -- the Mart measured 48px of facade over 32px of wall art and the Centre
+    -- 64, and the fold stacked the MART sign and the Poke Ball plate up the
+    -- front to fill it.  The footprint's last FOUR tile rows are the wall,
+    -- everything north of them is roof art on the hip.
+    -- A BUILDING STOPS AT THE MAP'S EDGE.  Lavender's Pokemon Tower stands
+    -- against the north edge, and its column ran on into the border ring
+    -- above -- north -12, twenty-six rows of art for a seven-row drawing --
+    -- so the facade was sampled over the wrong rows and wore its door twice.
+    -- Every cell the cartridge names for a building is on the map.
+    if S.isGen3 and S.outdoor and e.bld and run.north and run.north < 0
+       and run.front and run.front >= 0 then
+      run.north = 0
+      run.extent = run.front + 1
+      if run.roofArtTop and run.roofArtTop < 0 then
+        run.roofArtRows = (run.roofArtRows or 0) + run.roofArtTop
+        run.roofArtTop = 0
+        if run.roofArtRows <= 0 then run.roofArtTop, run.roofArtRows = nil, nil end
+      end
+      if run.gen3FlatTop and run.gen3FlatTop[1] < 0 then
+        run.gen3FlatTop = { 0, math.max(1, run.gen3FlatTop[2] + run.gen3FlatTop[1]) }
+      end
+    end
+    -- A BUILDING DRAWN AS AN ELEVATION IS STOOD UP AS ONE.
+    --
+    -- Reported: "the cemetery building in lavender doesn't have the proper
+    -- facade to match the 2d art stood up in 3d".  Lavender's Pokemon Tower
+    -- is drawn FRONT-ON -- storeys of windows stacked up the page, the door
+    -- at the foot -- not as a roof seen from above.  Its whole drawing is the
+    -- facade: one course per tile row from the door to the top, no hip, no
+    -- roof band, and the top face is the top row.
+    if S.isGen3 and S.outdoor and e.bld and run.north and run.front then
+      local dnS = gen3BuildingDest(map, e.bld)
+      local elev = false
+      do
+        local okB, bsp = pcall(Gen3.buildingsOf, map)
+        local rec = okB and bsp and bsp.list and bsp.list[e.bld]
+        elev = rec and rec.elevation == true or false
+      end
+      if elev or (dnS and Structures.standUpDest(dnS)) then
+        local rows = run.front - run.north + 1
+        -- never taller than the footprint the cartridge names: a column that
+        -- ran on past the building (into the cliff beside it) is not tower
+        local own = bldRows[e.bld] and bldRows[e.bld] * 2 or rows
+        if rows > own then rows = own end
+        run.rise = 0
+        run.h = rows * 8 + zBase
+        run.peak = run.h
+        run.roofArtTop, run.roofArtRows = nil, nil
+        run.gen3FlatTop, run.gen3FlatRows = nil, nil
+        run.gen3ArtNorth = nil
+      end
+    end
+    -- A COLUMN WHOSE ART THE PROFILE HAS CLASSED IS MEASURED BY IT.
+    --
+    -- Where `building_art` says which cells are "roof" and which "wall"
+    -- (the Kanto gate houses, the Sevii harbours), that IS the drawing's
+    -- split: the facade is the wall cells and nothing else, and a flat
+    -- top wears exactly the roof cells.  Read off the run's own column.
+    -- Measured, Route 16's gate stood 64px of facade over 32px of wall and
+    -- folded its roof eave and window band across its front out of order.
+    if S.isGen3 and S.outdoor and e.bld and run.north and run.front
+       and g3c and g3c.buildingArt and g3c.metatileAt then
+      local cx = e.list and e.list[1] and e.list[1][1] or 0
+      local wallC, roofTop, roofC = 0, nil, 0
+      for cy = math.floor(math.max(0, run.north) / 2), math.floor(run.front / 2) do
+        local okM, m = pcall(g3c.metatileAt, cx, cy)
+        local cls = okM and m and g3c.buildingArt[m]
+        if cls == "wall" then wallC = wallC + 1
+        elseif cls == "roof" then
+          roofC = roofC + 2
+          if roofTop == nil then roofTop = cy * 2 end
+        elseif cls == "eave" then
+          -- only the cell's LOWER tile row is roof: the upper is the crown
+          -- of a tree behind the building, drawn over it (Saffron's Dojo)
+          roofC = roofC + 1
+          if roofTop == nil then roofTop = cy * 2 + 1 end
+        end
+      end
+      if wallC > 0 and roofC > 0 then
+        run.h = wallC * 16 + zBase
+        -- a building no warp leads into (a gate wall, a doorless block) has
+        -- no pitched roof to keep: its named roof cells are a flat top
+        -- ...and one whose destination has a flat rooftop is flat in EVERY
+        -- column: a column the scan ran a row longer (past a signpost at the
+        -- door, Route 5's Underground Path hut) measured a pitch of its own
+        -- and stood as a grey slab beside its flat-topped neighbours
+        local destB = gen3BuildingDest(map, e.bld)
+        if run.gen3FlatTop or (run.rise or 0) == 0 or destB == nil
+           or Structures.flatRoofDest(destB) then
+          run.rise = 0
+          run.peak = run.h
+          run.gen3FlatTop = { roofTop, roofC }
+          run.gen3FlatRows = (roofTop + roofC) - run.north
+          run.roofArtTop, run.roofArtRows = nil, nil
+        else
+          run.peak = run.h + run.rise
+          run.roofArtTop, run.roofArtRows = roofTop, roofC
+        end
+      end
+    end
+    if S.isGen3 and S.outdoor and e.bld and run.north and run.front
+       and require("src.core.GameVersion").get() ~= "emerald" then
+      local dn = gen3BuildingDest(map, e.bld)
+      local civic = dn and (dn:find("_Mart$") or dn:find("_PokemonCenter_1F$"))
+      -- EVERY OTHER BUILDING: no taller than the wall it has art for.
+      --
+      -- Lavender's houses are a flat purple roof over ONE cell of wall --
+      -- windows and door -- and stood 48px of facade over that 16px band, so
+      -- the window row was drawn twice and the door's top reappeared up the
+      -- front.  Where the roof art's band is known, what is left below it is
+      -- the wall's whole drawing, and the facade stops there.
+      if not civic and not run.gen3FlatTop and run.roofArtTop
+         and (run.roofArtRows or 0) > 0 then
+        local wallRows = run.front - (run.roofArtTop + run.roofArtRows) + 1
+        -- a wall is at least one cell: a band left a single tile row deep
+        -- had the door's top half on the roof and its bottom on the wall
+        if wallRows < 2 and run.roofArtRows > (2 - wallRows) then
+          run.roofArtRows = run.roofArtRows - (2 - wallRows)
+          wallRows = 2
+        end
+        local cap = math.max(2, wallRows) * 8
+        if run.h - zBase > cap then
+          run.h = cap + zBase
+          run.peak = run.h + (run.rise or 0)
+        end
+      end
+      if civic then
+        local WALL_ROWS = 4
+        local roofRowsArt = (run.front - run.north + 1) - WALL_ROWS
+        local rise = (run.rise and run.rise > 0) and run.rise or COURSE
+        run.rise = rise
+        run.h = WALL_ROWS * 8 + zBase
+        run.peak = run.h + rise
+        if roofRowsArt > 0 then
+          run.roofArtTop, run.roofArtRows = run.north, roofRowsArt
+        end
+      end
+    end
     if S.outdoor and e.bld and (run.rise or 0) > 0 then
       local columns = bldRoofBands[e.bld]
       run.gen3RoofSplitPending = columns and columns[e.list[1][1]]
@@ -8055,6 +8274,270 @@ end
 --
 --   ANYTHING ALREADY HIGHER.  Raise only.  A cell the terrace pass or the
 --   rock pass put above this is better informed than a step count.
+-- ---- mountain terraces: the drawing's own steps, read up each column ----
+
+-- EVER GRANDE CITY'S MOUNTAINS.  The city sits under Victory Road's massif,
+-- and the cartridge draws it as stacked terraces seen from the south: a
+-- light plateau top (108, 109, 113, 190), then a band of dark cliff face
+-- (112..125, 137, 145, 169, 378, 380 -- 115 is a lip over a face), then the
+-- next plateau above it, band after band up to the map's edge.  Every one of
+-- those cells is blocked, so the drop pass cut each column to the drop it
+-- separated from whatever it happened to meet and the climb pass stepped
+-- them one at a time: a jumble of boxes at unrelated heights, with plateau
+-- art on cliff sides and cliff art lying on tops.
+--
+-- The art states the heights outright, and it states them per column: walk
+-- north from the ground a column stands on, and every face row climbs one
+-- course while every plateau row holds level.  A face cell stands at the
+-- top of the course it draws, so its south side is the wall the art shows;
+-- a plateau stands flush with the last face below it.  Walkable ground met
+-- on the way -- a path cut up the mountain -- resets the walk to its own
+-- height, so a path is never buried.  Profile-gated (`mountain_terraces`):
+-- the same primary rock tiles run over half of Hoenn's routes, whose
+-- terraces the elevation field already builds.
+local TERRACE_TOP = { [108] = true, [109] = true, [113] = true, [190] = true }
+-- A band of face drawn more than three cells deep is not a taller cliff but
+-- a mountain FLANK seen side-on -- east of Ever Grande's Centre the face art
+-- runs twenty rows unbroken -- and climbing every row stood it 192px, a wall
+-- that buried the path beside it.  A band climbs at most three courses and
+-- the massif at most eight.
+local TERRACE_BAND = 3
+local TERRACE_MAX = 8 * COURSE
+
+function Structures.terraceGen3Mountains(S, map, x0, x1, y0, y1)
+  if not S.isGen3 or not S.outdoor then return end
+  local okG, g3c = pcall(Gen3.forMap, map)
+  if not (okG and g3c and g3c.profile and g3c.profile.mountain_terraces) then return end
+  local rockIds = g3c.profile.mountain_rock
+  if type(rockIds) ~= "table" then return end
+  -- the plateau tops: a profile may name its own (Route 114's tan rock is
+  -- Fallarbor's, not the primary's), and only a profile that says so lets a
+  -- walkable top be re-levelled -- elsewhere a walkable plateau already
+  -- stands where the elevation field put it
+  local tops = type(g3c.profile.mountain_tops) == "table"
+               and g3c.profile.mountain_tops or TERRACE_TOP
+  local walkTops = g3c.profile.mountain_walkable_tops == true
+  local W = math.floor(tonumber(map.def.width) or 0)
+  local H = math.floor(tonumber(map.def.height) or 0)
+  if W <= 0 or H <= 0 then return end
+  local cx0 = math.max(0, math.floor(x0 / 2))
+  local cx1 = math.min(W - 1, math.floor(x1 / 2))
+  local cy0 = math.max(0, math.floor(y0 / 2))
+  local cy1 = math.min(H - 1, math.floor(y1 / 2))
+  local function K(cx, cy) return cy * 8192 + cx end
+  -- A WALKABLE CELL DRAWN AS PLATEAU IS PLATEAU.  Ever Grande leaves a few
+  -- corner cells of rock (190) passable at elevation 0 -- (15,33), (17,34),
+  -- (22,35) -- inside the massif, unreachable from any path.  Left at the
+  -- ground's height they were pits in the terrace; drawn as its top, they
+  -- are its top.
+  local function rockAt(cx, cy)
+    local okM, m = pcall(g3c.metatileAt, cx, cy)
+    if not (okM and m and rockIds[m]) then return nil end
+    local okW, wk = pcall(map.isWalkableCell, map, cx, cy)
+    if okW and wk and not (walkTops and tops[m]) then return nil end
+    local okB, isB = pcall(g3c.isBuildingCell, cx, cy)
+    if okB and isB then return nil end
+    local k = keyOf(cx * 2, cy * 2)
+    local sh = S.shapeAt[k]
+    if not sh or sh.override or S.skip[k] then return nil end
+    return tops[m] and "top" or "face"
+  end
+  local floorNear
+  local function groundAt(cx, cy)
+    local z = S.synthZ and S.synthZ[K(cx, cy)]
+    if z then return z end
+    local sh = S.shapeAt[keyOf(cx * 2, cy * 2 + 1)]
+    return sh and tonumber(sh.h) or 0
+  end
+
+  -- A FLANK IS NOT A STAIR.  A face band longer than TERRACE_BAND rows is
+  -- a cliff's SIDE drawn as it runs north-south past the plateau (the long
+  -- vertical stripes of Routes 112 and 115), not courses stacked one over
+  -- another.  Climbing it stood a wall three courses over both plateaus it
+  -- divides, and walled the paths in.  Its rows are deferred and take the
+  -- height of the terrain either side of them instead -- the higher one,
+  -- since the flank is that plateau's edge.
+  local floorMemo = {}
+  function floorNear(cx, cy)
+    local k = K(cx, cy)
+    local m = floorMemo[k]
+    if m ~= nil then return m or nil end
+    local lo = nil
+    for r = 1, 4 do
+      for dy = -r, r do
+        for dx = -r, r do
+          if math.max(math.abs(dx), math.abs(dy)) == r then
+            local okW, wk = pcall(map.isWalkableCell, map, cx + dx, cy + dy)
+            if okW and wk and not rockAt(cx + dx, cy + dy) then
+              local z = groundAt(cx + dx, cy + dy)
+              if lo == nil or z < lo then lo = z end
+            end
+          end
+        end
+      end
+      if lo then break end
+    end
+    floorMemo[k] = lo or false
+    return lo
+  end
+  local flank = {}
+  local set, cells, hi = {}, 0, 0
+  for cx = cx0, cx1 do
+    Budget.tick()
+    local runLen, cy = {}, H - 1
+    while cy >= 0 do
+      if rockAt(cx, cy) == "face" then
+        local y = cy
+        while y >= 0 and rockAt(cx, y) == "face" do y = y - 1 end
+        for yy = y + 1, cy do runLen[yy] = cy - y end
+        cy = y
+      else
+        cy = cy - 1
+      end
+    end
+    local h, band = nil, 0
+    for cy = H - 1, 0, -1 do
+      local role = rockAt(cx, cy)
+      if role == "face" and (runLen[cy] or 0) > TERRACE_BAND then
+        role = "flank"
+      end
+      if role ~= "face" then band = 0 end
+      if role == nil then
+        local okW, wk = pcall(map.isWalkableCell, map, cx, cy)
+        -- walkable ground (or anything that is not this rock) is the datum
+        -- the next band of rock climbs from
+        h = (okW and wk) and groundAt(cx, cy) or nil
+        -- a cave mouth is a gap in a FACE: the rock either side climbs a
+        -- course here, and so must the column above the gap, or the mouth
+        -- leaves a slot a course deep all the way up the massif
+        if h and rockAt(cx - 1, cy) == "face" and rockAt(cx + 1, cy) == "face" then
+          h = h + COURSE
+        end
+      else
+        if h == nil then
+          -- rock running in from the map's south edge, off a building or a
+          -- prop: the lowest walkable ground near it is the datum, never the
+          -- world floor -- Route 115's terraces sit a course up, and a walk
+          -- started at 0 dug holes clean through them to the sky
+          h = floorNear(cx, cy) or 0
+        end
+        if role == "face" then
+          band = band + 1
+          if band <= TERRACE_BAND then h = math.min(TERRACE_MAX, h + COURSE) end
+        end
+        if role == "flank" then flank[K(cx, cy)] = h end
+        if cy >= cy0 and cy <= cy1 then set[K(cx, cy)] = h end
+      end
+    end
+  end
+
+  -- ...the flanks, levelled to the terrain beside them
+  for k, z0 in pairs(flank) do
+    local cy = math.floor(k / 8192)
+    local cx = k - cy * 8192
+    local best = nil
+    for _, dir in ipairs({ -1, 1 }) do
+      for n = 1, 4 do
+        local nk = K(cx + dir * n, cy)
+        if not flank[nk] then
+          local z = set[nk]
+          if z == nil then
+            local okW, wk = pcall(map.isWalkableCell, map, cx + dir * n, cy)
+            if okW and wk then z = groundAt(cx + dir * n, cy) end
+          end
+          if z and (best == nil or z > best) then best = z end
+          break
+        end
+      end
+    end
+    if best and set[k] ~= nil then set[k] = best end
+  end
+  -- ...AND A WAY INTO THE ROCK IS GROUND.  A cave mouth is a walkable cell
+  -- cut into the face, and nothing about it is rock to the art readers, so
+  -- the volume pass measured the whole column above it as one run -- the
+  -- Seafoam Islands' west mouth stood 72px, a dark shaft up the face of the
+  -- island.  A walkable cell against the terraced rock with a run of its own
+  -- stands on the ground in front of it.
+  local mouths = 0
+  for k in pairs(set) do
+    local cy = math.floor(k / 8192)
+    local cx = k - cy * 8192
+    for _, d in ipairs(DIRS4) do
+      local nx, ny = cx + d[1], cy + d[2]
+      local nk = K(nx, ny)
+      if not set[nk] and nx >= 0 and ny >= 0 and nx < W and ny < H then
+        local okW, wk = pcall(map.isWalkableCell, map, nx, ny)
+        local okB, isB = pcall(g3c.isBuildingCell, nx, ny)
+        if okW and wk and not (okB and isB)
+           and S.runs[keyOf(nx * 2, ny * 2 + 1)] then
+          local z = floorNear(nx, ny) or groundAt(nx, ny + 1)
+          for dy = 0, 1 do
+            for dx = 0, 1 do
+              local kk = keyOf(nx * 2 + dx, ny * 2 + dy)
+              local old = S.shapeAt[kk]
+              S.runs[kk] = nil
+              if old and not old.override then
+                local nu = {}
+                for k2, v2 in pairs(old) do nu[k2] = v2 end
+                nu.class, nu.flat, nu.h, nu.base = "ground", true, z, nil
+                S.shapeAt[kk] = nu
+              end
+            end
+          end
+          if S.synthZ then S.synthZ[nk] = z end
+          mouths = mouths + 1
+        end
+      end
+    end
+  end
+  -- ...and nothing stands below the ground around it
+  for k, z in pairs(set) do
+    local cy = math.floor(k / 8192)
+    local cx = k - cy * 8192
+    local f = floorNear(cx, cy)
+    if f and z < f then set[k] = f end
+  end
+
+  for k, z in pairs(set) do
+    local cy = math.floor(k / 8192)
+    local cx = k - cy * 8192
+    for dy = 0, 1 do
+      for dx = 0, 1 do
+        local kk = keyOf(cx * 2 + dx, cy * 2 + dy)
+        local old = S.shapeAt[kk]
+        if old and not old.override then
+          local nu = {}
+          for k2, v2 in pairs(old) do nu[k2] = v2 end
+          local okW, wk = pcall(map.isWalkableCell, map, cx, cy)
+          if okW and wk then
+            nu.class, nu.flat = "ground", true
+          else
+            nu.class, nu.flat, nu.art = "cliff", false, "upright"
+          end
+          nu.h = z
+          nu.face = nil
+          -- a column stands from the world floor: a base left over from the
+          -- run the cell used to belong to floated it, or -- above its new
+          -- top -- left nothing at all and a hole to the sky
+          nu.base = 0
+          S.shapeAt[kk] = nu
+          S.runs[kk] = nil
+        end
+      end
+    end
+    if S.synthZ then S.synthZ[k] = z end
+    cells = cells + 1
+    if z > hi then hi = z end
+  end
+  if cells > 0 then
+    local okL, Logger = pcall(require, "src.core.Logger")
+    if okL and Logger and Logger.info then
+      pcall(Logger.info, "gen3 shapes: %s terraced %d mountain cell(s), "
+            .. "highest %dpx", tostring(map.id), cells, hi)
+    end
+  end
+end
+
 function Structures.climbGen3Masses(S, map, x0, x1, y0, y1)
   if not S.isGen3 or not S.outdoor then return end
   local okG, g3c = pcall(Gen3.forMap, map)
@@ -8357,12 +8840,12 @@ function Structures.climbGen3Masses(S, map, x0, x1, y0, y1)
          and not (S.rockWall and S.rockWall[nk]) then
         dist[nk] = dist[k] + 1
         -- the highest rim one step nearer than this cell
-        local best = nil
+        local best, bestK, bestE = nil, nil, nil
         for _, e in ipairs(D) do
           local pk = K(nx + e[1], ny + e[2])
           if dist[pk] == dist[nk] - 1 and want[pk]
              and (best == nil or want[pk] > best) then
-            best = want[pk]
+            best, bestK, bestE = want[pk], pk, e
           end
         end
         -- ...and it may spend no more courses than the body draws faces
@@ -8503,6 +8986,63 @@ function Structures.climbGen3Masses(S, map, x0, x1, y0, y1)
   end
 
   -- ---- deliver, raise only
+  -- ...AND ROCK SOUTH OF OPEN GROUND STAYS LOW ENOUGH TO SEE OVER.
+  --
+  -- The diorama is seen from the south, so a mass lying south of the
+  -- ground it rims climbs toward the lens.  Route 25's ridge rose to 160px
+  -- over ten rows south of its path and Fuchsia's rock below the south fence
+  -- to 96, each a wall in front of the camera where the art draws a low
+  -- rocky bank.  Down each column: a mass whose north neighbour is walkable
+  -- ground stands at most SOUTH_BANK courses above that ground -- unless
+  -- the walkable ground at its own south end is higher, which the rock is
+  -- the face of and must still reach.
+  do
+    local SOUTH_BANK = 2
+    local function walkable(x, y)
+      if x < 0 or y < 0 or x >= W or y >= H then return false end
+      local okW, w = pcall(map.isWalkableCell, map, x, y)
+      return okW and w
+    end
+    local function floorOf(x, y)
+      return (S.synthZ and S.synthZ[K(x, y)]) or finishedFloor(S, map, g3c, x, y)
+    end
+    for cx = cx0, cx1 do
+      local cy = cy0
+      while cy <= cy1 do
+        -- the ground to the north may be a fence row or two away (Fuchsia's
+        -- south fence stands between the street and its rock bank)
+        local gy = nil
+        if mass[K(cx, cy)] and cy > 0 and not mass[K(cx, cy - 1)] then
+          for up = 1, 3 do
+            local yy = cy - up
+            if yy < 0 or mass[K(cx, yy)] then break end
+            if walkable(cx, yy) then gy = yy break end
+          end
+        end
+        if gy then
+          local g = floorOf(cx, gy)
+          local y1 = cy
+          while y1 + 1 <= cy1 and mass[K(cx, y1 + 1)] do y1 = y1 + 1 end
+          if g then
+            local limit = g + SOUTH_BANK * COURSE
+            local south = walkable(cx, y1 + 1) and floorOf(cx, y1 + 1) or nil
+            if south and south > limit then limit = south end
+            for y = cy, y1 do
+              local k = K(cx, y)
+              if want[k] and want[k] > limit then
+                local was = zAt(cx, y)
+                want[k] = (was > limit) and was or limit
+              end
+            end
+          end
+          cy = y1 + 1
+        else
+          cy = cy + 1
+        end
+      end
+    end
+  end
+
   local raised, hi = 0, 0
   for k, z in pairs(want) do
     local cy = math.floor(k / 8192)
@@ -8567,6 +9107,7 @@ end
 -- behind it may be a bank.
 function Structures.standGen3Ledges(S, map, x0, x1, y0, y1)
   if not S.isGen3 or not S.outdoor then return end
+  if not Structures.ledgeTerraces() then return end
   if type(Gen3.ledgeHopAt) ~= "function" then return end
   local okG, g3c = pcall(Gen3.forMap, map)
   if not (okG and g3c) then return end
@@ -12455,9 +12996,26 @@ function Structures.forMap(map)
   -- Celadon Mansion is the case that found it: all four of its
   -- staircases are door tiles, so `stair_e` / `stair_down_w` pins there
   -- silently did nothing and the flights stayed painted on the floor.
+  -- A CAVE MOUTH IS AN OPENING, NOT A DOOR IN A WALL.  Folded as one, the
+  -- Seafoam Islands' mouths each became a door column the height of the
+  -- whole map -- a dark shaft standing up the face of the island.  Gen 3
+  -- names where every warp leads; one into a cave keeps its own shape.
+  local caveDoor = {}
+  do
+    local okM, gm = pcall(V.data, "gen3_maps")
+    local all = okM and type(gm) == "table" and gm.maps or nil
+    if all then
+      for _, w in ipairs((def and def.warps) or {}) do
+        local dest = all[tostring(w.destMap)]
+        if dest and dest.kind == "cave" and tonumber(w.x) and tonumber(w.y) then
+          caveDoor[tonumber(w.y) * 8192 + tonumber(w.x)] = true
+        end
+      end
+    end
+  end
   for cy = math.floor(y0 / 2), math.floor(y1 / 2) do
     for cx = math.floor(x0 / 2), math.floor(x1 / 2) do
-      if map.doorTiles[map:cellTile(cx, cy)] then
+      if map.doorTiles[map:cellTile(cx, cy)] and not caveDoor[cy * 8192 + cx] then
         local northK = keyOf(cx * 2, cy * 2 - 1)
         local ns = shapeAt[northK]
         if ns and ns.art == "upright" then
@@ -12728,6 +13286,23 @@ function Structures.forMap(map)
   -- call.  (g3-basin-311.)
   Structures.buildGen3Basins(S, map, x0, x1, y0, y1, "claim")
 
+  if require('src.core.GameVersion').get()=='polishedcrystal' then
+    -- Fruit is an OAM overlay on a terrain tree in the ROM. The voxel
+    -- cast composites both as one sprite, so claim the terrain base here.
+    for _,object in ipairs(map.def.objects or {})do if object.fruitTree then
+      local cx,cy=object.x,object.y
+      local gx,gy
+      for _,d in ipairs({{0,1},{1,0},{-1,0},{0,-1}})do
+        local nx,ny=cx+d[1],cy+d[2]
+        if map:inBounds(nx,ny) and map:isWalkableCell(nx,ny)then gx,gy=nx,ny;break end
+      end
+      if gx then for dy=0,1 do for dx=0,1 do
+        local k=keyOf(cx*2+dx,cy*2+dy)
+        S.shapeAt[k]={class='ground',art='flat',flat=true,h=0,authored=true}
+        S.skip[k]=true;S.ground[k]=S.tileAt[keyOf(gx*2+dx,gy*2+dy)]
+      end end end
+    end end
+  end
   Structures.buildCylinders(S, map, x0, x1, y0, y1, groundTiles)
 
   -- ---- rocks in water: a hull over sea that stays sea ----
@@ -12870,6 +13445,8 @@ function Structures.forMap(map)
   -- ...and then the inside of a mountain, which the drop pass cannot
   -- measure because there is no floor beside it.
   Structures.climbGen3Masses(S, map, x0, x1, y0, y1)
+  -- ...and a massif the profile says is drawn as terraces, stepped by its art.
+  Structures.terraceGen3Mountains(S, map, x0, x1, y0, y1)
   -- ...and the lips, which are one surface with the terrace behind them.
   Structures.standGen3Ledges(S, map, x0, x1, y0, y1)
   -- ...and the falls, last, so nothing downstream boxes the cascade flat.
@@ -13298,10 +13875,20 @@ function Structures.forMap(map)
     -- ---- tall grass: two standing tuft rows per tile. BODY only: the 2D
     -- renderer never draws a neighbour's ring, and standing scenery past a
     -- map's edge would poke into the map next door ----
-    Structures.buildGrass(S, map, 0, tw - 1, 0, th - 1, data)
-
     -- ---- flowers: the animated meadow tile stands as a 1px cutout ----
-    Structures.buildFlowers(S, map, tw, th, x0, x1, y0, y1, data)
+    --
+    -- ...AND ON GEN 3, ONCE THE GROUND HAS STOPPED MOVING.  Both read the
+    -- height of the cell they stand on when they are built, and the Gen 3
+    -- floor, ledge and terrace passes below raise that ground afterwards --
+    -- so a flower bed or a grass mat on a raised ledge was laid at the old
+    -- level and sank into the terrace.  Neither writes anything another
+    -- pass reads (`S.grassQuads` / `S.flowerQuads` only), so they simply run
+    -- last; Gen 1/2 has no such passes and keeps its order.
+    local function plants()
+      Structures.buildGrass(S, map, 0, tw - 1, 0, th - 1, data)
+      Structures.buildFlowers(S, map, tw, th, x0, x1, y0, y1, data)
+    end
+    if S.isGen3 then S._plantsAfterGround = plants else plants() end
 
   end
 
@@ -13457,6 +14044,63 @@ function Structures.forMap(map)
     -- ...and last of all the planks, which need the water under them settled
     -- before they can be cut out of it.
     pcall(Structures.carveGen3DeckPlanks, S, map)
+  end
+  -- ...AND A BUILDING STANDS ON ITS DOORSTEP AS THE GROUND FINALLY IS.
+  --
+  -- `foundGen3Buildings` reads the doorstep before the floor and terrace
+  -- passes above have run, and those can raise it: Cape Brink's lawn came
+  -- up to 32 after its house was founded at 0, and the house sank into the
+  -- lawn to its eaves.  Read the step again now, and lift (never lower) the
+  -- building's columns onto it.
+  if S.isGen3 and S.outdoor then
+    local okB, bd = pcall(Gen3.buildingsOf, map)
+    local okG, g3l = pcall(Gen3.forMap, map)
+    if okB and bd and bd.list and okG and g3l then
+      local lifted = 0
+      for _, bl in ipairs(bd.list) do
+        local d = bl.warp or bl.door
+        local step = nil
+        if d then
+          local okW, wk = pcall(map.isWalkableCell, map, d[1], d[2] + 1)
+          if okW and wk then step = finishedFloor(S, map, g3l, d[1], d[2] + 1) end
+        end
+        if step then
+          local seen = {}
+          for _, c in ipairs(bl.cells) do
+            for dy = 0, 1 do
+              for dx = 0, 1 do
+                local run = S.runs[keyOf(c[1] * 2 + dx, c[2] * 2 + dy)]
+                if run and not seen[run] and not run.face then
+                  seen[run] = true
+                  local base = run.base or 0
+                  if step > base then
+                    local dz = step - base
+                    run.base = step
+                    run.h = (run.h or 0) + dz
+                    run.peak = (run.peak or run.h) + dz
+                    lifted = lifted + 1
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
+      if lifted > 0 then
+        local okL, Logger = pcall(require, "src.core.Logger")
+        if okL and Logger then
+          pcall(Logger.info, "gen3 shapes: %s lifted %d building column(s) onto the doorstep the ground settled at", tostring(map.id), lifted)
+        end
+      end
+    end
+  end
+  if S._plantsAfterGround then
+    local okPl, errPl = pcall(S._plantsAfterGround)
+    S._plantsAfterGround = nil
+    if not okPl then
+      local okL, Logger = pcall(require, "src.core.Logger")
+      if okL and Logger then pcall(Logger.warn, "gen3 shapes: %s plants failed: %s", tostring(map.id), tostring(errPl)) end
+    end
   end
 
   -- A BUILDING'S BOX COVERS ITS WHOLE FOOTPRINT, AND THIS IS THE LAST WORD.
@@ -13838,8 +14482,10 @@ function Structures.forMap(map)
       end
     end
     Structures.buildGen3Overhead(S, map, x0, x1, y0, y1)
+    Structures.buildGen3Arches(S, map, x0, x1, y0, y1)
   end
 
+  V.require("EmeraldBuildings").settle(S)
   return S
 end
 
@@ -14692,7 +15338,26 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
   -- should be. Flooding through `off` alone gives the exact outline of what
   -- is drawn, which is the whole reason the shape surface exists.
   local mask = {}
-  if S.isGen3 then
+  local pinkCanopy = false
+  if NX == 32 and NY == 32 and map.tileset.id == 'TilesetJohto1'
+     and require('src.core.GameVersion').get() == 'polishedcrystal' then
+    local t = tileOf(0, 0)
+    local variant = map.tileset.tileVariants and map.tileset.tileVariants[t]
+    pinkCanopy = (variant and variant.base or t) == 198
+  end
+  if pinkCanopy then
+    -- Pink blossoms share the grass's light shades and have an open
+    -- outline. A shade flood eats the flowers and leaves a black hull.
+    -- Give this authored crown a rounded top and a narrow trunk instead.
+    for iy = 0, 29 do
+      local radius = iy < 24 and (15 * math.sqrt(math.max(0,
+          1 - ((iy - 13) / 14) ^ 2))) or 3
+      for ix = 0, NX - 1 do
+        if math.abs(ix + .5 - 16) <= radius then mask[iy*NX+ix] = true end
+      end
+    end
+  end
+  if S.isGen3 and not pinkCanopy then
     for band = 0, NY / NX - 1 do
       local y0, y1 = band * NX, band * NX + NX - 1
       local out = floodOutside({ off = true }, y0, y1)
@@ -15201,6 +15866,16 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
   -- cap interiors sample the canopy a couple of rows below the rim,
   -- skipping outline-dark pixels
   local function deepTexel(ix, iy)
+    if pinkCanopy then
+      -- The lid wears blossom material, not the sprite's shadow outline.
+      for distance = 0, 32 do
+        for yy = 2, 21 do for xx = 2, 29 do
+          if math.abs(xx-ix)+math.abs(yy-iy)==distance
+             and mask[yy*NX+xx] and cls[yy*NX+xx] ~= 'black'
+             and cls[yy*NX+xx] ~= 'off' then return texel(xx,yy) end
+        end end
+      end
+    end
     for iy2 = iy + 2, math.min(NY - 1, iy + 4) do
       local i = iy2 * NX + ix
       if mask[i] and cls[i] ~= "black" then return texel(ix, iy2) end
@@ -21265,8 +21940,28 @@ end
 -- underneath.  The ground under the deck is repainted with the plaza's own
 -- paving, so you can walk beneath the awning and the wares tables keep
 -- their place in the shade.
-local STALL_DECK = 20            -- px: the canopy's underside clears a walker
-local STALL_THICK = 2
+-- THE CANOPY IS A HIP ROOF, AND THE DRAWING SAYS WHERE ITS EDGES ARE.
+--
+-- Each stall is two rows of awning cells.  Read off the art (517..551 over
+-- 565..559, and the narrow 549..519 over 557..567): the canopy's outline
+-- runs 8px into the two edge columns -- their outer halves are pavement --
+-- and from the back row's first pixel row down to the front row's ninth,
+-- where a four-row scalloped VALANCE hangs over the pole tops.  On top it
+-- is a hip roof seen from above: a light ridge stripe across the back row,
+-- a lit west hip, a shaded east hip and the long south slope.
+--
+-- Built as one flat slab at a fixed height, with the back row's art
+-- repeated over the front row and the whole front cell folded down as a
+-- 16px wall, it read as a thick blue box.  Now the outline is the eave, the
+-- roof pitches to the ridge the art draws, only the valance hangs, and the
+-- eave height is measured off the pavement beside the stall.
+local STALL_EAVE = 20            -- px over the pavement: the valance's top
+local STALL_RISE = 10            -- px: the ridge over the eave
+local STALL_INSET = 8            -- px of pavement in each edge column
+local STALL_TOP = 1              -- the back row's outline row
+local STALL_VALANCE = 9          -- the front row's first valance row
+local STALL_VALANCE_ROWS = 4
+local STALL_HIP = 12             -- px: the hips' run, as drawn
 local STALL_SHADE = { top = 1.0, fascia = 0.92, side = 0.78, under = 0.55 }
 
 function Structures.buildGen3Stalls(S, map, data, x0, x1, y0, y1)
@@ -21288,109 +21983,167 @@ function Structures.buildGen3Stalls(S, map, data, x0, x1, y0, y1)
     return okB and m and awn[m] or false
   end
 
-  local function uvOf(tile)
-    local u0 = ((tile % perRow) * 8) / atlasW
-    local v0 = (math.floor(tile / perRow) * 8) / atlasH
-    return u0, v0, u0 + 8 / atlasW, v0 + 8 / atlasH
+  -- a texel of the drawing at world pixel (x, z), as one quad's uv rect
+  -- spanning `n` texels east from it (never across an 8px tile)
+  local function texRect(x, z, n)
+    local tile = S.tileAt[keyOf(math.floor(x / 8), math.floor(z / 8))]
+    if not tile then return nil end
+    local tx0 = (tile % perRow) * 8 + (x % 8)
+    local ty0 = math.floor(tile / perRow) * 8 + (z % 8)
+    local u0, u1 = tx0 / atlasW, (tx0 + n) / atlasW
+    local v0, v1 = ty0 / atlasH, (ty0 + 1) / atlasH
+    return u0, v0, u1, v1
+  end
+  local function push(c1, c2, c3, c4, u0, v0, u1, v1, shade)
+    quads[#quads + 1] = { c1, c2, c3, c4,
+      uv = { { u0, v0 }, { u1, v0 }, { u1, v1 }, { u0, v1 } },
+      shade = shade, own = true }
   end
 
-  local built = 0
-  for cy = math.max(0, math.floor(y0 / 2)), math.min(H - 1, math.floor(y1 / 2)) do
-    for cx = math.max(0, math.floor(x0 / 2)), math.min(W - 1, math.floor(x1 / 2)) do
+  -- one stall per connected group of awning cells
+  local seen, built = {}, 0
+  for cy0 = math.max(0, math.floor(y0 / 2)), math.min(H - 1, math.floor(y1 / 2)) do
+    for cx0 = math.max(0, math.floor(x0 / 2)), math.min(W - 1, math.floor(x1 / 2)) do
       Budget.tick()
-      if isAwn(cx, cy) then
-        local k0 = keyOf(cx * 2, cy * 2)
-        if not S.skip[k0] then
-          -- the ground the stall shades: the commonest flat neighbour
-          local votes, floorTile, bestN = {}, nil, 0
+      if isAwn(cx0, cy0) and not seen[cy0 * 8192 + cx0]
+         and not S.skip[keyOf(cx0 * 2, cy0 * 2)] then
+        local cells, stack = {}, { { cx0, cy0 } }
+        seen[cy0 * 8192 + cx0] = true
+        local minX, maxX, minY, maxY = cx0, cx0, cy0, cy0
+        while #stack > 0 do
+          local c = table.remove(stack)
+          cells[#cells + 1] = c
+          minX, maxX = math.min(minX, c[1]), math.max(maxX, c[1])
+          minY, maxY = math.min(minY, c[2]), math.max(maxY, c[2])
           for _, d in ipairs(DIRS4) do
-            local nx, ny = cx + d[1], cy + d[2]
+            local nx, ny = c[1] + d[1], c[2] + d[2]
+            if isAwn(nx, ny) and not seen[ny * 8192 + nx] then
+              seen[ny * 8192 + nx] = true
+              stack[#stack + 1] = { nx, ny }
+            end
+          end
+        end
+
+        -- the pavement it stands on: the commonest flat neighbour's tile,
+        -- and that neighbour's height
+        local votes, floorTile, bestN, floorH = {}, nil, 0, 0
+        for _, c in ipairs(cells) do
+          for _, d in ipairs(DIRS4) do
+            local nx, ny = c[1] + d[1], c[2] + d[2]
             if not isAwn(nx, ny) then
               local nk = keyOf(nx * 2, ny * 2)
               local ns = S.shapeAt[nk]
               if ns and ns.flat and ns.class ~= "void"
-                 and ns.class ~= "water" then
+                 and ns.class ~= "water" and not S.runs[nk] then
                 local nt = S.tileAt[nk]
                 if nt then
                   votes[nt] = (votes[nt] or 0) + 1
-                  if votes[nt] > bestN then floorTile, bestN = nt, votes[nt] end
+                  if votes[nt] > bestN then
+                    floorTile, bestN, floorH = nt, votes[nt], ns.h or 0
+                  end
+                end
+              end
+            end
+          end
+        end
+
+        if maxY > minY and maxX > minX then
+          local X0 = minX * 16 + STALL_INSET
+          local X1 = maxX * 16 + 16 - STALL_INSET
+          local Z0 = minY * 16 + STALL_TOP
+          local Zv = maxY * 16 + STALL_VALANCE
+          local ridge = minY * 16 + 9
+          local eave = floorH + STALL_EAVE
+          local function roofH(x, z)
+            local f = math.min((z + 0.5 - Z0) / (ridge - Z0),
+                               (Zv - z - 0.5) / (Zv - ridge),
+                               (x + 0.5 - X0) / STALL_HIP,
+                               (X1 - x - 0.5) / STALL_HIP)
+            f = math.max(0, math.min(1, f))
+            return eave + math.floor(STALL_RISE * f + 0.5)
+          end
+          local under = eave - 1
+
+          for z = Z0, Zv - 1 do
+            -- the roof, in runs of one height within one tile
+            local x = X0
+            while x < X1 do
+              local h = roofH(x, z)
+              local n = 1
+              while x + n < X1 and (x + n) % 8 ~= 0 and roofH(x + n, z) == h do
+                n = n + 1
+              end
+              local u0, v0, u1, v1 = texRect(x, z, n)
+              if u0 then
+                push({ x, h, z }, { x + n, h, z }, { x + n, h, z + 1 },
+                     { x, h, z + 1 }, u0, v0, u1, v1, STALL_SHADE.top)
+                push({ x, under, z + 1 }, { x + n, under, z + 1 },
+                     { x + n, under, z }, { x, under, z }, u0, v0, u1, v1,
+                     STALL_SHADE.under)
+              end
+              x = x + n
+            end
+            -- the risers between steps, and the eave's own edge
+            for xx = X0, X1 - 1 do
+              local h = roofH(xx, z)
+              local u0, v0, u1, v1 = texRect(xx, z, 1)
+              if u0 then
+                local nz = (z > Z0) and roofH(xx, z - 1) or under
+                if nz < h then
+                  push({ xx + 1, nz, z }, { xx, nz, z }, { xx, h, z },
+                       { xx + 1, h, z }, u0, v0, u1, v1, STALL_SHADE.side)
+                end
+                local wz = (xx > X0) and roofH(xx - 1, z) or under
+                if wz < h then
+                  push({ xx, wz, z }, { xx, wz, z + 1 }, { xx, h, z + 1 },
+                       { xx, h, z }, u0, v0, u1, v1, STALL_SHADE.side)
+                end
+                local ez = (xx < X1 - 1) and roofH(xx + 1, z) or under
+                if ez < h then
+                  push({ xx + 1, ez, z + 1 }, { xx + 1, ez, z },
+                       { xx + 1, h, z }, { xx + 1, h, z + 1 },
+                       u0, v0, u1, v1, STALL_SHADE.side)
+                end
+                local sz = (z < Zv - 1) and roofH(xx, z + 1) or under
+                if sz < h then
+                  push({ xx, sz, z + 1 }, { xx + 1, sz, z + 1 },
+                       { xx + 1, h, z + 1 }, { xx, h, z + 1 },
+                       u0, v0, u1, v1, STALL_SHADE.fascia)
                 end
               end
             end
           end
 
-          local frontRow = not isAwn(cx, cy + 1)
-          local yT = STALL_DECK
-          local yB = STALL_DECK - STALL_THICK
-          for dy = 0, 1 do
-            for dx = 0, 1 do
-              local tx, ty = cx * 2 + dx, cy * 2 + dy
-              local tile = S.tileAt[keyOf(tx, ty)]
-              -- a front cell's TOP continues the canopy behind it; its own
-              -- art is spent on the fascia below
-              local topTile = tile
-              if frontRow then
-                topTile = S.tileAt[keyOf(tx, (cy - 1) * 2 + dy)] or tile
+          -- the valance: its drawn rows hang from the eave, front and back
+          for r = 0, STALL_VALANCE_ROWS - 1 do
+            local z = Zv + r
+            local ya, yb = under - r - 1, under - r
+            local x = X0
+            while x < X1 do
+              local n = math.min(8 - x % 8, X1 - x)
+              local u0, v0, u1, v1 = texRect(x, z, n)
+              if u0 then
+                push({ x, ya, Zv + 1 }, { x + n, ya, Zv + 1 },
+                     { x + n, yb, Zv + 1 }, { x, yb, Zv + 1 },
+                     u0, v0, u1, v1, STALL_SHADE.fascia)
+                push({ x + n, ya, Zv }, { x, ya, Zv }, { x, yb, Zv },
+                     { x + n, yb, Zv }, u0, v0, u1, v1, STALL_SHADE.under)
               end
-              if tile then
-                local x, z = tx * 8, ty * 8
-                local u0, v0, u1, v1 = uvOf(topTile)
-                quads[#quads + 1] = { { x, yT, z }, { x + 8, yT, z },
-                  { x + 8, yT, z + 8 }, { x, yT, z + 8 },
-                  uv = { { u0, v0 }, { u1, v0 }, { u1, v1 }, { u0, v1 } },
-                  shade = STALL_SHADE.top, own = true }
-                quads[#quads + 1] = { { x, yB, z + 8 }, { x + 8, yB, z + 8 },
-                  { x + 8, yB, z }, { x, yB, z },
-                  uv = { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } },
-                  shade = STALL_SHADE.under, own = true }
-              end
-            end
-          end
-          -- the skirt: the front cell's own 16px of art, folded down
-          if frontRow then
-            for dx = 0, 1 do
-              local tx = cx * 2 + dx
-              local x = tx * 8
-              local z1 = (cy * 2 + 2) * 8
-              for band = 0, 1 do
-                local tile = S.tileAt[keyOf(tx, cy * 2 + band)]
-                if tile then
-                  local u0, v0, u1, v1 = uvOf(tile)
-                  local top = yB - band * 8
-                  local bot = yB - band * 8 - 8
-                  quads[#quads + 1] = { { x, bot, z1 }, { x + 8, bot, z1 },
-                    { x + 8, top, z1 }, { x, top, z1 },
-                    uv = { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } },
-                    shade = STALL_SHADE.fascia, own = true }
-                end
-              end
-            end
-          end
-          -- flank plates on open east/west edges, one texel deep
-          for _, side in ipairs({ { -1, 0 }, { 1, 0 } }) do
-            if not isAwn(cx + side[1], cy) then
-              local x = side[1] < 0 and cx * 16 or cx * 16 + 16
-              local z0, z1 = cy * 16, cy * 16 + 16
-              local tile = S.tileAt[k0]
-              if tile then
-                local u0, v0, u1, v1 = uvOf(tile)
-                quads[#quads + 1] = { { x, yB, z0 }, { x, yB, z1 },
-                  { x, yT, z1 }, { x, yT, z0 },
-                  uv = { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } },
-                  shade = STALL_SHADE.side, own = true }
-              end
+              x = x + n
             end
           end
 
-          for dy = 0, 1 do
-            for dx = 0, 1 do
-              local tk = keyOf(cx * 2 + dx, cy * 2 + dy)
-              S.skip[tk] = true
-              S.runs[tk] = nil
-              S.ground[tk] = floorTile or false
+          for _, c in ipairs(cells) do
+            for dy = 0, 1 do
+              for dx = 0, 1 do
+                local tk = keyOf(c[1] * 2 + dx, c[2] * 2 + dy)
+                S.skip[tk] = true
+                S.runs[tk] = nil
+                S.ground[tk] = floorTile or false
+              end
             end
+            built = built + 1
           end
-          built = built + 1
         end
       end
     end
@@ -23394,6 +24147,166 @@ local function overheadFor(map)
   end
   overheadCacheS[tilesetId] = out or false
   return out
+end
+
+-- ---- arches: a beam drawn over the path, raised to the walls it joins ----
+
+-- ROUTE 23'S BADGE GATES.  Between each pair of gate walls an arch spans the
+-- path, and the cartridge draws its beam on the ABOVE-PLAYER layer of two
+-- walkable rows: the beam's top across the bottom of the back row (689..691)
+-- and its front face, Poke Ball and all, across the top of the front row
+-- (697..699).  Walkable ground with the beam painted on it -- so the beam lay
+-- on the path while the walls either side stood 80px.
+--
+-- The profile names each beam metatile and the clean ground under it
+-- (`arch_span`, {[meta] = under}).  The beam's own pixels -- the overhead
+-- mask, nothing else -- are stood up at the height of the walls in the same
+-- row: the back row's as a flat top, the front row's folded down as the
+-- face, the stall skirt's move.  The cell itself is repainted with its
+-- ground, so the path runs on under the arch.
+local ARCH_THICK = 3
+local ARCH_SHADE = { top = 1.0, face = 0.9, side = 0.75, under = 0.5 }
+
+function Structures.buildGen3Arches(S, map, x0, x1, y0, y1)
+  if not S.isGen3 or not S.outdoor then return end
+  local okC, g3c = pcall(Gen3.forMap, map)
+  if not (okC and g3c and g3c.profile) then return end
+  local spec = g3c.profile.arch_span
+  if type(spec) ~= "table" or type(g3c.metatileAt) ~= "function" then return end
+  local okM, masks = pcall(Gen3.overheadMasks, map.tileset)
+  if not (okM and masks) then return end
+  local perRow, atlasW, atlasH = geomOf(map.tileset)
+  if not (perRow and atlasW and atlasH and atlasW > 0 and atlasH > 0) then
+    return
+  end
+  local quads = S.objectQuads
+  local function beamAt(cx, cy)
+    local ok, m = pcall(g3c.metatileAt, cx, cy)
+    return ok and m and spec[m] and m or nil
+  end
+  -- the walls this beam joins: the tallest run in its own row, either side
+  local function deckHeight(cx, cy)
+    local best = nil
+    for _, dir in ipairs({ -1, 1 }) do
+      for n = 1, 6 do
+        local nx = cx + dir * n
+        if not beamAt(nx, cy) then
+          local run = S.runs[keyOf(nx * 2, cy * 2 + 1)]
+          if run and run.h and (best == nil or run.h > best) then
+            best = run.h
+          end
+          break
+        end
+      end
+    end
+    return best
+  end
+  local function uvAt(m, lx, ly)
+    local t = m * 4 + math.floor(ly / 8) * 2 + math.floor(lx / 8)
+    return ((t % perRow) * 8 + (lx % 8) + 0.5) / atlasW,
+           (math.floor(t / perRow) * 8 + (ly % 8) + 0.5) / atlasH
+  end
+  local function quad(c1, c2, c3, c4, u, v, shade)
+    quads[#quads + 1] = { c1, c2, c3, c4, u = u, v = v, shade = shade }
+  end
+
+  local built = 0
+  for cy = math.floor(y0 / 2), math.floor(y1 / 2) do
+    for cx = math.floor(x0 / 2), math.floor(x1 / 2) do
+      Budget.tick()
+      local m = beamAt(cx, cy)
+      local mask = m and masks[m]
+      local H = mask and deckHeight(cx, cy)
+      if H then
+        -- the front row is the one with no beam south of it
+        local front = beamAt(cx, cy + 1) == nil and beamAt(cx, cy - 1) ~= nil
+        local function at(lx, ly)
+          return lx >= 0 and lx <= 15 and ly >= 0 and ly <= 15
+                 and mask[ly * 16 + lx] or false
+        end
+        for ly = 0, 15 do
+          for lx = 0, 15 do
+            if at(lx, ly) then
+              local u, v = uvAt(m, lx, ly)
+              local x = cx * 16 + lx
+              if front then
+                -- folded down: pixel row ly hangs ly px below the deck, a
+                -- slab ARCH_THICK deep standing on the row's north edge
+                local zf = cy * 16
+                local zb = zf + ARCH_THICK
+                local ya, yb = H - ly - 1, H - ly
+                quad({ x, ya, zb }, { x + 1, ya, zb }, { x + 1, yb, zb },
+                     { x, yb, zb }, u, v, ARCH_SHADE.face)
+                quad({ x + 1, ya, zf }, { x, ya, zf }, { x, yb, zf },
+                     { x + 1, yb, zf }, u, v, ARCH_SHADE.side)
+                if not at(lx, ly + 1) then
+                  quad({ x, ya, zb }, { x, ya, zf }, { x + 1, ya, zf },
+                       { x + 1, ya, zb }, u, v, ARCH_SHADE.under)
+                end
+                if not at(lx, ly - 1) then
+                  quad({ x, yb, zf }, { x, yb, zb }, { x + 1, yb, zb },
+                       { x + 1, yb, zf }, u, v, ARCH_SHADE.top)
+                end
+                if not at(lx - 1, ly) then
+                  quad({ x, ya, zf }, { x, ya, zb }, { x, yb, zb },
+                       { x, yb, zf }, u, v, ARCH_SHADE.side)
+                end
+                if not at(lx + 1, ly) then
+                  quad({ x + 1, ya, zb }, { x + 1, ya, zf }, { x + 1, yb, zf },
+                       { x + 1, yb, zb }, u, v, ARCH_SHADE.side)
+                end
+              else
+                -- the beam's top, flat at the walls' height
+                local z = cy * 16 + ly
+                local yT, yB = H, H - ARCH_THICK
+                quad({ x, yT, z }, { x + 1, yT, z }, { x + 1, yT, z + 1 },
+                     { x, yT, z + 1 }, u, v, ARCH_SHADE.top)
+                quad({ x, yB, z + 1 }, { x + 1, yB, z + 1 }, { x + 1, yB, z },
+                     { x, yB, z }, u, v, ARCH_SHADE.under)
+                if not at(lx, ly - 1) then
+                  quad({ x + 1, yB, z }, { x, yB, z }, { x, yT, z },
+                       { x + 1, yT, z }, u, v, ARCH_SHADE.side)
+                end
+                if not at(lx, ly + 1) and beamAt(cx, cy + 1) == nil then
+                  quad({ x, yB, z + 1 }, { x + 1, yB, z + 1 },
+                       { x + 1, yT, z + 1 }, { x, yT, z + 1 }, u, v,
+                       ARCH_SHADE.face)
+                end
+                if not at(lx - 1, ly) then
+                  quad({ x, yB, z }, { x, yB, z + 1 }, { x, yT, z + 1 },
+                       { x, yT, z }, u, v, ARCH_SHADE.side)
+                end
+                if not at(lx + 1, ly) then
+                  quad({ x + 1, yB, z + 1 }, { x + 1, yB, z }, { x + 1, yT, z },
+                       { x + 1, yT, z + 1 }, u, v, ARCH_SHADE.side)
+                end
+              end
+            end
+          end
+        end
+        -- ...and the path under it is the path
+        local floor = tonumber(spec[m])
+        if floor then
+          for dy = 0, 1 do
+            for dx = 0, 1 do
+              local tk = keyOf(cx * 2 + dx, cy * 2 + dy)
+              local t = floor * 4 + dy * 2 + dx
+              S.tileAt[tk] = t
+              if S.skip[tk] then S.ground[tk] = t end
+            end
+          end
+        end
+        built = built + 1
+      end
+    end
+  end
+  if built > 0 then
+    local okL, Logger = pcall(require, "src.core.Logger")
+    if okL and Logger and Logger.info then
+      pcall(Logger.info, "gen3 shapes: %s raised %d arch cell(s) to the walls "
+            .. "they join", tostring(map.id), built)
+    end
+  end
 end
 
 --- Every authored overhead figure on this map, stood on the object in front.
@@ -25501,6 +26414,17 @@ function Structures.buildStairs(S, map, x0, x1, y0, y1)
         -- blocked east and west, that is what makes it a notch -- so it says
         -- so, and only the gate below needs an answer.
         axis = axis or s.stairAxis
+        -- ...AND A RAMP THE ART DOES NOT BAND STILL HAS A DIRECTION.  A muddy
+        -- or bumpy slope taken as a flight (Route 115's ramp at (28, 8..9))
+        -- draws no tread lines, so the art gives no axis and the cell fell
+        -- to the bare east-west stair at the world floor: a slot in the
+        -- terrace with the sky showing through it.  The flight itself knows
+        -- which way it climbs.
+        if not axis and S.isGen3 and not down then
+          local okF, _, _, fAxis = pcall(Structures.flightEnds, map, cx, cy)
+          if okF and fAxis == "z" then axis = "y"
+          elseif okF and fAxis == "x" then axis = "x" end
+        end
         if axis and not down then
           local z0f, z1f = Structures.flightEnds(map, cx, cy)
           local climb = (z0f and z1f) and math.abs(z1f - z0f) or COURSE
@@ -26100,6 +27024,40 @@ end
 -- `tiles` is a list of {tx, ty} forming one region (or what is left of one
 -- after object extraction); runs are column-local, heights are measured
 -- per column and reconciled per region.
+-- Destinations whose building has a flat rooftop in the cartridge's art.
+-- Read off the cartridge's own 2D art, town by town: the gyms and the dojo,
+-- Celadon's store, condominiums, hotel, restaurant and game corner, Silph
+-- Co, the power plant, the trainer tower, Cinnabar's lab, and every route
+-- gate and entrance hall.  Pewter's Museum is NOT here -- it wears a pink
+-- hipped roof -- and nor is any Pokemon Center or Mart.
+Structures.FLAT_ROOF_DESTS = {
+  -- a gym whose interior is storeys enters on "_Gym_1F" (Lavaridge,
+  -- Sootopolis); without it Lavaridge's gym kept a pitch and folded its
+  -- rooftop down its front
+  "_Gym$", "_Gym_%dF$", "_Dojo$", "_DepartmentStore", "_Condominiums", "_GameCorner$",
+  "_Hotel$", "_Restaurant$", "^SilphCo", "^PowerPlant",
+  "^Route[%w_]*Entrance", "_SafariZone_Entrance$", "^UndergroundPath_",
+  "^TrainerTower", "_PokemonLab_Entrance$",
+  -- Lavender's houses: a flat purple panel over one cell of wall
+  "^LavenderTown_House", "^LavenderTown_VolunteerPokemonHouse",
+}
+-- Destinations drawn as a front elevation rather than a plan: their whole
+-- drawing is facade, stood up a course per tile row.
+Structures.STAND_UP_DESTS = { "^PokemonTower", "_DepartmentStore", "_Condominiums" }
+function Structures.standUpDest(name)
+  for _, pat in ipairs(Structures.STAND_UP_DESTS) do
+    if tostring(name):find(pat) then return true end
+  end
+  return false
+end
+
+function Structures.flatRoofDest(name)
+  for _, pat in ipairs(Structures.FLAT_ROOF_DESTS) do
+    if tostring(name):find(pat) then return true end
+  end
+  return false
+end
+
 function Structures.buildVolume(S, map, tiles)
   local cols = {}
   for _, c in ipairs(tiles) do
@@ -26906,7 +27864,56 @@ function Structures.buildVolume(S, map, tiles)
     end
     regionFlatRoof = votes >= 2
   end
+  -- ...AND A GYM IS FLAT, WHEREVER ITS ART IS DRAWN.
+  --
+  -- Reported: "all gyms look glitched instead of having flat tops". The
+  -- layer test above sends Cerulean's, Vermilion's and Celadon's gyms to the
+  -- pitch, because the cartridge draws their rooftop field ABOVE the player
+  -- -- the same cut its own note says costs Pewter's Museum. The door says
+  -- what the building is with no reading of art at all: every Kanto gym's
+  -- door warps into a map named "<Town>_Gym". So a region holding a building
+  -- whose door leads to a flat-roofed destination votes flat outright.
+  --
+  -- Decided PER BUILDING, not for the region: Celadon's Condominiums share
+  -- one connected mass with the Pokemon Center, and the Center keeps its
+  -- hipped roof while the Condominiums go flat beside it.
+  local bldFlat = {}
+  if S.isGen3 and S.outdoor then
+    for _, r in ipairs(runs) do
+      local id = r.run.gen3Bld
+      if id and bldFlat[id] == nil then
+        local dest = gen3BuildingDest(map, id)
+        bldFlat[id] = (dest and Structures.flatRoofDest(dest)) or false
+      end
+    end
+  end
+  local function runFlat(run)
+    return regionFlatRoof or (run.gen3Bld ~= nil and bldFlat[run.gen3Bld] == true)
+  end
 
+  -- ...AND A REGION THAT IS NOT ONE BUILDING LEVELS PER BUILDING.
+  --
+  -- MOTIVATED BY SAFFRON CITY, where Silph Co, the Mart, the Fan Club and the
+  -- flat yellow apartment blocks between them are one connected mass of 138
+  -- columns.  Levelled as a region, every one of those blocks took Silph's
+  -- 144px and its 26 roof rows, and stood as a tower.  A compact region IS a
+  -- building and keeps the region rule; otherwise the key is the building
+  -- the warps name, or -- for a block with no door -- the row its top
+  -- starts on, which is what one drawn block shares across its width.
+  local partRoofRows, partRoofH = {}, {}
+  local function partOf(run)
+    if regionCompact then return "region" end
+    return run.gen3Bld and ("b" .. tostring(run.gen3Bld)) or ("n" .. tostring(run.north))
+  end
+  for _, r in ipairs(runs) do
+    local rr = r.run.gen3RoofRows
+    if rr and rr > 0 then
+      local k = partOf(r.run)
+      if rr > (partRoofRows[k] or 0) then partRoofRows[k] = rr end
+      local rh0 = r.run.unit * 8
+      if rh0 > (partRoofH[k] or 0) then partRoofH[k] = rh0 end
+    end
+  end
   for _, r in ipairs(runs) do
     local rr = r.run.gen3RoofRows
     if rr and rr > 0 then
@@ -27411,7 +28418,7 @@ function Structures.buildVolume(S, map, tiles)
     end
     if regionRoofRows > 0 then
       if run.gen3RoofRows then
-        run.gen3RoofRows = regionRoofRows
+        run.gen3RoofRows = partRoofRows[partOf(run)] or regionRoofRows
       elseif fabric and regionCompact and run.extent >= 4
              and (roofedNorth[r.tx - 1] == run.north
                   or roofedNorth[r.tx + 1] == run.north
@@ -27455,7 +28462,8 @@ function Structures.buildVolume(S, map, tiles)
          and (not S.isGen3 or run.gen3RoofRows) then
         run.base = regionBaseMax
       end
-      if regionRoofH > h then h = math.min(regionRoofH, drawnCap) end
+      local levelH = partRoofH[partOf(run)] or regionRoofH
+      if levelH > h then h = math.min(levelH, drawnCap) end
       -- A ROOF SEEN FROM ABOVE IS DEPTH, NOT HEIGHT.
       --
       -- This is the thing that made every civic building in Hoenn a tower.
@@ -27703,8 +28711,9 @@ function Structures.buildVolume(S, map, tiles)
     -- Route 23's from 259 to 263, which is the run structure moving under a
     -- change that was meant to move a roof.  `warpBuilt` is the region-level
     -- "a warp names a building here" the chain above already computes.
-    if regionFlatRoof
-       and (warpBuilt or run.gen3RoofRows or run.door == true) then
+    if (regionFlatRoof
+        and (warpBuilt or run.gen3RoofRows or run.door == true))
+       or (run.gen3Bld ~= nil and bldFlat[run.gen3Bld] == true) then
       roofRows = 0
       -- ...AND HOW DEEP THAT FLAT ROOFTOP IS, SO THE WALL KNOWS WHERE IT
       -- STOPS.
@@ -27738,7 +28747,7 @@ function Structures.buildVolume(S, map, tiles)
       -- `g3-back-333` had to gate against -- and a cliff face is SUPPOSED
       -- to wear its own drawing top to bottom.  Recorded for those, the
       -- depth truncated their faces: Route 124 and Route 133 both moved.
-      local fr, ty = 0, run.north
+      local fr, ty, trim = 0, run.north, false
       while (run.gen3Bld ~= nil or run.door == true)
             and ty + 1 <= (run.front or ty) and fr < GEN3_MAX_ROWS do
         local function rowTile(x)
@@ -27750,10 +28759,23 @@ function Structures.buildVolume(S, map, tiles)
         while n < 24 and rowTile(x) == a do n = n + 1; x = x - 2 end
         x = r.tx + 2
         while n < 24 and rowTile(x) == a do n = n + 1; x = x + 2 end
-        if n < FLAT_FIELD_DEPTH then break end
-        fr = fr + 2
-        ty = ty + 2
+        if n >= FLAT_FIELD_DEPTH then
+          fr = fr + 2
+          ty = ty + 2
+        elseif fr == 0 and not trim then
+          -- A TRIM COURSE FIRST, the same allowance the vote makes when it
+          -- tries the second cell row: Cerulean's Gym reads a cap row that
+          -- does not tile across, then its field.  Walked from the top row
+          -- alone the depth came back 0, the wall stopped nowhere, and the
+          -- gym wore its rooftop down its front again.
+          trim = true
+          fr = 2
+          ty = ty + 2
+        else
+          break
+        end
       end
+      if trim and fr <= 2 then fr = 0 end      -- a trim with no field is no roof
       if fr > 0 then run.gen3FlatRows = fr end
     end
     -- HOW MUCH OF THE DRAWING IS ROOF -- which is not how far the roof
@@ -27995,6 +29017,15 @@ function Structures.buildVolume(S, map, tiles)
       h = 0
       run.face = { rows = run.extent, dir = face.dir }
     end
+    -- ...AND A FLAT ROOFTOP IS NOT WALL.  The rows the flat-roof depth walk
+    -- measured are drawn in plan, lying on top of the building; only what
+    -- is left below them is facade.  Unclamped, Cerulean's Gym stood 64px
+    -- of facade over a 32px drawing and folded its window course up the
+    -- front four times.
+    if S.isGen3 and roofRows == 0 and (run.gen3FlatRows or 0) > 0 and not face then
+      local facade = math.max(2, (run.extent or 0) - run.gen3FlatRows) * 8
+      if facade < h then h = facade end
+    end
     run.rise = roofRows * 8
     -- ...measured from the run's own datum, so a house on a terrace stands
     -- ON it rather than in it.  `base` is 0 everywhere the ground is the
@@ -28003,6 +29034,103 @@ function Structures.buildVolume(S, map, tiles)
     run.h = h - run.rise + run.base    -- facade top: what sides build to
     for ty = run.north, run.front do
       S.runs[keyOf(r.tx, ty)] = run
+    end
+  end
+
+  -- ONE FLAT ROOFTOP PER BUILDING, AT ONE HEIGHT.
+  --
+  -- Cerulean's Gym measured its columns from three different tops (rows 34,
+  -- 36 and 40) and so stood them 16, 32 and 64px tall: a flat roof in three
+  -- steps, which is the "glitched gym" reported.  The building is one
+  -- drawing: its rooftop starts at the highest row any column measured a
+  -- field on and is as deep as the deepest field; what is left down to the
+  -- front is facade, the same for every column.  Each column then wears as
+  -- many rows of roof art as lie above that shared wall line.
+  if S.isGen3 then
+    local flatBld = {}
+    for _, r in ipairs(runs) do
+      local run = r.run
+      local id = run.gen3Bld
+      if id and (run.gen3FlatRows or 0) > 0 and runFlat(run) then
+        local b = flatBld[id] or { top = run.north, fr = 0, front = run.front }
+        b.top = math.min(b.top, run.north)
+        b.fr = math.max(b.fr, run.gen3FlatRows)
+        b.front = math.max(b.front, run.front)
+        flatBld[id] = b
+      end
+    end
+    -- ...AND THE FACADE STANDS ON THE MAIN FRONT, NOT THE ENTRANCE BAY'S.
+    --
+    -- Every Emerald gym projects its doors one cell south of the rest of its
+    -- front (Petalburg's 458/461/459 under a 12-column block).  Measured
+    -- from the deepest column, the whole gym stood a cell too tall, and the
+    -- columns with no art for that extra course folded their roof down the
+    -- front: the dark curtains hanging over every gym's facade.  The main
+    -- front is the one most columns share; a column that runs past it is
+    -- cut there, and its bay stands as a low block of its own -- one course
+    -- per tile row it draws -- in front of the wall.
+    local fronts = {}
+    for _, r in ipairs(runs) do
+      local run = r.run
+      local id = run.gen3Bld
+      if id and flatBld[id] then
+        fronts[id] = fronts[id] or {}
+        fronts[id][run.front] = (fronts[id][run.front] or 0) + 1
+      end
+    end
+    for id, b in pairs(flatBld) do
+      local best, bestN = b.front, -1
+      for f, n in pairs(fronts[id] or {}) do
+        if n > bestN or (n == bestN and f < best) then best, bestN = f, n end
+      end
+      -- only a shallow bay: a deeper difference is a wing, not a porch
+      if best < b.front and b.front - best <= 2 then b.main = best end
+    end
+    local function standBay(run, tx, at)
+      local bay = {}
+      for k, v in pairs(run) do bay[k] = v end
+      bay.north, bay.extent = at, run.front - at + 1
+      bay.rise, bay.roofRows, bay.gen3RoofRows = 0, nil, nil
+      bay.roofArtTop, bay.roofArtRows = nil, nil
+      bay.gen3FlatTop, bay.gen3FlatRows = nil, nil
+      bay.gen3WallArtFront, bay.gableExtent, bay.gen3ArtNorth = nil, nil, nil
+      bay.shedRoof = nil
+      bay.h = bay.extent * 8 + (run.base or 0)
+      bay.peak = bay.h
+      bay.gen3Bay = true
+      for ty = at, run.front do S.runs[keyOf(tx, ty)] = bay end
+      return bay
+    end
+    for _, r in ipairs(runs) do
+      local run = r.run
+      local b = run.gen3Bld and flatBld[run.gen3Bld]
+      if b and b.main and not run.face and run.front > b.main then
+        if run.north > b.main then
+          standBay(run, r.tx, run.north)
+          run.gen3BayOnly = true
+        else
+          standBay(run, r.tx, b.main + 1)
+          run.front = b.main
+          run.extent = run.front - run.north + 1
+        end
+      end
+    end
+    for _, r in ipairs(runs) do
+      local run = r.run
+      local b = run.gen3Bld and flatBld[run.gen3Bld]
+      if b and not run.face and not run.gen3BayOnly then
+        local wallLine = b.top + b.fr
+        local facade = math.max(2, (b.main or b.front) - wallLine + 1) * 8
+        run.rise = 0
+        run.h = facade + run.base
+        run.peak = run.h
+        local art = wallLine - run.north
+        run.gen3FlatRows = art > 0 and art or nil
+        -- the TOP face's art: this column's own roof rows, or -- for an
+        -- entrance bay that starts at the wall line and has none -- the
+        -- building's field, so the bay's top is roof and not its own sign
+        run.gen3FlatTop = art > 0 and { run.north, art } or { b.top, b.fr }
+      end
     end
   end
 
@@ -29882,7 +31010,7 @@ end
 --- cell is TWO tile rows and TWO tile columns, so a mat is four tiles and the
 --- behaviour byte is asked once per CELL (`math.floor(t / 2)`) and answered
 --- for all four.
-function Structures.buildGen3Grass(S, map, x0, x1, y0, y1)
+function Structures.buildGen3GrassMats(S, map, x0, x1, y0, y1)
   local sp = Gen3.spec()
   local kinds = sp and sp.grass_kind
   if type(kinds) ~= "table" then return end
@@ -29990,11 +31118,43 @@ function Structures.buildGen3Grass(S, map, x0, x1, y0, y1)
   end
 end
 
+function Structures.buildGen3Grass(S,map,x0,x1,y0,y1,data)
+  -- Kanto's tall grass stands as sprite cards too -- reported: "the grass
+  -- should be rendering as sprites" -- the same cut-to-the-drawing cards
+  -- Hoenn's wear.  Anything else Gen 3 keeps the mats.
+  local ver=require("src.core.GameVersion").get()
+  if ver~="emerald" and ver~="firered" and ver~="leafgreen" then
+    return Structures.buildGen3GrassMats(S,map,x0,x1,y0,y1)
+  end
+  local kinds=Gen3.spec().grass_kind
+  local ctx=Gen3.forMap(map)
+  local perRow,w,h=geomOf(map.tileset)
+  local templates={}
+  local cards=V.require("GrassSprites")
+  for ty=y0,y1 do for tx=x0,x1 do
+    Budget.tick()
+    local k=keyOf(tx,ty)
+    local shape=S.shapeAt[k]
+    if shape and shape.art=="grass" and not S.skip[k]
+      and gen3GrassKind(ctx,kinds,math.floor(tx/2),math.floor(ty/2)) then
+      local tile=S.tileAt[k]
+      local tpl=templates[tile]
+      if not tpl then tpl=cards.template(data,tile,perRow,w,h);templates[tile]=tpl end
+      local base=(S.runs[k] and S.runs[k].h) or shape.h or 0
+      for _,q in ipairs(tpl)do
+        local copy={uv=q.uv,shade=q.shade}
+        for i=1,4 do copy[i]={q[i][1]+tx*8,q[i][2]+base,q[i][3]+ty*8}end
+        S.grassQuads[#S.grassQuads+1]=copy
+      end
+    end
+  end end
+end
+
 function Structures.buildGrass(S, map, x0, x1, y0, y1, data)
   -- Hoenn takes the mat above; Kanto, Johto and Prism the per-pixel tufts
   -- their own art draws (see the header on GRASS_MAT for why they differ).
   if S.isGen3 and Gen3.mapIsGen3(map) then
-    return Structures.buildGen3Grass(S, map, x0, x1, y0, y1)
+    return Structures.buildGen3Grass(S, map, x0, x1, y0, y1, data)
   end
   local templates = {}
   local quads = S.grassQuads

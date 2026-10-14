@@ -197,6 +197,10 @@ function Gen4Terrain.append(state, chunk)
       -- take effect: a cache written before today carries no alpha, which is
       -- what the name fallback over there is for.
       alpha = shape.alpha,
+      -- unlit by the cartridge (Gen4ModelPack): no area-light tint
+      unlit = shape.unlit,
+      -- out of the map's fog (Gen4ModelPack): polyAttr bit 15 clear
+      noFog = shape.noFog,
     }
   end
 

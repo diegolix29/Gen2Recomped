@@ -92,6 +92,10 @@ function TurnOrder.firstMover(a, aMove, b, bMove, rng, invertTie, battle, data)
   end
 
   local sa, sb = effectiveSpeed(a, battle), effectiveSpeed(b, battle)
+  -- TRICK ROOM (FIELD_CONDITION_TRICK_ROOM): within a priority bracket the
+  -- slower moves first. Only the speed comparison flips -- priority, Quick Claw
+  -- and the tie roll are as they were.
+  if sa ~= sb and battle and battle.field and (battle.field.trickRoom or 0) > 0 then return sa < sb end
   if sa ~= sb then return sa > sb end
   local aFirst = rng(0, 1) == 0
   if invertTie then aFirst = not aFirst end

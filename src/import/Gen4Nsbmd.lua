@@ -163,6 +163,12 @@ function Gen4Nsbmd.decodeDisplayList(data, at, size)
   -- it does not mention alone.  So all of it persists across commands.
   local x, y, z = 0, 0, 0
   local nx, ny, nz = 0, 0, 1
+  -- WHETHER A NORMAL WAS EVER GIVEN. The DS lights a vertex from the NORMAL
+  -- command; a display list that issues COLOR instead -- HeartGold /
+  -- SoulSilver's lightmapped (`_lm`) geometry -- carries its lighting baked
+  -- in, and (0, 0, 1) above is only this decoder's resting value, which read
+  -- as a real normal made every such floor a wall facing the camera.
+  local normalSet = false
   local u, v = 0, 0
   local r, g, b = 1, 1, 1
   local matrix = 0
@@ -172,6 +178,7 @@ function Gen4Nsbmd.decodeDisplayList(data, at, size)
     vertices[#vertices + 1] = {
       x = x, y = y, z = z, nx = nx, ny = ny, nz = nz,
       u = u, v = v, r = r, g = g, b = b, matrix = matrix,
+      noNormal = (not normalSet) or nil,
     }
     stats.vertices = stats.vertices + 1
     return #vertices
@@ -206,6 +213,7 @@ function Gen4Nsbmd.decodeDisplayList(data, at, size)
         g = bits(p1, 5, 5) / 31
         b = bits(p1, 10, 5) / 31
       elseif cmd == 0x21 then
+        normalSet = true
         nx = sN(bits(p1, 0, 10), 10) / 512
         ny = sN(bits(p1, 10, 10), 10) / 512
         nz = sN(bits(p1, 20, 10), 10) / 512
@@ -542,7 +550,36 @@ function Gen4Nsbmd.parse(data)
         -- the hardware register holds, and the renderer is the right place to
         -- decide what 9/31 looks like in this engine's blend.
         alpha = math.floor(polyAttr / 2 ^ 16) % 32,
+        -- THE TEXTURE PARAMETER, +0x14: its bits 30..31 are the texture
+        -- coordinate SOURCE -- 0 none, 1 the vertex's own, 2 the NORMAL
+        -- (environment mapping: the shine on HGSS's starter balls), 3 the
+        -- vertex position.
+        texImageParam = u32(data, record + 0x14) or 0,
+        texGen = math.floor((u32(data, record + 0x14) or 0) / 2 ^ 30) % 4,
+        -- THE TEXTURE MATRIX (NNSG3dResMatData): `flag` at +0x1E -- bit 0 use
+        -- it, bit 1 scale is one, bit 2 rotation is zero, bit 3 translation
+        -- is zero -- and after the two fx32 magnifications at +0x24 / +0x28,
+        -- an fx32 scale pair when bit 1 is clear. HGSS's floors repeat their
+        -- small plank and stone textures this way; read without it, Falkner's
+        -- gym stretched one 32-pixel plank across whole walkways.
+        texFlag = u16(data, record + 0x1E) or 0,
+        -- diffuse | ambient << 16 and specular | emission << 16, RGB555 each,
+        -- bit 15 of diffuse saying "vertex colour is the diffuse"
+        diffAmb = u32(data, record + 0x04) or 0,
+        specEmi = u32(data, record + 0x08) or 0,
       }
+      do
+        local m = model.materials[#model.materials]
+        local flag = m.texFlag
+        if flag % 2 == 1 and math.floor(flag / 2) % 2 == 0 then
+          local function fx32(at)
+            local v = u32(data, at) or 0
+            if v >= 0x80000000 then v = v - 0x100000000 end
+            return v / 4096
+          end
+          m.texScaleS, m.texScaleT = fx32(record + 0x2C), fx32(record + 0x30)
+        end
+      end
     end
     -- ...and the same fact the way a renderer wants it: material -> names.
     for _, tex in ipairs(model.textures) do

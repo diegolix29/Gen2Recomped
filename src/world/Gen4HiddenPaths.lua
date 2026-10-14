@@ -156,6 +156,10 @@ local CHUNK, BLOCKED = 32, 255
 local COLLISION = 0x8000
 function Gen4HiddenPaths.applyToDef(data, def, save)
   if not (def and def.generation == 4 and def.layout == OVERWORLD) then return false end
+  -- Platinum's patches name SINNOH's matrix cells; Black and White's maps
+  -- carry generation 4 and an overworld matrix 0 of their own, and the
+  -- patches walled off Route 1's way into Accumula
+  if def.gen5 then return false end
   if type(def.blocks) ~= "string" or type(def.behaviorCells) ~= "string" then return false end
   local key = Gen4HiddenPaths.key(save)
   if def.gen4HiddenKey == key then return false end

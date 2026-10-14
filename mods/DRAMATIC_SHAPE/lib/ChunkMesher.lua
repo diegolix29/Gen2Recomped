@@ -864,6 +864,49 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
     return false
   end
 
+  -- THE FLOOR A CLUMP OF PROPS STANDS ON (Gen 3 outdoors).
+  --
+  -- A Kanto tree is drawn two and three cells tall, and its upper cells are
+  -- stood up on the ground a course or two higher so the drawing climbs --
+  -- which was right for the TREE and wrong for the ground cut out under it:
+  -- that fill was laid at the raised height too, with walls down to the
+  -- street, and Pewter's row of trees south of the Mart stood on a block of
+  -- pavement two courses tall.  The fill belongs at the floor the clump
+  -- stands in: the commonest height of the flat, walkable-ground tiles
+  -- around the connected skipped region, never above the tile's own.
+  local clumpFloor = {}
+  local function propFloor(tx0, ty0)
+    local k0 = keyOf(tx0, ty0)
+    local hit = clumpFloor[k0]
+    if hit ~= nil then return hit or nil end
+    local members, queue, head, seen = {}, { { tx0, ty0 } }, 1, { [k0] = true }
+    local votes = {}
+    while head <= #queue and #queue < 2048 do
+      local c = queue[head]; head = head + 1
+      members[#members + 1] = keyOf(c[1], c[2])
+      for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+        local nx, ny = c[1] + d[1], c[2] + d[2]
+        local nk = keyOf(nx, ny)
+        if not seen[nk] then
+          seen[nk] = true
+          local ns = S.shapeAt[nk]
+          if S.skip[nk] and ns then
+            queue[#queue + 1] = { nx, ny }
+          elseif ns and ns.flat and ns.class ~= "water" and ns.class ~= "void" then
+            local h = heightAt(nx, ny)
+            if type(h) == "number" then votes[h] = (votes[h] or 0) + 1 end
+          end
+        end
+      end
+    end
+    local best, bestN = nil, 0
+    for h, n in pairs(votes) do
+      if n > bestN or (n == bestN and best and h < best) then best, bestN = h, n end
+    end
+    for _, mk in ipairs(members) do clumpFloor[mk] = best or false end
+    return best
+  end
+
   for ty = -r, th + r - 1 do
     for tx = -r, tw + r - 1 do
       Budget.tick()
@@ -938,6 +981,10 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
           -- already using.
           local gy = heightAt(tx, ty)
           if type(gy) ~= "number" then gy = s.base or 0 end
+          if S.isGen3 and S.outdoor then
+            local pf = propFloor(tx, ty)
+            if pf and pf < gy then gy = pf end
+          end
           topQuad(tx * 8, ty * 8, gy, g, 1)
           -- the claimed tile is still ground at height 0, and water next
           -- door still recesses below it: without the same below-ground
@@ -1535,6 +1582,16 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
             -- `run.north` on any of the 518 maps (measured: 0 cases).
             artTop = run.roofArtTop
             m = math.min(run.roofArtRows, run.front - artTop + 1)
+          elseif S.isGen3 and run.gen3FlatTop then
+            artTop = run.gen3FlatTop[1]
+            m = math.max(1, run.gen3FlatTop[2])
+          elseif S.isGen3 and (run.gen3FlatRows or 0) > 0 then
+            -- A FLAT ROOFTOP WEARS ITS OWN FIELD, measured by Structures:
+            -- the rows from the building's top down to where its wall
+            -- starts.  Left at the two-row default, a Kanto gym's top
+            -- sampled its facade too and wore the entrance emblem twice.
+            artTop = run.north
+            m = math.max(1, math.min(run.gen3FlatRows, run.front - artTop + 1))
           end
           if roomTop then
             topQuad(x0, z0, h, roomTop, VOLUME_TOP_SHADE)

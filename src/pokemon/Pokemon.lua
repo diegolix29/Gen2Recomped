@@ -178,6 +178,10 @@ end
 
 function Pokemon.new(data, species, level, rng, form)
   local nativeForm=(data.constants or {}).gen==4 and (form or 0) or nil
+  local speciesDef=(data.pokemon or {})[species]
+  if require("src.core.GameVersion").get()=="polishedcrystal" and speciesDef and speciesDef.forms then
+    nativeForm=form or require("src.pokemon.PolishedUnown").choose(nil,rng)
+  end
   local def = require('src.pokemon.Gen4Forms').definition(data,
     {species=species,form=nativeForm})
   assert(def, "unknown species " .. tostring(species))
@@ -448,13 +452,19 @@ end
 -- Pokémon Center / blackout heal (engine/events/heal_party.asm
 -- HealParty): full HP, status cleared, and every move's PP restored to
 -- its base plus the PP-Up bonus (RestoreBonusPP adds maxPP/5 per PP UP).
+function Pokemon.maxPP(def, slot)
+  local base = math.max(0,tonumber(def and def.pp) or 0)
+  local ups = type(slot)=='table' and math.min(3,math.max(0,math.floor(tonumber(slot.ppUps) or 0))) or 0
+  return base + ups * math.floor(base / 5)
+end
+
 function Pokemon.restorePP(mon, moves)
   moves = moves or require("src.core.Data").moves
   if moves then
     for _, mv in ipairs(mon.moves or {}) do
       local mdef = moves[mv.id]
       if mdef then
-        mv.pp = mdef.pp + (mv.ppUps or 0) * math.floor(mdef.pp / 5)
+        mv.pp = Pokemon.maxPP(mdef,mv)
       end
     end
   end

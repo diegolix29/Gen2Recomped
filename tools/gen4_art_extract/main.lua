@@ -22,10 +22,12 @@ local MODULES = {
   trainer_card = { module = "src.import.Gen4TrainerCardArt", dir = "trainer_card_art", cache = "gen4_trainer_card_art" },
   summary = { module = "src.import.Gen4SummaryArt", dir = "summary_art", cache = "gen4_summary_art", dataCache = "gen4_summary_ink" },
   box = { module = "src.import.Gen4BoxArt", dir = "box", cache = "gen4_box_art", dataCache = "gen4_box_ink" },
+  townmap = { module = "src.import.Gen4TownMapArt", dir = "town_map_art", cache = "gen4_town_map_art", dataCache = "gen4_town_map_ink" },
   mainmenu = { module = "src.import.Gen4MainMenuArt", dir = "main_menu", cache = "gen4_main_menu_art", dataCache = "gen4_main_menu_ink" },
   shop = { module = "src.import.Gen4ShopArt", dir = "shop_art", cache = "gen4_shop_art" },
   battle = { module = "src.import.Gen4BattleArt", dir = "battle_art", cache = "gen4_battle_art", dataCache = "gen4_battle_anims" },
   poketch = { module = "src.import.Gen4PoketchArt", dir = "poketch_art", cache = "gen4_poketch_art", dataCache = "gen4_poketch_ink" },
+  startmenu = { module = "src.import.Gen4StartMenuArt", dir = "start_menu_art", cache = "gen4_start_menu_art", dataCache = "gen4_start_menu_ink" },
   evolution = { module = "src.import.Gen4EvolutionArt", dir = "evolution_art", cache = "gen4_evolution_art", dataCache = "gen4_evolution_ink" },
 }
 

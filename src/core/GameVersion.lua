@@ -984,6 +984,90 @@ GameVersion.VERSIONS = {
     -- VERSION rather than testing the generation number in a dozen places.
     dualScreen = true,
   },
+  -- HEARTGOLD AND SOULSILVER, Gen 4 on Platinum's engine: pret/pokeheartgold
+  -- builds both, and both dumps hash to what it builds. The Gen 4 extractor
+  -- reads them through src/import/Gen4Versions.lua -- their own paths (almost
+  -- everything under /a/x/y/z) and their own text banks over Platinum's.
+  -- Held at importable = false ("COMING SOON") until the overworld imports;
+  -- POKEPORT_UNLOCK=heartgold,soulsilver opens the import for development.
+  -- Two screens, Platinum's camera: both follow from generation 4 and
+  -- `dualScreen`, the same as Platinum, with nothing version-specific added.
+  heartgold = {
+    id = "heartgold",
+    generation = 4,
+    family = "hgss",
+    label = "HeartGold",
+    displayName = "Pokemon HeartGold",
+    launcherName = "HeartGold",
+    sha1 = "4fcded0e2713dc03929845de631d0932ea2b5a37",   -- IPKE, USA
+    gameCode = "IPKE",
+    manifest = "tools/rom_manifest_heartgold.json",
+    cachePrefix = "heartgold/",
+    saveSuffix = "_heartgold",
+    importable = false,
+    experimental = true,
+    experimentalLabel = "EARLY",
+    hasRunning = true,
+    dualScreen = true,
+  },
+  soulsilver = {
+    id = "soulsilver",
+    generation = 4,
+    family = "hgss",
+    label = "SoulSilver",
+    displayName = "Pokemon SoulSilver",
+    launcherName = "SoulSilver",
+    sha1 = "f8dc38ea20c17541a43b58c5e6d18c1732c7e582",   -- IPGE, USA/Australia
+    gameCode = "IPGE",
+    manifest = "tools/rom_manifest_soulsilver.json",
+    cachePrefix = "soulsilver/",
+    saveSuffix = "_soulsilver",
+    importable = false,
+    experimental = true,
+    experimentalLabel = "EARLY",
+    hasRunning = true,
+    dualScreen = true,
+  },
+  -- BLACK AND WHITE, Gen 5: squiddonaut/pokeblack decompiles Black and builds
+  -- exactly this dump (IRBO); White is the same engine and data layout with
+  -- its own version exclusives. Two screens and a 3D field like Platinum, so
+  -- the same second-screen modes, single-screen mode and camera controls.
+  black = {
+    id = "black",
+    generation = 5,
+    family = "bw",
+    label = "Black",
+    displayName = "Pokemon Black",
+    launcherName = "Black",
+    sha1 = "26ad0b9967aa279c4a266ee69f52b9b2332399a5",   -- IRBO, USA/Europe (NDSi Enhanced)
+    gameCode = "IRBO",
+    manifest = "tools/rom_manifest_black.json",
+    cachePrefix = "black/",
+    saveSuffix = "_black",
+    importable = false,
+    experimental = true,
+    experimentalLabel = "EARLY",
+    hasRunning = true,
+    dualScreen = true,
+  },
+  white = {
+    id = "white",
+    generation = 5,
+    family = "bw",
+    label = "White",
+    displayName = "Pokemon White",
+    launcherName = "White",
+    sha1 = "bc696a0dfb448c7b3a8a206f0f8214411a039208",   -- IRAO, USA/Europe (NDSi Enhanced)
+    gameCode = "IRAO",
+    manifest = "tools/rom_manifest_white.json",
+    cachePrefix = "white/",
+    saveSuffix = "_white",
+    importable = false,
+    experimental = true,
+    experimentalLabel = "EARLY",
+    hasRunning = true,
+    dualScreen = true,
+  },
 }
 
 -- Launcher column order: the CARTRIDGES in generation order, then the ROM
@@ -993,6 +1077,7 @@ GameVersion.VERSIONS = {
 -- ordering rule tests/polished_crystal_registration_test.lua asserts.
 GameVersion.ORDER = { "red", "blue", "yellow", "gold", "silver", "crystal",
                       "firered", "emerald", "platinum",
+                      "heartgold", "soulsilver", "black", "white",
                       "prism", "polishedcrystal" }
 
 GameVersion.current = "red"
@@ -1036,6 +1121,26 @@ end
 -- other three generations take.
 function GameVersion.isGen4(id)
   return GameVersion.generation(id) == 4
+end
+
+-- The fifth, Black and White. Same caveat again: a predicate, not support.
+function GameVersion.isGen5(id)
+  return GameVersion.generation(id) == 5
+end
+
+-- A Nintendo DS cartridge: a filesystem, two screens, a 3D field.
+function GameVersion.isNds(id)
+  return GameVersion.generation(id) >= 4
+end
+
+-- TWO SCREENS: `GameVersion.isDualScreen` below. src/ui/SecondScreen.lua
+-- offers every second-screen mode (OFF among them -- the single-screen
+-- layout) wherever it is true: Platinum, HeartGold, SoulSilver, Black, White.
+
+-- The game's family within its generation ("platinum", "hgss", "bw").
+function GameVersion.family(id)
+  local info = GameVersion.info(id)
+  return info and (info.family or info.id) or nil
 end
 
 -- THE MONEY SIGN THIS CARTRIDGE'S FONT DRAWS, which is a different character

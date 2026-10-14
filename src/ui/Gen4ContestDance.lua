@@ -23,8 +23,14 @@
 -- THE BUTTONS (ov17_022492DC): UP or X is JUMP, DOWN or B is FRONT, LEFT or Y
 -- is LEFT, RIGHT or A is RIGHT.
 --
--- Not drawn: the 3D particles and fireworks. The
--- sound effects wait on the contest's SE table.
+-- THE SOUNDS are the cartridge's: the applause as the stage opens
+-- (ov17_0223DAD0's init) and again once the song has ended (ov17_0224E86C);
+-- the spotlight's click as the lead steps up and again as the back row takes
+-- the second half, and as the lights come up (ov17_0224CDC0 / ov17_0224D41C);
+-- your-turn chime (ov17_0224C9F0); the dancers moving to their new places
+-- (ov17_0224DFF8); and every move's step and verdict (ov17_0224B20C).
+--
+-- Not drawn: the 3D particles and fireworks.
 
 local Font = require("src.render.Font")
 local T = require("src.import.Gen4Text")
@@ -34,6 +40,13 @@ local Dance = require("src.pokemon.Gen4ContestDance")
 
 local UI = {}
 UI.__index = UI
+
+-- a cartridge sound effect (src/core/Sound.playSe), nothing when headless
+local function se(self, name, opts)
+  local data = self.game and self.game.data or self.data
+  local ok, Sound = pcall(require, "src.core.Sound")
+  if ok and type(Sound) == "table" and Sound.playSe and data then return Sound.playSe(data, name, opts) end
+end
 
 UI.POS = { { 128, 96, 1.0 }, { 48, 40, 0.75 }, { 128, 40, 0.75 }, { 208, 40, 0.75 } }
 UI.BUBBLE = { { 128, 88 }, { 48, 32 }, { 128, 32 }, { 208, 32 } }
@@ -51,6 +64,8 @@ function UI.new(game, c, opts)
   local nick = self:name(0)
   T.buffer(game, nick)
   self:say(T.resolve(game.data, Dance.BANK, practice and 20 or 8, game))
+  -- ov17_0223DAD0's init: the audience's applause as the stage opens
+  se(self, "SEQ_SE_DP_CON_007")
   return self
 end
 
@@ -108,6 +123,8 @@ end
 
 function UI:startDance()
   self.mode, self.frame, self.message = "dance", 0, nil
+  -- ov17_0224D41C: the stage lights come up before the song
+  se(self, "SEQ_SE_DP_CON_019")
   local ok, Music = pcall(require, "src.core.Music")
   if ok and Music.play then pcall(Music.play, self.data, self.d.song.seq) end
 end
@@ -129,6 +146,41 @@ function UI:moved(move, isLead, slot, ms, row)
   if isLead then self.tint = { colour = UI.TINT[move.dir], from = f } end
   if move.quality == Dance.MISS and not isLead then self.tint = { colour = { 0, 0, 0 }, from = f } end
   self.notes[#self.notes + 1] = { grid = move.grid, dir = move.dir, row = row, own = move.id == 0, ms = ms }
+  self:moveSounds(move, isLead, last)
+end
+
+-- ov17_0224B20C's sounds for a move: the measure's tallies (unk_A1D the
+-- run of EXCELLENTs, unk_A21 the misses, unk_A25..27 the back row's
+-- verdicts), the fireworks' applause for a clean measure (ov17_0224CB80),
+-- the step (the dancer's last a bigger one), then the verdict -- heard for
+-- every dancer when you lead, otherwise only for the lead's and your own
+function UI:moveSounds(move, isLead, last)
+  local d, tally, id, q = self.d, self.tally, move.id, move.quality
+  if not tally then return end
+  if q == Dance.EXCELLENT then tally.run[id] = tally.run[id] + 1 else tally.run[id] = 0 end
+  if q == Dance.MISS then tally.miss[id] = tally.miss[id] + 1 end
+  if not isLead then tally.back[q] = tally.back[q] + 1 end
+  if last then
+    if isLead then
+      if tally.run[id] == d.moves or tally.miss[id] == 0 then se(self, "SEQ_SE_DP_CON_007") end
+    elseif tally.back[0] + tally.back[1] + tally.back[2] == d.moves * 3
+        and (tally.back[0] == d.moves * 3 or tally.back[2] == 0) then
+      se(self, "SEQ_SE_DP_CON_007")
+    end
+  end
+  if last then se(self, "SEQ_SE_DP_CON_028") else se(self, "SEQ_SE_DP_CON_027_3") end
+  if not (self.ms.lead == 0 or isLead or id == 0) then return end
+  if q == Dance.EXCELLENT then
+    if tally.run[id] == d.moves then se(self, "SEQ_SE_DP_CON_023")
+    elseif tally.run[id] == d.moves - 1 then se(self, "SEQ_SE_DP_CON_022")
+    else se(self, "SEQ_SE_DP_CON_021") end
+  elseif q == Dance.GOOD then
+    se(self, "SEQ_SE_DP_CON_024")
+  elseif move.wrong then
+    se(self, "SEQ_SE_DP_CON_026")
+  else
+    se(self, "SEQ_SE_DP_CARD10")
+  end
 end
 
 function UI:beginMeasure(r, m)
@@ -136,6 +188,12 @@ function UI:beginMeasure(r, m)
   local ms = Dance.newMeasure(d, r, m)
   self.ms, self.notes, self.events = ms, {}, {}
   self.cool = { [0] = -999, -999, -999, -999 }
+  -- ov17_0224DF54: the tallies start again each measure
+  self.tally = { run = { [0] = 0, 0, 0, 0 }, miss = { [0] = 0, 0, 0, 0 }, back = { [0] = 0, 0, 0 } }
+  -- ov17_0224D710: the spotlight on the lead (ov17_0224CDC0), and the
+  -- your-turn chime when that is you (ov17_0224C9F0)
+  se(self, "SEQ_SE_DP_CON_019")
+  if ms.lead == 0 then se(self, "SEQ_SE_DP_CON_031") end
   if ms.lead ~= 0 then
     for _, e in ipairs(Dance.npcLead(d, ms.lead)) do
       self.events[#self.events + 1] = { t = e.t, dir = e.dir, id = ms.lead, lead = true }
@@ -187,6 +245,8 @@ function UI:tick()
     end
     self.endFrames = self.endFrames + 1
     if self.endFrames == 60 then
+      -- ov17_0224E86C: a second after the song, the applause
+      se(self, "SEQ_SE_DP_CON_007")
       if Contest.isPractice(self.c.competition) then return self:finish() end
       local id = Dance.leading(self.d)
       local e = self.c.contestants[id]
@@ -208,12 +268,24 @@ function UI:tick()
   self.round = r
   if m and (not self.ms or self.ms.round ~= r or self.ms.measure ~= m) then self:beginMeasure(r, m) end
   if not m then
+    -- ov17_0224DFF8: after each round but the last, the dancers move to
+    -- their new places (ov17_0223ED1C)
+    if f >= Dance.roundStart(d, 0) and r < 3 and not (self.rotated or {})[r] then
+      self.rotated = self.rotated or {}
+      self.rotated[r] = true
+      se(self, "SEQ_SE_DP_CON_030")
+    end
     self.instructionText = self.instructionText or self:instruction(math.min(3, f < Dance.roundStart(d, 0) and 0 or r + 1))
   end
   local ms = self.ms
   if not (ms and m) then return end
   local t = f - ms.start
-  if t >= d.half and not self.copiesPlanned then self:planCopies() end
+  if t >= d.half and not self.copiesPlanned then
+    self:planCopies()
+    -- the spotlight swings to the back row, and your chime when you follow
+    se(self, "SEQ_SE_DP_CON_019")
+    if ms.lead ~= 0 then se(self, "SEQ_SE_DP_CON_031") end
+  end
   -- the computer dancers, on their frames
   for i = #self.events, 1, -1 do
     local e = self.events[i]

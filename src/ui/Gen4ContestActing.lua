@@ -15,6 +15,13 @@
 -- Controls: the d-pad moves over the 2x2 move buttons, A confirms; LEFT/RIGHT
 -- pick a judge, DOWN reaches EXIT, A confirms, B (or EXIT) goes back to the
 -- moves; A advances the messages.
+--
+-- The sounds are overlay017's (ov17_02243C28.c's acting commands,
+-- ov17_0223F7E4.c's buttons): the opening fanfare and applause, the last
+-- turn's call, the cursor and the choices, your entrance, the hearts as they
+-- climb (each a semitone higher), the Voltage's applause or drop, and the
+-- judges' shares. Not heard: the max-Voltage stars' own flight sounds
+-- (ov17_02243750 / ov17_022434E0), the Lua drawing no such animation.
 
 local Font = require("src.render.Font")
 local T = require("src.import.Gen4Text")
@@ -22,6 +29,36 @@ local A = require("src.pokemon.Gen4ContestActing")
 
 local Act = {}
 Act.__index = Act
+
+-- a cartridge sound effect (src/core/Sound.playSe), nothing when headless
+local function se(self, name, opts)
+  local data = self.game and self.game.data or self.data
+  local ok, Sound = pcall(require, "src.core.Sound")
+  if ok and type(Sound) == "table" and Sound.playSe and data then return Sound.playSe(data, name, opts) end
+end
+
+-- a sound `delay` frames from now
+function Act:later(delay, name, opts)
+  self.timers = self.timers or {}
+  self.timers[#self.timers + 1] = { at = (self.clock or 0) + delay, name = name, opts = opts }
+end
+
+-- a step in the message queue that makes a sound rather than a page
+function Act:cue(fn) self.queue[#self.queue + 1] = { cue = fn } end
+
+-- ov17_02241F34: the hearts climbing from `from` to `to` points, one every
+-- three frames (ov17_02244D98), each SEQ_SE_DP_CON_003 pitched up a
+-- semitone (64 / 64ths) per heart already shown
+function Act:heartsClimb(from, to)
+  local n = 0
+  local p = from
+  while p < to do
+    p = p + 10
+    local hearts = math.min(24, math.floor(p / 10))
+    self:later(3 * n, "SEQ_SE_DP_CON_003", { pitch = 2 ^ ((hearts - 1) / 12) })
+    n = n + 1
+  end
+end
 
 -- Contest_Text_TimeFor<Type>ActingCompetition, by contest type
 local INTRO = { [0] = 40, 39, 35, 37, 38 }
@@ -40,7 +77,13 @@ function Act.new(game, contest, opts)
   self.onDone = opts.onDone
   local practice = require("src.pokemon.Gen4Contest").isPractice(contest.competition)
   self:say(204, practice and BEGIN_PRACTICE or INTRO[contest.type])
-  self.after = function() self:startTurn() end
+  -- ov17_02243E2C: the opening line's fanfare; the applause 30 frames after
+  -- it has been read (ov17_022431A0)
+  se(self, "SEQ_SE_DP_CON_032")
+  self.after = function()
+    self:later(30, "SEQ_SE_DP_CON_007")
+    self:startTurn()
+  end
   return self
 end
 
@@ -99,24 +142,62 @@ end
 
 function Act:sayEvents(list)
   local c = self.c
+  self.run = self.run or { [0] = 0, 0, 0, 0 }
   for _, ev in ipairs(list) do
     if ev.kind == "performed" then
       self:say(204, PERFORMED, { [0] = self:name(ev.id), self:judgeName(ev.judge), self:moveName(ev.move) })
       if ev.already then self:say(204, ALREADY) end
+    elseif ev.kind == "appeal" or ev.kind == "bonus" then
+      -- ov17_02244D98: the performer's hearts for the turn climb
+      local from = self.run[ev.id]
+      local to = from + ev.points
+      self.run[ev.id] = to
+      self:cue(function() self:heartsClimb(from, to) end)
     elseif ev.kind == "effect" then
       self:sayEffect(ev)
     elseif ev.kind == "voltage" then
       local j = self:judgeName(ev.judge)
+      -- ov17_0224519C: the crowd's applause as a Voltage rises
+      -- (ov17_022431A0), a SEQ_SE_DP_CON_001 for each star lost
+      if ev.delta > 0 then
+        self:cue(function() se(self, "SEQ_SE_DP_CON_007") end)
+      else
+        self:cue(function()
+          for k = 0, math.floor(-ev.delta / 10) - 1 do self:later(3 * k, "SEQ_SE_DP_CON_001") end
+        end)
+      end
       if ev.delta > 0 then
         self:say(204, VOLT_UP + ev.mtype, { [0] = j })
         if math.floor(ev.level / 10) == 4 then self:say(204, PRETTY_EXCITED)
-        elseif ev.level >= A.MAX_VOLTAGE then self:say(204, GOING_WILD, { [0] = tostring(math.floor(ev.bonus / 10)) }) end
+        elseif ev.level >= A.MAX_VOLTAGE then
+          self:say(204, GOING_WILD, { [0] = tostring(math.floor(ev.bonus / 10)) })
+          -- ov17_0224519C (states 21-22): the bonus's hearts climb
+          local from = self.run[ev.id]
+          local to = from + (ev.bonus or 0)
+          self.run[ev.id] = to
+          self:cue(function() self:heartsClimb(from, to) end)
+        end
       else
         self:say(204, VOLT_DOWN + ev.mtype, { [0] = j })
       end
     elseif ev.kind == "judge" then
       local slots = { [0] = self:judgeName(ev.judge) }
       for k, id in ipairs(ev.ids) do slots[k] = self:name(id) end
+      -- ov17_022456E8: each one's share of the judge, by how many others
+      -- chose the same -- none, one, two, three -- and its hearts climbing
+      local others = ev.count - 1
+      local share = ({ [0] = 30, 20, 10, 0 })[others]
+      self:cue(function()
+        if others == 0 then se(self, "SEQ_SE_DP_CON_023")
+        elseif others == 1 then se(self, "SEQ_SE_DP_CON_022")
+        elseif others == 2 then se(self, "SEQ_SE_DP_CON_021")
+        else se(self, "SEQ_SE_DP_CON_001") end
+      end)
+      for _, id in ipairs(ev.ids) do
+        local from = self.run[id]
+        self.run[id] = from + share
+        self:cue(function() self:heartsClimb(from, from + share) end)
+      end
       self:say(204, IMPRESSED[ev.count], slots)
     elseif ev.kind == "lowestFirst" then
       self:say(204, NEXT_LOWEST)
@@ -147,6 +228,8 @@ function Act:startTurn()
     T.buffer(self.game, tostring(self.s.turn + 1))
     self.prompt = T.resolve(self.data, 204, last and LAST_MOVE or WHICH_MOVE, self.game)
   end
+  -- ov17_022449B8: the last performance's call
+  if last then se(self, "SEQ_SE_DP_CON_029") end
 end
 
 function Act:runTurn()
@@ -162,6 +245,7 @@ function Act:runTurn()
   A.beginTurn(s, choices)
   self.mode = "show"
   self.pos = 0
+  self.run = { [0] = 0, 0, 0, 0 }
   self:nextPerformance()
 end
 
@@ -169,6 +253,8 @@ function Act:nextPerformance()
   local s = self.s
   if self.pos < 4 then
     self.performer = s.order[self.pos + 1]
+    -- ov17_02243F68: your Pokemon's entrance, 11 frames in
+    if self.performer == 0 then self:later(11, "SEQ_SE_DP_CON_031") end
     local ev = A.perform(s, self.pos)
     self.pos = self.pos + 1
     self:sayEvents(ev)
@@ -191,37 +277,78 @@ function Act:finish()
   if self.onDone then self.onDone() end
 end
 
+-- the sounds due this frame
+function Act:tickSounds()
+  self.clock = (self.clock or 0) + 1
+  local timers = self.timers
+  if not timers then return end
+  for i = #timers, 1, -1 do
+    local t = timers[i]
+    if self.clock >= t.at then
+      table.remove(timers, i)
+      se(self, t.name, t.opts)
+    end
+  end
+end
+
+-- the queue's sound steps at its front, run as they come up
+function Act:runCues()
+  while type(self.queue[1]) == "table" do
+    local item = table.remove(self.queue, 1)
+    item.cue()
+  end
+end
+
 function Act:update()
   local input = self.game.input
+  self:tickSounds()
+  self:runCues()
   if #self.queue > 0 then
-    if input:wasPressed("a") or input:wasPressed("b") then table.remove(self.queue, 1) end
+    if input:wasPressed("a") or input:wasPressed("b") then
+      table.remove(self.queue, 1)
+      self:runCues()
+    end
     if #self.queue == 0 and self.after then
       local f = self.after
       self.after = nil
       f()
+      self:runCues()
     end
     return
   end
-  if self.after then local f = self.after; self.after = nil; return f() end
+  if self.after then
+    local f = self.after
+    self.after = nil
+    f()
+    return self:runCues()
+  end
   if self.mode == "move" then
     -- the four buttons are a 2x2 grid (Unk_ov17_022532D0)
     local moves = self:playerMoves()
     local c = self.cursor - 1
     if input:wasPressed("up") or input:wasPressed("down") then c = (c + 2) % 4 end
     if input:wasPressed("left") or input:wasPressed("right") then c = c - c % 2 + (1 - c % 2) end
+    -- ov17_02241004: the cursor's click when it moves
+    if c + 1 ~= self.cursor then se(self, "SEQ_SE_DP_SELECT") end
     self.cursor = c + 1
     if input:wasPressed("a") and A.canUse(self.s, 0, moves[self.cursor]) then
+      -- ov17_022449B8: a move chosen
+      se(self, "SEQ_SE_DP_DECIDE")
       self.chosenMove = moves[self.cursor]
       self.mode = "judge"
     end
   elseif self.mode == "judge" then
     -- three judges over EXIT (Unk_ov17_022532A8); EXIT goes back to the moves
+    local was = self.judge
     if self.judge < 3 then self.lastJudge = self.judge end
     if input:wasPressed("left") and self.judge < 3 then self.judge = (self.judge + 2) % 3 end
     if input:wasPressed("right") and self.judge < 3 then self.judge = (self.judge + 1) % 3 end
     if input:wasPressed("down") then self.judge = 3 end
     if input:wasPressed("up") and self.judge == 3 then self.judge = self.lastJudge or 0 end
+    if self.judge ~= was then se(self, "SEQ_SE_DP_SELECT") end
     local a, b = input:wasPressed("a"), input:wasPressed("b")
+    -- ov17_022449B8: a judge (or EXIT, which B also picks) chosen
+    if a or b then se(self, "SEQ_SE_DP_DECIDE") end
     if b or (a and self.judge == 3) then
       self.judge = self.lastJudge or 0
       self.mode = "move"
@@ -378,6 +505,7 @@ end
 
 function Act:message()
   local msg = self.queue[1]
+  if type(msg) ~= "string" then msg = nil end
   if not msg and self.mode == "move" then msg = self.prompt
   elseif not msg and self.mode == "judge" then msg = T.resolve(self.data, 204, CHOOSE_JUDGE) end
   return msg

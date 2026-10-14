@@ -88,6 +88,7 @@ function ModSetting:setIndex(i, game)
     loader.modOptions[id][self.key] = value
   end
   if game and game.writeOptions then pcall(game.writeOptions, game) end
+  if self.onChange then pcall(self.onChange, value) end
   return value
 end
 
@@ -99,7 +100,9 @@ end
 -- which writes and persists on its own). Nothing to store: just move the
 -- cached index so the next read agrees with it.
 function ModSetting:sync(value)
+  local before = self.index
   self.index = indexOf(self, value)
+  if self.onChange and before ~= self.index then pcall(self.onChange, value) end
 end
 
 -- The descriptor src/ui/OptionRows.lua renders, in the shape the

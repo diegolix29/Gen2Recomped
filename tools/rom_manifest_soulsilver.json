@@ -1,0 +1,13 @@
+{
+  "format": 4,
+  "generation": 4,
+  "romSha1": "f8dc38ea20c17541a43b58c5e6d18c1732c7e582",
+  "gameCode": "IPGE",
+  "title": "POKEMON SS",
+  "notes": [
+    "A Nintendo DS cartridge is a filesystem: every extraction stage opens a file by",
+    "its path (or, for most of this game, by its numbered /a/x/y/z path), so this",
+    "manifest carries only which dump is this game -- RomImporter reads romSha1.",
+    "Decomp: pret/pokeheartgold (pokesoulsilver.us.nds)."
+  ]
+}

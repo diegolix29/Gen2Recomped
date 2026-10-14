@@ -164,6 +164,25 @@ function Gen4MoneyWindow.coinPanelFor(game, left, top)
   }
 end
 
+-- FieldMenu_DrawBPWindow / FieldMenu_PrintBPToWindow: the same window as the
+-- coins (SCRIPT_MANAGER_SPECIAL_CURRENCY_WINDOW), bank 361's 230 around the
+-- Battle Points padded to five
+Gen4MoneyWindow.BP_ENTRY = 230
+function Gen4MoneyWindow.bpPanelFor(game, left, top)
+  local save = game and game.save
+  if type(save) ~= "table" then return nil end
+  local digits = tostring(require("src.pokemon.Gen4BattleTower").bp(save))
+  local amount = (" "):rep(math.max(0, Gen4MoneyWindow.COIN_DIGITS - #digits)) .. digits
+  local saved = game.stringBuffers and game.stringBuffers[1]
+  require("src.import.Gen4Text").buffer(game, amount)
+  local line = require("src.import.Gen4Text").resolve(game.data, Gen4MoneyWindow.COIN_BANK,
+                                                       Gen4MoneyWindow.BP_ENTRY, game)
+  if game.stringBuffers then game.stringBuffers[1] = saved end
+  if type(line) ~= "string" or line == "" then line = amount .. " BP" end
+  return { left = math.floor(tonumber(left) or 20), top = math.floor(tonumber(top) or 2),
+           amount = line, coins = true, bp = true, tilesW = 10, tilesH = 2 }
+end
+
 function Gen4MoneyWindow.drawCoins(panel)
   if type(panel) ~= "table" then return false end
   local Font = require("src.render.Font")

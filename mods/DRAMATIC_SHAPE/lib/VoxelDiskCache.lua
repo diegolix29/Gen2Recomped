@@ -259,7 +259,9 @@ end
 local function shapeSignature()
   local ok, S = pcall(V.require, "Structures")
   if ok and type(S) == "table" and S.SHAPE_REV then
-    return tostring(S.SHAPE_REV)
+    local ledges = (type(S.ledgeTerraces) == "function" and S.ledgeTerraces())
+                   and "+ledges" or ""
+    return tostring(S.SHAPE_REV) .. ledges
   end
   return "?"
 end

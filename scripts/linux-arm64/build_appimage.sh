@@ -5,7 +5,7 @@
 #
 # Mounts the host provides:
 #   /cache  pinned downloads + the compiled LÖVE prefix (persists between runs)
-#   /in     read-only inputs: game.love, icon.png
+#   /in     read-only inputs: game.love, icon.png, translation/ (optional)
 #   /out    the finished AppImage lands here
 #
 # Environment:
@@ -357,6 +357,11 @@ cp -R "$jit_share/jit" "$APPDIR/share/$LUAJIT_SHARE_DIR/"
 
 # --------------------------------------------------------------- branding
 cp "$IN/game.love" "$APPDIR/game.love"
+if [ -f "$IN/translation/rom-translate" ]; then
+  mkdir -p "$APPDIR/translation"
+  cp "$IN/translation/rom-translate" "$APPDIR/translation/"
+  chmod 0755 "$APPDIR/translation/rom-translate"
+fi
 unzip -Z1 "$APPDIR/game.love" > "$WORK/love-listing.txt"
 grep -qxF "tools/rom_manifest_gold.json" "$WORK/love-listing.txt" \
   || fail "game.love is missing tools/rom_manifest_gold.json"

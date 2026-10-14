@@ -45,7 +45,7 @@ PC.PARTY_EXIT={192,184}
 PC.WORDS={JUMP=24,WALLPAPER=25,NAME=26,['HEADER CANCEL']=27,
  ['SCENERY 1']=28,['SCENERY 2']=29,['SCENERY 3']=30,ETCETERA=31,
  MOVE=58,SUMMARY=61,WITHDRAW=62,STORE=63,ITEM=64,MARK=65,RELEASE=66,CANCEL=67,
- CONFIRM=68,GIVE=70,TAKE=71,YES=78,NO=79}
+ CONFIRM=68,GIVE=70,TAKE=71,['SET ON LEFT']=76,['SET ON RIGHT']=77,YES=78,NO=79}
 PC.WALLPAPER_NAME=34      -- FOREST, the first of sixteen
 local FALLBACK_INK={species={{255,247,255},{115,115,132}},nickname={{239,230,255},{90,90,107}},
  male={{148,230,239},{41,123,165}},female={{247,132,132},{197,41,41}},item={{255,247,255},{115,115,132}},
@@ -225,13 +225,77 @@ function PC:step()
  end
  local j=self.jump
  if j then
-  j.f=j.f+1
-  if j.f==11 and not j.closing then self.message=self:say(8,'Jump to which Box?') end
-  if j.closing then j.c=j.c+1;if j.c>=7 then self.jump=nil end end
+  if j.closing then
+   j.c=j.c+1
+   if j.c>=PC.JUMP_CLOSE_FRAMES then self.jump=nil;self.message='' end
+  else
+   j.f=j.f+1
+   -- BOX_SELECTOR_DISPLAY_MESSAGE_START: the question once the popup is up
+   if j.f==PC.JUMP_OPEN_FRAMES then self.message=self:say(8,'Jump to which Box?') end
+  end
  end
  if self.dialStep then self:dialStep() end
+ self:subStep()
 end
 function PC:busy() return self.slide or self.paperFade end
+
+-- THE JUMP POPUP (ov19_021DB8E4, BoxSelectorPopup in box_app_manager.c).
+-- ov19_021DC0A0 opens BG1 map 3's 32 x 10 band out from tile row 10, one row
+-- up and one down a frame (four frames, then whole on the fifth); the seven
+-- thumbnails (box selection - 3 .. + 3, at x 32 + 32 i, y 88) come in on the
+-- next frame in OBJ rows 13-15 faded seven-sevenths to white and lose a
+-- seventh a frame; at 0 the name window (10, 6) 12 x 2 -- the name centred on
+-- x 48 in TEXT_COLOR(2, 8, 7) -- and the counts window (3, 13) 26 x 1 --
+-- two zero-padded digits per box, 32 apart -- go up.  Left / right (and L / R)
+-- move the selection and redraw at once (ov19_021DBB70); A jumps, B does not.
+-- ov19_021DC1CC closes it: everything off, then the band folds back in.
+PC.JUMP_BAND_FRAMES=5
+PC.JUMP_FADE=7
+PC.JUMP_OPEN_FRAMES=PC.JUMP_BAND_FRAMES+1+PC.JUMP_FADE
+PC.JUMP_CLOSE_FRAMES=7
+function PC:openJump()
+ self.jump={f=0,box=self.game.save.currentBox or 1}
+ self.message=''
+end
+function PC:closeJump(target)
+ local j=self.jump
+ if not j or j.closing then return end
+ j.closing=true;j.c=0
+ local cur=self.game.save.currentBox or 1
+ if target and target~=cur then
+  local prev=self:previewMon()
+  self:bg3State()
+  self.game.save.currentBox=target
+  self:slideBox(cur,target,prev)
+ end
+end
+-- how many band rows are showing on each side of row 10
+function PC:jumpBandRows()
+ local j=self.jump
+ if not j then return 0 end
+ if j.closing then
+  if j.c<=1 then return 5 end
+  return math.max(0,5-(j.c-1))
+ end
+ return math.min(5,j.f)
+end
+-- the thumbnails' fade to white, 0..1, or nil before they are up
+function PC:jumpFade()
+ local j=self.jump
+ if not j or j.closing then return nil end
+ if j.f<=PC.JUMP_BAND_FRAMES then return nil end
+ local level=math.max(0,PC.JUMP_FADE-(j.f-PC.JUMP_BAND_FRAMES-1))
+ return level/PC.JUMP_FADE
+end
+function PC:updateJump(input)
+ local j=self.jump
+ if j.closing or j.f<PC.JUMP_OPEN_FRAMES then return end
+ local count=Boxes.count()
+ if input:wasPressed('left') or input:wasPressed('l') then j.box=(j.box-2)%count+1
+ elseif input:wasPressed('right') or input:wasPressed('r') then j.box=j.box%count+1
+ elseif input:wasPressed('a') then self:closeJump(j.box)
+ elseif input:wasPressed('b') then self:closeJump(nil) end
+end
 function PC:rememberOrigin()
  if self.held and self.held.from and not self.held.box then self.held.box=self.game.save.currentBox end
 end
@@ -303,7 +367,12 @@ function PC:choose()
  if not mon then return end
  if self.opts.mode=='withdraw' then return self:withdraw(slot) end
  local prompt=self:say(0,self:nameOf(mon)..' is selected.',self:nameOf(mon))
- if self.opts.mode=='items' then self:openMenu({'TAKE','GIVE','CANCEL'},prompt)
+ if self:compareMode() then
+  -- BoxMenu_FillMonMenu, PC_MODE_COMPARE
+  local c=self:compareState()
+  local set=c.slot==0 and 'SET ON LEFT' or 'SET ON RIGHT'
+  self:openMenu({{label=self:label(set),key='SET COMPARE'},'WITHDRAW','MARK','CANCEL'},prompt)
+ elseif self.opts.mode=='items' then self:openMenu({'TAKE','GIVE','CANCEL'},prompt)
  else self:openMenu({'MOVE','SUMMARY','WITHDRAW','MARK','RELEASE','CANCEL'},prompt) end
 end
 -- StateStack:pop calls exit as a lifecycle hook. It must not pop again.
@@ -332,6 +401,7 @@ function PC:runAction(action)
  if action=='MOVE' then self:carry(slot)
  elseif action=='SUMMARY' then Screens.push(self.game,'SummaryMenu',mon)
  elseif action=='WITHDRAW' then self:withdraw(slot)
+ elseif action=='SET COMPARE' then self:toggleCompareSlot()
  elseif action=='RELEASE' then
   if mon and (mon.egg or mon.isEgg) then self.message=self:say(31,'You can’t release an Egg.');return end
   self:openMenu({{label=self:label('YES'),key='CONFIRM RELEASE'},{label=self:label('NO'),key='CANCEL'}},self:say(2,'Release this Pokémon?'),2)
@@ -356,13 +426,7 @@ function PC:runAction(action)
    if name~='' then self.game.save.boxNames=self.game.save.boxNames or {};self.game.save.boxNames[self.game.save.currentBox]=name end
   end})
  elseif action=='JUMP' then
-  local rows={}
-  for n=1,Boxes.count() do
-   local saved=self.game.save.currentBox;self.game.save.currentBox=n
-   rows[n]={label=self:boxName(),key=function() self.game.save.currentBox=n end}
-   self.game.save.currentBox=saved
-  end
-  self:openMenu(rows,self:say(8,'Jump to which Box?'),self.game.save.currentBox or 1)
+  self:openJump()
  elseif action=='WALLPAPER' then
   local pages={}
   for p=0,3 do
@@ -370,7 +434,7 @@ function PC:runAction(action)
     local rows={}
     for i=0,3 do
      local id=p*4+i
-     rows[#rows+1]={label=self:word(PC.STORAGE_BANK,PC.WALLPAPER_NAME+id,'WALLPAPER '..id),key=function() self:box().wallpaper=id end}
+     rows[#rows+1]={label=self:word(PC.STORAGE_BANK,PC.WALLPAPER_NAME+id,'WALLPAPER '..id),key=function() self:setWallpaper(id) end}
     end
     rows[#rows+1]={label=self:label('CANCEL'),key='CANCEL'}
     self:openMenu(rows,self:say(10,'Pick the wallpaper.'))
@@ -394,6 +458,21 @@ function PC:runAction(action)
 end
 function PC:update(dt)
  self.t=(self.t or 0)+(dt or 1/60);local input=self.game.input
+ for _=1,self:frames(dt) do self:step() end
+ if self.jump then self:updateJump(input);return end
+ -- a box sliding in or a wallpaper fading takes no input until it is done
+ if self:busy() then return end
+ -- a touch dial up (TOUCH_BOX_JUMP / TOUCH_MARKINGS): the pad, A or B only
+ -- closes it; while it opens, closes or turns nothing is read
+ local s=self.subState
+ if s and (s.task or s.dial~=PC.DIAL_NONE) then
+  if not s.task and not s.items and not s.scroll and s.dial~=PC.DIAL_NONE then
+   for _,k in ipairs({'up','down','left','right','a','b'}) do
+    if input:wasPressed(k) then self:setDial(PC.DIAL_NONE);break end
+   end
+  end
+  return
+ end
  if self.menu then
   local n=#self.menu
   if input:wasPressed('up') then self.action=(self.action-2)%n+1
@@ -429,6 +508,612 @@ function PC:update(dt)
  end
  if moved then self.message='' end
  if input:wasPressed('a') then self:choose() end
+end
+
+-- ----------------------------------------------------------- bottom screen --
+--
+-- THE TOUCH SCREEN (ov19_021DCF88; compare mode's is ov19_021DEC04), drawn
+-- through src/ui/SecondScreen.lua whenever a bottom screen is shown.  Sub BG:
+--   SUB_3  `sub_bg` (map 124), the backdrop with the two dial wells
+--   SUB_2  `sub_cover` (map 125, 512 wide) scrolled 0 / -128 / 128 by dial
+--          (Unk_ov19_021E024C), alpha-blended over SUB_3 by the sine ramp of
+--          ov19_021DD024 as a dial opens and closes
+--   SUB_1  `sub_dials` (map 126, 512 wide) scrolled 0 / -96 / 88
+--          (Unk_ov19_021E0258) over 8 frames (16 when switching dials)
+--   SUB_0  the box names on the BOX dial, alpha 14 / 2 (ov19_021DE350)
+--   OBJ    the corner buttons at (0, 184) and (256, 184) flipped, BG priority
+--          3; the dial's items (box thumbnails, or the eight markings
+--          buttons mirrored to the right) on the arc Unk_ov19_021E028C at the
+--          eight stops Unk_ov19_021E0264, BG priority 2
+-- Touch (box_app_manager.c): the corner circles (0 | 255, 184) r 40 open a
+-- dial; a dial is a ring about (0 | 255, 192) between radii 56 and 88 whose
+-- turn counts 0 / 1 / 2 steps past 4.219 / 33.75 degrees (touch_dial.c); the
+-- markings buttons are circles r 16 at PC_MARKINGS_BUTTON1..6; the pad, A or
+-- B closes a dial.  A box picked on the dial is jumped to 20 frames after
+-- the stylus leaves the ring.
+PC.ARC={
+ 106,200,106,194,106,190,105,186,105,184,105,182,105,180,105,178,105,176,104,174,104,172,
+ 104,170,104,168,103,166,103,164,103,163,102,161,102,159,101,157,101,155,100,153,100,151,99,150,
+ 98,148,98,146,97,144,96,142,96,141,95,139,94,137,94,136,93,134,92,132,91,131,90,129,89,127,
+ 88,126,87,124,86,123,86,121,85,120,83,118,82,117,81,115,80,114,79,112,78,111,77,110,76,108,
+ 75,107,73,106,72,104,71,103,70,102,68,101,67,100,66,99,65,98,63,97,62,95,61,95,59,94,58,93,
+ 56,92,55,91,54,90,52,89,51,88,49,88,48,87,46,86,45,86,43,85,42,84,40,84,39,83,37,83,36,82,
+ 34,82,33,82,31,81,30,81,28,81,26,80,25,80,23,80,22,80,20,80,19,80,17,80,16,80,16,78,16,76,
+ 16,74,16,72,16,70,16,68,16,66,16,64,16,63,16,61,16,60,16,58,16,57,16,55,16,54,16,52,16,51,
+ 16,49,16,48,16,46,16,45,16,43,16,42,16,40,16,39,16,38,16,36,16,34,16,32,16,30,16,28,16,26,
+ 16,24,16,22,16,20,16,18,16,16,16,14,16,12,16,10,16,8,16,6,16,4,16,2,16,0,16,-2,16,-4,16,-6,
+ 16,-8,16,-10,16,-12,16,-14,16,-16}
+PC.STOPS={[0]=0x8F,0x7F,0x6A,0x4A,0x33,0x1F,0xC,0}
+PC.DIAL_NONE,PC.DIAL_BOX,PC.DIAL_MARKS=0,1,2
+PC.SUB1_X={[0]=0,-96,88}
+PC.SUB2_X={[0]=0,-128,128}
+PC.BUTTON={{0,184},{255,184}}
+PC.BUTTON_R=40
+PC.RING={inner=56,outer=88}
+PC.MARK_BUTTONS={{152,168},{163,134},{184,104},{216,84},{240,52},{240,16}}
+PC.MARK_R=16
+PC.NAME_RECTS={{36,4},{36,36},{50,69},{92,92},{114,124},{124,156}}
+PC.JUMP_DELAY=20
+PC.XLU=6/16          -- G2_SetBlendAlpha(NONE, ALL, 6, 10): a filtered-out icon
+-- ov19_021DD024: the blend ramp, sin(90 i / 16) * 16, 0 and 16 at the ends
+PC.RAMP={[0]=0}
+for i=1,14 do PC.RAMP[i]=math.floor(math.sin(math.rad(math.floor(math.floor(90*4096/16)*i/4096)))*16) end
+PC.RAMP[15]=16
+-- compare mode (ov19_021DEC04)
+PC.COMPARE_DOTS={{128,54},{172,86},{155,136},{100,136},{84,86}}  -- cool beauty cute smart tough
+PC.COMPARE_CENTRE={128,100}
+PC.COMPARE_BUTTON={128,178,12}
+PC.COMPARE_TEXT={nature=35,level=36,hp=37,attack=38,defense=39,spAttack=40,spDefense=41,speed=42,move=43,unknown=44}
+
+function PC:bottomShown()
+ local okS,SS=pcall(require,'src.ui.SecondScreen')
+ if not okS or not self.game then return false end
+ local mode=SS.mode(self.game)
+ local combined=SS.combined and SS.combined(self.game)
+ return ((mode=='display' or mode=='inset') and not SS.stowed(self.game)) or combined or false,SS
+end
+function PC:bottomPoint(px,py)
+ local shown,SS=self:bottomShown()
+ if not shown then return nil end
+ return SS.toLocal(self.game,px,py)
+end
+function PC:compareMode() return self.opts.mode=='compare' end
+function PC:sub()
+ if not self.subState then
+  self.subState={dial=PC.DIAL_NONE,offset=0,markScroll=0,sub1=0,sub2=0,blend=16,cover=0,
+   buttons={{seq=0,t=0},{seq=0,t=0}},names=false,items=nil,scroll=nil,jumpWait=nil}
+  -- MOVE ITEMS: the right button is set to its press sequence once and
+  -- left on its last cell (ov19_021DD224)
+  if self.opts.mode=='items' then self.subState.buttons[2]={seq=1,t=16} end
+ end
+ return self.subState
+end
+-- BoxApp_GetMonSpriteTransparencyMask: MOVE ITEMS always 1 (no item -> faded)
+function PC:markMask()
+ if self.opts.mode=='items' then return 1 end
+ return self.markFilter or 0
+end
+function PC:iconFaded(mon)
+ local mask=self:markMask()
+ if not mon or mask==0 then return false end
+ if mask%2==1 then
+  local item=mon.heldItem or mon.item
+  if not item or item==0 then return true end
+ end
+ local marks=tonumber(mon.markings) or 0
+ for i=0,5 do
+  if math.floor(mask/2^(i+1))%2==1 and math.floor(marks/2^i)%2==0 then return true end
+ end
+ return false
+end
+-- BoxApp_SetMonSpriteTransparencyMask
+function PC:toggleMarkFilter(kind)
+ if kind==0 then self.markFilter=0 return end
+ local m,b=self.markFilter or 0,2^(kind-1)
+ self.markFilter=(math.floor(m/b)%2==1) and m-b or m+b
+end
+-- ov19_021DD9B8: the button of kind k lit?
+function PC:markLit(kind)
+ local mask=self:markMask()
+ if kind==0 then return mask==0 end
+ return math.floor(mask/2^(kind-1))%2==1
+end
+-- a corner button's cell for its sequence at tick t
+local BUTTON_SEQS={[0]={{0,60}},{{1,8},{2,8}},{{3,4},{4,4}}}
+local function seqCell(seq,t,loop)
+ local frames=BUTTON_SEQS[seq] or BUTTON_SEQS[0]
+ local total=0
+ for _,f in ipairs(frames) do total=total+f[2] end
+ if loop then t=t%total end
+ local acc=0
+ for _,f in ipairs(frames) do acc=acc+f[2];if t<acc then return f[1] end end
+ return frames[#frames][1]
+end
+function PC:pressButton(i)
+ self:sub().buttons[i]={seq=1,t=0}
+end
+
+-- ov19_021DD378: open, switch or close a dial
+function PC:setDial(to)
+ local s=self:sub()
+ local from=s.dial
+ if from==to then return end
+ s.items,s.scroll,s.names,s.jumpWait=nil,nil,false,nil
+ if to==PC.DIAL_NONE then
+  s.task={kind='close',k=0,from=from}
+ else
+  if to==PC.DIAL_BOX then s.offset=(self.game.save.currentBox or 1)-1 else s.offset=0;s.markScroll=0 end
+  self:pressButton(to)
+  s.task={kind=from==PC.DIAL_NONE and 'open' or 'switch',k=0,to=to,frames=from==PC.DIAL_NONE and 8 or 16,
+   sub1From=s.sub1}
+ end
+ s.dial=to
+ s.drag=nil
+end
+function PC:subBusy()
+ local s=self.subState
+ return s and (s.task or s.items or s.scroll) and true or false
+end
+-- the item slide-in after a dial opens (ov19_021DDCC0 / ov19_021DDFFC)
+function PC:startItems()
+ local s=self:sub()
+ s.items={k=0}
+end
+-- one vblank of the bottom screen's tasks
+function PC:subStep()
+ local s=self.subState
+ if not s then return end
+ for _,b in ipairs(s.buttons) do b.t=b.t+1 end
+ local t=s.task
+ if t then
+  t.k=t.k+1
+  local b=s.buttons[t.to or 0]
+  local pressDone=not b or b.t>=16
+  if t.kind=='open' then
+   -- case 0: the press plays out; 1: SUB_1 scrolls 8 frames; 2-3: SUB_2
+   -- is put in place and fades in over 16
+   if not t.p then if pressDone then t.p=1;t.n=0 end
+   elseif t.p==1 then
+    t.n=t.n+1
+    s.sub1=math.floor(t.sub1From+(PC.SUB1_X[t.to]-t.sub1From)*t.n/t.frames)
+    if t.n>=t.frames then s.sub1=PC.SUB1_X[t.to];s.blend=0;s.cover=PC.SUB2_X[t.to];t.p=2;t.n=0 end
+   else
+    s.blend=PC.RAMP[math.min(15,t.n)];t.n=t.n+1
+    if t.n>=16 then s.blend=16;s.buttons[t.to]={seq=0,t=0};s.task=nil;self:startItems() end
+   end
+  elseif t.kind=='switch' then
+   if not t.p then if pressDone then t.p=1;t.n=15 end
+   elseif t.p==1 then
+    t.n=t.n-1;s.blend=PC.RAMP[t.n]
+    if t.n<=0 then s.cover=PC.SUB2_X[t.to];t.p=2;t.n=0;t.sub1From=s.sub1 end
+   elseif t.p==2 then
+    t.n=t.n+1
+    s.sub1=math.floor(t.sub1From+(PC.SUB1_X[t.to]-t.sub1From)*t.n/t.frames)
+    if t.n>=t.frames then s.sub1=PC.SUB1_X[t.to];s.blend=0;t.p=3;t.n=0 end
+   else
+    s.blend=PC.RAMP[math.min(15,t.n)];t.n=t.n+1
+    if t.n>=16 then s.blend=16;s.buttons[t.to]={seq=0,t=0};s.task=nil;self:startItems() end
+   end
+  else -- close (ov19_021DD670)
+   if not t.p then t.p=1;t.n=15;t.sub1From=s.sub1 end
+   if t.p==1 then
+    t.n=t.n-1;s.blend=PC.RAMP[t.n]
+    if t.n<=0 then s.cover=0;t.p=2;t.n=0 end
+   elseif t.p==2 then
+    t.n=t.n+1
+    s.sub1=math.floor(t.sub1From+(0-t.sub1From)*t.n/8)
+    if t.n>=8 then s.sub1=0;s.task=nil end
+   end
+  end
+ end
+ if s.items then
+  s.items.k=s.items.k+1
+  if s.items.k>48 then s.items=nil;s.names=(s.dial==PC.DIAL_BOX) end
+ end
+ if s.scroll then
+  s.scroll.k=s.scroll.k+1
+  if s.scroll.k>=s.scroll.frames then s.scroll=nil;s.names=(s.dial==PC.DIAL_BOX) end
+ end
+ -- TOUCH_BOX_JUMP_WAIT_FOR_INPUT_OR_JUMP: the jump, once the stylus is off
+ if s.dial==PC.DIAL_BOX and s.jumpWait and not s.scroll and not self.slide then
+  s.jumpWait=s.jumpWait+1
+  if s.jumpWait>PC.JUMP_DELAY then
+   s.jumpWait=nil
+   local cur=self.game.save.currentBox or 1
+   local target=s.offset+1
+   if target~=cur then
+    local prev=self:previewMon()
+    self:bg3State()
+    self.game.save.currentBox=target
+    self:slideBox(cur,target,prev)
+   end
+  end
+ end
+ local c=self.compare
+ if c and c.setPress then c.setPress.t=(c.setPress.t or 0)+1 end
+end
+
+-- WHERE AN ITEM IS: stop `p` (0..7, fractional between stops by index)
+function PC.arcPoint(stop)
+ stop=math.max(0,math.min(7,stop))
+ local a=math.floor(stop)
+ local b=math.min(7,a+1)
+ local idx=PC.STOPS[a]+(PC.STOPS[b]-PC.STOPS[a])*(stop-a)
+ idx=math.max(0,math.min(143,math.floor(idx)))
+ return PC.ARC[idx*2+1],PC.ARC[idx*2+2]
+end
+-- the stop of each item now: box b (0-based) sits at offset + 4 - b, the
+-- markings button of kind t at 6 - ((t - scroll) mod 8)
+function PC:itemStop(base)
+ local s=self.subState
+ local stop=base
+ if s.scroll then
+  local f=s.scroll.k/s.scroll.frames
+  stop=base-s.scroll.delta*(1-f)
+ end
+ if s.items then
+  -- ov19_021DDCC0: the item for stop p leaves stop 0 at 2 (6 - p) and takes
+  -- 6 p frames; ov19_021DDFFC: stop p leaves after 6 (6 - p), taking 6 p
+  local p=math.floor(base+0.5)
+  if p<1 or p>6 then return nil end
+  local start=(s.dial==PC.DIAL_BOX) and 2*(6-p) or 6*(6-p)
+  local f=math.max(0,math.min(1,(s.items.k-start)/math.max(1,6*p)))
+  stop=p*f
+ end
+ return stop
+end
+function PC:boxOnStop(b)
+ local s=self.subState
+ local count=Boxes.count()
+ local p=(s.offset+4-b)%count
+ if p>count/2 then p=p-count end
+ return p
+end
+function PC:markOnStop(kind)
+ local s=self.subState
+ return 6-((kind-s.markScroll)%8)
+end
+
+-- the dial's turn (touch_dial.c)
+local function angleOf(cx,cy,x,y) return math.deg(math.atan2(y-cy,x-cx))%360 end
+function PC:dialCentre()
+ local s=self.subState
+ return s.dial==PC.DIAL_MARKS and 255 or 0,192
+end
+function PC.dialSteps(initial,current,direction)
+ local change=current-initial
+ local sign=change<0 and -1 or 1
+ change=math.abs(change)
+ local i=0
+ if change>=4.219 then i=1 end
+ if change>=33.75 then i=2 end
+ return i*sign*direction
+end
+function PC:inRing(x,y)
+ local cx,cy=self:dialCentre()
+ local d=(x-cx)^2+(y-cy)^2
+ return d<PC.RING.outer^2 and d>=PC.RING.inner^2
+end
+function PC:dialScroll(delta)
+ local s=self.subState
+ if s.dial==PC.DIAL_BOX then
+  s.offset=(s.offset+delta)%Boxes.count()
+ else
+  s.markScroll=(s.markScroll+delta)%8
+ end
+ s.names=false
+ s.scroll={k=0,delta=delta,frames=6*math.abs(delta)}
+end
+function PC:dialEnd()
+ local s=self.subState
+ s.drag=nil
+ if s.dial==PC.DIAL_BOX then
+  s.jumpWait=((self.game.save.currentBox or 1)-1~=s.offset) and 0 or nil
+ end
+end
+function PC:dialMove(x,y)
+ local s=self.subState
+ local d=s.drag
+ if not d then return end
+ if not (x and self:inRing(x,y)) then return self:dialEnd() end
+ if s.scroll then return end
+ local cx,cy=self:dialCentre()
+ local amount=PC.dialSteps(d.angle,angleOf(cx,cy,x,y),cx<128 and 1 or -1)
+ if amount~=d.amount then
+  local delta=amount-d.amount
+  d.amount=amount
+  self:dialScroll(delta)
+ end
+end
+
+-- compare mode's two slots (CompareModeHelper)
+function PC:compareState()
+ if not self.compare then self.compare={slot=0,mode=0,mons={},has={}} end
+ return self.compare
+end
+-- what a slot shows: the cursor's Pokemon in the active slot, the one it was
+-- last set to in the other
+function PC:compareMon(slot)
+ local c=self:compareState()
+ if slot==c.slot then return (self:previewMon()) end
+ return c.has[slot] and c.mons[slot] or nil
+end
+-- BOX_MENU_SET_ON_LEFT / RIGHT and the corner buttons: the active slot keeps
+-- the cursor's Pokemon and the other slot becomes the active one
+function PC:toggleCompareSlot()
+ local c=self:compareState()
+ local mon=self:previewMon()
+ if not mon then return false end
+ c.mons[c.slot]=mon;c.has[c.slot]=true
+ c.setPress={slot=c.slot,t=0}
+ c.slot=1-c.slot
+ return true
+end
+function PC:nextCompareMode()
+ local c=self:compareState()
+ c.mode=(c.mode+1)%3
+end
+
+function PC:bottomTouch(x,y)
+ if self:compareMode() then
+  local c=self:compareState()
+  for i,b in ipairs(PC.BUTTON) do
+   if (x-b[1])^2+(y-b[2])^2<PC.BUTTON_R^2 then
+    if c.slot==i-1 and self:previewMon() and not self.menu and not self.held then self:toggleCompareSlot() end
+    return true
+   end
+  end
+  local cb=PC.COMPARE_BUTTON
+  if (x-cb[1])^2+(y-cb[2])^2<cb[3]^2 then c.pressed=true;self:nextCompareMode() end
+  return true
+ end
+ local s=self:sub()
+ if s.task or self.jump or self.menu or self:busy() then return true end
+ local function button()
+  for i,b in ipairs(PC.BUTTON) do
+   if (x-b[1])^2+(y-b[2])^2<PC.BUTTON_R^2 then return i end
+  end
+ end
+ local b=button()
+ if s.dial==PC.DIAL_NONE then
+  if b==1 then self:setDial(PC.DIAL_BOX)
+  elseif b==2 then
+   -- MOVE ITEMS has no markings dial (SEQ_SE_DP_BOX03)
+   if self.opts.mode~='items' then self:setDial(PC.DIAL_MARKS) end
+  end
+  return true
+ end
+ if s.items or s.scroll then return true end
+ if s.dial==PC.DIAL_BOX and b==2 then
+  if self.opts.mode~='items' then self:setDial(PC.DIAL_MARKS) end
+  return true
+ end
+ if s.dial==PC.DIAL_MARKS and b==1 then self:setDial(PC.DIAL_BOX);return true end
+ if s.dial==PC.DIAL_MARKS then
+  for i,p in ipairs(PC.MARK_BUTTONS) do
+   if (x-p[1])^2+(y-p[2])^2<PC.MARK_R^2 then
+    self:toggleMarkFilter((s.markScroll+i-1)%8)
+    return true
+   end
+  end
+ end
+ if self:inRing(x,y) then
+  local cx,cy=self:dialCentre()
+  s.drag={angle=angleOf(cx,cy,x,y),amount=0}
+  s.jumpWait=nil
+ end
+ return true
+end
+
+-- the 512-wide layer seen through a 256 window at scroll x
+local function drawWrapped(self,img,scroll,alpha)
+ if not img then return end
+ local g=love.graphics
+ local w,h=img:getDimensions()
+ self.wrapQuads=self.wrapQuads or {}
+ local x0=scroll%w   -- BG scroll: screen x shows map x + scroll
+ g.setColor(1,1,1,alpha or 1)
+ local done=0
+ while done<256 do
+  local sx=(x0+done)%w
+  local n=math.min(256-done,w-sx)
+  local key=tostring(img)..sx..':'..n
+  if not self.wrapQuads[key] then self.wrapQuads[key]=g.newQuad(sx,0,n,math.min(h,192),w,h) end
+  g.draw(img,self.wrapQuads[key],done,0)
+  done=done+n
+ end
+ g.setColor(1,1,1,1)
+end
+function PC:subSprite(key,x,y,flip,alpha)
+ local img,rec=self:art(key)
+ if not img then return false end
+ local ox,oy=rec.originX or -img:getWidth()/2,rec.originY or -img:getHeight()/2
+ love.graphics.setColor(1,1,1,alpha or 1)
+ if flip then love.graphics.draw(img,math.floor(x-ox),math.floor(y+oy),0,-1,1)
+ else love.graphics.draw(img,math.floor(x+ox),math.floor(y+oy)) end
+ love.graphics.setColor(1,1,1,1)
+ return true
+end
+function PC:drawSubBox(n,x,y,ink)
+ -- ov19_021DBBA8's thumbnail of box n (0-based), as the jump popup draws it
+ local g=love.graphics
+ if not self:sprite('jump_thumb',x,y) then return end
+ local x0,y0=x-16,y-16
+ local p=self:wallpaperOf(n+1);if p>=24 then p=p-8 end
+ local c=(ink.jumpPaper or {})[p]
+ if c then g.setColor(c[1]/255,c[2]/255,c[3]/255,1);g.rectangle('fill',x0+9,y0+10,14,12) end
+ local box=Boxes.ensure(self.game.save)[n+1] or {}
+ for slot=1,30 do
+  local mon=box[slot]
+  if mon then
+   local colour
+   if mon.egg or mon.isEgg then colour=(mon.species==490) and 1 or 8
+   else
+    local def=self.game.data.pokemon and self.game.data.pokemon[mon.species]
+    colour=tonumber(def and def.bodyColor) or 0
+   end
+   local bc=(ink.jumpBody or {})[colour]
+   if bc then
+    g.setColor(bc[1]/255,bc[2]/255,bc[3]/255,1)
+    g.rectangle('fill',x0+10+((slot-1)%6)*2,y0+11+math.floor((slot-1)/6)*2,2,2)
+   end
+  end
+ end
+ g.setColor(1,1,1,1)
+end
+function PC:drawBottom()
+ local g=love.graphics
+ local ink=self:ink()
+ if self:compareMode() then return self:drawCompareBottom(ink) end
+ local s=self:sub()
+ local bd=ink.subBackdrop or {82,148,214}
+ g.setColor(bd[1]/255,bd[2]/255,bd[3]/255,1);g.rectangle('fill',0,0,256,192);g.setColor(1,1,1,1)
+ local bg=self:art('sub_bg')
+ if bg then g.draw(bg,0,0) end
+ -- OBJ priority 3: the corner buttons, under every BG but SUB_3
+ for i=1,2 do
+  local b=s.buttons[i]
+  local cell=seqCell(b.seq,b.t,false)
+  self:subSprite('sub_button_'..cell,i==1 and 0 or 256,184,i==2)
+ end
+ if s.blend>0 and s.cover~=0 then drawWrapped(self,self:art('sub_cover'),s.cover,s.blend/16) end
+ -- OBJ priority 2: the dial's items
+ if s.dial==PC.DIAL_BOX and not s.task then
+  for b=0,Boxes.count()-1 do
+   local p=self:boxOnStop(b)
+   if p>=-2 and p<=9 then
+    local stop=self:itemStop(p)
+    if stop and (stop>0 and stop<7 or (s.items and stop>=0 and stop<=7)) then
+     local x,y=PC.arcPoint(stop)
+     self:drawSubBox(b,x,y,ink)
+    end
+   end
+  end
+ elseif s.dial==PC.DIAL_MARKS and not s.task then
+  for kind=0,7 do
+   local stop=self:itemStop(self:markOnStop(kind))
+   if stop and (stop>0 and stop<7 or (s.items and stop>=0 and stop<=7)) then
+    local x,y=PC.arcPoint(stop)
+    self:subSprite('sub_mark_'..(kind*2+(self:markLit(kind) and 1 or 0)),256-x,y)
+   end
+  end
+ end
+ drawWrapped(self,self:art('sub_dials'),s.sub1,1)
+ -- SUB_0: the six box names along the arc
+ if s.dial==PC.DIAL_BOX and s.names then
+  local pair=ink.subName or {{255,255,255},{90,90,107}}
+  local count=Boxes.count()
+  Font.pushStyle({text=rgb(pair[1]),shadow=rgb(pair[2])})
+  g.setColor(1,1,1,14/16)
+  for i,r in ipairs(PC.NAME_RECTS) do
+   local n=(s.offset+3-(i-1))%count
+   Font.draw(Font.fit(self:boxNameOf(n+1),100),r[1]+4,r[2]+2)
+  end
+  g.setColor(1,1,1,1)
+  Font.popStyle()
+ end
+end
+
+-- ov19_021DEC04's three pages
+function PC:compareValues(mon)
+ local stats=mon.stats or {}
+ local data=self.game.data
+ local nature=mon.nature
+ if type(nature)~='string' and mon.personality then
+  nature=((data.constants or {}).natureOrder or {})[mon.personality%25+1]
+ end
+ return nature,{mon.level or 1,tonumber(mon.maxHp) or tonumber(stats.hp) or 0,
+  stats.attack or stats.atk or 0,stats.defense or stats.def or 0,
+  stats.spAttack or stats.spatk or 0,stats.spDefense or stats.spdef or 0,stats.speed or stats.spe or 0}
+end
+function PC:drawCompareBottom(ink)
+ local g=love.graphics
+ local c=self:compareState()
+ local bd=ink.cmpBackdrop or {173,222,247}
+ g.setColor(bd[1]/255,bd[2]/255,bd[3]/255,1);g.rectangle('fill',0,0,256,192);g.setColor(1,1,1,1)
+ local page=({[0]='cmp_battle','cmp_contest','cmp_moves'})[c.mode]
+ local bg=self:art(page)
+ if bg then g.draw(bg,0,0) end
+ local pairs2={[0]=ink.cmpLeft or {{255,255,255},{90,90,107}},ink.cmpRight or {{255,255,255},{90,90,107}}}
+ local function centred(text,tx,tw,y,slot)
+  if not text or text=='' then return end
+  text=Font.fit(tostring(text),tw*8)
+  say(text,tx*8+math.floor((tw*8-Font.width(text))/2),y,pairs2[slot])
+ end
+ local function word(n,fallback) return self:word(PC.MESSAGE_BANK,n,fallback) end
+ -- the column labels (13, 4) 6 x 16
+ if c.mode==0 then
+  local keys={'nature','level','hp','attack','defense','spAttack','spDefense','speed'}
+  local fall={'NATURE','Lv.','HP','ATTACK','DEFENSE','SP. ATK','SP. DEF','SPEED'}
+  for i,k in ipairs(keys) do centred(word(PC.COMPARE_TEXT[k],fall[i]),13,6,32+16*(i-1),0) end
+ elseif c.mode==2 then
+  centred(word(PC.COMPARE_TEXT.move,'MOVE'),13,6,32,0)
+ end
+ for slot=0,1 do
+  local mon=self:compareMon(slot)
+  local nx=slot==0 and 3 or 20
+  if mon then
+   local egg=mon.egg or mon.isEgg
+   centred(egg and (mon.nickname or 'EGG') or self:nameOf(mon),nx,9,8,slot)
+   local q=word(PC.COMPARE_TEXT.unknown,'???')
+   if c.mode==0 then
+    if egg then for i=0,7 do centred(q,nx,9,32+16*i,slot) end
+    else
+     local nature,values=self:compareValues(mon)
+     centred(nature,nx,9,32,slot)
+     for i,v in ipairs(values) do centred(tostring(math.floor(v)),nx,9,32+16*i,slot) end
+    end
+   elseif c.mode==2 then
+    local mx=slot==0 and 1 or 20
+    for i=1,4 do
+     if egg then centred(q,mx,11,32+4+24*(i-1),slot)
+     else
+      local m=(mon.moves or {})[i]
+      local id=(type(m)=='table' and (m.id or m.move)) or m
+      local rec=id and id~=0 and (self.game.data.moves or {})[id]
+      if id and id~=0 then centred(rec and rec.name or tostring(id),mx,11,32+4+24*(i-1),slot) end
+     end
+    end
+   end
+  end
+ end
+ -- the contest pentagon's dots: (centre + 10% of the way) + stat / 256 of the rest
+ if c.mode==1 then
+  local keys={'cool','beauty','cute','smart','tough'}
+  for _,slot in ipairs({1-c.slot,c.slot}) do
+   local mon=self:compareMon(slot)
+   if mon and not (mon.egg or mon.isEgg) then
+    local con=mon.contest or {}
+    for i,k in ipairs(keys) do
+     local t=PC.COMPARE_DOTS[i]
+     local bx=PC.COMPARE_CENTRE[1]+(t[1]-PC.COMPARE_CENTRE[1])*0.1
+     local by=PC.COMPARE_CENTRE[2]+(t[2]-PC.COMPARE_CENTRE[2])*0.1
+     local v=math.max(0,math.min(255,tonumber(con[k]) or 0))
+     self:subSprite('cmp_dot_'..slot,bx+(t[1]-bx)*v/256,by+(t[2]-by)*v/256)
+    end
+   end
+  end
+ end
+ -- the slot buttons: the active one up, the other set (cell 2, after the
+ -- press 1 x 8 / 2 x 16 when it was just set)
+ for slot=0,1 do
+  local cell=0
+  if slot~=c.slot and c.has[slot] then
+   cell=2
+   if c.setPress and c.setPress.slot==slot and (c.setPress.t or 0)<8 then cell=1 end
+  end
+  self:subSprite((slot==0 and 'cmp_left_' or 'cmp_right_')..cell,slot==0 and 0 or 256,184,slot==1)
+ end
+ -- the mode toggle: 5 / 3 alternating, 5 / 4 while held (ov19_021DF930)
+ local t=math.floor((self.t or 0)*60)
+ local held=c.pressed
+ local cell=(t%8<4) and 5 or (held and 4 or 3)
+ self:subSprite('cmp_toggle_'..cell,128,176)
+ -- the two Pokemon icons at (112, 10) and (144, 10)
+ for slot=0,1 do
+  local mon=self:compareMon(slot)
+  if mon then self:drawIcon(mon,slot==0 and 112 or 144,10) end
+ end
 end
 
 -- -------------------------------------------------------------------- draw --
@@ -588,23 +1273,147 @@ function PC:drawMenu(ink)
  end
 end
 
+-- BG3 as the ring keeps it: each visible column is one of a slot's 23
+-- (paper_NN, one 8-pixel column of it) or the 0x18 fill in slot 0's palette,
+-- at the ring's scroll plus the slide's; a wallpaper fading out washes its
+-- slot to white.  False with no `paper_NN` in the cache (an older one).
+function PC:drawBG3()
+ local g=love.graphics
+ local b=self:bg3State()
+ local first=b.slots[0] or b.slots[1]
+ if not (first and self:art(('paper_%02d'):format(first.paper))) then return false end
+ local bgShift=self:slideShift()
+ local scroll=(b.scroll+(self.slide and bgShift or 0))%512
+ self.paperQuads=self.paperQuads or {}
+ for sx=0,256,8 do
+  local ringX=(sx+scroll)%512
+  local c=math.floor(ringX/8)
+  local x=sx-(ringX%8)
+  local col=b.cols[c]
+  local img,qx,slot
+  if col then
+   slot=b.slots[col.slot]
+   img=slot and self:art(('paper_%02d'):format(slot.paper));qx=col.x*8
+  end
+  if not img then
+   slot=b.slots[0] or first
+   img=self:art(('paper_fill_%02d'):format(slot.paper));qx=0
+   col={slot=0}
+  end
+  if img then
+   local w,h=img:getDimensions()
+   local key=tostring(w)..':'..qx
+   if not self.paperQuads[key] then self.paperQuads[key]=g.newQuad(qx,0,8,192,w,h) end
+   g.setColor(1,1,1,1)
+   g.draw(img,self.paperQuads[key],x,0)
+   local white=self:paperWhite(col.slot)
+   if white>0 then g.setColor(1,1,1,white);g.rectangle('fill',x,0,8,192);g.setColor(1,1,1,1) end
+  end
+ end
+ return true
+end
+
+-- the popup over BG1 and its OBJ thumbnails (see PC.JUMP_*)
+function PC:drawJump(ink)
+ local g=love.graphics
+ local j=self.jump
+ local band=self:art('jump_band')
+ local rows=self:jumpBandRows()
+ if band and rows>0 then
+  local w,h=band:getDimensions()
+  g.setColor(1,1,1,1)
+  -- the band's top `rows` rows above tile row 10, its bottom `rows` below
+  g.draw(band,g.newQuad(0,0,256,rows*8,w,h),0,80-rows*8)
+  g.draw(band,g.newQuad(0,80-rows*8,256,rows*8,w,h),0,80)
+ end
+ local fade=self:jumpFade()
+ if not fade then return end
+ local count=Boxes.count()
+ local boxes=Boxes.ensure(self.game.save)
+ local paperInk=ink.jumpPaper or {}
+ local bodyInk=ink.jumpBody or {}
+ for i=0,6 do
+  local n=(j.box-1+i-3)%count+1
+  local cx,cy=32+i*32,88
+  if self:sprite('jump_thumb',cx,cy) then
+   local x0,y0=cx-16,cy-16
+   -- ov19_021DBBA8: the inside in the wallpaper's colour, a 2 x 2 dot per
+   -- Pokemon in its body colour
+   local p=self:wallpaperOf(n);if p>=24 then p=p-8 end
+   local c=paperInk[p]
+   if c then g.setColor(c[1]/255,c[2]/255,c[3]/255,1);g.rectangle('fill',x0+9,y0+10,14,12) end
+   local box=boxes[n] or {}
+   for slot=1,30 do
+    local mon=box[slot]
+    if mon then
+     local colour
+     if mon.egg or mon.isEgg then colour=(mon.species==490) and 1 or 8
+     else
+      local def=self.game.data.pokemon and self.game.data.pokemon[mon.species]
+      colour=tonumber(def and def.bodyColor) or 0
+     end
+     local bc=bodyInk[colour]
+     if bc then
+      g.setColor(bc[1]/255,bc[2]/255,bc[3]/255,1)
+      g.rectangle('fill',x0+10+((slot-1)%6)*2,y0+11+math.floor((slot-1)/6)*2,2,2)
+     end
+    end
+   end
+   if fade>0 then g.setColor(1,1,1,fade);g.rectangle('fill',x0,y0,32,32) end
+   g.setColor(1,1,1,1)
+  end
+ end
+ if fade>0 then return end
+ -- the name window (10, 6) 12 x 2 on colour 7, and the counts (3, 13) 26 x 1 on 4
+ local plate=ink.jumpPlate or {247,132,132}
+ g.setColor(plate[1]/255,plate[2]/255,plate[3]/255,1);g.rectangle('fill',80,48,96,16)
+ local name=self:boxNameOf(j.box)
+ say(name,80+48-math.floor(Font.width(name)/2),48,ink.jumpName or {{255,255,255},{214,90,90}})
+ local paper=ink.jumpCount or {230,165,90}
+ g.setColor(paper[1]/255,paper[2]/255,paper[3]/255,1);g.rectangle('fill',24,104,208,8)
+ g.setColor(1,1,1,1)
+ for i=0,6 do
+  local n=(j.box-1+i-3)%count+1
+  local box=boxes[n] or {}
+  local k=0
+  for slot=1,30 do if box[slot] then k=k+1 end end
+  self:number('special_jump',k,2,true,24+32*i,104)
+ end
+end
+
 function PC:draw()
  local g=love.graphics
  local ink=self:ink()
  local bd=ink.backdrop or FALLBACK_INK.backdrop
  g.setColor(bd[1]/255,bd[2]/255,bd[3]/255,1);g.rectangle('fill',0,0,256,192);g.setColor(1,1,1,1)
  local paperId=self:wallpaperId()
- local paper=self:art(('wallpaper_%02d'):format(paperId))
- local fresh=paper~=nil
- if paper then g.draw(paper,0,0)
- else
-  paper=self:img(('storage/wallpaper_%02d'):format(paperId));if paper then g.draw(paper,88,0) end
+ local fresh=self:drawBG3()
+ if not fresh then
+  local paper=self:img(('storage/wallpaper_%02d'):format(paperId));if paper then g.draw(paper,88,0) end
  end
- -- the box name, in the wallpaper's own colours 2 (letter) and 1 (shadow)
- local pair=(ink.wallpaper or {})[paperId] or {{99,99,99},{255,255,255}}
- local name=Font.fit(self:boxName(),144)
- say(name,172-Font.width(name)/2,13,pair)
- for slot=1,30 do self:drawIcon(self:box()[slot],112+(slot-1)%6*24,40+math.floor((slot-1)/6)*24) end
+ -- the box name, in the wallpaper's own colours 2 (letter) and 1 (shadow),
+ -- and the thirty icons -- during a slide the old box's and the new one's,
+ -- the new one 184 along in the direction of travel
+ local bgShift,iconShift=self:slideShift()
+ local s=self.slide
+ local function boxLayer(n,dx,iconDx)
+  local p=self:wallpaperOf(n)
+  local pair=(ink.wallpaper or {})[p] or {{99,99,99},{255,255,255}}
+  local name=Font.fit(self:boxNameOf(n),144)
+  say(name,172-Font.width(name)/2+dx,13,pair)
+  local box=Boxes.ensure(self.game.save)[n] or {}
+  for slot=1,30 do
+   local m=box[slot]
+   self:drawIcon(m,112+(slot-1)%6*24+iconDx,40+math.floor((slot-1)/6)*24,self:iconFaded(m) and PC.XLU or 1)
+  end
+ end
+ local cur=self.game.save.currentBox or 1
+ if s then
+  boxLayer(s.oldBox,-bgShift,iconShift)
+  boxLayer(cur,184*s.dir-bgShift,184*s.dir+iconShift)
+ else
+  boxLayer(cur,0,0)
+ end
  local hx,hy,where=self:handPoint()
  -- the buttons sit under BG2 (BG priority 2)
  local pressed=0
@@ -617,7 +1426,24 @@ function PC:draw()
   else g.setColor(0.8,0.9,1,1);g.rectangle('fill',112,0,120,192);g.setColor(1,1,1,1) end
   for i=1,6 do
    local p=PC.PARTY_SLOTS[i]
-   self:drawIcon(self.game.save.party[i],p[1],p[2])
+   local m=self.game.save.party[i]
+   self:drawIcon(m,p[1],p[2],self:iconFaded(m) and PC.XLU or 1)
+  end
+ end
+ -- MOVE ITEMS (ov19_021DE3E8): the previewed Pokemon's item at half size
+ -- (sequence 6) on its slot + (10, 8)
+ if self.opts.mode=='items' and not self.held and not self.menu then
+  local m=self:previewMon()
+  local item=m and (m.heldItem or m.item)
+  if item and item~=0 then
+   local x,y
+   if self.partyOpen then
+    local p=PC.PARTY_SLOTS[self.partyIndex]
+    if p then x,y=p[1]+10,p[2]+8 end
+   elseif self.row>=1 and self.row<=5 then
+    x,y=112+(self.col-1)*24+10,40+(self.row-1)*24+8
+   end
+   if x then self:drawItemIcon(item,x,y,0.5) end
   end
  end
  local mon
@@ -635,6 +1461,7 @@ function PC:draw()
  local hand=self.held and 2 or 0
  if not self:sprite(('cursor_%02d'):format(hand),hx,hy) then self:drawCursor(hand,hx,hy) end
  if self.menu then self:drawMenu(ink) end
+ if self.jump then self:drawJump(ink) end
  if self.message and self.message~='' then
   Font.drawDialogueBox(1,20,29,4)
   local y=168
@@ -643,6 +1470,41 @@ function PC:draw()
    if y>184 then break end
   end
  end
+ self:drawSubscreen()
+end
+-- the bottom screen through SecondScreen, when one is shown
+function PC:drawSubscreen()
+ local shown,SS=self:bottomShown()
+ if not shown then return end
+ SS.draw(self.game,function() self:drawBottom() end)
+end
+-- Gen3BoxMenu's icon, with the XLU of a filtered-out Pokemon
+local ICON_PERIOD=0.32
+function PC:drawIcon(mon,cx,cy,alpha)
+ local img,frameH=self:iconFor(mon)
+ if not img then return end
+ local iw,ih=img:getDimensions()
+ frameH=math.min(frameH or ih,ih)
+ local frames=math.max(1,math.floor(ih/frameH))
+ local frame=frames>1 and (math.floor(((self.t or 0)%(ICON_PERIOD*frames))/ICON_PERIOD)%frames) or 0
+ self.quads=self.quads or {}
+ local key=('%d:%d:%d'):format(iw,frameH,frame)
+ if not self.quads[key] then self.quads[key]=love.graphics.newQuad(0,frame*frameH,iw,frameH,iw,ih) end
+ love.graphics.setColor(1,1,1,alpha or 1)
+ love.graphics.draw(img,self.quads[key],math.floor(cx-iw/2),math.floor(cy-frameH/2))
+ love.graphics.setColor(1,1,1,1)
+end
+-- an item icon (gen4_graphics items/icon_NNN) centred at (x, y), scaled
+function PC:drawItemIcon(item,x,y,scale)
+ local def=self.game.data.items and self.game.data.items[item]
+ local id=tonumber(def and def.id) or tonumber(item)
+ local img=id and self:img(('items/icon_%03d'):format(id))
+ if not img then return false end
+ scale=scale or 1
+ local w,h=img:getDimensions()
+ love.graphics.setColor(1,1,1,1)
+ love.graphics.draw(img,math.floor(x-w*scale/2),math.floor(y-h*scale/2),0,scale,scale)
+ return true
 end
 -- an older cache's hand (gen4_graphics storage/cursor_NN)
 function PC:drawCursor(sequence,x,y)
@@ -653,7 +1515,18 @@ function PC:drawCursor(sequence,x,y)
   love.graphics.draw(img,x+(rec.originX or -img:getWidth()/2),y+(rec.originY or 0))
  end
 end
-function PC:touchpressed(_,px,py)
+function PC:touchpressed(id,px,py)
+ -- the bottom screen first, when it is shown (SecondScreen.toLocal); a tap
+ -- from the panel that misses it is still not a tap on the boxes
+ local bx,by=self:bottomPoint(px,py)
+ if bx then
+  self.subPointer={id=id}
+  return self:bottomTouch(bx,by)
+ end
+ if self.game.secondScreenInjecting then return true end
+ if self.jump or self:busy() then return true end
+ local s=self.subState
+ if s and (s.task or s.dial~=PC.DIAL_NONE) then return true end
  local r=require('src.render.Renderer').uiPresentation
  if not r or px<r.x or py<r.y or px>=r.x+r.w or py>=r.y+r.h then return false end
  local x,y=(px-r.x)/r.scaleX,(py-r.y)/r.scaleY
@@ -672,6 +1545,20 @@ function PC:touchpressed(_,px,py)
  elseif y<32 then if x<120 then self:changeBox(-1) elseif x>224 then self:changeBox(1) else self.row=0;self:choose() end
  elseif y>=160 and x>=112 then self.row=PC.BUTTON_ROW;self.col=x<184 and 1 or 4;self:choose()
  elseif x>=100 and x<244 and y>=28 and y<148 then self.col=math.floor((x-100)/24)+1;self.row=math.floor((y-28)/24)+1;self:choose() end
+ return true
+end
+function PC:touchmoved(id,px,py)
+ if not (self.subPointer and self.subPointer.id==id) then return false end
+ local s=self.subState
+ if s and s.drag then self:dialMove(self:bottomPoint(px,py)) end
+ return true
+end
+function PC:touchreleased(id)
+ if not (self.subPointer and self.subPointer.id==id) then return false end
+ self.subPointer=nil
+ local s=self.subState
+ if s and s.drag then self:dialEnd() end
+ if self.compare then self.compare.pressed=nil end
  return true
 end
 return PC

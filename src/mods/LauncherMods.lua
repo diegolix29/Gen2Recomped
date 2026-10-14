@@ -387,6 +387,19 @@ end
 -- cannot tell one home from another.
 function LauncherMods.underRoot(root, path)
   if not (root and path) then return false end
+  -- A MOD THE GAME SHIPS WITH IS IN EVERY HOME.  The bundled mods live in the
+  -- game archive (or the source folder), not in any save directory, so asked
+  -- this question they answered "no" the moment a player picked a custom
+  -- game-data folder -- and DRAMATIC SHAPES vanished from the launcher and
+  -- the game alike, reported as "not bundled in the build".
+  local fs = love and love.filesystem
+  if fs and fs.getRealDirectory and fs.getSource then
+    local okR, realDir = pcall(fs.getRealDirectory, path)
+    local okS, source = pcall(fs.getSource)
+    if okR and okS and realDir and source and realDir == source then
+      return true
+    end
+  end
   local real = LauncherMods.realPath(root, path)
   local handle = io.open(real .. CacheFs.SEP .. "manifest.json", "rb")
   if handle then handle:close() return true end

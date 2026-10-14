@@ -116,12 +116,74 @@ function Gen4MapHeaders.parse(record)
   }
 end
 
+-- HEARTGOLD AND SOULSILVER: the same 24 bytes, laid out differently
+-- (pokeheartgold include/map_header.h, 540 of them in src/data/map_headers.h):
+--
+--   00 u8  wildEncounterBank (0xFF none)   01 u8 areaDataBank
+--   02 u16 moveModelBank:4 worldMapX:6 worldMapY:6
+--   04 u16 matrix   06 scripts   08 scriptHeader   0A msg
+--   0C u16 dayMusic 0E nightMusic   10 u16 events
+--   12 u16 mapsec:8 areaIcon:4 momCallIntro:4
+--   14 u32 region:1 weather:7 mapType:4 cameraType:6 followMode:2 battleBg:5
+--          bike:1 running:1 escapeRope:1 fly:1 outgoingCalls:1 incomingCalls:1
+--          radioSignal:1
+--
+-- Parsed into Platinum's field names, so everything downstream reads one
+-- shape: `scriptHeader` is what Platinum calls the init scripts, and `mapsec`
+-- indexes the place-name bank as Platinum's `labelText` does.
+Gen4MapHeaders.HGSS_NO_ENCOUNTERS = 0xFF
+Gen4MapHeaders.HGSS_COUNT = 540
+
+function Gen4MapHeaders.parseHgss(record)
+  if type(record) ~= "string" or #record < Gen4MapHeaders.RECORD_BYTES then
+    return nil, "map header record is too short"
+  end
+  local wild = u8(record, 0)
+  local mm = u16(record, 2)
+  local sec = u16(record, 0x12)
+  local bits = u16(record, 0x14) + u16(record, 0x16) * 65536
+  local function field(shift, width) return floor(bits / 2 ^ shift) % 2 ^ width end
+  return {
+    family = "hgss",
+    encounters = (wild ~= Gen4MapHeaders.HGSS_NO_ENCOUNTERS) and wild or nil,
+    areaData = u8(record, 1),
+    moveModels = mm % 16, worldMapX = floor(mm / 16) % 64, worldMapY = floor(mm / 1024) % 64,
+    matrix = u16(record, 4),
+    scripts = u16(record, 6),
+    initScripts = u16(record, 8),
+    messages = u16(record, 0x0A),
+    dayMusic = u16(record, 0x0C),
+    nightMusic = u16(record, 0x0E),
+    events = u16(record, 0x10),
+    labelText = sec % 256, mapsec = sec % 256,
+    areaIcon = floor(sec / 256) % 16, momCallIntro = floor(sec / 4096) % 16,
+    region = field(0, 1),
+    weather = field(1, 7),
+    mapType = field(8, 4),
+    camera = field(12, 6),
+    followMode = field(18, 2),
+    battleBackground = field(20, 5),
+    allowBike = field(25, 1) == 1,
+    allowRunning = field(26, 1) == 1,
+    allowEscapeRope = field(27, 1) == 1,
+    allowFly = field(28, 1) == 1,
+    outgoingCalls = field(29, 1) == 1,
+    incomingCalls = field(30, 1) == 1,
+    radioSignal = field(31, 1) == 1,
+  }
+end
+
+-- the parser for a family ("hgss" or Platinum's)
+function Gen4MapHeaders.parserFor(family)
+  return family == "hgss" and Gen4MapHeaders.parseHgss or Gen4MapHeaders.parse
+end
+
 -- `limits` names how many members each referenced archive actually has, and
 -- is what makes the search trustworthy.  Every field is required, because the
 -- signature is only as strong as its weakest constraint.
 --   { areaData, matrix, scripts, messages, encounters, events, names }
 local function looksLikeHeader(arm9, at, limits)
-  local h = Gen4MapHeaders.parse(arm9:sub(at + 1, at + Gen4MapHeaders.RECORD_BYTES))
+  local h = (limits.parse or Gen4MapHeaders.parse)(arm9:sub(at + 1, at + Gen4MapHeaders.RECORD_BYTES))
   if not h then return false end
   return h.areaData < limits.areaData
      and h.matrix < limits.matrix
@@ -148,7 +210,7 @@ function Gen4MapHeaders.find(arm9, limits)
   end
 
   -- Try the known offset first, so the usual case costs one check.
-  local hinted = runAt(Gen4MapHeaders.KNOWN_OFFSET)
+  local hinted = limits.parse and 0 or runAt(Gen4MapHeaders.KNOWN_OFFSET)
   if hinted >= 500 then return Gen4MapHeaders.KNOWN_OFFSET, hinted end
 
   -- Otherwise scan.  Word-aligned: the table is a compiled array and the
@@ -169,15 +231,26 @@ function Gen4MapHeaders.find(arm9, limits)
   if bestN < 100 then
     return nil, ("no map header table found (longest plausible run was %d)"):format(bestN)
   end
+  -- THE SKIP ABOVE CAN STEP OVER THE FIRST RECORD: a run that begins a few
+  -- bytes early ends mid-record and the scan resumes one record late. Found on
+  -- HeartGold, whose MAP_EVERYWHERE came out missing and every map one id off,
+  -- so walk back while the record before still passes.
+  while bestAt >= Gen4MapHeaders.RECORD_BYTES
+    and looksLikeHeader(arm9, bestAt - Gen4MapHeaders.RECORD_BYTES, limits) do
+    bestAt, bestN = bestAt - Gen4MapHeaders.RECORD_BYTES, bestN + 1
+  end
+  -- ...and never past the cartridge's own count of maps when it is known
+  if limits.count and bestN > limits.count then bestN = limits.count end
   return bestAt, bestN
 end
 
 -- All the headers, given the ARM9 and the offset/count `find` returned.
-function Gen4MapHeaders.all(arm9, at, count)
+function Gen4MapHeaders.all(arm9, at, count, parse)
+  parse = parse or Gen4MapHeaders.parse
   local out = {}
   for i = 0, count - 1 do
     local o = at + i * Gen4MapHeaders.RECORD_BYTES
-    local h = Gen4MapHeaders.parse(arm9:sub(o + 1, o + Gen4MapHeaders.RECORD_BYTES))
+    local h = parse(arm9:sub(o + 1, o + Gen4MapHeaders.RECORD_BYTES))
     if h then h.id = i; out[i] = h end
   end
   return out

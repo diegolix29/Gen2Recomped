@@ -31,6 +31,20 @@ namespace love
 {
 namespace android
 {
+// Gen2Recomp offline translation bridge, called from a LOVE worker thread.
+bool closeOfflineTranslation();
+bool translateOffline(const char *source, const char *target, const std::string &text, std::string &output);
+
+/**
+ * Gen2Recomp in-app updates: hand a downloaded release APK (absolute path) to
+ * Android's package installer, which installs it over this app. Android 8+
+ * asks the player to allow installs from this app once first
+ * (canInstallApks / requestInstallPermission). Main thread only.
+ **/
+bool installApk(const char *path);
+bool canInstallApks();
+bool requestInstallPermission();
+
 
 /**
  * Enables or disables immersive mode where the navigation bar is hidden.

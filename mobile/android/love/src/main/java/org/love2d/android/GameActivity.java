@@ -536,6 +536,16 @@ public class GameActivity extends SDLActivity {
 
         self.pendingPickFilename = destFilename;
         self.pickRetried = false;
+        // Only bridge-owned inbox files, never the user's selected source.
+        // A previous ready ROM must not wake Lua before this new copy lands.
+        try {
+            File inbox = self.saveIdentityDir();
+            new File(inbox, destFilename).delete();
+            new File(inbox, "pick_done.flag").delete();
+        } catch (RuntimeException error) {
+            Log.e("GameActivity", "could not prepare picker inbox", error);
+            return false;
+        }
         if (android.os.Build.VERSION.SDK_INT >= 21) {
             Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
             intent.addCategory(Intent.CATEGORY_OPENABLE);
@@ -1423,7 +1433,7 @@ public class GameActivity extends SDLActivity {
                 android.os.ParcelFileDescriptor pfd =
                     getContentResolver().openFileDescriptor(uri, "r");
                 if (pfd != null) {
-                    source = new java.io.FileInputStream(pfd.getFileDescriptor());
+                    source = new android.os.ParcelFileDescriptor.AutoCloseInputStream(pfd);
                 }
             } catch (Exception e) {
                 if (why == null) why = e.getClass().getSimpleName() + ": " + e.getMessage();
@@ -1460,15 +1470,40 @@ public class GameActivity extends SDLActivity {
                 + "\n" + (why == null ? "no reader accepted it" : why));
             return;
         }
-        if (!copyAssetFile(source, destFile.getPath())) {
-            Log.d("GameActivity", "could not copy picked file to " + destFile);
-            // A truncated pick would only fail verification later, so drop it
-            // and report instead.
-            destFile.delete();
-            writeSaveDirFlag(PICK_ERROR_FILENAME, destName
-                + "\nfrom " + uri.getScheme() + "://" + uri.getAuthority()
-                + "\nthe file opened but the copy did not finish");
+        // Lua polls on its own thread while the provider stream is copied.
+        // Publish the recognized filename only after a complete close, so a
+        // partial ROM cannot be rejected and blacklisted as the user's pick.
+        final InputStream pickedSource = source;
+        final String pickedName = destName;
+        // Provider/SD copying must not block the Android activity thread.
+        new Thread(new Runnable() {
+            @Override public void run() {
+                boolean published = publishPickedFile(pickedSource, destFile);
+                if (!published) {
+                    Log.d("GameActivity", "could not copy picked file to " + destFile);
+                    writeSaveDirFlag(PICK_ERROR_FILENAME, pickedName
+                        + "\nfrom " + uri.getScheme() + "://" + uri.getAuthority()
+                        + "\nthe file opened but the copy did not finish");
+                } else {
+                    writeSaveDirFlag("pick_done.flag", pickedName);
+                }
+            }
+        }, "rom-picker-copy").start();
+    }
+
+    boolean publishPickedFile(InputStream source, File destFile) {
+        File stagedFile = new File(destFile.getParentFile(), destFile.getName() + ".part");
+        boolean published = false;
+        try {
+            boolean copied = copyAssetFile(source, stagedFile.getPath());
+            published = copied && (!destFile.exists() || destFile.delete())
+                && stagedFile.renameTo(destFile);
+        } catch (RuntimeException error) {
+            Log.e("GameActivity", "picked file publication failed", error);
+        } finally {
+            if (!published) stagedFile.delete();
         }
+        return published;
     }
 
     /**
@@ -2048,5 +2083,67 @@ public class GameActivity extends SDLActivity {
                 canvas.drawBitmap(bitmap, null, dst, paint);
             }
         }
+    }
+
+    public static byte[] translateOffline(String source, String target, byte[] input) throws Exception {
+        return OfflineTranslation.translate(source, target, input);
+    }
+
+    /**
+     * Gen2Recomp in-app updates (src/update/Check.lua, Check.install): open
+     * Android's package installer on a downloaded release APK. Every release
+     * is signed with the same key (docs/android-signing.md), so it installs
+     * over this app in place and the save directory is kept. The APK is in the
+     * app's own storage, shared through the FileProvider declared in the app
+     * manifest (authority <applicationId>.updates).
+     */
+    public static boolean installApk(String path) {
+        GameActivity self = (GameActivity) mSingleton;
+        if (self == null || path == null) return false;
+        try {
+            Context context = self.getApplicationContext();
+            if (!canInstallApks()) return false;
+            File apk = new File(path);
+            if (!apk.isFile()) return false;
+            Uri uri = androidx.core.content.FileProvider.getUriForFile(
+                context, context.getPackageName() + ".updates", apk);
+            Intent intent = new Intent(Intent.ACTION_VIEW);
+            intent.setDataAndType(uri, "application/vnd.android.package-archive");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            self.startActivity(intent);
+            return true;
+        } catch (Exception e) {
+            Log.d("GameActivity", "could not open the installer: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /** Android 8+: has the player allowed installs from this app? */
+    public static boolean canInstallApks() {
+        GameActivity self = (GameActivity) mSingleton;
+        if (self == null) return false;
+        if (android.os.Build.VERSION.SDK_INT < 26) return true;
+        return self.getPackageManager().canRequestPackageInstalls();
+    }
+
+    /** Open the "install unknown apps" setting for this app. */
+    public static boolean requestInstallPermission() {
+        GameActivity self = (GameActivity) mSingleton;
+        if (self == null || android.os.Build.VERSION.SDK_INT < 26) return false;
+        try {
+            Intent intent = new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                Uri.parse("package:" + self.getPackageName()));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            self.startActivity(intent);
+            return true;
+        } catch (Exception e) {
+            Log.d("GameActivity", "could not open the install permission screen: " + e.getMessage());
+            return false;
+        }
+    }
+
+    public static boolean closeOfflineTranslation() {
+        OfflineTranslation.close();
+        return true;
     }
 }

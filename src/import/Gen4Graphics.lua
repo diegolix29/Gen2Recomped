@@ -212,6 +212,32 @@ function Gen4Graphics.decryptSprite(pixels)
   return table.concat(out)
 end
 
+-- DIAMOND AND PEARL'S ORDER, which HeartGold and SoulSilver keep for their
+-- trainer pictures: pokeheartgold's UnscanPokepic (src/pokepic.c) sends
+-- NARC_a_0_5_8 and NARC_a_0_0_6 -- the trainer fronts and backs -- to
+-- UnscanPokepic_DP, which seeds from the LAST halfword and walks BACKWARDS,
+-- where the Platinum/HGSS order above seeds from the first and walks forward.
+-- Same key step; only the end it starts from differs.
+function Gen4Graphics.decryptSpriteDP(pixels)
+  if type(pixels) ~= "string" or #pixels < 2 then return pixels end
+  local count = floor(#pixels / 2)
+  local key = byte(pixels, count * 2 - 1) + byte(pixels, count * 2) * 256
+  local out = {}
+  for i = count, 1, -1 do
+    local lo, hi = byte(pixels, i * 2 - 1, i * 2)
+    local v = lo + hi * 256
+    local r, place, a, b = 0, 1, v, key
+    for _ = 1, 16 do
+      local x, y = a % 2, b % 2
+      if x ~= y then r = r + place end
+      a, b, place = floor(a / 2), floor(b / 2), place * 2
+    end
+    out[i] = string.char(r % 256, floor(r / 256))
+    key = (key * 0x41C64E6D + 0x6073) % 65536
+  end
+  return table.concat(out) .. sub(pixels, count * 2 + 1)
+end
+
 -- ---------------------------------------------------------------------------
 -- The container
 -- ---------------------------------------------------------------------------
@@ -792,7 +818,10 @@ function Gen4Graphics.compose(map, sheet, palette, firstTile)
   -- arithmetic, and ten are the odd sizes above.
   local cols = floor(w / 8)
   local blockCols = nil
-  if (w == 256 or w == 512) and (h == 256 or h == 512)
+  -- ...AND NOT AN AFFINE ONE. An extended rotation/scaling background (BG
+  -- mode 5's bg2/bg3 -- the Battle Frontier's scenes) is one linear grid at
+  -- any size; the caller that knows its BG mode says so with `map.linear`.
+  if not map.linear and (w == 256 or w == 512) and (h == 256 or h == 512)
      and (w > 256 or h > 256) then
     blockCols = floor(w / 256)
   end

@@ -56,6 +56,11 @@ local Warp = {}
 function Warp.onArrive(map, cx, cy, dir)
   local w = map:warpAtCell(cx, cy)
   if not (w and map:isWarpTileCell(cx, cy)) then return nil end
+  -- A DISTORTION WORLD LIFT rides first, or is not there at all
+  -- (src/world/Gen4DistPlatforms.lua takes the warp when the ride ends).
+  if w.def and w.def.distortionLift then
+    return require("src.world.Gen4DistPlatforms").arrive(map, w)
+  end
   -- ...AND THE BEHAVIOUR HAS TO BE ONE THAT OPENS, which on this cartridge
   -- is a separate question from whether a warp event is here.
   --

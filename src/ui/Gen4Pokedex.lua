@@ -109,7 +109,35 @@ function Gen4Pokedex.new(game, opts)
   self.page = "list"
   self.scroll = 0
   self.form = 0
+  -- the list page's graphics coming up plays BUTTON01 (see listTransition)
+  self.listSePending = true
   return self
+end
+
+-- ----------------------------------------------------------------- sound --
+-- The overlay's effects (src/applications/pokedex/*.c):
+--   SEQ_SE_DP_DECIDE   every button that does something: open an entry, open
+--                      or leave search, swap the dex, leave, a size/loop/
+--                      search value that changes
+--   SEQ_SE_DP_DENSI06  every step of the selection (list, wheel, entry page)
+--                      and every tab or form that changes
+--   SEQ_SE_DP_BUTTON01 the list page's graphics entering or leaving
+--                      (ov21_021D6FB4, ov21_021D5AEC.c:1365)
+--   SEQ_SE_DP_Z_SEARCH a search starting (pokedex_search.c:377)
+-- NOT HERE: crysub.c's SEQ_SE_DP_KATI (the chorus/pan switch and the dial,
+-- which this cry page does not have), the foreign-language entry buttons
+-- (ov21_021E1924.c) and the area map's drag (ov21_021DDD2C.c:557).
+local function se(self, name, opts)
+  local data = self.game and self.game.data or self.data
+  local ok, Sound = pcall(require, "src.core.Sound")
+  if ok and type(Sound) == "table" and Sound.playSe and data then return Sound.playSe(data, name, opts) end
+end
+
+-- The list page's enter/exit (ov21_021D71A8 / ov21_021D7248) both open with
+-- ov21_021D6FB4's BUTTON01 -- a frame after the press's DECIDE, which is why
+-- it waits for the next update.
+function Gen4Pokedex:listTransition()
+  self.listSePending = true
 end
 
 -- ------------------------------------------------------------------ data --
@@ -220,6 +248,10 @@ function Gen4Pokedex:close()
   if self.wheelCanvas and self.wheelCanvas.release then self.wheelCanvas:release() end
   self.wheelCanvas=nil
   self:stopCry()
+  -- ov21_021D601C: B on the unfiltered list (ov21_021D5AEC.c:548), then the
+  -- list's exit
+  se(self, "SEQ_SE_DP_DECIDE")
+  se(self, "SEQ_SE_DP_BUTTON01")
   self.game.stack:pop()
   if self.onCancel then self.onCancel() end
 end
@@ -240,6 +272,11 @@ function Gen4Pokedex:move(delta)
   end
   local before = self.index
   self.index = index
+  -- a step that lands: the list's (ov21_021D5AEC.c:1715/1732/1745), the
+  -- wheel's (ov21_021D76B0.c:791) and the entry page's (ov21_021E1924.c:1055).
+  -- The list's LEFT/RIGHT page is five steps on the cartridge, a DENSI06
+  -- each; here it is one jump and one effect.
+  if index ~= before then se(self, "SEQ_SE_DP_DENSI06") end
   if not self:tabAvailable(self.tab) then self.tab = 1 end
   if self.page == 'list' and index ~= before then
     -- a one-entry step slides the plates; anything else only fades the
@@ -295,9 +332,39 @@ end
 
 function Gen4Pokedex:setTab(tab)
   if not self:tabAvailable(tab) then return false end
-  if tab~=self.tab then self:stopCry();self.scroll=0 end
+  -- ov21_021E29DC.c:1118-1155 / 1414-1447: a tab that changes, DENSI06
+  if tab~=self.tab then self:stopCry();self.scroll=0;se(self,"SEQ_SE_DP_DENSI06") end
   self.tab=tab
   return true
+end
+
+-- the size page's A / touch (ov21_021E68F4.c:467/474/732)
+function Gen4Pokedex:toggleSize()
+  self.sizeWeight=not self.sizeWeight
+  se(self,"SEQ_SE_DP_DECIDE")
+end
+
+-- the form page: the box swapping to another form (formmain.c:347)
+function Gen4Pokedex:nextForm()
+  local before=self.form or 0
+  self.form=(before+1)%#self:forms()
+  if self.form~=before then se(self,"SEQ_SE_DP_DENSI06") end
+end
+
+-- A search button (ov21_021D94BC.c:3089-3395): DECIDE when it changes
+-- something -- a field, a choice, the type page -- and never for one already
+-- chosen. CANCEL and SEARCH play theirs in backToList / applySearch.
+function Gen4Pokedex:searchActivate(b)
+  if not b then return end
+  local s=self.searchSelection or {}
+  local before={self.searchField,self.searchTypePage,s[1],s[2],s[3],s[4],s[5]}
+  Search.activate(self,b)
+  if b.action=='cancel' or b.action=='apply' then return end
+  s=self.searchSelection or {}
+  local after={self.searchField,self.searchTypePage,s[1],s[2],s[3],s[4],s[5]}
+  for i=1,7 do
+    if before[i]~=after[i] then se(self,"SEQ_SE_DP_DECIDE");return end
+  end
 end
 
 function Gen4Pokedex:bottomVisible()
@@ -307,17 +374,25 @@ end
 
 function Gen4Pokedex:backToList()
   self.searchPointer,self.searchPressed=nil,nil
+  -- the entry page's back (ov21_021E29DC.c:1112/1358/1459) and search's
+  -- CANCEL (ov21_021D94BC.c:3089), then the list coming back up
+  se(self,"SEQ_SE_DP_DECIDE")
+  if self.page~='list' then self:listTransition() end
   self:stopCry();self.wheelPointer=nil;self.page,self.scroll='list',0
 end
 
 function Gen4Pokedex:openEntry()
   if not self:status(self:species()) then return false end
+  -- A on an entry (ov21_021D5AEC.c:563), then the list's exit
+  se(self,"SEQ_SE_DP_DECIDE");self:listTransition()
   self.wheelPointer=nil;self.page='entry';self.tab=1;self.form=0;self:playCry()
   return true
 end
 
 function Gen4Pokedex:openSearch()
   if self.filtered then return false end
+  -- X (ov21_021D747C, ov21_021D5AEC.c:1647), then the list's exit
+  se(self,"SEQ_SE_DP_DECIDE");self:listTransition()
   self:stopCry();self.wheelPointer=nil
   self.searchSelection=Search.defaults();self.searchField=1;self.searchError=nil;self.page='search'
   self.searchTypePage,self.searchTypeSlot,self.searchCursor=0,3,nil
@@ -326,7 +401,9 @@ end
 
 function Gen4Pokedex:changeSearch(delta)
   local field=self.searchField
+  local was=self.searchSelection[field]
   self.searchSelection[field]=(self.searchSelection[field]-1+delta)%#Search.CHOICES[field]+1
+  if self.searchSelection[field]~=was then se(self,"SEQ_SE_DP_DECIDE") end
   if field==3 or field==4 then
     local other=field==3 and 4 or 3
     if self.searchSelection[field]~=1 and self.searchSelection[field]==self.searchSelection[other] then
@@ -337,11 +414,16 @@ function Gen4Pokedex:changeSearch(delta)
 end
 
 function Gen4Pokedex:applySearch()
+  -- SEARCH (ov21_021D94BC.c:3119), and the search running
+  -- (pokedex_search.c:377) -- 32 frames later on the cartridge, at once here
+  se(self,"SEQ_SE_DP_DECIDE")
+  se(self,"SEQ_SE_DP_Z_SEARCH")
   local entries,why=Search.results(self,self.searchSelection)
   if not entries or #entries==0 then
     self.searchError=why=='missing data' and 'REIMPORT ROM FOR SEARCH DATA' or 'NONE FOUND'
     return false
   end
+  self:listTransition()
   self:stopCry();self.entries=entries;self.filtered=true
   self.page='list';self.index,self.top,self.scroll=1,1,0
   return true
@@ -349,6 +431,8 @@ end
 
 function Gen4Pokedex:cancelResults()
   if not self.filtered then self:close();return end
+  -- B on search results (ov21_021D5AEC.c:554)
+  se(self,"SEQ_SE_DP_DECIDE")
   local species=self:species()
   self.filtered=nil;self.entries=self:listing();self.index,self.top=1,1
   for i,id in ipairs(self.entries) do if id==species then self.index=i;break end end
@@ -360,6 +444,8 @@ function Gen4Pokedex:toggleDex()
   local orders=self.art and self.art.orders
   if not dex.national or not (orders and orders.sinnoh and orders.national) then return false end
   if self.filtered then return false end
+  -- SELECT (ov21_021D74B0, ov21_021D5AEC.c:1672)
+  se(self,"SEQ_SE_DP_DECIDE")
   self:stopCry()
   self.national=not self.national
   self.entries=self:listing()
@@ -369,6 +455,7 @@ end
 
 function Gen4Pokedex:update(dt)
   local frames=(type(dt)=='number' and dt>0) and math.min(dt*60,4) or 1
+  if self.listSePending then self.listSePending=nil;se(self,"SEQ_SE_DP_BUTTON01") end
   if self.page=='list' then self:updateListAnim(frames) else self.listAnim=nil end
   if self.page=='entry' and self.tab==3 and self.cryRunning and self.cry and self.cry.isPlaying then
     local ok,playing=pcall(self.cry.isPlaying,self.cry)
@@ -388,7 +475,7 @@ function Gen4Pokedex:update(dt)
     for _,dir in ipairs({'up','down','left','right'}) do
       if input:wasPressed(dir) then self.searchCursor=Search.navigate(buttons,self.searchCursor,dir);return end
     end
-    if input:wasPressed('a') then Search.activate(self,buttons[self.searchCursor])
+    if input:wasPressed('a') then self:searchActivate(buttons[self.searchCursor])
     elseif input:wasPressed('start') then self:applySearch()
     elseif input:wasPressed('b') then self:backToList() end
     return
@@ -404,8 +491,8 @@ function Gen4Pokedex:update(dt)
     elseif input:wasPressed("a") then
       if self.tab == 3 then self:pressCryPlay()
       elseif self.tab == 1 then self:playCry()
-      elseif self.tab == 4 then self.sizeWeight=not self.sizeWeight
-      elseif self.tab == 5 then self.form = ((self.form or 0) + 1) % #self:forms() end
+      elseif self.tab == 4 then self:toggleSize()
+      elseif self.tab == 5 then self:nextForm() end
     elseif input:wasPressed("b") or input:wasPressed("start") then self:backToList() end
     return
   end
@@ -449,9 +536,12 @@ function Gen4Pokedex:touchpressed(id,px,py)
       if self.tab==3 then
         if self.cryPointer then return true end
         if x>=156 and x<204 and y>=107 and y<155 then self:pressCryPlay();self.cryPointer=id
-        elseif x>=214 and x<246 and y>=150 and y<182 then self.cryLoop=not self.cryLoop;self.cryPointer=id end
-      elseif self.tab==4 and y>=128 then self.sizeWeight=not self.sizeWeight
-      elseif self.tab==5 and y>=128 then self.form=((self.form or 0)+1)%#self:forms() end
+        elseif x>=214 and x<246 and y>=150 and y<182 then
+          -- LOOP (crysub.c:667)
+          self.cryLoop=not self.cryLoop;self.cryPointer=id;se(self,"SEQ_SE_DP_DECIDE")
+        end
+      elseif self.tab==4 and y>=128 then self:toggleSize()
+      elseif self.tab==5 and y>=128 then self:nextForm() end
       return true
     end
     -- A secondary-panel event must never be reinterpreted as a top-screen tap.
@@ -465,8 +555,8 @@ function Gen4Pokedex:touchpressed(id,px,py)
     if y >= 176 then
       local tab = math.min(5, math.floor(x / (W / 5)) + 1)
       self:setTab(tab)
-    elseif self.tab == 5 and y >= 128 then self.form = ((self.form or 0) + 1) % #self:forms()
-    elseif self.tab == 4 and y >= 128 then self.sizeWeight=not self.sizeWeight
+    elseif self.tab == 5 and y >= 128 then self:nextForm()
+    elseif self.tab == 4 and y >= 128 then self:toggleSize()
     elseif self.tab == 3 or x < 96 then self:playCry() end
   elseif math.abs(x-LIST_PREVIEW.x)<32 and math.abs(y-LIST_PREVIEW.y)<32 then
     -- the preview is the selected entry
@@ -487,7 +577,7 @@ function Gen4Pokedex:searchTouch(x,y,companion)
   if companion~=false then
     for i,b in ipairs(Search.buttons(self)) do
       if x>=b.x-b.w/2 and x<b.x+b.w/2 and y>=b.y-b.h/2 and y<b.y+b.h/2 then
-        self.searchCursor=i;self.searchPressed=b;Search.activate(self,b);return true
+        self.searchCursor=i;self.searchPressed=b;self:searchActivate(b);return true
       end
     end
     return true

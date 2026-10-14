@@ -124,6 +124,14 @@ return {
             -- east-west, running through the cell
             [231] = { posts = { { 1, 10 }, { 9, 10 } },
                       rails = { { "x", 10, 0, 16 } } },
+            -- ...and the same run with the crown of the tree south of it
+            -- drawn over its lower half (214 west, 215 east): the cycling
+            -- road's fences.  Unlisted, they were raised as rock and stood
+            -- as green boxes with the fence painted on top.
+            [214] = { posts = { { 1, 10 }, { 9, 10 } },
+                      rails = { { "x", 10, 0, 16 } } },
+            [215] = { posts = { { 1, 10 }, { 9, 10 } },
+                      rails = { { "x", 10, 0, 16 } } },
 
             -- ...and turning NORTH out of the cell: 252 on the west post
             -- (its rows 0..1 carry that post's body at columns 2..5), 253 on
@@ -141,6 +149,17 @@ return {
                       rails = { { "x", 10, 0, 16 }, { "z", 1, 10, 16 } } },
             [237] = { posts = { { 1, 10 }, { 9, 10 } },
                       rails = { { "x", 10, 0, 16 }, { "z", 9, 10, 16 } } },
+            -- ...and RUNNING NORTH-SOUTH, which Kanto draws as a thin rail
+            -- bar down one side of the cell: 244 on the west lane (its bar
+            -- is columns 2..5), 245 on the east (columns 10..13) -- the same
+            -- two lanes 252/253 and 236/237 turn into, so a straight line
+            -- meets its corner without a jog.  Reported: "in cerulean some
+            -- of the fences are flat" -- every one of them was one of these
+            -- two, meshed as grass with the fence painted on.
+            [244] = { posts = { { 1, 2 }, { 1, 10 } },
+                      rails = { { "z", 1, 0, 16 } } },
+            [245] = { posts = { { 9, 2 }, { 9, 10 } },
+                      rails = { { "z", 9, 0, 16 } } },
           },
         },
       },
@@ -169,6 +188,15 @@ return {
   -- the pair (tools/gen3_find_under.py), and each came back with exactly ONE
   -- candidate.
   overhead = {
+    -- ROUTE 23's BADGE-GATE STATUES (the road to Victory Road): a Pokemon
+    -- statue drawn wholly above the player in the wall row (663), standing
+    -- on the plaque pedestal one cell south (751 / 671).  Lifted off the wall
+    -- and stood on the pedestal; the wall behind it wears the gate's panel.
+    ["TILESET_02D4A94_02D4B84"] = {
+      figures = {
+        { name = "badge gate statue", meta = 663, under = 672, south = 1 },
+      },
+    },
     -- CELADON DEPARTMENT STORE: the planters flanking the shop floor.  702
     -- and 703 each carry 138 px of above-player frond over the two floor
     -- shades, and 710/711 (pinned `cylinder` in gen3_shapes.lua) are the

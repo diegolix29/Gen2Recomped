@@ -236,19 +236,47 @@ function Gen4PoketchArt.images(rom)
   local pal = G.palette(member("generic_bg_tiles.NCLR"))
   if not pal then return nil, "poketch palette unreadable" end
   local out = {}
-  for set, loads in pairs(Gen4PoketchArt.SETS) do
+  -- OBJ palette rows apps load over generic_bg_tiles.NCLR: the dowsing
+  -- machine's rows 13 and 14 are the theme's row with colour 1 replaced by 8
+  -- and by 15 (dowsing_machine/graphics.c Task_DrawBackground).
+  local function rowsWith(over)
+    local p = {}
+    for i, c in ipairs(pal) do p[i] = c end
+    for row, src in pairs(over) do
+      for k = 0, 15 do p[row * 16 + k + 1] = pal[k + 1] end
+      for k, from in pairs(src) do p[row * 16 + k + 1] = pal[from + 1] end
+    end
+    return p
+  end
+  local palFor = { dowsing_machine = rowsWith({ [13] = { [1] = 8 }, [14] = { [1] = 15 } }) }
+  local function cells(set, loads, key, colours)
     local sheet = vram(member, G, loads)
     local ncer = member(set .. "_cell.NCER.lz")
     local bank = sheet and Gen4PoketchArt.centreDoubleSize(ncer, Cells.parse(ncer, G), G)
     if bank then
       for i, cell in ipairs(bank.cells) do
-        local pic = Cells.assemble(cell, sheet, pal, bank, G)
+        local pic = Cells.assemble(cell, sheet, colours or palFor[set] or pal, bank, G)
         if pic then
           pic.originX, pic.originY = Cells.extent(cell)
-          out[("%s_%02d"):format(set, i - 1)] = pic
+          out[("%s_%02d"):format(key or set, i - 1)] = pic
         end
       end
     end
+  end
+  for set, loads in pairs(Gen4PoketchArt.SETS) do cells(set, loads) end
+  -- the app number on the shutter (PoketchGraphics_LoadAppCounterPalette):
+  -- the digits in the theme's row with colours 1/4 and 8/15 swapped
+  local inverse = {}
+  for i, c in ipairs(pal) do inverse[i] = c end
+  inverse[2], inverse[5], inverse[9], inverse[16] = pal[5], pal[2], pal[16], pal[9]
+  cells("digits", Gen4PoketchArt.SETS.digits, "digits_inverse", inverse)
+  -- the border's own tiles (the shutter is its tile 164) in its palette
+  local border, borderPal = G.tiles(member("poketch_border.NCGR.lz")), G.palette(member("poketch_border.NCLR"))
+  if border and borderPal then
+    local rows = math.ceil(border.count / 32)
+    local list = {}
+    for i = 0, rows * 32 - 1 do list[i + 1] = { tile = i < border.count and i or 0, palette = 0 } end
+    out.border_bgtiles = G.compose({ width = 256, height = rows * 8, cells = list }, border, borderPal)
   end
   -- Tilemaps composed over the BG sheet the app loads under them.
   for key, pair in pairs(Gen4PoketchArt.COMPOSE) do

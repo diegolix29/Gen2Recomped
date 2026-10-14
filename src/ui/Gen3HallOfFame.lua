@@ -65,6 +65,8 @@ end
 function Gen3HallOfFame.new(game, onDone)
   local record = Gen3HallOfFame.record(game)
   if not record then return nil end
+  -- save.c / post_battle_event_funcs.c: GAME_STAT_ENTERED_HOF and the first's play time
+  if game.save then pcall(function() require("src.pokemon.Gen3GameStats").enteredHallOfFame(game.save) end) end
   -- FireRed runs its own ceremony (fly-in team, confetti, the player's walk)
   if record.frlg then
     return require("src.ui.Gen3HallOfFameFRLG").new(game, record, onDone)

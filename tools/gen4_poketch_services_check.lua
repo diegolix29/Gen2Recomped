@@ -35,6 +35,8 @@ game.input = { wasPressed = function() return false end }
 watch:update(0.5)
 require('src.pokemon.Gen4PoketchState').tick(game, 0.5)
 check(game.save.poketch.stopwatch == 0.5, 'stopwatch advances')
+-- the cartridge's START does nothing on 00:00 (StartTimer returns 0), so a time is set first
+game.save.poketch.timerDuration = 60
 watch.index = 5; watch:activate(); watch:update(1)
 require('src.pokemon.Gen4PoketchState').tick(game, 1)
 check(game.save.poketch.timer == 59, 'timer counts down')
@@ -301,24 +303,35 @@ check(game.save.poketch.calculator.display=='10','calculator painted keys work t
 app('Memo Pad'); game.save.poketch.memo={}; game.save.poketch.memoErasing=false
 tap(100,100); local memo=game.save.poketch.memo
 check(next(memo)~=nil,'memo drawing accepts mouse click')
-tap(112,152); tap(100,100)
+-- memo_pad/main.c: the eraser (180-204, 24-88) and pencil (180-204, 104-168) buttons
+tap(192,56); tap(100,100)
 check(next(memo)==nil,'memo eraser deletes touched pixels')
-tap(112,152); tap(100,100); tap(176,152)
-check(next(game.save.poketch.memo)==nil,'memo clear touch empties drawing')
+tap(192,136); tap(100,100)
+check(next(game.save.poketch.memo)~=nil,'memo pencil draws again')
 app('Dot Artist'); game.save.poketch.dots={}
 tap(20,20); tap(20,20)
 check(game.save.poketch.dots[0]==2,'dot artist repeated clicks cycle pixel shades')
 app('Stopwatch'); game.save.poketch.stopwatch=5; game.save.poketch.stopwatchRunning=false
 tap(112,112); check(game.save.poketch.stopwatchRunning,'stopwatch start text is clickable')
-tap(112,144); check(game.save.poketch.stopwatch==0 and not game.save.poketch.stopwatchRunning,'stopwatch reset text is clickable')
+-- stopwatch/main.c: tapping Voltorb again stops it; holding it 75 ticks starts the
+-- reset sequence (90 ticks blinking, 60 exploding) that zeroes it
+tap(112,112); check(not game.save.poketch.stopwatchRunning and game.save.poketch.stopwatch==5,'stopwatch tap stops it')
+watch:touchpressed('mouse',112,112); for _=1,160 do watch:updatePresentation(1/60) end; watch:touchreleased('mouse')
+for _=1,320 do watch:updatePresentation(1/60) end
+check(game.save.poketch.stopwatch==0 and not game.save.poketch.stopwatchRunning,'held Voltorb resets the stopwatch')
 app('Kitchen Timer'); game.save.poketch.timerDuration=60; game.save.poketch.timerRunning=false
-tap(88,104); tap(136,104)
+game.save.poketch.timerFinished=false; game.save.poketch.timerPaused=false
+-- kitchen_timer/main.c hit boxes: digit arrows above (y 80-96) and below, START
+-- (16-80, 144-176), STOP (80-144)
+tap(96,88); tap(144,88)
 check(game.save.poketch.timerDuration==121,'timer digits adjust minutes and seconds')
-tap(112,144); check(game.save.poketch.timerRunning,'timer start label is clickable')
-tap(112,144); check(not game.save.poketch.timerRunning,'timer stop label is clickable')
+tap(48,160); check(game.save.poketch.timerRunning,'timer START is clickable')
+tap(112,160); check(not game.save.poketch.timerRunning,'timer STOP is clickable')
 app('Alarm Clock'); game.save.poketch.alarmHour=0; game.save.poketch.alarmMinute=0; game.save.poketch.alarmEnabled=false
-tap(88,112); tap(136,112); tap(112,152)
-check(game.save.poketch.alarmHour==1 and game.save.poketch.alarmMinute==1 and game.save.poketch.alarmEnabled,'alarm digits and on/off text are clickable')
+-- alarm_clock/main.c: hour/minute up arrows (64-80 / 112-128, y 112-128), the
+-- switch's upper half (176-208, 72-104) sets the alarm
+tap(72,120); tap(120,120); tap(192,88)
+check(game.save.poketch.alarmHour==1 and game.save.poketch.alarmMinute==1 and game.save.poketch.alarmEnabled,'alarm arrows and switch are clickable')
 app('Move Tester'); game.save.poketch.moveTester={1,1,18}
 tap(28,128); tap(116,128); tap(108,40); tap(196,40); tap(108,72); tap(196,72)
 check(game.save.poketch.moveTester[1]==1 and game.save.poketch.moveTester[2]==1
@@ -334,13 +347,13 @@ check(game.save.poketch.color==7,'color slider responds to mouse dragging')
 local cries={}; package.loaded['src.core.Sound']={playCry=function(_,species) cries[#cries+1]=species end}
 app('Pokémon List'); tap(48,48)
 app('Pokémon History'); tap(32,32)
-app('Friendship Checker'); tap(32,40)
+app('Friendship Checker'); tap(48,52)
 check(#cries==3 and watch.friendshipTouch,'Pokemon icon apps accept clicks and give feedback')
 app('Calendar')
 local now=os.date('*t'); local first=((now.wday-1)-(now.day-1)%7)%7
 local cell=first+now.day-1; local dateKey=('%04d-%02d-%02d'):format(now.year,now.month,now.day)
 game.save.poketch.calendar={}
-tap(33+(cell%7)*20,43+math.floor(cell/7)*14)
+tap(32+(cell%7)*24+8,40+math.floor(cell/7)*24+8)
 check(game.save.poketch.calendar[dateKey],'calendar date cell accepts click')
 app('Roulette'); tap(112,96)
 check(type(game.save.poketch.roulette)=='number','roulette accepts click')

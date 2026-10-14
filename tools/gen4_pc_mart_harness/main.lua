@@ -111,7 +111,32 @@ function love.load()
       { "box 2 wallpaper", function(s) s.game.save.currentBox = 2; s.row, s.col = 1, 1 end },
       { "header menu", function(s) s.row = 0; s:choose() end },
       { "wallpaper page", function(s) s.row = 0; s:choose(); s:runAction("WALLPAPER"); s:runAction(s.menu[2].key); s.action = 3 end },
-      { "jump", function(s) s.row = 0; s:choose(); s:runAction("JUMP"); s.action = 12 end },
+      { "jump: band opening", function(s) s.row = 0; s:choose(); s:runAction("JUMP"); for _ = 1, 3 do s:update(1 / 60) end end },
+      { "jump: thumbnails fading in", function(s) s.row = 0; s:choose(); s:runAction("JUMP"); for _ = 1, 9 do s:update(1 / 60) end end },
+      { "jump: open, box 3 picked", function(s)
+          s.row = 0; s:choose(); s:runAction("JUMP"); for _ = 1, 20 do s:update(1 / 60) end
+          s.game.input = { wasPressed = function(_, k) return k == "right" end, isDown = function() return false end }
+          s:update(1 / 60); s:update(1 / 60)
+          s.game.input = { wasPressed = function() return false end, isDown = function() return false end }
+        end },
+      { "jump -> slide, mid-way", function(s)
+          s.row, s.col = 1, 1; s:openJump(); for _ = 1, 20 do s:update(1 / 60) end
+          s.jump.box = 2; s:closeJump(2); for _ = 1, 15 do s:update(1 / 60) end
+        end },
+      { "R: slide, frame 8", function(s)
+          s.row, s.col = 1, 1
+          s.game.input = { wasPressed = function(_, k) return k == "r" end, isDown = function() return false end }
+          s:update(1 / 60)
+          s.game.input = { wasPressed = function() return false end, isDown = function() return false end }
+          for _ = 1, 7 do s:update(1 / 60) end
+        end },
+      { "R: slide done (item box shows the ring)", function(s)
+          s.row, s.col = 1, 1
+          s.game.input = { wasPressed = function(_, k) return k == "r" end, isDown = function() return false end }
+          s:update(1 / 60)
+          s.game.input = { wasPressed = function() return false end, isDown = function() return false end }
+          for _ = 1, 40 do s:update(1 / 60) end
+        end },
       { "close box button", function(s) s.row, s.col = 6, 5; s.game.save.boxes[1].wallpaper = 21 end },
       { "egg + release", function(s) s.row, s.col = 2, 3; s:choose(); s:runAction("RELEASE") end },
       { "mark menu", function(s) s.row, s.col = 1, 1; s:choose(); s:runAction("MARK"); s:pickMenuRow(2); s.action = 4 end },
@@ -142,6 +167,56 @@ function love.load()
       pages[#pages + 1] = render(function() st:draw() end, { 0.2, 0.4, 0.2 })
     end
     sheet(pages, "pc.png")
+
+    -- -------------------------------------------- the PC's bottom screen --
+    -- pc_bottom.png: each scene's top screen beside its touch screen
+    -- (Gen4BoxMenu:drawBottom, ov19_021DCF88 / ov19_021DEC04)
+    local function frames(s, n) for _ = 1, n do s:update(1 / 60) end end
+    local bottomScenes = {
+      { "idle", "move", function(s) end },
+      { "box dial: button pressed", "move", function(s) s:setDial(PC.DIAL_BOX); frames(s, 6) end },
+      { "box dial: cover fading in", "move", function(s) s:setDial(PC.DIAL_BOX); frames(s, 30) end },
+      { "box dial: items sliding in", "move", function(s) s:setDial(PC.DIAL_BOX); frames(s, 52) end },
+      { "box dial: open, names", "move", function(s) s:setDial(PC.DIAL_BOX); frames(s, 120) end },
+      { "box dial: turned +1, mid-way", "move", function(s)
+          s:setDial(PC.DIAL_BOX); frames(s, 120)
+          s:bottomTouch(45, 130); s:dialMove(65, 160); frames(s, 3) end },
+      { "box dial: jumped to box 2", "move", function(s)
+          s:setDial(PC.DIAL_BOX); frames(s, 120)
+          s:bottomTouch(45, 130); s:dialMove(65, 160); frames(s, 8); s:dialEnd(); frames(s, 60) end },
+      { "markings dial: open", "move", function(s) s:setDial(PC.DIAL_MARKS); frames(s, 140) end },
+      { "markings: circle filter", "move", function(s)
+          s:setDial(PC.DIAL_MARKS); frames(s, 140)
+          -- button 1 at (163, 134) is kind scroll + 1 = ITEM; button 3 = triangle..
+          s:bottomTouch(184, 104); frames(s, 2) end },
+      { "markings: closing", "move", function(s)
+          s:setDial(PC.DIAL_MARKS); frames(s, 140); s:setDial(PC.DIAL_NONE); frames(s, 10) end },
+      { "move items", "items", function(s) s.row, s.col = 1, 1 end },
+      { "compare: battle", "compare", function(s)
+          s.row, s.col = 1, 1; s:toggleCompareSlot(); s.row, s.col = 1, 3 end },
+      { "compare: contest", "compare", function(s)
+          s.row, s.col = 1, 1; s:toggleCompareSlot(); s.row, s.col = 1, 3; s:nextCompareMode() end },
+      { "compare: moves", "compare", function(s)
+          s.row, s.col = 1, 1; s:toggleCompareSlot(); s.row, s.col = 1, 2; s:nextCompareMode(); s:nextCompareMode() end },
+      { "compare: egg", "compare", function(s) s.row, s.col = 2, 3 end },
+    }
+    local bpages = {}
+    for _, sc in ipairs(bottomScenes) do
+      local save = pcSave()
+      save.boxes[1][1].stats = { hp = 21, attack = 12, defense = 11, spAttack = 9, spDefense = 10, speed = 8 }
+      save.boxes[1][1].contest = { cool = 120, beauty = 40, cute = 255, smart = 10, tough = 80 }
+      save.boxes[1][1].nature = "BOLD"
+      save.boxes[1][1].moves = { { id = 33 }, { id = 45 }, { id = 55 } }
+      save.boxes[1][3].contest = { cool = 200, beauty = 200, cute = 30, smart = 160, tough = 10 }
+      save.boxes[1][3].markings = 2
+      local screen = PC.new(newGame(save), { mode = sc[2] })
+      screen.t = 0
+      sc[3](screen)
+      bpages[#bpages + 1] = render(function() screen:draw() end)
+      bpages[#bpages + 1] = render(function() screen:drawBottom() end)
+      print("pc bottom", sc[1])
+    end
+    sheet(bpages, "pc_bottom.png", 4)
 
     -- ------------------------------------------------------ the main menu --
     local save = { player = { name = "LUCAS", gender = "male" }, pokedex = { seen = { [1] = true, [4] = true }, owned = {} },

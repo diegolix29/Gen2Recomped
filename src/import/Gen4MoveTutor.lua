@@ -54,7 +54,48 @@ function Gen4MoveTutor.parse(ov)
   return { moves = moves, masks = masks }
 end
 
+-- HEARTGOLD / SOULSILVER (pokeheartgold src/field/scrcmd_move_tutor.c):
+-- sTutorMoves[52], 4 bytes each (u16 move, u8 BP cost, u8 tutor NPC -- 0..2
+-- the Frontier's three, 3 the Ilex Forest Headbutt man), compiled into an
+-- overlay and found by its first two rows (Dive 40 / 0, Mud-Slap 32 / 1);
+-- and fielddata/wazaoshie/waza_oshie.bin, 8 bytes (64 bits) per moveset,
+-- row species - 1, the forms after the species exactly as Platinum's. The
+-- output has Platinum's shape, the NPC standing in for `location`.
+Gen4MoveTutor.HGSS = { COUNT = 52, STRIDE = 4, MASK_BYTES = 8,
+                       MASKS = "/fielddata/wazaoshie/waza_oshie.bin",
+                       SIGNATURE = string.char(0x23, 0x01, 40, 0, 0xBD, 0x00, 32, 1),
+                       HEADBUTT_NPC = 3 }
+function Gen4MoveTutor.parseHgss(ov, maskFile)
+  local H = Gen4MoveTutor.HGSS
+  local at = type(ov) == "string" and ov:find(H.SIGNATURE, 1, true)
+  if not at then return nil end
+  local moves = {}
+  for i = 0, H.COUNT - 1 do
+    local o = at + i * H.STRIDE
+    moves[i + 1] = { move = ov:byte(o) + ov:byte(o + 1) * 256, cost = ov:byte(o + 2),
+                     location = ov:byte(o + 3) }
+  end
+  local masks = {}
+  for m = 1, math.floor(#maskFile / H.MASK_BYTES) do
+    local o = (m - 1) * H.MASK_BYTES
+    local hex = {}
+    for k = 1, H.MASK_BYTES do hex[k] = ("%02x"):format(maskFile:byte(o + k)) end
+    masks[m] = table.concat(hex)
+  end
+  return { moves = moves, masks = masks }
+end
+
 function Gen4MoveTutor.extract(rom)
+  if require("src.import.Gen4ScriptBands").family == "hgss" then
+    local maskFile = rom and rom:read(Gen4MoveTutor.HGSS.MASKS)
+    if not maskFile then return nil, "no waza_oshie.bin" end
+    for i = 0, 130 do
+      local ok, ov = pcall(rom.overlay, rom, i)
+      local out = ok and ov and Gen4MoveTutor.parseHgss(ov, maskFile)
+      if out then return out end
+    end
+    return nil, "sTutorMoves not found in any overlay"
+  end
   local ov = rom and rom:overlay(Gen4MoveTutor.OVERLAY)
   return Gen4MoveTutor.parse(ov)
 end

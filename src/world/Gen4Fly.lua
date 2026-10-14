@@ -32,6 +32,22 @@ local function rows(data)
   return (data and data.field and data.field.healLocations) or {}
 end
 
+-- THE SPAWN TABLE NAMES MATRIX TILES, NOT THE MAP'S OWN. sSpawnLocations
+-- gives Jubilife's landing as (180, 777) -- the Sinnoh matrix -- and the map
+-- def is cut out of that matrix at (128, 736), so the spot is (52, 41) of
+-- the map. Handed over unconverted, every fly landed far outside the town:
+-- the player stood in the void. A coordinate past the map's own size is
+-- taken back by the map's origin.
+local function localSpot(data, mapId, x, y)
+  local def = data and data.maps and data.maps[mapId]
+  x, y = tonumber(x) or 0, tonumber(y) or 0
+  if def and def.width and def.height and (x >= def.width or y >= def.height) then
+    x, y = x - (tonumber(def.originX) or 0), y - (tonumber(def.originY) or 0)
+  end
+  return x, y
+end
+Gen4Fly.localSpot = localSpot
+
 -- TryUnlockFlyLocationByMap: the FIRST row whose fly map is this header.
 function Gen4Fly.onEnter(data, save, header)
   header = tonumber(header)
@@ -62,7 +78,8 @@ function Gen4Fly.destinations(data, save)
     if fly and fly.map and not seen[fly.map] and Gen4Fly.unlocked(save, row) then
       seen[fly.map] = true
       local def = data.maps and data.maps[fly.map]
-      out[#out + 1] = { map = fly.map, x = fly.x, y = fly.y,
+      local x, y = localSpot(data, fly.map, fly.x, fly.y)
+      out[#out + 1] = { map = fly.map, x = x, y = y,
                         label = (def and def.label) or fly.map }
     end
   end
@@ -75,7 +92,8 @@ end
 function Gen4Fly.destinationFor(data, firstArrival)
   for _, row in ipairs(rows(data)) do
     if row.fly and row.firstArrival == firstArrival then
-      return { map = row.fly.map, x = row.fly.x, y = row.fly.y }
+      local x, y = localSpot(data, row.fly.map, row.fly.x, row.fly.y)
+      return { map = row.fly.map, x = x, y = y }
     end
   end
   return nil

@@ -32,6 +32,14 @@ Gen4MiningScreen.name = "Gen4MiningScreen"
 
 local W, H = 256, 192
 
+-- A cartridge sound effect (src/underground/mining.c's Sound_PlayEffect calls),
+-- by its SDAT symbol name. Nothing happens headless or without audio.
+local function se(self, name, opts)
+  local data = self.game and self.game.data
+  local ok, Sound = pcall(require, "src.core.Sound")
+  if ok and type(Sound) == "table" and Sound.playSe and data then return Sound.playSe(data, name, opts) end
+end
+
 -- A mining cell is 2x2 tiles and the grid starts four tile rows down, which is
 -- the cartridge's own arithmetic read backwards:
 --
@@ -355,8 +363,8 @@ function Gen4MiningScreen:itemIdFor(constant)
   if not self.itemsByName then
     local out = {}
     for id, def in pairs((self.game.data or {}).items or {}) do
-      if type(def) == "table" and type(def.name) == "string" then
-        out[def.name:upper()] = id
+      if type(def) == "table" and type((def.translationSourceName or def.name)) == "string" then
+        out[(def.translationSourceName or def.name):upper()] = id
       end
     end
     self.itemsByName = out
@@ -417,6 +425,7 @@ function Gen4MiningScreen:chooseTool(tool)
   local other = self.pickaxe and "hammer" or "pickaxe"
   self.buttons[tool], self.buttons[other] = "mid", "up"
   self.pendingPress = tool
+  se(self, "SEQ_SE_DP_SELECT")             -- SE_CONFIRM_sseq_3
   if self.pickaxe then self:setSprite("button", 7, 232, 152)
   else self:setSprite("button", 6, 232, 80) end
 end
@@ -427,6 +436,9 @@ function Gen4MiningScreen:playHit(cx, cy, hit)
   self:setSprite("tool", self.pickaxe and 0 or 1, x, y)
   local impact = hit.hitRock and 2 or (self.pickaxe and 3 or 4)
   self:setSprite("impact", impact, x, y)
+  if hit.hitRock then se(self, "SEQ_SE_DP_UG_004")
+  elseif self.pickaxe then se(self, "SEQ_SE_DP_UG_002")
+  else se(self, "SEQ_SE_DP_UG_003") end
   if hit.foundItem then self:setSprite("sparkle", 5, x, y) end
 end
 
@@ -438,6 +450,7 @@ function Gen4MiningScreen:sparkleNewlyOut()
   for i, placed in ipairs(MiningWall.treasures(self.wall)) do
     if out[i] and not self.out[i] then
       self.out[i] = true
+      se(self, "SEQ_SE_DP_KIRAKIRA4")
       for j = 0, 2 do
         local x = self.rand(placed.obj.w * 8) + placed.x * CELL
         local y = self.rand(placed.obj.h * 8) + placed.y * CELL + GRID_Y
@@ -500,7 +513,10 @@ function Gen4MiningScreen:touchpressed(_, px, py)
   if hit then
     self.lastHit = { x = cx, y = cy, rock = hit.hitRock, time = 12 }
     self:playHit(cx, cy, hit)
-    self.crackShown = true               -- Mining_DrawWallCrack places it
+    -- Mining_RemoveDirt: uncovering part of a treasure arms soundEffectTimer
+    -- (15); Mining_MainGameLoop plays SEQ_SE_DP_KIRAKIRA3 when it runs out
+    if hit.foundItem then self.kiraTimer = 15 end
+    self.crackShown = true              -- Mining_DrawWallCrack places it
     self.shakeTimer = 1
   end
   self:sparkleNewlyOut()
@@ -542,6 +558,8 @@ function Gen4MiningScreen:update()
   self:shakeScreen()
 
   if self.phase == "intro" then
+    -- MINING_STATE_WAIT_FOR_FADE_IN_START: the ping as the wall appears
+    if not self.introSe then self.introSe = true; se(self, "SEQ_SE_PL_UG_006") end
     self.timer = self.timer - 1
     if self.timer <= 0 then
       self.message = nil
@@ -560,6 +578,7 @@ function Gen4MiningScreen:update()
     if self.timer > 0 then
       self.timer = self.timer - 1
       if self.timer == 0 then
+        se(self, "SEQ_SE_DP_PIRORIRO2")
         local list = { { text = self:text("everything") or Strings("Everything was dug up!"), hold = 60 } }
         self:say(self:obtainedMessages(list), function() self:close("won") end)
       end
@@ -576,6 +595,7 @@ function Gen4MiningScreen:update()
         self.shakeTimer = 100
         self.shakeX, self.shakeY = 0, 0
         self.fade = 0                       -- 15 frames down to black
+        se(self, "SEQ_SE_DP_UG_001")        -- MINING_STATE_COLLAPSE_FADE_OUT
       end
       return
     end
@@ -599,6 +619,10 @@ function Gen4MiningScreen:update()
     self.pendingPress = nil
   end
   self:queueShake()
+  if self.kiraTimer and self.kiraTimer > 0 then
+    self.kiraTimer = self.kiraTimer - 1
+    if self.kiraTimer == 0 then se(self, "SEQ_SE_DP_KIRAKIRA3") end
+  end
   -- THE PORT'S OWN WAY OUT.  The cartridge has none: once the game starts you
   -- play it to a win or a collapse.  A player here may have no touch device at
   -- all, or a stuck screen, and leaving them in a state with no exit is worse

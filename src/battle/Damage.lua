@@ -146,7 +146,7 @@ end
 -- (`ld [hl], 50 percent + 1` = 128), so the caller passes the raw threshold
 -- rather than a percentage: floor(50 * 255 / 100) would be 127, one short.
 function Damage.accuracyRoll(ruleset, move, attacker, defender, rng,
-                             accuracyRaw, data, weather)
+                             accuracyRaw, data, weather, deepFog)
   rng = rng or love.math.random
   -- X ACCURACY sets USING_X_ACCURACY: the move simply never misses
   -- (MoveHitTest returns before any accuracy math, 1/256 included)
@@ -170,6 +170,9 @@ function Damage.accuracyRoll(ruleset, move, attacker, defender, rng,
     pct = math.floor(pct * HoldItems.accuracyMultiplier(attacker, defender)
                      / 100)
     if pct ~= 100 then acc = math.min(255, math.floor(acc * pct / 100)) end
+    -- DEEP FOG: hitRate * 6 / 10 (battle_controller_player.c), after the
+    -- weather abilities and before HUSTLE in the cartridge's sequence
+    if deepFog then acc = math.floor(acc * 6 / 10) end
   end
   -- ...AND GEN II's OWN BRIGHTPOWDER, which is a SUBTRACTION rather than a
   -- multiplier: it takes its ItemAttributes parameter (20 in retail Gen II)
@@ -177,7 +180,7 @@ function Damage.accuracyRoll(ruleset, move, attacker, defender, rng,
   -- one, otherwise a 1/256 hit chance is invented.  A Gen 3 dataset has no
   -- such attribute and this answers zero.
   acc = math.max(0, acc - HeldItems.accuracyPenalty(data, defender))
-  if not ruleset.oneIn256Miss and basePct >= 100
+  if not ruleset.oneIn256Miss and basePct >= 100 and not deepFog
      and (attacker.stages.accuracy or 0) >= (defender.stages.evasion or 0) then
     return true
   end

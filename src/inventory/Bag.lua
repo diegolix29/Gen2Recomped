@@ -148,6 +148,18 @@ function Bag.add(save, id, qty, data)
   -- pocket's thirty
   data = data or require("src.core.Data")
   local inv = save.inventory
+  -- INSIDE THE BATTLE PYRAMID the bag is its own ten slots, no pockets
+  -- (AddPyramidBagItem; see Gen3BattlePyramid.syncBag)
+  if save.gen3PyramidBag then
+    local slots = 0
+    for _ in pairs(inv) do slots = slots + 1 end
+    if not inv[id] and slots >= 10 then return false end
+    if (inv[id] or 0) + (qty or 1) > 99 then return false end
+    local isNew = not inv[id]
+    inv[id] = (inv[id] or 0) + (qty or 1)
+    if isNew then table.insert(Bag.order(save), id) end
+    return true
+  end
   if not inv[id] and not isBadge(id) then
     -- EMERALD'S BAG IS FIVE POCKETS, and the sizes are the cartridge's:
     -- they fall out of the save layout, where each pocket starts where the

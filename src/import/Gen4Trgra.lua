@@ -86,14 +86,18 @@ end
 
 -- sheet(narc, Gen4Graphics, class) -> { pixels, width, height, bpp }
 -- `pixels` is DECRYPTED and linear, one nibble per pixel, low nibble first.
-function Gen4Trgra.sheet(narc, Gen4Graphics, class)
+--
+-- `dpOrder`: decrypt in Diamond and Pearl's order (last halfword first),
+-- which HeartGold and SoulSilver use for these archives -- see
+-- Gen4Graphics.decryptSpriteDP.
+function Gen4Trgra.sheet(narc, Gen4Graphics, class, dpOrder)
   if not narc then return nil end
   local member = narc:get(class * Gen4Trgra.MEMBERS_PER_CLASS + Gen4Trgra.SLOT.sheet)
   if not (member and #member > 0) then return nil end
   local info = Gen4Graphics.tiles(member)
   if not (info and info.tilesX and info.tilesY) then return nil end
   return {
-    pixels = Gen4Graphics.decryptSprite(info.pixels),
+    pixels = (dpOrder and Gen4Graphics.decryptSpriteDP or Gen4Graphics.decryptSprite)(info.pixels),
     width = info.tilesX * 8,
     height = info.tilesY * 8,
     bitmap = info.bitmap,

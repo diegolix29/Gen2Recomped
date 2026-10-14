@@ -91,6 +91,14 @@ local NAV = {
   [7] = { 5, 1, 5, 0 },
 }
 Gen4PartyMenu.NAV = NAV
+-- ...and choosing a team, with CONFIRM (6) above CANCEL (7)
+local NAV_SELECT = {
+  [0] = { 7, 2, 7, 1 }, [1] = { 7, 3, 0, 2 }, [2] = { 0, 4, 1, 3 },
+  [3] = { 1, 5, 2, 4 }, [4] = { 2, 6, 3, 5 }, [5] = { 3, 6, 4, 6 },
+  [6] = { 5, 7, 5, 0 }, [7] = { 6, 1, 6, 0 },
+}
+local CONFIRM = { x = 200, y = 136, w = 56, h = 24, cx = 232, cy = 148, label = { x = 204, y = 140, w = 48 } }
+Gen4PartyMenu.CONFIRM = CONFIRM
 local DIRS = { up = 1, down = 2, left = 3, right = 4 }
 
 -- The field moves this screen can run, in the order Gen4FieldMoves knows them.
@@ -121,6 +129,13 @@ function Gen4PartyMenu.new(game, opts)
   self.pickOnly = opts.pickOnly
   self.forceSwitch = opts.forceSwitch
   self.keepOpen = opts.keepOpen
+  -- CHOOSING A TEAM (PARTY_MENU_MODE_BATTLE_TOWER and its kin): `select` =
+  -- { count, maxLevel, banlist, unique, onDone(slots|nil) }. Each member is
+  -- ENTERed or not in turn; the panels say FIRST / SECOND / ... / NOT ENTERED
+  -- / BANNED (bank 453's 169-174, 167, 168), and CONFIRM checks the count and
+  -- the duplicates (HandleGameWindowEvent) before handing the slots back.
+  self.select = opts.select
+  if self.select then self.select.order = {} end
   -- THE BATTLE THAT OPENED THIS SCREEN, and what it changes.
   --
   -- Reported from play: the party screen in a Platinum battle was KANTO'S.
@@ -249,8 +264,97 @@ end
 function Gen4PartyMenu:party() return self.game.save.party or {} end
 
 -- Slots 1..#party, then CANCEL.
-function Gen4PartyMenu:count() return #self:party() + 1 end
-function Gen4PartyMenu:onCancelRow() return self.index > #self:party() end
+function Gen4PartyMenu:count() return #self:party() + (self.select and 2 or 1) end
+function Gen4PartyMenu:onCancelRow() return self.index >= self:count() end
+-- ...and, choosing a team, CONFIRM between the last member and CANCEL
+function Gen4PartyMenu:onConfirmRow() return self.select ~= nil and self.index == #self:party() + 1 end
+
+-- ------------------------------------------------------- choosing a team --
+
+local BANLIST = { [150] = true, [151] = true, [249] = true, [250] = true, [251] = true, [382] = true,
+  [383] = true, [384] = true, [385] = true, [386] = true, [483] = true, [484] = true, [487] = true,
+  [489] = true, [490] = true, [491] = true, [492] = true, [493] = true }
+Gen4PartyMenu.FRONTIER_BANLIST = BANLIST
+
+-- PartyMenu_CheckEligibility: "entered", "banned" or "eligible"
+function Gen4PartyMenu:eligibility(slot)
+  local sel = self.select
+  local mon = self:party()[slot]
+  if not (sel and mon) then return nil end
+  if sel.banlist and BANLIST[tonumber(mon.species) or -1] then return "banned" end
+  for _, s in ipairs(sel.order) do if s == slot then return "entered" end end
+  if require('src.pokemon.Party').isEgg(mon) or (sel.maxLevel and (tonumber(mon.level) or 1) > sel.maxLevel) then return "banned" end
+  -- PartyMenu_CheckBattleHallEligibility: a floor, not a cap (reqLevel 30)
+  if sel.minLevel and (tonumber(mon.level) or 1) < sel.minLevel then return "banned" end
+  return "eligible"
+end
+
+local function nonEmpty(t) return (type(t) == "string" and t ~= "") and t or nil end
+local ORDINALS = { "FIRST", "SECOND", "THIRD", "FOURTH", "FIFTH", "SIXTH" }
+function Gen4PartyMenu:selectionWord(slot)
+  local sel = self.select
+  for k, s in ipairs(sel.order) do
+    if s == slot then return nonEmpty(self:bankLine(168 + k)) or ORDINALS[k] end
+  end
+  if self:eligibility(slot) == "banned" then return nonEmpty(self:bankLine(168)) or "BANNED" end
+  return nonEmpty(self:bankLine(167)) or "NOT ENTERED"
+end
+
+function Gen4PartyMenu:selectMessage(n)
+  self.selectNotice = self:bankLine(n) or ""
+end
+
+-- PartyMenu_SelectChooseWithLimit / PartyMenu_PrintAllEligibilities
+-- (not `enter`: the state stack calls a pushed screen's `enter()`)
+function Gen4PartyMenu:enterSlot(slot)
+  local sel = self.select
+  if #sel.order >= sel.count then
+    self:selectMessage(({ 123, 100, 124, 125, 126 })[sel.count] or 29)
+    return
+  end
+  sel.order[#sel.order + 1] = slot
+  -- the last one moves the cursor onto CONFIRM (sub_0207FD68(application, 6))
+  if #sel.order == sel.count then self.index = #self:party() + 1 end
+end
+function Gen4PartyMenu:unenterSlot(slot)
+  local order = self.select.order
+  for k, s in ipairs(order) do if s == slot then table.remove(order, k) break end end
+end
+
+-- HandleGameWindowEvent: CONFIRM
+function Gen4PartyMenu:confirmSelection()
+  local sel = self.select
+  if #sel.order < sel.count then
+    self:selectMessage(({ [2] = 107, [3] = 119, [4] = 120, [5] = 121, [6] = 122 })[sel.count] or 29)
+    return
+  end
+  if sel.unique then
+    local party = self:party()
+    for a = 1, #sel.order do
+      for b = a + 1, #sel.order do
+        local m1, m2 = party[sel.order[a]], party[sel.order[b]]
+        if m1.species == m2.species then self:selectMessage(182) return end
+        local i1 = tonumber(m1.item) or 0
+        if i1 ~= 0 and i1 == (tonumber(m2.item) or 0) then self:selectMessage(183) return end
+      end
+    end
+  end
+  -- PARTY_MENU_MODE_BATTLE_HALL: doubles is one kind twice
+  -- ("You must use the same kind of Pokemon.")
+  if sel.sameKind then
+    local party = self:party()
+    for a = 2, #sel.order do
+      if party[sel.order[a]].species ~= party[sel.order[1]].species then
+        self:selectMessage(sel.sameKindMessage or 201)
+        return
+      end
+    end
+  end
+  local slots = {}
+  for k, s in ipairs(sel.order) do slots[k] = s end
+  self.game.stack:pop()
+  if sel.onDone then sel.onDone(slots) end
+end
 
 -- The submenu's frame, in pixels: rows 16 apart ending at y 184.
 function Gen4PartyMenu:menuRect(n)
@@ -269,6 +373,9 @@ function Gen4PartyMenu:touchpressed(_, px, py)
       self:runAction(actions[math.floor((y-m.firstRow)/MENU.row)+1])
     else self.submenu=nil;self.itemMenu=nil end
     return true
+  end
+  if self.select and x>=CONFIRM.x and x<CONFIRM.x+CONFIRM.w and y>=CONFIRM.y and y<CONFIRM.y+CONFIRM.h then
+    self.index=#self:party()+1;self:choose();return true
   end
   if x>=CANCEL.x and x<CANCEL.x+CANCEL.w and y>=CANCEL.y and y<CANCEL.y+CANCEL.h then
     self.index=self:count();self:choose();return true
@@ -303,7 +410,13 @@ function Gen4PartyMenu:swapWith(slot)
 end
 
 function Gen4PartyMenu:choose()
+  if self:onConfirmRow() then return self:confirmSelection() end
   if self.index > #self:party() then
+    if self.select then
+      self.game.stack:pop()
+      if self.select.onDone then self.select.onDone(nil) end
+      return
+    end
     if self.switchFrom then self.switchFrom = nil return end
     if self.hpTransfer then self.hpTransfer = nil return end
     -- CANCEL is the same refusal as B and takes the same route; see update().
@@ -340,6 +453,8 @@ function Gen4PartyMenu:runAction(action)
   self.itemMenu = nil
   local field=action:match('^field:(.+)$')
   if field and mon then return self:useFieldMove(mon,field) end
+  if action == 'enter' then return self:enterSlot(self.index) end
+  if action == 'noentry' then return self:unenterSlot(self.index) end
   if action == "send" and mon then
     -- Straight back to the caller. Whether this member MAY be sent out is the
     -- caller's question and it already asks it: BattleState's own onSwitch
@@ -395,6 +510,12 @@ Gen4PartyMenu.BATTLE_ACTIONS = { "send", "summary", "cancel" }
 function Gen4PartyMenu:actions()
   if self.itemMenu then return {'give','take','cancel'} end
   if self.battle then return Gen4PartyMenu.BATTLE_ACTIONS end
+  if self.select then
+    local e = self:eligibility(self.index)
+    if e == "entered" then return { 'noentry', 'summary', 'cancel' } end
+    if e == "eligible" then return { 'enter', 'summary', 'cancel' } end
+    return { 'summary', 'cancel' }
+  end
   local rows={'summary'}
   local F=require('src.world.Gen4FieldMoves');local mon=self:party()[self.index]
   local egg=require('src.pokemon.Party').isEgg(mon)
@@ -512,6 +633,11 @@ function Gen4PartyMenu:finishHpTransfer()
   giver.hp = (tonumber(giver.hp) or 0) - amount
   target.hp = hp + amount
   self.hpTransfer = nil
+  -- the Journal: "Shared HP using Softboiled / Milk Drink." (party_menu main.c)
+  pcall(function()
+    local J = require('src.pokemon.Gen4Journal')
+    J.usedMove(self.game.save, self.hpTransferMove == 'MILK_DRINK' and J.MOVE.MILK_DRINK or J.MOVE.SOFTBOILED, 0)
+  end)
   -- 64 "{name}'s HP was restored by {n} point(s)."
   local T = require('src.import.Gen4Text')
   T.buffer(self.game, self:monName(target), tostring(amount))
@@ -531,7 +657,7 @@ function Gen4PartyMenu:useFieldMove(mon,move)
   local save=self.game.save
   local function badge() return F.badgeHeld(self.game.data,save,move) end
   local partner=require('src.world.Gen4Follower').hasPartner(save)
-  if move=='MILK_DRINK' or move=='SOFTBOILED' then return self:startHpTransfer(mon) end
+  if move=='MILK_DRINK' or move=='SOFTBOILED' then self.hpTransferMove=move; return self:startHpTransfer(mon) end
   if not ow then return self:fieldRefused('location') end
   -- CUT, ROCK SMASH, STRENGTH: the badge, then the object faced
   local obstacle=Gen4PartyMenu.OBSTACLE[move]
@@ -606,6 +732,11 @@ function Gen4PartyMenu:useFieldMove(mon,move)
     if ow.player.surfing then return self:fieldRefused('surfing') end
     if partner then return self:fieldRefused('partner') end
     if ow:useSurfFieldMove()~='ok' then return self:fieldRefused('location') end
+    -- PLATINUM: FieldMoves_UseSurfFromMenu (field_moves 12) -- the message,
+    -- then UseSurf, which hops onto the water (Gen4Commands.g4_use_surf)
+    if not (self.game.data.gen4_version and self.game.data.gen4_version.family=='hgss') then
+      return self:runFieldScript('field_moves',12)
+    end
     self:close()
     local x,y=ow.player:facingCell();ow:trySurf(x,y)
     return
@@ -622,9 +753,14 @@ function Gen4PartyMenu:useFieldMove(mon,move)
   if (move=='DIG' or move=='TELEPORT') and partner then return self:fieldRefused('partner') end
   if not usable then return self:fieldRefused('location') end
   self:close()
-  if move=='DIG' then ow:beginTeleportOut(nil,{escape=true})
-  elseif move=='TELEPORT' then ow:beginTeleportOut()
-  elseif move=='SWEET_SCENT' then ow:gen4SweetScent() end
+  -- the Journal's field-move rows (field_move_tasks.c, field_warp.c)
+  local J=require('src.pokemon.Gen4Journal')
+  local here=ow.map and ow.map.def and ow.map.def.header
+  if move=='DIG' then pcall(J.usedMove,save,J.MOVE.DIG,here); ow:beginTeleportOut(nil,{escape=true})
+  elseif move=='TELEPORT' then
+    -- written where the player lands, once the warp has faded in
+    ow:beginTeleportOut(function() pcall(J.usedMove,save,J.MOVE.TELEPORT,ow.map and ow.map.def and ow.map.def.header) end)
+  elseif move=='SWEET_SCENT' then pcall(J.usedMove,save,J.MOVE.SWEET_SCENT,here); ow:gen4SweetScent() end
 end
 
 -- A field move's row is the MOVE'S NAME (STRVAR 6), from the cache's move
@@ -640,6 +776,8 @@ end
 function Gen4PartyMenu:actionLabel(action)
   local field=action:match('^field:(.+)$');if field then return self:fieldMoveName(field) end
   if action == "send" then return Strings("SEND OUT") end
+  if action == "enter" then return self:word('enter','ENTER') end
+  if action == "noentry" then return self:word('noEntry','NO ENTRY') end
   if action == "summary" then return self:word('summary','SUMMARY') end
   if action == "switch" then return self:word('switch','SWITCH') end
   if action == 'item' then return self:word('item','ITEM') end
@@ -652,12 +790,13 @@ end
 -- over in the same direction.
 function Gen4PartyMenu:step(dir)
   local party = self:party()
-  local at = self:onCancelRow() and 7 or (self.index - 1)
+  local at = self:onCancelRow() and 7 or (self:onConfirmRow() and 6) or (self.index - 1)
   for _ = 1, 8 do
-    local row = NAV[at]
+    local row = (self.select and NAV_SELECT[at]) or NAV[at]
     if not row then return end
     at = row[DIRS[dir]]
     if at == 7 then self.index = self:count() return end
+    if at == 6 then self.index = #party + 1 return end
     if party[at + 1] then self.index = at + 1 return end
   end
 end
@@ -667,6 +806,10 @@ function Gen4PartyMenu:update(dt)
   local input = self.game.input
   if not input then return end
 
+  if self.selectNotice then
+    if input:wasPressed("a") or input:wasPressed("b") then self.selectNotice = nil end
+    return
+  end
   if self.submenu then
     local actions = self:actions()
     local n = #actions
@@ -702,6 +845,8 @@ function Gen4PartyMenu:update(dt)
     elseif self.onSwitch and not (self.pickOnly or self.forceSwitch)
            and not self.battle then
       self:handOff(nil)
+    elseif self.select then
+      self.index = self:count(); self:choose()
     else
       self:close()
     end
@@ -880,6 +1025,12 @@ function Gen4PartyMenu:drawPanel(i, mon)
     self:number(tonumber(mon.level) or 1, at.x + 21, at.y + 34)
   end
 
+  if self.select then
+    Font.pushStyle(self.ink.name)
+    Font.draw(self:selectionWord(i), at.x + 48, at.y + 32)
+    Font.popStyle()
+    return
+  end
   if self.tmhm then
     -- WITH A MACHINE OPEN THE PANEL ANSWERS THE QUESTION instead of showing
     -- the numbers and the bar.
@@ -958,6 +1109,18 @@ function Gen4PartyMenu:drawCursor()
   end
 end
 
+function Gen4PartyMenu:drawConfirm()
+  local selected = self:onConfirmRow()
+  if not self:drawSprite(selected and "button_1" or "button_0", CONFIRM.cx, CONFIRM.cy) then
+    Font.drawBox(25, 17, 7, 3)
+    if selected then Font.drawCode(Theme.cursor, CONFIRM.x + 2, CONFIRM.label.y) end
+  end
+  local word = self:word("confirm", "CONFIRM")
+  Font.pushStyle(self.ink.name)
+  Font.draw(word, CONFIRM.label.x + math.floor((CONFIRM.label.w - Font.width(word)) / 2), CONFIRM.label.y)
+  Font.popStyle()
+end
+
 function Gen4PartyMenu:drawCancel()
   local selected = self:onCancelRow()
   if not self:drawSprite(selected and "button_1" or "button_0", CANCEL.cx, CANCEL.cy) then
@@ -985,10 +1148,21 @@ function Gen4PartyMenu:prompt()
   if self.hpTransfer then return self:word("useOn", "Use on which Pokémon?") end
   if self.tmhm then return self:word("teachWhich", "Teach which POKéMON?") end
   if self.pickOnly then return self:word("useOn", "Use on which Pokémon?") end
+  if self.select then return self.selectNotice or self:word("chooseAndConfirm", "Choose Pokémon and confirm.") end
   return self:word("choose", "Choose a Pokémon.")
 end
 
 function Gen4PartyMenu:drawMessage()
+  -- a refusal while choosing a team: the long message, two lines, A or B
+  if self.selectNotice then
+    messageBox({ tx = 1, ty = 18, tw = 22, th = 6 })
+    local y = 152
+    for line in (self.selectNotice:gsub("{[^}]*}", "") .. "\n"):gmatch("([^\n]*)\n") do
+      if y < 184 then Font.draw(Font.fit(line, 160), 16, y) end
+      y = y + 16
+    end
+    return
+  end
   if self.submenu then
     messageBox(MEDIUM_BOX)
     local mon = self:party()[self.index]
@@ -1068,6 +1242,7 @@ function Gen4PartyMenu:draw()
   self:drawCursor()
   for i = 1, math.min(#party, #SLOTS) do self:drawPanelSprites(i, party[i]) end
 
+  if self.select then self:drawConfirm() end
   self:drawCancel()
   self:drawMessage()
   if self.submenu then self:drawSubmenu() end

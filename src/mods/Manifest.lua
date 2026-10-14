@@ -112,7 +112,8 @@ end
 -- patches is what it patches, and the registry remains the truth once loaded.
 -- `generations`: [1, 2] -- the generations a mod is written for.
 --
--- Validated to the generations that exist and sorted, so the set is comparable and
+-- Validated to the generations that exist (ModGens.COUNT -- 1 to 5) and
+-- sorted, so the set is comparable and
 -- an out-of-range entry is dropped rather than widening the mod's claim.  An
 -- empty or malformed list reads as "unstated" (nil), NOT as "none": a mod that
 -- says nothing intelligible must keep working exactly as it did.
@@ -122,7 +123,10 @@ local function parseGenerations(raw)
   local seen, out = {}, {}
   for _, entry in ipairs(list) do
     local n = tonumber(entry)
-    if n and n % 1 == 0 and n >= 1 and n <= 4 and not seen[n] then
+    -- WAS `n <= 3`, which silently dropped a mod's claim to Gen 4 (and would
+    -- have dropped Gen 5): a Platinum mod that said "generations": [4] read as
+    -- saying nothing at all
+    if n and n % 1 == 0 and n >= 1 and n <= require("src.mods.ModGens").COUNT and not seen[n] then
       seen[n] = true
       out[#out + 1] = n
     end

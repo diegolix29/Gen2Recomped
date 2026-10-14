@@ -45,6 +45,9 @@ function Field.program(data,move,slot,script)
   local entry=data.constants.gen3FieldMoves[move]
   local out={{"g3_lock",true},{"g3_field_effect_arg",0,slot},
     {"g3_buffer",0,"party",slot},{"g3_buffer",1,"move",entry.move}}
+  -- GAME_STAT_USED_CUT / _USED_ROCK_SMASH
+  if move=="CUT" then out[#out+1]={"g3_game_stat",18}
+  elseif move=="ROCK_SMASH" then out[#out+1]={"g3_game_stat",19} end
   for _,row in ipairs(tail) do out[#out+1]=row end
   return out
 end

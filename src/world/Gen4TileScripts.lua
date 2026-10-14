@@ -109,6 +109,44 @@ end
 
 Gen4TileScripts.byValue = index
 
+-- ...AND NOW THE TWO ROWS BELOW THE TABLE, after all.  The party menu was the
+-- only door into Surf and Rock Climb, and an HM sweep found both dead from the
+-- overworld: pressing A at the sea or at a rocky wall did nothing at all.
+-- They are the C's own tests (`Field_TileBehaviorToScript`, field_control.c),
+-- reached only when no table row matched:
+--
+--     PlayerAvatar_CanUseRockClimb(behavior, dir)        -> FIELD_MOVES 3
+--         (ROCK_CLIMB_N_S facing north/south, _E_W facing west/east; the
+--          script asks for the move and the Icicle Badge itself)
+--     !surfing && CanUseSurf(next) && HasBadge(3)
+--         && Party_HasMonWithMove(SURF)                  -> FIELD_MOVES 4
+--
+-- One door each still: the menu runs entries 11 and 12, the press 3 and 4,
+-- and every one of them ends in the same `UseRockClimb` / `UseSurf`.
+-- Platinum's numbering; HeartGold's field-move band is its own.
+Gen4TileScripts.ROCK_CLIMB_N_S, Gen4TileScripts.ROCK_CLIMB_E_W = 0x4B, 0x4C
+
+function Gen4TileScripts.fieldMoveRow(ow, behaviour, facing)
+  local Game = package.loaded["src.core.Game"]
+  local data, save = Game and Game.data, Game and Game.save
+  if not (data and save) then return nil end
+  if data.gen4_version and data.gen4_version.family == "hgss" then return nil end
+  local ns = (facing == "up" or facing == "down") and behaviour == Gen4TileScripts.ROCK_CLIMB_N_S
+  local ew = (facing == "left" or facing == "right") and behaviour == Gen4TileScripts.ROCK_CLIMB_E_W
+  if ns or ew then
+    return { behaviour = "ROCK_CLIMB", band = "field_moves", index = 3 }
+  end
+  local Map = require("src.world.Map")
+  local p = ow and ow.player
+  if p and not p.surfing and Map.G4_SURFABLE[behaviour] then
+    local F = require("src.world.Gen4FieldMoves")
+    if F.partyMember(data, save, "SURF") then
+      return { behaviour = "WATER", band = "field_moves", index = 4 }
+    end
+  end
+  return nil
+end
+
 -- The row for a behaviour byte, or nil.  `facing` is the player's, in this
 -- engine's words ("up" is DIR_NORTH).
 function Gen4TileScripts.rowFor(behaviour, facing)

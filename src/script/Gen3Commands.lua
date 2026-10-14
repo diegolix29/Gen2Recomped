@@ -1980,6 +1980,11 @@ function Commands.g3_trainer_battle(ctx, kind, trainerId, winScript, cantText,
     end
     return
   end
+  -- EMERALD'S TRAINER_BATTLE_PYRAMID: the floor's frontier trainer, not the
+  -- placeholder the record names (src/script/Gen3BattlePyramid.lua)
+  if k == 9 and require("src.core.GameVersion").get() == "emerald" then
+    return require("src.script.Gen3BattlePyramid").trainerBattle(ctx)
+  end
   if FLAG_CHECKED_KINDS[k] then
     local name = trainerFlag(ctx.g3Trainer, ctx.game and ctx.game.data)
     if name and (ctx.save or {}).flags and ctx.save.flags[name] == true then
@@ -2235,6 +2240,16 @@ end
 
 function Commands.g3_warp(ctx, group, number, warpId, x, y)
   local id = mapKey(group, number)
+  -- THE PYRAMID FLOOR'S (1, 1) IS NOBODY'S CELL: the layout puts the player on
+  -- the entrance square's exit tile (GenerateBattlePyramidFloorLayout)
+  if id == "MAP_G26_N26" and require("src.core.GameVersion").get() == "emerald" then
+    local P = require("src.script.Gen3BattlePyramid")
+    local ex, ey = P.entrance(ctx.game.data, ctx.save)
+    if ex then
+      Commands.warp(ctx, id, ex, ey)
+      return
+    end
+  end
   -- warp id $FF means "use the x/y given"; anything else names a warp on the
   -- destination map and the coordinates are ignored
   local named = tonumber(warpId) or 0xFF
@@ -2485,6 +2500,10 @@ function Commands.g3_rotate_move(ctx, puzzle)
       local step = ROTATE_STEP[spec.order[dir + 1]]
       local rows = rotatingMovement(ctx, spec.walk[dir + 1])
       if step then
+        -- RotateTilePuzzle moves the template when the slide starts.
+        -- Internal gym teleports must respawn it at that destination.
+        rememberHome(ctx, npc.def and npc.def.index,
+                     npc.cellX + step[1], npc.cellY + step[2])
         state.objects[#state.objects + 1] = {
           entity = npc, index = npc.def and npc.def.index, from = dir,
           x = npc.cellX + step[1], y = npc.cellY + step[2],
@@ -3141,6 +3160,15 @@ end
 
 function Commands.g3_wait_state(ctx)
   Gen3Commands.restoreFade(ctx)
+  -- ...and, as on the cartridge, wait for whichever running effect calls
+  -- ScriptContext_Enable first: a camera shake, the Orb (src/world/Gen3ScreenFx)
+  local runner = ctx.runner
+  if ctx.overworld and runner and runner.yield then
+    local parked = require("src.world.Gen3ScreenFx").wait(ctx.overworld, function()
+      if runner.resume then runner:resume() end
+    end)
+    if parked then runner:yield() end
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -4814,15 +4842,38 @@ end
 -- what is honoured here is the DURATION, because that is the part the port's
 -- jolt has a knob for and inventing an amplitude scale it does not have would
 -- be a number this port chose.
+--
+-- NOW THE CARTRIDGE'S OWN (Task_ShakeCamera): the CAMERA pans by the two
+-- amplitudes, map and sprites together, the sign flipping every 0x8007th
+-- frame, 0x8006 times -- and the script's `waitstate` waits for it
+-- (src/world/Gen3ScreenFx.lua). A record with no usable count or delay keeps
+-- the old background jolt.
 local GEN3_SHAKE_DEFAULT = 32
 Gen3Commands.SPECIALS[312] = function(ctx)
   local ow = ctx.overworld
   if not ow then return end
+  local Fx = require("src.world.Gen3ScreenFx")
+  if Fx.shakeCamera(ow, getVar(ctx.save, 0x8004), getVar(ctx.save, 0x8005),
+                    getVar(ctx.save, 0x8006), getVar(ctx.save, 0x8007)) then
+    return
+  end
   local frames = getVar(ctx.save, 0x8006)
   if not frames or frames <= 0 or frames > 600 then
     frames = GEN3_SHAKE_DEFAULT
   end
   ow.quakeFrames = frames
+end
+
+-- 284 DoOrbEffect / 285 FadeOutOrbEffect: Maxie's and Archie's Orbs waking
+-- Groudon and Kyogre (Magma Hideout 4F, Seafloor Cavern) -- the red or blue
+-- circle, the rocking camera, and the fade. src/world/Gen3ScreenFx.lua.
+Gen3Commands.SPECIALS[284] = function(ctx)
+  if ctx.overworld then
+    require("src.world.Gen3ScreenFx").orb(ctx.overworld, getVar(ctx.save, VAR_RESULT))
+  end
+end
+Gen3Commands.SPECIALS[285] = function(ctx)
+  if ctx.overworld then require("src.world.Gen3ScreenFx").fadeOutOrb(ctx.overworld) end
 end
 
 -- 297 and 298: FACE ME, AND LET GO.
@@ -7083,6 +7134,34 @@ function Commands.g3_special(ctx, index, destVar)
   end
 end
 
+-- THE MIRAGE TOWER COMES DOWN: 411 / 413 / 483 / 484 / 485, the effects of
+-- mirage_tower.c -- see src/world/Gen3MirageTower.lua. None of the scripts
+-- waits on them; they run beside the message that follows.
+Gen3Commands.SPECIALS[411] = function(ctx)
+  require("src.world.Gen3MirageTower").ceilingCrumble(ctx.overworld, ctx.game)
+end
+Gen3Commands.SPECIALS[413] = function(ctx)
+  require("src.world.Gen3MirageTower").descend(ctx.overworld, ctx.game)
+end
+Gen3Commands.SPECIALS[483] = function(ctx)
+  require("src.world.Gen3MirageTower").startDisintegration(ctx.overworld, ctx.game)
+end
+Gen3Commands.SPECIALS[484] = function(ctx)
+  require("src.world.Gen3MirageTower").startShake(ctx.overworld, ctx.game)
+end
+Gen3Commands.SPECIALS[485] = function(ctx)
+  require("src.world.Gen3MirageTower").startFossil(ctx.overworld, ctx.game)
+end
+
+-- 133 SwapRegisteredBike (item.c): Rydel trades your bike for the other one,
+-- and a bike registered to SELECT moves with it rather than pointing at the
+-- bike you no longer have.
+Gen3Commands.SPECIALS[133] = function(ctx)
+  local reg = ctx.save.registeredItem
+  if reg == "MACH_BIKE" then ctx.save.registeredItem = "ACRO_BIKE"
+  elseif reg == "ACRO_BIKE" then ctx.save.registeredItem = "MACH_BIKE" end
+end
+
 -- ---------------------------------------------------------------------------
 -- THE REST OF THE OPCODE TABLE
 --
@@ -7897,12 +7976,16 @@ Gen3Commands.SPECIALS[6] = function(ctx)
   local id = math.floor(tonumber(ctx.g3SecretBaseId or getVar(save, VAR_SECRET_BASE_ID)) or 0)
   local ow = ctx.overworld
   local player = ow and ow.player
+  local back = save.gen3DynamicWarp
+  local outside = require("src.world.Gen3SecretBase").isRoom(secretBaseRecord(ctx),
+                         ow and ow.map and ow.map.id) and back or nil
   local claimed = require("src.world.Gen3SecretBase").claim(save, id,
-                                            ow and ow.map and ow.map.id,
-                                            player and player.cellX,
-                                            player and player.cellY)
+                                            outside and outside.map or (ow and ow.map and ow.map.id),
+                                            outside and outside.x or (player and player.cellX),
+                                            outside and outside.y or (player and player.cellY))
   if claimed then
-    local def = ow and ow.map and ow.map.def
+    local def = outside and ctx.game and ctx.game.data and ctx.game.data.maps
+                 and ctx.game.data.maps[outside.map] or (ow and ow.map and ow.map.def)
     local section = def and def.regionMapSection
     if section then setVar(save, 0x4026, section) end
     setVar(save, 0x4054, 0) -- VAR_CURRENT_SECRET_BASE
@@ -9608,10 +9691,14 @@ function Commands.g3_start_contest(ctx)
       state.standings = {}
       state.conditions = {}
       state.names = {}
+      state.trainers = {}
+      state.playerIndex = 0
       for i, c in ipairs(result.run.contestants) do
         state.standings[i] = c.place
         state.conditions[i] = c.condition
         state.names[i] = c.mon and (c.mon.nickname or c.mon.species) or "?"
+        state.trainers[i] = c.trainer or (c.player and ctx.save.player and ctx.save.player.name) or ""
+        if c.player then state.playerIndex = i - 1 end
       end
     end,
   })
@@ -9686,6 +9773,35 @@ Gen3Commands.SPECIALS[88] = function(ctx)
       return
     end
   end
+end
+
+-- GET_CONTEST_WINNER_ID (contest_util.c): the first contestant whose final
+-- standing is 0th, i.e. first place.
+function Gen3Commands.contestWinner(state)
+  for i, place in pairs(state.standings or {}) do
+    if place == 1 then return i end
+  end
+  return 1
+end
+
+-- 80 GetContestPlayerId: VAR_0x8004 = gContestPlayerMonIndex, the player's
+-- seat among the four (the results scripts compare it with the winner's).
+Gen3Commands.SPECIALS[80] = function(ctx)
+  setVar(ctx.save, 0x8004, contestState(ctx).playerIndex or 0)
+end
+
+-- 82 BufferContestWinnerTrainerName: STR_VAR_3, the winner's trainer.
+Gen3Commands.SPECIALS[82] = function(ctx)
+  local state = contestState(ctx)
+  ctx.save.buffers = ctx.save.buffers or {}
+  ctx.save.buffers[3] = tostring((state.trainers or {})[Gen3Commands.contestWinner(state)] or "")
+end
+
+-- 83 BufferContestWinnerMonName: STR_VAR_1, the winning Pokemon's nickname.
+Gen3Commands.SPECIALS[83] = function(ctx)
+  local state = contestState(ctx)
+  ctx.save.buffers = ctx.save.buffers or {}
+  ctx.save.buffers[1] = tostring((state.names or {})[Gen3Commands.contestWinner(state)] or "")
 end
 
 -- 79 GetContestWinnerId
@@ -11794,6 +11910,13 @@ function Gen3Commands.frontierCall(ctx, facility)
     Logger.debug("gen3 frontier: %s function %d is not ported", facility, arg)
   end
   if answers then setVar(ctx.save, VAR_RESULT, 0) end
+  -- ...and nothing left in gStringVar4 for a following `msgbox gStringVar4`
+  -- to show: a function that is not ported has not filled it, and the last
+  -- line some other script put there is not this one's
+  if ctx.game then
+    ctx.game.stringBuffers = ctx.game.stringBuffers or {}
+    ctx.game.stringBuffers[4] = ""
+  end
   return 0
 end
 
@@ -12880,15 +13003,25 @@ Gen3Commands.SPECIALS[239] = function(ctx)
     Logger.warn("gen3 tent: %s has no face on this dataset -- import the ROM "
                   .. "again", tostring(trainer.name))
   end
-  Logger.info("gen3 tent: fought under this engine's ordinary rules -- the "
-                .. "cartridge's PALACE rules (natures choosing the moves) are "
-                .. "not ported yet")
-  Commands.start_battle(ctx, "trainer", Gen3Commands.TENT_TRAINER_KEY, 1, nil)
+  -- Verdanturf (VAR_FRONTIER_FACILITY 2, FRONTIER_FACILITY_PALACE) fights
+  -- under PALACE rules; every tent battle is a Frontier one -- no
+  -- experience, and a loss is the challenge's end rather than a whiteout
+  -- ...and Fallarbor (3, FRONTIER_FACILITY_ARENA) under ARENA rules
+  local fac = math.floor(tonumber(getVar(ctx.save,
+    (parties or {}).tentVar or Gen3Commands.TENT_VAR)) or 0)
+  Commands.start_battle(ctx, "trainer", Gen3Commands.TENT_TRAINER_KEY, 1,
+    { canLose = true, noExp = true, palace = (fac == 2) or nil, arena = (fac == 3) or nil,
+      forfeit = true })
   local won = ctx.lastBattleResult == "win"
   setVar(ctx.save, VAR_RESULT, won and 1 or 0)
   return won and 1 or 0
 end
 
 Gen3Commands.installTent()
+
+-- ...and the Battle Tower over it (src/script/Gen3BattleFrontier.lua), which
+-- hands a tent's calls back to the handlers above
+package.loaded["src.script.Gen3Commands"] = Gen3Commands
+require("src.script.Gen3BattleFrontier").install()
 
 return Gen3Commands

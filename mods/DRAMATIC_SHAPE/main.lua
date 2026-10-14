@@ -199,6 +199,11 @@ function V.data(name)
     return value
   end
   local value = chunkFor("data/" .. name .. ".lua")(V)
+  if name == "voxel_heights" and version == "polishedcrystal" then
+    value = V.require("PolishedProfile").apply(value,
+      chunkFor("data/polishedcrystal/voxel_indices.lua")(V),
+      chunkFor("data/polishedcrystal/furniture.lua")(V))
+  end
   dataFiles[name] = value
   return value
 end
@@ -216,6 +221,15 @@ local VoxelScene = V.require("VoxelScene")
 local NativeGen4 = V.require('NativeGen4')
 local TiltShift = V.require("TiltShift")
 local ChunkMesher = V.require("ChunkMesher")
+-- LEDGE TERRACES moves the ground, so every built mesh goes: the disk cache
+-- already keys on it (VoxelDiskCache.shapeSignature), this drops the copies
+-- in memory and the queue, and the world rebuilds around the player.
+V.require("Structures").ledgeSetting.onChange = function()
+  ChunkMesher.invalidate()
+end
+if require('src.core.GameVersion').get() == 'polishedcrystal' then
+  ChunkMesher.setCacheRulesTag('emerald-clean-civic-roofs-v16')
+end
 -- Forward declaration: the prebake pass is set up far below (it needs the
 -- options schema first) but the update hook that drives it is written above
 -- that, and a closure cannot capture a local that does not exist yet.
@@ -592,6 +606,17 @@ end
 
 local SETTINGS = {
   { VoxelGrid.setting, "One-pixel wireframe along every voxel edge." },
+  -- Geometry, not look: the FULL preset does not own it, so `full = true`
+  -- keeps it on the menu there too.  A change drops every built mesh (see
+  -- rebuildForLedges below) because the ground itself moves.
+  { V.require("Structures").ledgeSetting,
+    "Gen 3 hop-down ledges raise the ground behind them into terraces. OFF "
+    .. "keeps the map's own ground level and gives each ledge a low lip.",
+    when = function()
+      local ok, GV = pcall(require, "src.core.GameVersion")
+      return ok and GV.generation and GV.generation(GV.get()) == 3
+    end,
+    full = true },
   { WorldCurve.setting,
     "Bend the world down over the horizon, Animal Crossing style." },
   { Water.setting,

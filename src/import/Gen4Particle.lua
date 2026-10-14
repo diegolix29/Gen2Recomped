@@ -138,7 +138,7 @@ function Gen4Particle.shape(param)
   return { format = param % 8, width = w, height = h }
 end
 
--- textures(data) -> { { format, width, height, pixels, palette }, ... }
+-- textures(data) -> { { format, width, height, pixels, palette, repeatS/T, flipS/T }, ... }
 --
 -- `palette` is a flat list of { r, g, b } 0-255, and it is TRIMMED: the
 -- cartridge stores only the colours a texture uses, so most are two entries
@@ -187,6 +187,13 @@ function Gen4Particle.textures(data)
       pixels = sub(data, at + Gen4Particle.TEXTURE_HEADER_BYTES + 1,
                    at + Gen4Particle.TEXTURE_HEADER_BYTES + texBytes),
       palette = palette,
+      -- SPLTextureParam bits 12-15: repeat S/T, then FLIP S/T. A flipped
+      -- repeat mirrors every other copy, which is how a quarter-circle tiled
+      -- 2x2 becomes a ring (spl_draw.c hands the bits to the polygon).
+      repeatS = floor(param / 4096) % 2 == 1,
+      repeatT = floor(param / 8192) % 2 == 1,
+      flipS = floor(param / 16384) % 2 == 1,
+      flipT = floor(param / 32768) % 2 == 1,
     }
     at = at + total
     n = n + 1

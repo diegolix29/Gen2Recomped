@@ -447,6 +447,7 @@ function Gen3ShopMenu:buyDecoration(row)
       end
       Decor.give(game.save, row.id, 1)
       game.save.money = (tonumber(game.save.money) or 0) - cost
+      require("src.pokemon.Gen3GameStats").increment(game.save, 38) -- GAME_STAT_SHOPPED
       require("src.core.Sound").play(game.data, "Purchase")
       self.say = self:repeatLine()
                  or line(game, "boughtBag", Strings("Here you are!\nThank you!"))
@@ -539,6 +540,7 @@ function Gen3ShopMenu:buy(row)
             return
           end
           game.save.money = (tonumber(game.save.money) or 0) - cost
+      require("src.pokemon.Gen3GameStats").increment(game.save, 38) -- GAME_STAT_SHOPPED
           require("src.core.Sound").play(game.data, "Purchase")
           self.say = line(game, "boughtBag",
                           Strings("Here you are!\nThank you!"))

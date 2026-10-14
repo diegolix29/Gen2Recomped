@@ -113,6 +113,19 @@ function love.load(args)
       { "Matchup Checker", function(w, s) s.matchup = { 1, 2 }; s.compatibility = 70 end },
       { "Dowsing Machine" }, { "Marking Map" }, { "Berry Searcher" },
       { "Color Changer", function(w, s) s.color = 3 end }, { "Trainer Counter" },
+      -- the app change: the shutter closing, then held shut with the number
+      { "Counter", function(w) w:cycle(1) end, 6 },
+      { "Counter", function(w) w:cycle(1); w:updatePresentation(1 / 60); w:cycle(1) end, 14 },
+      { "Counter", function(w) w:cycle(1) end, 20 },
+      { "Dowsing Machine", function(w)
+          w.dowsingResult = { kind = 2, x = 112, y = 101, items = { { x = 134, y = 90, range = 1 } } }
+          w.dowsingStart = 0 end, 14 },
+      { "Dowsing Machine", function(w)
+          w.dowsingResult = { kind = 2, x = 112, y = 101, items = { { x = 134, y = 90, range = 1 } } }
+          w.dowsingStart = 0 end, 50 },
+      { "Roulette", function(w) w:rouletteButton(1) end, 30 },
+      { "Matchup Checker", function(w, s) s.matchup = { 1, 2 }; w:matchupTouch(112, 148) end, 200 },
+      { "Pokémon List", function(w, s) w.game.save.party[4].hp = 30 end },
     }
     local pages = {}
     for _, sc in ipairs(scenes) do

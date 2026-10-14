@@ -323,33 +323,39 @@ static bool callStaticBool(const char *name, const char *sig, const char *arg)
 	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
 	if (env == nullptr)
 		return false;
-
+	// Folder creation also runs in the ROM import worker. FindClass on a
+	// native thread uses the system loader, which cannot resolve app classes.
+	// Use SDL's live activity, as the background HTTP bridge does below.
 	jobject activityObj = (jobject) SDL_AndroidGetActivity();
-	if (activityObj == nullptr)
-		return false;
-	jclass activity = env->GetObjectClass(activityObj);
-	env->DeleteLocalRef(activityObj);
-	if (activity == nullptr)
+	if (env->ExceptionCheck() || activityObj == nullptr)
 	{
 		env->ExceptionClear();
+		if (activityObj != nullptr) env->DeleteLocalRef(activityObj);
 		return false;
 	}
-
+	jclass activity = env->GetObjectClass(activityObj);
+	env->DeleteLocalRef(activityObj);
+	if (env->ExceptionCheck() || activity == nullptr)
+	{
+		env->ExceptionClear();
+		if (activity != nullptr) env->DeleteLocalRef(activity);
+		return false;
+	}
 	jmethodID method = env->GetStaticMethodID(activity, name, sig);
-	if (method == nullptr)
+	if (env->ExceptionCheck() || method == nullptr)
 	{
 		env->ExceptionClear();
 		env->DeleteLocalRef(activity);
 		return false;
 	}
-
-	jboolean result = JNI_FALSE;
+	jboolean result;
 	if (arg != nullptr)
 	{
 		jstring jarg = env->NewStringUTF(arg);
-		if (jarg == nullptr)
+		if (env->ExceptionCheck() || jarg == nullptr)
 		{
 			env->ExceptionClear();
+			if (jarg != nullptr) env->DeleteLocalRef(jarg);
 			env->DeleteLocalRef(activity);
 			return false;
 		}
@@ -358,13 +364,11 @@ static bool callStaticBool(const char *name, const char *sig, const char *arg)
 	}
 	else
 		result = env->CallStaticBooleanMethod(activity, method);
-
 	if (env->ExceptionCheck())
 	{
 		env->ExceptionClear();
 		result = JNI_FALSE;
 	}
-
 	env->DeleteLocalRef(activity);
 	return result == JNI_TRUE;
 }
@@ -472,6 +476,55 @@ bool httpDownload(const char *url, const char *destPath, const char *userAgent, 
 		env->DeleteLocalRef(jaccept);
 	env->DeleteLocalRef(activity);
 	return result;
+}
+
+bool installApk(const char *path)
+{
+    return callStaticBool("installApk", "(Ljava/lang/String;)Z", path);
+}
+
+bool canInstallApks()
+{
+    return callStaticBool("canInstallApks", "()Z", nullptr);
+}
+
+bool requestInstallPermission()
+{
+    return callStaticBool("requestInstallPermission", "()Z", nullptr);
+}
+
+bool closeOfflineTranslation()
+{
+    return callStaticBool("closeOfflineTranslation", "()Z", nullptr);
+}
+
+// Gen2Recomp: byte arrays preserve standard UTF-8, including supplementary characters.
+bool translateOffline(const char *source, const char *target, const std::string &text, std::string &output)
+{
+    JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+    jobject obj = (jobject) SDL_AndroidGetActivity();
+    if (!obj) return false;
+    jclass activity = env->GetObjectClass(obj);
+    env->DeleteLocalRef(obj);
+    jmethodID method = env->GetStaticMethodID(activity, "translateOffline", "(Ljava/lang/String;Ljava/lang/String;[B)[B");
+    if (!method) { env->ExceptionClear(); env->DeleteLocalRef(activity); return false; }
+    jstring from = env->NewStringUTF(source);
+    jstring to = env->NewStringUTF(target);
+    jbyteArray bytes = env->NewByteArray((jsize) text.size());
+    env->SetByteArrayRegion(bytes, 0, (jsize) text.size(), (const jbyte*) text.data());
+    jbyteArray result = (jbyteArray) env->CallStaticObjectMethod(activity, method, from, to, bytes);
+    bool ok = !env->ExceptionCheck() && result;
+    if (env->ExceptionCheck()) { env->ExceptionDescribe(); env->ExceptionClear(); }
+    if (ok) {
+        output.resize(env->GetArrayLength(result));
+        if (!output.empty()) env->GetByteArrayRegion(result, 0, (jsize) output.size(), (jbyte*) &output[0]);
+    }
+    if (result) env->DeleteLocalRef(result);
+    env->DeleteLocalRef(bytes);
+    env->DeleteLocalRef(from);
+    env->DeleteLocalRef(to);
+    env->DeleteLocalRef(activity);
+    return ok;
 }
 
 /*

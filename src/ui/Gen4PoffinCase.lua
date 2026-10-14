@@ -32,6 +32,16 @@ Case.BANK = 463
 Case.VIEW = 6                       -- POFFIN_LIST_VIEW_HEIGHT
 Case.ALL = 5                        -- FLAVOR_MAX: the ALL button
 
+-- THE CASE'S SOUNDS (manager.c, menus.c): SEQ_SE_DP_SELECT (SE_CONFIRM_sseq_3)
+-- for every A / B and every cursor move of the list (UpdateSelectedPoffin),
+-- the action menu (PlaySound) and the YES / NO window (Menu_ProcessInput);
+-- SEQ_SE_DP_BUTTON9 for a flavour button (PoffinManager_UpdatePoffinFilter).
+local function se(self, name, opts)
+  local data = self.game and self.game.data
+  local ok, Sound = pcall(require, "src.core.Sound")
+  if ok and type(Sound) == "table" and Sound.playSe and data then return Sound.playSe(data, name, opts) end
+end
+
 function Case:uiSize() return 256, 192 end
 function Case:wantsFillScale() return true end
 
@@ -116,6 +126,8 @@ function Case:close()
 end
 
 function Case:setFilter(f)
+  -- pressed again on the chosen button, it still sounds
+  se(self, "SEQ_SE_DP_BUTTON9")
   if f == self.filter then return end
   self.filter, self.top, self.cursor = f, 0, 0
   self:refresh()
@@ -135,8 +147,13 @@ function Case:update()
     return
   end
   if self.mode == "confirm" then
-    if input:wasPressed("up") or input:wasPressed("down") then self.yes = not self.yes end
+    if input:wasPressed("up") or input:wasPressed("down") then
+      self.yes = not self.yes
+      se(self, "SEQ_SE_DP_SELECT")
+    end
     local a, b = input:wasPressed("a"), input:wasPressed("b")
+    -- State_ConfirmDeletePoffin: YES and MENU_CANCEL both sound
+    if a or b then se(self, "SEQ_SE_DP_SELECT") end
     if b or (a and not self.yes) then self.mode, self.message = "list", nil; return end
     if a then
       local index = self:selected()
@@ -150,9 +167,11 @@ function Case:update()
     return
   end
   if self.mode == "action" then
-    if input:wasPressed("up") then self.action = (self.action + 2) % 3 end
-    if input:wasPressed("down") then self.action = (self.action + 1) % 3 end
+    if input:wasPressed("up") then self.action = (self.action + 2) % 3; se(self, "SEQ_SE_DP_SELECT") end
+    if input:wasPressed("down") then self.action = (self.action + 1) % 3; se(self, "SEQ_SE_DP_SELECT") end
     local a, b = input:wasPressed("a"), input:wasPressed("b")
+    -- State_SelectAction: A or B
+    if a or b then se(self, "SEQ_SE_DP_SELECT") end
     if b or (a and self.action == 2) then self.mode = "list"; return end
     if a and self.action == 0 then return self:give() end
     if a and self.action == 1 then
@@ -165,6 +184,7 @@ function Case:update()
   end
   -- the list (a ListMenu with PAGER_MODE_LEFT_RIGHT_PAD)
   local count = #self.rows + 1
+  local wasTop, wasCursor = self.top, self.cursor
   if input:wasPressed("up") then
     if self.cursor > 0 then self.cursor = self.cursor - 1 elseif self.top > 0 then self.top = self.top - 1 end
   elseif input:wasPressed("down") then
@@ -180,7 +200,13 @@ function Case:update()
   elseif input:wasPressed("r") then
     self:setFilter((self.filter + 1) % 6)
   end
+  -- UpdateSelectedPoffin: the selection moved
+  if (self.top ~= wasTop or self.cursor ~= wasCursor) and not (input:wasPressed("l") or input:wasPressed("r")) then
+    se(self, "SEQ_SE_DP_SELECT")
+  end
   local a, b = input:wasPressed("a"), input:wasPressed("b")
+  -- State_SelectPoffin: A or B
+  if a or b then se(self, "SEQ_SE_DP_SELECT") end
   if b then return self:close() end
   if a then
     local index = self:selected()

@@ -185,10 +185,31 @@ Gen4Roamers.LONG_HOP_ONE_IN = 16
 -- your map is met on one wild encounter in two.
 Gen4Roamers.MEET_ONE_IN = 2
 
+-- HEARTGOLD / SOULSILVER run the same rules on their own tables
+-- (src/world/HgssRoamers: Raikou, Entei, Latias, Latios over 41 Johto and
+-- Kanto routes) -- the same odds above, both games, and a long hop kept to
+-- the slot's own region. Swapped in on the module, so every function below
+-- reads whichever family the loaded cartridge is.
+local PLATINUM_TABLES = {
+  SLOTS = Gen4Roamers.SLOTS, SLOT_COUNT = Gen4Roamers.SLOT_COUNT,
+  ROUTES = Gen4Roamers.ROUTES, ROUTE_COUNT = Gen4Roamers.ROUTE_COUNT,
+  NEARBY = Gen4Roamers.NEARBY,
+}
+local familyNow
+function Gen4Roamers.useFamily()
+  local ok, Bands = pcall(require, "src.import.Gen4ScriptBands")
+  local f = ok and Bands.family or nil
+  if f == familyNow then return end
+  familyNow = f
+  local t = (f == "hgss") and require("src.world.HgssRoamers") or PLATINUM_TABLES
+  for k in pairs(PLATINUM_TABLES) do Gen4Roamers[k] = t[k] end
+end
+
 -- ---------------------------------------------------------------------------
 -- the save
 
 local function held(save, make)
+  Gen4Roamers.useFamily()
   if type(save) ~= "table" then return nil end
   if make then save.gen4Roamers = save.gen4Roamers or {} end
   local all = save.gen4Roamers
@@ -213,9 +234,25 @@ function Gen4Roamers.mapForHeader(data, header)
   local index = headerIndex[maps]
   if not index then
     index = {}
+    -- GEN 4 MAPS FIRST: the loaded data can carry another generation's maps
+    -- with a `header` field of their own (a Johto `R_38` answered for HGSS's
+    -- header 42, Route 38), so those only fill numbers no Gen 4 map has
     for id, def in pairs(maps) do
-      if type(def) == "table" and def.header then index[def.header] = id end
+      if type(def) == "table" and def.header and def.generation ~= 4 then index[def.header] = id end
     end
+    -- ...and of two Gen 4 defs on one header (the loaded data can hold both
+    -- `R32` and a separate `R_32`), the plain id, so the answer is stable
+    local gen4 = {}
+    for id, def in pairs(maps) do
+      if type(def) == "table" and def.header and def.generation == 4 then
+        local have = gen4[def.header]
+        if not have or (tostring(have):find("_") and not tostring(id):find("_"))
+           or ((tostring(have):find("_") ~= nil) == (tostring(id):find("_") ~= nil) and tostring(id) < tostring(have)) then
+          gen4[def.header] = id
+        end
+      end
+    end
+    for header, id in pairs(gen4) do index[header] = id end
     headerIndex[maps] = index
   end
   return index[tonumber(header) or -1]
@@ -267,6 +304,7 @@ end
 -- happens to have it on -- it starts somewhere random that is not the map the
 -- player just came from.
 function Gen4Roamers.activate(data, save, slot, rng)
+  Gen4Roamers.useFamily()
   slot = math.floor(tonumber(slot) or -1)
   local def = Gen4Roamers.SLOTS[slot]
   if not (def and save) then return nil end
@@ -334,7 +372,7 @@ end
 
 local EVERYWHERE = nil
 local function everywhere()
-  if not EVERYWHERE then
+  if not EVERYWHERE or #EVERYWHERE ~= Gen4Roamers.ROUTE_COUNT then
     EVERYWHERE = {}
     for i = 0, Gen4Roamers.ROUTE_COUNT - 1 do EVERYWHERE[#EVERYWHERE + 1] = i end
   end
@@ -354,7 +392,9 @@ function Gen4Roamers.hop(data, save, slot, rng)
   local it = Gen4Roamers.active(save, slot) or (held(save) or {})[slot]
   if type(it) ~= "table" then return nil end
   local hereMap = Gen4Roamers.mapOf(data, tonumber(it.route) or 0)
-  local choice = pickAllowed(data, everywhere(), rng,
+  -- ...within the slot's region where it has one (HGSS)
+  local def = Gen4Roamers.SLOTS[tonumber(slot) or -1]
+  local choice = pickAllowed(data, (def and def.region) or everywhere(), rng,
                              Gen4Roamers.previousMap(save), hereMap)
   if not choice then return it.map end
   it.route, it.map = choice.index, choice.map
@@ -470,7 +510,12 @@ function Gen4Roamers.check(data, save, mapId, rng)
   local here = {}
   for slot = 0, Gen4Roamers.SLOT_COUNT - 1 do
     local it = Gen4Roamers.active(save, slot)
-    if it and it.map == mapId then here[#here + 1] = slot end
+    -- by HEADER as well as by id: a map can be loaded under two ids
+    local route = it and Gen4Roamers.ROUTES[tonumber(it.route) or -1]
+    local def = data and data.maps and data.maps[mapId]
+    if it and (it.map == mapId or (route and def and def.header == route.header)) then
+      here[#here + 1] = slot
+    end
   end
   if #here == 0 then return nil end
   if randInt(rng, Gen4Roamers.MEET_ONE_IN) == 0 then return nil end

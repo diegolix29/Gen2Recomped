@@ -116,6 +116,35 @@ function love.load()
       return battle
     end
 
+    -- a bag with every battle pocket filled, the HP pocket past one page
+    function stockBag(b, used)
+      local Bag = require("src.inventory.Bag")
+      local save = b.game.save
+      for _, row in ipairs({ { 17, 5 }, { 26, 3 }, { 25, 2 }, { 24, 1 }, { 23, 1 }, { 28, 2 },
+                             { 38, 4 }, { 18, 6 }, { 22, 2 }, { 21, 1 }, { 19, 3 }, { 20, 1 },
+                             { 27, 2 }, { 4, 12 }, { 3, 5 }, { 2, 1 }, { 55, 1 }, { 57, 2 }, { 58, 1 } }) do
+        Bag.add(save, row[1], row[2], Data)
+      end
+      if used then
+        local c = require("src.ui.Gen4BattleBag").bagCursor(b.game)
+        c.lastItem, c.lastPocket = 26, 0
+      end
+    end
+    function makeDouble(b)
+      local BattleState = require("src.battle.BattleState")
+      b.double = true
+      local partner = b.game.save.party[2]
+      b:placeBattler(2, BattleState.makeBattler(Data, partner, true, b.game.save))
+      local foe2 = Pokemon.new(Data, 403, 5)
+      local B = BattleState.makeBattler(Data, foe2, false)
+      b:placeBattler(3, B)
+      b.enemyParty = { b.enemy.mon, foe2 }
+      for _, x in ipairs({ b:battlerAt(2), b:battlerAt(3) }) do
+        x.shownHP = x.mon.hp
+        if x.name == nil then x.name = Data.pokemon[x.mon.species].name end
+      end
+    end
+
     local SCENES = {
       { "intro", { ticks = 140 } },
       { "menu", {} },
@@ -169,8 +198,130 @@ function love.load()
       { "party_select", { more = { { 25, 14 } } }, function(b)
           local P = require("src.ui.Gen4BattleParty")
           local s = P.new(b.game, { battle = b })
-          s.index = 2; s.screen = "select"; s.selectIndex = 3
+          s.index = 2; b.gen4CursorActive = true; s:setScreen("select", 3)
           return s
+        end },
+      -- THE BATTLE BAG, its three screens over a stocked bag
+      { "bag_menu", {}, function(b)
+          stockBag(b, true)
+          b.gen4CursorActive = true
+          print("bag screen id: " .. tostring(require("src.battle.Gen4Battle").bagScreenId(b)))
+          return require("src.ui.Gen4BattleBag").new(b.game, { battle = b })
+        end },
+      { "bag_menu_fresh", {}, function(b)
+          stockBag(b, false)
+          b.game.gen4BattleBagCursor = nil
+          return require("src.ui.Gen4BattleBag").new(b.game, { battle = b })
+        end },
+      { "bag_pocket", {}, function(b)
+          stockBag(b, true)
+          b.gen4CursorActive = true
+          local s = require("src.ui.Gen4BattleBag").new(b.game, { battle = b })
+          s.pocket = 0; s:setScreen("pocket"); s.cursor.index = 3
+          return s
+        end },
+      { "bag_pocket_p2", {}, function(b)
+          stockBag(b, true)
+          local s = require("src.ui.Gen4BattleBag").new(b.game, { battle = b })
+          s.pocket = 1; s.cur.pages[1] = 1; s:setScreen("pocket")
+          return s
+        end },
+      { "bag_balls", {}, function(b)
+          stockBag(b, true)
+          b.gen4CursorActive = true
+          local s = require("src.ui.Gen4BattleBag").new(b.game, { battle = b })
+          s.pocket = 2; s:setScreen("pocket")
+          s.press = { name = "item2", state = 1, ticks = 0 }
+          return s
+        end },
+      { "bag_use", {}, function(b)
+          stockBag(b, true)
+          b.gen4CursorActive = true
+          local s = require("src.ui.Gen4BattleBag").new(b.game, { battle = b })
+          s.pocket = 0; s.cur.positions[0] = 1; s:setScreen("use")
+          return s
+        end },
+      { "bag_battle_items", {}, function(b)
+          stockBag(b, true)
+          local s = require("src.ui.Gen4BattleBag").new(b.game, { battle = b })
+          s.pocket = 3; s:setScreen("pocket")
+          s:say("It's no good! It's impossible to aim\nwhen there are two Pokémon!")
+          return s
+        end },
+      -- the battle party list's detail pages
+      { "party_summary", { more = { { 25, 14 }, { 54, 12, status = "PSN" } } }, function(b)
+          b.gen4CursorActive = true
+          b.game.save.party[1].item = 17
+          local s = require("src.ui.Gen4BattleParty").new(b.game, { battle = b })
+          s.index = 1; s:setScreen("summary", 3)
+          return s
+        end },
+      { "party_moves", { more = { { 25, 14 } } }, function(b)
+          b.gen4CursorActive = true
+          local s = require("src.ui.Gen4BattleParty").new(b.game, { battle = b })
+          s.index = 1; s:setScreen("moves", 2)
+          return s
+        end },
+      { "party_movesum", { more = { { 25, 14 } } }, function(b)
+          b.gen4CursorActive = true
+          local s = require("src.ui.Gen4BattleParty").new(b.game, { battle = b })
+          s.index = 1; s.moveSlot = 2; s:setScreen("movesum")
+          return s
+        end },
+      { "party_item", { more = { { 25, 14, hp = 3 }, { 54, 12, status = "PSN" } } }, function(b)
+          local s = require("src.ui.Gen4BattleParty").new(b.game, { battle = b, mode = "useItem", itemId = 17 })
+          return s
+        end },
+      { "party_restore", { more = { { 25, 14 } } }, function(b)
+          b.gen4CursorActive = true
+          local mon = b.game.save.party[1]
+          for _, mv in ipairs(mon.moves) do mv.pp = math.max(0, mv.pp - 7) end
+          local s = require("src.ui.Gen4BattleParty").new(b.game, { battle = b, mode = "useItem",
+            itemId = 38, onMove = function() end })
+          s.index = 1; s:setScreen("restore", 1)
+          return s
+        end },
+      { "party_learn", { partyLevel = 30 }, function(b)
+          b.gen4CursorActive = true
+          local mon = b.game.save.party[1]
+          return require("src.ui.Gen4BattleParty").new(b.game, { battle = b, mode = "learnMove",
+            mon = mon, moveId = 53, onChoose = function() end })
+        end },
+      { "party_confirm", { partyLevel = 30 }, function(b)
+          b.gen4CursorActive = true
+          local mon = b.game.save.party[1]
+          local s = require("src.ui.Gen4BattleParty").new(b.game, { battle = b, mode = "learnMove",
+            mon = mon, moveId = 53, onChoose = function() end })
+          s.moveSlot = 2; s.learnSlot = 2; s:setScreen("confirm")
+          return s
+        end },
+      -- A DOUBLE: the second foe and the partner placed beside the pair
+      { "doubles", { more = { { 393, 15 } } }, function(b)
+          makeDouble(b)
+          b.gen4CursorActive = true
+        end },
+      { "doubles_target", { more = { { 393, 15 } } }, function(b)
+          makeDouble(b)
+          b.gen4CursorActive = true
+          local BattleState = require("src.battle.BattleState")
+          b.targetChoices = { b:battlerAt(1), b:battlerAt(3), b:battlerAt(2) }
+          b.battlerAt(b, 3).mon.status = "PAR"
+          b.targetIndex = 1
+          b.pendingMove = b.player.curMoves and b.player.curMoves[1]
+          b.phase = "targetSelect"
+        end },
+      { "balls_wobble", { more = { { 25, 14 } } }, function(b)
+          local Growth = require("src.pokemon.Growth")
+          for _, mon in ipairs(b.game.save.party) do
+            local def = Data.pokemon[mon.species]
+            local base = Growth.expForLevel(def.growthRate, mon.level)
+            local nxt = Growth.expForLevel(def.growthRate, mon.level + 1)
+            mon.exp = base + math.floor((nxt - base) * 0.95)
+          end
+          b.gen4CursorActive = true
+          b.frame = 0
+          -- run the wobble a few frames so one ball is caught mid-rock
+          for f = 1, 21 do b.frame = f; pcall(require("src.battle.Gen4Battle").drawSubscreenBalls, b) end
         end },
       { "compact", {}, function() stowed = true end },
       { "compact_moves", {}, function(b) stowed = true; b.phase = "moveSelect"; b.moveIndex = 1 end },

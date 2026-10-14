@@ -155,6 +155,14 @@ function MapLoader.applyHiddenPaths(data, def)
 end
 
 function MapLoader.load(data, mapId)
+  -- EMERALD'S BATTLE PYRAMID FLOOR is rebuilt from the save every time it is
+  -- loaded, as the cartridge rebuilds it (GenerateBattlePyramidFloorLayout)
+  if mapId == "MAP_G26_N26" and require("src.core.GameVersion").get() == "emerald" then
+    local save = currentSave()
+    if save and require("src.script.Gen3BattlePyramid").prepareFloor(data, save) then
+      MapLoader.evict(mapId)
+    end
+  end
   local m = cache[mapId]
   if m then
     -- A cached overworld map built before a hidden path was unlocked (or

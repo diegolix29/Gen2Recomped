@@ -219,8 +219,25 @@ function Gen4Sdat.sequence(self, index)
   local off = u32(self.data, base + 4 + index * 4)
   if not off or off == 0 then return nil end
   local at = self.info + off
+  -- SEQ INFO record: u16 file, u16 pad, u16 bank, u8 volume, u8 channel
+  -- priority, u8 player priority, u8 player, u16 reserved.
   return { file = u16(self.data, at), bank = u16(self.data, at + 4),
-           volume = u8(self.data, at + 6), index = index }
+           volume = u8(self.data, at + 6), channelPriority = u8(self.data, at + 7),
+           playerPriority = u8(self.data, at + 8), player = u8(self.data, at + 9),
+           index = index }
+end
+-- PLAYER INFO record (INFO kind 4): u8 max sequences, u8 pad, u16 channel
+-- mask, u32 heap.  An SE player with room for one sequence is why a second
+-- menu blip cuts the first one off on the cartridge.
+Gen4Sdat.PLAYER = 4
+function Gen4Sdat.player(self, index)
+  local base, count = records(self, self.info, Gen4Sdat.PLAYER)
+  if not base or index < 0 or index >= count then return nil end
+  local off = u32(self.data, base + 4 + index * 4)
+  if not off or off == 0 then return nil end
+  local at = self.info + off
+  return { maxSequences = u8(self.data, at), channels = u16(self.data, at + 2),
+           index = index, name = Gen4Sdat.name(self, Gen4Sdat.PLAYER, index) }
 end
 function Gen4Sdat.instrument(self, bankIndex, program, note)
   local bank = Gen4Sdat.bank(self, bankIndex)

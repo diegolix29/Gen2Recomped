@@ -250,6 +250,9 @@ RomExtractorGen4.STAGES = STAGES
 function RomExtractorGen4.new(romPath, version, manifest, progress)
   local rom, err = NdsRom.open(romPath)
   if not rom then return nil, err end
+  -- HeartGold and SoulSilver: their paths and banks over Platinum's, or
+  -- Platinum's put back (src/import/Gen4Versions.lua)
+  require("src.import.Gen4Versions").apply(version, PATH, BANK)
   return setmetatable({
     rom = rom, version = version, manifest = manifest,
     progress = progress, stage = 0, wrote = {},
@@ -583,6 +586,8 @@ function RomExtractorGen4:extractParticles()
             local saved = self:saveImage(name, image, {
               format = texture.formatName,
               colours = #texture.palette,
+              flipS = texture.flipS or nil,
+              flipT = texture.flipT or nil,
             })
             if saved then
               entry.textures[#entry.textures + 1] = saved
@@ -791,7 +796,8 @@ end
 
 function RomExtractorGen4:extractEncounters()
   self:beginStage("encounters")
-  local out = Gen4Encounters.all(assert(self:archive("encounters")))
+  local out = Gen4Encounters.all(assert(self:archive("encounters")),
+    require("src.import.Gen4Versions").family(self.version))
   self:write("encounters", out)
   return out
 end
@@ -859,7 +865,7 @@ function RomExtractorGen4:extractTrainerMessages()
   local out, report = Gen4TrainerMessages.all(records:get(0), offsets:get(0))
   -- The third reading, taken here because this is the only place that has the
   -- message bank open at the same time as the table.
-  local bank = self:bank(Gen4TrainerMessages.BANK)
+  local bank = self:bank(BANK.trainerMessages or Gen4TrainerMessages.BANK)
   report.bankEntries = bank and bank.count or 0
   self.trainerMessageReport = report
   self:write("gen4_trainer_messages", out)
@@ -888,11 +894,21 @@ function RomExtractorGen4:extractMaps()
     events = assert(self:archive("events")).count,
     names = nameCount,
   }
+  -- HeartGold and SoulSilver lay the same 24 bytes out differently, and say
+  -- how many maps there are in the name table (one 16-byte name per header)
+  local family = require("src.import.Gen4Versions").family(self.version)
+  local parse = Gen4MapHeaders.parserFor(family)
+  if family == "hgss" then
+    limits.parse = parse
+    limits.count = nameCount
+    -- the place-name bank, not the map-name table, bounds HGSS's mapsec
+    limits.names = 256
+  end
   local arm9 = assert(self.rom:arm9())
   local at, count = Gen4MapHeaders.find(arm9, limits)
   if not at then return nil, "map header table not found in the ARM9" end
 
-  local headers = Gen4MapHeaders.all(arm9, at, count)
+  local headers = Gen4MapHeaders.all(arm9, at, count, parse)
   for id, h in pairs(headers) do
     h.internalName = names[id]
     h.label = self:string(BANK.mapLabel, h.labelText)
@@ -1059,6 +1075,9 @@ function RomExtractorGen4:extractMaps()
         -- CAMERA_TYPE_INTERIOR_ORTHOGRAPHIC, 189 are DEFAULT and 60 are CAVE;
         -- see `src/render/Gen4Camera.lua` for the table they index.
         cameraType = h.camera,
+        -- whose table that number indexes (Gen4Camera.HGSS_TYPES for HGSS);
+        -- absent for Platinum, whose maps read the table they always have
+        cameraFamily = h.family,
         -- WHICH BATTLE BACKGROUND A FIGHT ON THIS MAP USES.
         --
         -- `MapHeader_GetBattleBG` is the whole of the cartridge's answer:
@@ -1256,7 +1275,7 @@ function RomExtractorGen4:extractRegions(events, names)
         index = i, localId = o.localId,
         graphicsId = o.graphics,
         sprite = spriteKey,
-        spriteName = Gen4ObjectGfx.name(o.graphics),
+        spriteName = self:objectSpriteName(o.graphics),
         noSprite = noSprite,
         -- ...and, when the reason is that it is a MODEL, which one.  A
         -- member of fldeff.narc, not of the sprite archive: the two are
@@ -1291,6 +1310,9 @@ function RomExtractorGen4:extractRegions(events, names)
         end)(),
         scriptBand = band,
         berryPatch = band == 'berry_tree_interactions' and o.data[1] or nil,
+        -- HGSS's Apricorn trees (scr_seq_0150's band): the tree's index into
+        -- sTreeApricorns is param 0 (apricorn_tree_sys.c)
+        apricornTree = (band == 'apricorn_tree' and o.data) and o.data[1] or nil,
         scriptEntry = (kind == "band" or kind == "map") and entry or nil,
         scriptFile = member,
         movementType = o.movementType,
@@ -1481,11 +1503,18 @@ function RomExtractorGen4:extractScripts()
   -- The instruction's own width, asked for rather than written down: the
   -- movement list is at `(the byte after the instruction) + offset`, so a
   -- change to the opcode table must not be able to silently move it.
+  --
+  -- HEARTGOLD AND SOULSILVER decode with their own command table and are then
+  -- renamed into Platinum's words (Gen4HgssScriptAliases), so the VM lowers
+  -- one vocabulary.
+  local hgss = require("src.import.Gen4Versions").family(self.version) == "hgss"
+  local ops = hgss and require("src.import.Gen4HgssScriptOps") or Gen4ScriptOps
+  local Aliases = hgss and require("src.import.Gen4HgssScriptAliases") or nil
   local moveOp
-  for op, entry in pairs(Gen4ScriptOps.COMMANDS) do
+  for op, entry in pairs(ops.COMMANDS) do
     if entry[1] == "applymovement" then moveOp = op end
   end
-  local moveSize = moveOp and Gen4ScriptOps.size(moveOp)
+  local moveSize = moveOp and ops.size(moveOp)
   local movesRead, movesRefused = 0, 0
   for m = 0, arc.count - 1 do
     local bytes = arc:get(m)
@@ -1500,7 +1529,7 @@ function RomExtractorGen4:extractScripts()
       local i = 1
       while i <= #queue do
         local at = queue[i]; i = i + 1
-        local instructions, stopped = Gen4Script.decode(bytes, at)
+        local instructions, stopped = Gen4Script.decode(bytes, at, hgss and ops or nil)
         scripts[Gen4ScriptVM.label(m, at)] =
           { instructions = instructions, stopped = stopped }
         for _, ins in ipairs(instructions) do
@@ -1523,6 +1552,7 @@ function RomExtractorGen4:extractScripts()
               movesRefused = movesRefused + 1
             end
           end
+          if Aliases then Aliases.apply(ins) end
         end
       end
       -- The ENTRY POINTS in order: a script id in an event is an index into
@@ -1734,6 +1764,10 @@ function RomExtractorGen4:linkScripts(headers, events, names)
         maps[mapId] = {
           objects = objects, signs = signs, header = id,
           callbacks = callbacks, tables = tables, coords = coords,
+          -- the map's own script file IN HEADER ORDER: `ScriptManager_Set(fs,
+          -- id)` names a map script by number (the Distortion World's B7F and
+          -- Giratina room teleports, src/world/Gen4DistPlatforms.lua)
+          entries = list,
           -- Named `shared` rather than `specials`: they are entries in shared
           -- script files, which is a fact about them rather than an admission.
           shared = (next(shared.objects) or next(shared.signs)) and shared or nil,
@@ -1779,14 +1813,17 @@ end
 --     `message 3` is entry 3 of bank 213 and has nothing to do with the town
 --     the player is standing in.
 function RomExtractorGen4:scriptBands()
-  local names = Gen4Archives.names(PATH.scripts)
-  if not names then return nil end
+  -- HeartGold and SoulSilver name each band's file by NUMBER (their table's
+  -- third field); Platinum's are names looked up in the archive's list
+  local hgss = Gen4ScriptBands.family == "hgss"
+  local names = not hgss and Gen4Archives.names(PATH.scripts)
+  if not hgss and not names then return nil end
   local memberOf = {}
-  for index, name in ipairs(names) do memberOf[name] = index - 1 end
+  for index, name in ipairs(names or {}) do memberOf[name] = index - 1 end
 
   local out, resolved, missing = {}, 0, 0
   for _, band in ipairs(Gen4ScriptBands.BANDS) do
-    local member = memberOf[band[3]]
+    local member = hgss and band[3] or memberOf[band[3]]
     local entries = member and (self._entries or {})[member]
     if entries then
       out[band[2]] = {
@@ -3056,7 +3093,9 @@ function RomExtractorGen4:extractFonts()
     return index
   end
 
+  local V = require("src.import.Gen4Versions")
   local names = Gen4Archives.names(PATH.fonts)
+    or (V.family(self.version) == "hgss" and V.MEMBER_NAMES.fonts or nil)
   for member = 0, arc.count - 1 do
     local name = names and names[member + 1]
     -- NFGR carries no magic, so it is identified by its own arithmetic: the
@@ -3857,6 +3896,14 @@ end
 -- The graphicsId -> member table, read once from the cartridge.
 function RomExtractorGen4:objectGfxTable()
   if self._objectGfx ~= nil then return self._objectGfx end
+  -- HEARTGOLD AND SOULSILVER: pret's own table (ov01_022074A8), generated
+  -- into Gen4HgssObjectGfx, rather than Platinum's overlay-5 scan
+  if require("src.import.Gen4Versions").family(self.version) == "hgss" then
+    local map = {}
+    for id, row in pairs(require("src.import.Gen4HgssObjectGfx").byId) do map[id] = row[1] end
+    self._objectGfx = map
+    return map
+  end
   local overlay = self.rom and self.rom:overlay(Gen4ObjectGfx.OVERLAY)
   local members = self:archive("overworld")
   local map = overlay and Gen4ObjectGfx.read(overlay, members and members.count or 470)
@@ -3870,6 +3917,11 @@ end
 -- is the whole content of the answer.
 function RomExtractorGen4:objectModelTable()
   if self._objectModels ~= nil then return self._objectModels end
+  -- HGSS's 3D object models (signs, mailboxes) are not identified yet
+  if require("src.import.Gen4Versions").family(self.version) == "hgss" then
+    self._objectModels = false
+    return false
+  end
   local overlay = self.rom and self.rom:overlay(Gen4ObjectGfx.OVERLAY)
   local map = overlay and Gen4ObjectGfx.readModels(overlay,
                                                    Gen4ObjectGfx.MODEL_MEMBERS)
@@ -3886,6 +3938,21 @@ end
 -- spriteFor(graphicsId) -> key, member, reason
 -- `reason` is set when the id has no billboard of its own rather than when the
 -- lookup failed; the two must not look alike in the index.
+-- An object's graphics name, for logs and tools. HGSS numbers its sprites
+-- its own way (pokeheartgold constants/sprites.h, carried by
+-- Gen4HgssObjectGfx), so Platinum's list named Route 30's apricorn trees
+-- "wall_blocking_rotoms_room"; the var range 101..117 is var_(id - 101) on
+-- both, as map_object.c resolves it.
+function RomExtractorGen4:objectSpriteName(id)
+  if require("src.import.Gen4Versions").family(self.version) == "hgss" then
+    local entry = require("src.import.Gen4HgssObjectGfx").byId[id]
+    if entry then return entry[2] end
+    if id and id >= 101 and id <= 117 then return ("var_%d"):format(id - 101) end
+    return nil
+  end
+  return Gen4ObjectGfx.name(id)
+end
+
 function RomExtractorGen4:spriteFor(graphicsId)
   local map = self:objectGfxTable()
   local member = map and map[graphicsId]
@@ -3961,7 +4028,9 @@ function RomExtractorGen4:extractOverworld()
   --
   -- The real order is in this same archive -- see Gen4Facings -- and the
   -- twenty-five tables at its tail are read here once.
-  local sequences, seqReport = Gen4Facings.read(arc)
+  -- HGSS keeps its sequence tables mid-archive (Gen4HgssFacings)
+  local hgssSeq = require("src.import.Gen4Versions").family(self.version) == "hgss"
+  local sequences, seqReport = (hgssSeq and require("src.import.Gen4HgssFacings") or Gen4Facings).read(arc)
   local facingsReport = { byName = 0, byCount = 0, none = 0,
                           sequences = seqReport }
 
@@ -4227,8 +4296,10 @@ function RomExtractorGen4:extractTrainerSprites()
   local total = Gen4Trgra.classCount(arc)
   local written, animated, byClass = 0, 0, {}
 
+  -- HGSS's trainer pictures are scrambled in Diamond and Pearl's order
+  local dpOrder = require("src.import.Gen4Versions").family(self.version) == "hgss"
   for class = 0, total - 1 do
-    local sheet = Gen4Trgra.sheet(arc, Gen4Graphics, class)
+    local sheet = Gen4Trgra.sheet(arc, Gen4Graphics, class, dpOrder)
     local palette = Gen4Trgra.palette(arc, Gen4Graphics, class)
     local name = nil
     if names and class < names.count then
@@ -4504,9 +4575,18 @@ function RomExtractorGen4:extractField()
 
   local headers = self._mapHeaders
   local maps = self._mapDefs
-  local start, respawn, at, spawns, spawnAt =
-    Gen4Field.find(self.rom and self.rom:arm9(), headers, maps,
-                   headers and self._mapHeaderCount or nil)
+  -- HeartGold and SoulSilver: their own Location pair and 18-byte spawn rows
+  -- (Gen4HgssField), read into the same fields
+  local hgssBoot = require("src.import.Gen4Versions").family(self.version) == "hgss"
+  local start, respawn, at, spawns, spawnAt
+  if hgssBoot then
+    start, respawn, at, spawns, spawnAt = require("src.import.Gen4HgssField").find(
+      self.rom and self.rom:arm9(), self._mapHeaderCount or 540)
+  else
+    start, respawn, at, spawns, spawnAt =
+      Gen4Field.find(self.rom and self.rom:arm9(), headers, maps,
+                     headers and self._mapHeaderCount or nil)
+  end
 
   local out = { source = "ROM:Platinum" }
   if not start then
@@ -4593,10 +4673,15 @@ function RomExtractorGen4:extractField()
   -- Found by NAME rather than by graphics id.  `player_m` and `player_f` are
   -- what the object-graphics table calls them, and a name cannot be off by one
   -- the way an id can -- which is exactly the mistake this is fixing.
-  out.playerSprites, out.playerForms = self:playerSheets()
+  if hgssBoot then
+    out.playerSprites, out.playerForms = require("src.import.Gen4HgssField").playerSheets(
+      function(id) return (self:spriteFor(id)) end)
+  else
+    out.playerSprites, out.playerForms = self:playerSheets()
+  end
 
-  out.source = ("ROM:Platinum (locations arm9+0x%X, spawns arm9+0x%X)")
-    :format(at, spawnAt)
+  out.source = ("ROM:%s (locations arm9+0x%X, spawns arm9+0x%X)")
+    :format(hgssBoot and self.version or "Platinum", at, spawnAt)
   self:write("field", out)
   self.fieldReport = {
     found = true, startMap = startMap, startX = start.x, startY = start.z,
@@ -5476,7 +5561,10 @@ function RomExtractorGen4:extractTerrain(names)
   local land = self:archive("land")
   local matrices = self:archive("matrices")
   local areaArc = self:archive("areaData")
-  local texArc = self:archiveAt("/fielddata/areadata/area_map_tex/map_tex_set.narc")
+  -- HeartGold and SoulSilver: the numbered texture-set archive (/a/0/4/4) and
+  -- their own area record (Gen4HgssArea); everything else here is shared.
+  local hgssField = require("src.import.Gen4Versions").family(self.version) == "hgss"
+  local texArc = self:archiveAt(PATH.mapTextures or "/fielddata/areadata/area_map_tex/map_tex_set.narc")
   local out = {
     source = "ROM:land_data.narc + map_matrix.narc + map_tex_set.narc",
     chunkTiles = Gen4Terrain.CHUNK_TILES,
@@ -5586,7 +5674,8 @@ function RomExtractorGen4:extractTerrain(names)
   for id, h in pairs(self._mapHeaders or {}) do
     local mapId = names and names[id]
     local record = areaArc and areaArc:get(h.areaData)
-    local area = record and Gen4Maps.areaData(record)
+    local area = record and (hgssField and require("src.import.Gen4HgssArea").parse(record)
+                             or Gen4Maps.areaData(record))
     if mapId and area then
       out.maps[mapId] = { texture = area.mapTexture, area = h.areaData,
                           -- `areaLight`, not the old `lighting`: that name was on
@@ -5605,6 +5694,21 @@ function RomExtractorGen4:extractTerrain(names)
     end
   end
 
+  -- THE REST IS PLATINUM'S, by path and by table, and HGSS skips it until
+  -- each is ported (Gen4Versions STAGES says which stages HGSS runs).
+  if hgssField then
+    -- /data/arealight.narc is byte for byte Platinum's in HGSS (the same four
+    -- files), and HGSS's area record already names the member through its own
+    -- light mapping (Gen4HgssArea), so the light stage runs as it is
+    self:areaLights(out.maps)
+    -- the Headbutt tutor and the Frontier's three (Gen4MoveTutor.HGSS)
+    self:moveTutor()
+    self:write("gen4_terrain", out)
+    self.terrainReport = { chunks = packed, refused = refused, sets = setsBuilt,
+      pairedShapes = pairedShapes, undecoded = undecoded, maps = attributed,
+      noArea = noArea, geometry = #geometry, heights = #heights }
+    return out
+  end
   self:areaLights(out.maps)
   self:mapProps()
   self:feebas()
@@ -5621,7 +5725,11 @@ function RomExtractorGen4:extractTerrain(names)
   self:berryFlavors()
   self:trainerMusic()
   self:contestData()
-  self:contestArt()
+  self:contestArt() self:dressUpArt()
+  self:journalArt()
+  self:battleTowerData()
+  self:frontierScripts()
+  self:frontierArt()
   self:poffinArt()
   self:optionsArt()
   self:miningArt()
@@ -5841,6 +5949,51 @@ function RomExtractorGen4:contestArt()
   self:write("gen4_contest_art", index)
 end
 
+-- THE DRESS-UP'S ACCESSORIES AND DRESSING ROOM -- see src/import/Gen4DressUp.lua.
+function RomExtractorGen4:dressUpArt()
+  local images, record = nil, nil
+  if self.rom then images, record = require("src.import.Gen4DressUp").images(self.rom) end
+  if not images then return end
+  local paths = {}
+  for key, image in pairs(images) do
+    local e = self:saveImage("dressup/" .. key, image)
+    paths[key] = e and e.path
+  end
+  for _, acc in pairs(record.accessories) do acc.path = paths[acc.key] end
+  if record.room then record.room = { path = paths.room } end
+  self:write("gen4_dressup", record)
+end
+
+-- THE BATTLE TOWER'S TRAINERS AND SETS -- see src/import/Gen4BattleTowerData.lua.
+function RomExtractorGen4:battleTowerData()
+  local rec = self.rom and require("src.import.Gen4BattleTowerData").read(self.rom)
+  if rec then self:write("gen4_battle_tower", rec) end
+end
+
+-- THE BATTLE FRONTIER'S SCENE SCRIPTS -- see src/import/Gen4FrontierScripts.lua.
+function RomExtractorGen4:frontierScripts()
+  local rec = self.rom and require("src.import.Gen4FrontierScripts").read(self.rom)
+  if rec then self:write("gen4_frontier_scripts", rec) end
+end
+
+-- ...AND THEIR BACKDROPS -- see src/import/Gen4FrontierArt.lua.
+function RomExtractorGen4:frontierArt()
+  local images = self.rom and require("src.import.Gen4FrontierArt").images(self.rom)
+  if not images then return end
+  local index = {}
+  for key, image in pairs(images) do index[key] = self:saveImage("frontier/" .. key, image) end
+  self:write("gen4_frontier_art", index)
+end
+
+-- THE JOURNAL'S NOTEBOOK, ONE PAPER A PAGE -- see src/import/Gen4JournalArt.lua.
+function RomExtractorGen4:journalArt()
+  local images = self.rom and require("src.import.Gen4JournalArt").images(self.rom)
+  if not images then return end
+  local index = {}
+  for key, image in pairs(images) do index[key] = self:saveImage("journal/" .. key, image) end
+  self:write("gen4_journal_art", index)
+end
+
 -- THE HALL OF FAME AND THE CREDITS -- see src/import/Gen4EndingArt.lua.
 function RomExtractorGen4:endingArt()
   local E = self.rom and require("src.import.Gen4EndingArt")
@@ -5856,8 +6009,9 @@ function RomExtractorGen4:endingArt()
   self:write("gen4_ending", E.data(self.rom))
 end
 
--- THE POKETCH APPS' SPRITES AND TILES (src/import/Gen4PoketchArt.lua) AND THE
--- EVOLUTION SCENE'S PARTICLES (src/import/Gen4EvolutionArt.lua).
+-- THE POKETCH APPS' SPRITES AND TILES (src/import/Gen4PoketchArt.lua), THE
+-- EVOLUTION SCENE'S PARTICLES (src/import/Gen4EvolutionArt.lua) AND THE START
+-- MENU'S ICONS (src/import/Gen4StartMenuArt.lua).
 -- (Literal module names, for tools/gen4_cache_wiring_check.lua.)
 function RomExtractorGen4:poketchEvolutionArt()
   if not self.rom then return end
@@ -5879,6 +6033,12 @@ function RomExtractorGen4:poketchEvolutionArt()
   if evolution then
     self:write("gen4_evolution_art", save("evolution_art", evolution))
     self:write("gen4_evolution_ink", E.data(self.rom))
+  end
+  local SM = require("src.import.Gen4StartMenuArt")
+  local startMenu = SM.images(self.rom)
+  if startMenu then
+    self:write("gen4_start_menu_art", save("start_menu_art", startMenu))
+    self:write("gen4_start_menu_ink", SM.data(self.rom))
   end
 end
 
@@ -6054,6 +6214,19 @@ end
 function RomExtractorGen4:townMap()
   local out = self.rom and require("src.import.Gen4TownMap").extract(self.rom)
   if out then self:write("gen4_town_map", out) end
+  -- the bottom screen (Gen4TownMapArt); literal module names for
+  -- tools/gen4_cache_wiring_check.lua
+  if not self.rom then return end
+  local Art = require("src.import.Gen4TownMapArt")
+  local images = Art.images(self.rom)
+  if images then
+    local index = {}
+    for key, image in pairs(images) do
+      index[key] = self:saveImage("town_map_art/" .. key, image, { originX = image.originX, originY = image.originY })
+    end
+    self:write("gen4_town_map_art", index)
+    self:write("gen4_town_map_ink", Art.data(self.rom))
+  end
 end
 
 function RomExtractorGen4:specialEncounters()
@@ -6177,6 +6350,24 @@ local MODEL_ARCHIVES = {
     label = "field-effect models" },
 }
 
+-- HEARTGOLD AND SOULSILVER keep their buildings in TWO archives, and the area
+-- record says which a map loads (Gen4HgssArea: +6 nonzero opens /a/0/4/0, the
+-- outdoor ones, zero /a/1/4/8, the rooms'). Both are written; Gen4Ground picks
+-- by the map's `outdoors`. 339 of 340 and 219 of 222 carry their own textures,
+-- as Platinum's buildings do. The other Platinum archives above are not HGSS
+-- paths and wait to be identified.
+local HGSS_MODEL_ARCHIVES = {
+  { path = "/a/0/4/0", out = "buildings", label = "map buildings (outdoor)" },
+  { path = "/a/1/4/8", out = "interiorBuildings", label = "map buildings (rooms)" },
+  -- choose_starter_main_res: Elm's turntable -- tabletop, turntable, the
+  -- three balls and their glow, with the balls' rock / open and the
+  -- turntable's animations (choose_starter_app.c loads members 0..7)
+  { path = "/a/0/8/2", out = "hgssStarter", label = "starter turntable" },
+  -- Platinum's fldeff.narc: found by its models' names, `sea_ride` (the surf
+  -- mount) at member 86 here against Platinum's 81
+  { path = "/a/1/0/3", out = "fldeff", label = "field-effect models" },
+}
+
 -- Platinum's 3D, in the shape the engine can load: packed geometry, the
 -- textures as ordinary PNGs, and the animations that drive each model.
 --
@@ -6238,6 +6429,9 @@ function RomExtractorGen4:extractDistortionWorld()
         jumps = file.jumps,
         cameras = file.cameras,
         ghostPropBytes = file.ghostPropBytes,
+        ghostProps = file.ghostProps,
+        ghostTriggers = file.ghostTriggers,
+        ghostDefaultVisible = file.ghostDefaultVisible,
       }
     else
       out.refused["map" .. tostring(info.header)] = err
@@ -6285,6 +6479,13 @@ function RomExtractorGen4:extractDistortionWorld()
     self:tick("distortion", done, total)
   end
 
+  out.boulderFalls = Gen4DistWorld.findBoulderFalls(bin)
+  out.externalShadows = Gen4DistWorld.findExternalShadows(bin)
+  -- the sky behind it all (Gen4DistSky): tw_arc_etc's background and clouds
+  do
+    local okSky, sky, whySky = pcall(require("src.import.Gen4DistSky").extract, self)
+    if okSky and sky then out.sky = sky else out.refused.sky = tostring(okSky and whySky or sky) end
+  end
   local eat, paths = Gen4DistWorld.findElevatorPaths(bin)
   if paths then
     out.elevatorPaths = paths
@@ -6319,7 +6520,8 @@ function RomExtractorGen4:extractModels()
   local animFailed = 0
   local patternWritten = 0
 
-  for _, entry in ipairs(MODEL_ARCHIVES) do
+  local hgssModels = require("src.import.Gen4Versions").family(self.version) == "hgss"
+  for _, entry in ipairs(hgssModels and HGSS_MODEL_ARCHIVES or MODEL_ARCHIVES) do
     local arc = self:archiveAt(entry.path)
     local set = { label = entry.label, path = entry.path,
                   models = {}, animations = {} }
@@ -6676,7 +6878,77 @@ function RomExtractorGen4:extractModels()
   return out
 end
 
+-- The stages a version runs, by name (Gen4Versions.STAGES). Platinum runs
+-- every one below; HeartGold and SoulSilver run those whose formats have been
+-- checked against their cartridge, and the rest are written to the report as
+-- not ported rather than run against data they would misread.
+RomExtractorGen4.STAGE_METHODS = {
+  text = "extractText", species = "extractSpecies", moves = "extractMoves", items = "extractItems",
+  trainers = "extractTrainers", gen4_trainer_messages = "extractTrainerMessages",
+  encounters = "extractEncounters", scripts = "extractScripts",
+}
+-- the stages that hand each other what they found, as run() chains them
+RomExtractorGen4.STAGE_CHAIN = {
+  maps = function(self) self._stageHeaders, self._stageNames = self:extractMaps() end,
+  events = function(self) self._stageEvents = self:extractEvents() end,
+  regions = function(self) self:extractRegions(self._stageEvents, self._stageNames) end,
+  link = function(self) self:linkScripts(self._stageHeaders, self._stageEvents, self._stageNames) end,
+  terrain = function(self) self:extractTerrain(self._stageNames) end,
+  models = function(self) self:extractModels() end,
+  overworld = function(self) self:extractOverworld() end,
+  field = function(self) self:extractField() end,
+  -- the frames before the fonts: writeFontDef carries `self._winFrames`
+  frames = function(self) self:extractWindowFrames() end,
+  -- no ROM input: the stand-in tileset MapLoader needs for every Gen 4 map
+  tilesets = function(self) self:extractTilesets() end,
+  -- HGSS's battle pictures so far: the backdrops (Gen4HgssBattle) and the
+  -- window frames, in the `gen4_graphics` shape the battle screen reads
+  battle_graphics = function(self)
+    self:beginStage("graphics")
+    local backgrounds, written, skipped = require("src.import.Gen4HgssBattle").backgrounds(self)
+    self:write("gen4_graphics", { backgrounds = backgrounds, terrain = {}, battleObjects = {},
+      screens = {}, palettes = {}, skipped = skipped, frames = self._winFrames })
+    self.battleGraphicsReport = { backgrounds = written, skipped = #skipped }
+  end,
+  species_sprites = function(self) self:extractSpeciesSprites() end,
+  trainer_sprites = function(self) self:extractTrainerSprites() end,
+  heights = function(self) self:extractHeights() end,
+  -- HGSS's constants from their own module (Platinum's stage reads Sinnoh-only
+  -- archives -- the Poketch, the Underground, Honey trees)
+  constants = function(self)
+    self:beginStage("constants")
+    local constants, chart, report = require("src.import.Gen4HgssConstants").build(self)
+    if chart then self:write("type_chart", chart) end
+    self:write("constants", constants)
+    self.constantsReport = report
+  end,
+  fonts = function(self) self:extractFonts() end,
+}
+function RomExtractorGen4:runStages(list)
+  local skipped = {}
+  for _, name in ipairs(list) do
+    local chained = RomExtractorGen4.STAGE_CHAIN[name]
+    if chained then chained(self)
+    else
+      local method = RomExtractorGen4.STAGE_METHODS[name]
+      self[method](self)
+    end
+  end
+  for _, name in ipairs(STAGES) do
+    local listed = false
+    for _, n in ipairs(list) do if n == name then listed = true end end
+    if not listed then skipped[#skipped + 1] = name end
+  end
+  self.notPorted = skipped
+  self:write("gen4_version", { version = self.version, family = require("src.import.Gen4Versions").family(self.version),
+    stages = list, notPorted = skipped })
+  return self.wrote
+end
+
 function RomExtractorGen4:run()
+  local V = require("src.import.Gen4Versions")
+  local only = V.STAGES[V.family(self.version)]
+  if only then return self:runStages(only) end
   self:extractText()
   self:extractSpecies()
   self:extractMoves()
@@ -6726,7 +6998,31 @@ function RomExtractorGen4:run()
   -- reads two archives of its own and one ARM9 overlay, and joins to the rest
   -- of the cache only by map header id.
   self:extractDistortionWorld()
+  self:extractWeatherSys()
+  self:extractMailGra()
   return self.wrote
+end
+
+-- Platinum's mail stationery (Gen4MailGra), for the bag's Mail USE
+function RomExtractorGen4:extractMailGra()
+  if require("src.import.Gen4Versions").family(self.version) == "hgss" then return end
+  local ok, rec, why = pcall(require("src.import.Gen4MailGra").extract, self)
+  if ok and rec then
+    self:write("gen4_mail_gra", rec)
+  else
+    self:write("gen4_mail_gra", { refused = tostring(ok and why or rec) })
+  end
+end
+
+-- Platinum's snow art (Gen4WeatherSys): the flakes and the blizzard's layer
+function RomExtractorGen4:extractWeatherSys()
+  if require("src.import.Gen4Versions").family(self.version) == "hgss" then return end
+  local ok, rec, why = pcall(require("src.import.Gen4WeatherSys").extract, self)
+  if ok and rec then
+    self:write("gen4_weather_sys", rec)
+  else
+    self:write("gen4_weather_sys", { refused = tostring(ok and why or rec) })
+  end
 end
 
 -- NOT BUILT YET, and each is a seam rather than a detail:

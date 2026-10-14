@@ -378,6 +378,10 @@ end
 -- ask `gen3RecordFor` asks this instead, so the party picker, the heal path
 -- and `use` all agree about what an item does on every cartridge.
 function ItemEffects.recordFor(id, data)
+  local Data=data or require('src.core.Data')
+  local def=type(id)=='table' and id or (Data.items and Data.items[id])
+  local berry=require('src.inventory.PolishedBerries').record(def)
+  if berry then return berry end
   return ItemEffects.gen3RecordFor(id, data)
       or ItemEffects.gen4RecordFor(id, data)
 end
@@ -549,6 +553,11 @@ function ItemEffects.markGen4Machines(data)
 end
 
 function ItemEffects.needsTarget(id, itemDef)
+  do
+    local Data = package.loaded["src.core.Game"] and package.loaded["src.core.Game"].data
+    local g4 = require("src.inventory.Gen4ItemUse").needsTarget(id, itemDef, Data)
+    if g4 ~= nil then return g4 end
+  end
   -- HOENN ASKS FIRST, and this is what opens the party picker.
   --
   -- The list below is Gen 1's and Gen 2's, so an ORAN BERRY answered "no
@@ -658,12 +667,7 @@ local GEN3_EV_TOTAL = 510          -- across the six
 local GEN3_EV_ORDER = { "hp", "attack", "defense", "speed", "spatk", "spdef" }
 
 local function gen3Record(data, itemId)
-  local c = data and data.constants
-  local all = c and c.gen3ItemEffects
-  local r = type(all) == "table" and all[itemId] or nil
-  if r then return r end
-  -- ...and Sinnoh's, decoded from the item's own struct (gen4RecordFor).
-  return ItemEffects.gen4RecordFor(itemId, data)
+  return ItemEffects.recordFor(itemId,data)
 end
 
 -- The friendship a medicine moves, which is a third of the record the port
@@ -742,6 +746,7 @@ local function gen3Use(data, save, itemId, target, battle, moveIndex)
     local before = target.hp
     if not full then
       local by = r.amount
+      if r.hpDivisor then by=math.max(1,math.floor(maxHP/r.hpDivisor))end
       if by == "all" then
         target.hp = maxHP
       elseif by == "half" then
@@ -875,7 +880,13 @@ local function gen3Use(data, save, itemId, target, battle, moveIndex)
     else
       want = math.max(0, now + by)
     end
-    if want == now then return "failed", fail end
+    if want == now then
+      if r.friendshipOnly and (tonumber(target.happiness) or 0)<255 then
+        gen3Friendship(target,r.friendship)
+        return "consumed",{Strings("%s became\nfriendlier!",monName(data,target))}
+      end
+      return "failed", fail
+    end
     target.evs[r.ev] = want
     local okStats, Stats = pcall(require, "src.pokemon.Stats")
     if okStats and data.pokemon and data.pokemon[target.species] then
@@ -905,6 +916,29 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
   local name = itemDef and itemDef.name or itemId
   local rawItemId = itemId
   itemId = alias(itemId, itemDef)
+  -- PLATINUM'S ITEMS ARE NUMBERS, and the branches below are names.  Reported
+  -- from play: "Rowan forbids using various items, repels and bicycle are a
+  -- couple" -- every one of them fell past its branch to the refusal.  The
+  -- cartridge dispatches on the record's own `fieldUseFunc` (sItemUseFuncs,
+  -- item_use_functions.c), so that is what picks the branch here: 4 is
+  -- ITEM_USE_FUNC_BICYCLE, 21 ESCAPE_ROPE, and 19 BAG_MESSAGE -- the bag's own
+  -- UseItemInBag, which knows exactly the three Repels and the two Flutes.
+  -- PLATINUM'S OWN DISPATCH (src/inventory/Gen4ItemUse.lua) answers first
+  do
+    local kind, msgs, extra = require("src.inventory.Gen4ItemUse").use(data, save, rawItemId, itemDef, target, battle)
+    if kind then return kind, msgs or {}, extra end
+  end
+  local numericRaw = require("src.inventory.Gen4ItemUse").numeric(rawItemId)
+  if numericRaw and itemDef and itemDef.fieldUseFunc and itemId == rawItemId then
+    local f = tonumber(itemDef.fieldUseFunc)
+    local nm = itemDef.translationSourceName or itemDef.name
+    if f == 4 then itemId = "BICYCLE"
+    elseif f == 21 then itemId = "ESCAPE_ROPE"
+    elseif f == 19 then
+      itemId = ({ ["Repel"] = "REPEL", ["Super Repel"] = "SUPER_REPEL", ["Max Repel"] = "MAX_REPEL",
+                  ["Black Flute"] = "BLACK_FLUTE", ["White Flute"] = "WHITE_FLUTE" })[nm] or itemId
+    end
+  end
   local gen2Friendship = require("src.pokemon.Gen2Friendship")
   if gen2Friendship.isVanilla() and target and require("src.pokemon.Party").isEgg(target) then
     return "failed", { Strings("It won't have\nany effect.") }
@@ -1393,8 +1427,16 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
     end
     return "explorer_kit"
   end
+  -- PLATINUM'S JOURNAL (fieldUseFunc 5, ITEM_USE_FUNC_JOURNAL: UseJournalFromMenu
+  -- and UseJournalInField both open the journal app, sub_0203D30C)
+  if itemDef and itemDef.fieldUseFunc == 5 and (itemDef.translationSourceName or itemDef.name) == "Journal" then
+    if battle then
+      return "failed", { Strings("OAK: %s!\nThis isn't the\ntime to use that!", save.player.name) }
+    end
+    return "journal"
+  end
   -- THE POKE RADAR (fieldUseFunc 11, ITEM_USE_FUNC_POKE_RADAR)
-  if itemDef and itemDef.fieldUseFunc == 11 and itemDef.name == "Poké Radar" then
+  if itemDef and itemDef.fieldUseFunc == 11 and (itemDef.translationSourceName or itemDef.name) == "Poké Radar" then
     if battle then
       return "failed", { Strings("OAK: %s!\nThis isn't the\ntime to use that!", save.player.name) }
     end
@@ -1403,7 +1445,7 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
   -- Platinum's is item 442, which has no Gen 1 name key: its own use
   -- function row (`fieldUseFunc` 2, UseTownMapFromBag) says what it is
   local isGen4TownMap = itemDef and itemDef.fieldUseFunc == 2
-    and itemDef.name == "Town Map"
+    and (itemDef.translationSourceName or itemDef.name) == "Town Map"
   if itemId == "TOWN_MAP" or isGen4TownMap then
     if battle then
       return "failed", { Strings("OAK: %s!\nThis isn't the\ntime to use that!", save.player.name) }
@@ -1433,7 +1475,7 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
   end
   -- PLATINUM'S COIN CASE (item 444): BagContext_FormatUsageMessage prints bank
   -- 7 (TEXT_BANK_BAG) #57, "Your Coins: {STRVAR_1 54 0 0}", unpadded.
-  if tonumber(rawItemId) == 444 and itemDef and itemDef.name == "Coin Case" then
+  if require("src.inventory.Gen4ItemUse").numeric(rawItemId) == 444 and itemDef and (itemDef.translationSourceName or itemDef.name) == "Coin Case" then
     local key = require("src.import.Gen4Text").label(7, 57)
     local line = data and data.text and data.text[key]
     local coins = tostring(require("src.import.Gen4GameCorner").coins(save))
@@ -1441,14 +1483,14 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
     return "failed", { line }
   end
   -- THE POFFIN CASE (item 449): its own screen (src/ui/Gen4PoffinCase.lua).
-  if tonumber(rawItemId) == 449 and itemDef and itemDef.name == "Poffin Case" then
+  if require("src.inventory.Gen4ItemUse").numeric(rawItemId) == 449 and itemDef and (itemDef.translationSourceName or itemDef.name) == "Poffin Case" then
     if battle then
       return "failed", { Strings("OAK: %s!\nThis isn't the\ntime to use that!", save.player.name) }
     end
     return "poffin_case"
   end
   -- ...and the SEAL CASE (item 434): bank 7 #92, "Seals: n" -- CalcTotalBallSeals.
-  if tonumber(rawItemId) == 434 and itemDef and itemDef.name == "Seal Case" then
+  if require("src.inventory.Gen4ItemUse").numeric(rawItemId) == 434 and itemDef and (itemDef.translationSourceName or itemDef.name) == "Seal Case" then
     local key = require("src.import.Gen4Text").label(7, 92)
     local line = data and data.text and data.text[key]
     local n = tostring(require("src.import.Gen4Seals").total(save))
@@ -1458,6 +1500,32 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
   if itemId == "COIN_CASE" then
     return "failed", { Strings("Coin count:\n%d", save.coins or 0) }
   end
+  -- PLATINUM'S BAG (UseItemInBag / TryUseRepel, applications/bag/main.c): a
+  -- Repel refuses while one still works, takes its step count from the item's
+  -- own effect parameter, and says so in the bag's own lines (bank 7: 61, 62,
+  -- and 63/64 for the White and Black Flutes, which set the flute factor)
+  if require("src.inventory.Gen4ItemUse").numeric(rawItemId) and (itemId == "REPEL" or itemId == "SUPER_REPEL" or itemId == "MAX_REPEL"
+     or itemId == "BLACK_FLUTE" or itemId == "WHITE_FLUTE") and require("src.core.GameVersion").isGen4() then
+    if battle then
+      return "failed", { Strings("OAK: %s!\nThis isn't the\ntime to use that!", save.player.name) }
+    end
+    local Game = package.loaded["src.core.Game"]
+    local T = require("src.import.Gen4Text")
+    local function line(i, fallback)
+      if Game then pcall(T.buffer, Game, save.player.name, name) end
+      return (Game and T.resolve(data, 7, i, Game)) or fallback
+    end
+    if itemId == "BLACK_FLUTE" or itemId == "WHITE_FLUTE" then
+      save.gen4Flute = itemId == "BLACK_FLUTE" and "black" or "white"
+      return "kept", { line(itemId == "WHITE_FLUTE" and 63 or 64, Strings("%s used the\n%s.", save.player.name, name)) }
+    end
+    if (save.repelSteps or 0) > 0 then
+      return "failed", { line(62, Strings("Since a Repel's effects still linger,\nyou can't use this now.")) }
+    end
+    save.repelSteps = tonumber(itemDef.holdEffectParam) or (itemId == "REPEL" and 100 or itemId == "SUPER_REPEL" and 200 or 250)
+    pcall(function() require("src.core.Sound").play(data, "Repel") end)
+    return "consumed", { line(61, Strings("%s used the\n%s.", save.player.name, name)) }
+  end
   if itemId == "REPEL" or itemId == "SUPER_REPEL" or itemId == "MAX_REPEL" then
     local steps = itemId == "REPEL" and 100 or itemId == "SUPER_REPEL" and 200 or 250
     save.repelSteps = steps
@@ -1465,6 +1533,19 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
   end
 
   return "failed", { Strings("OAK: %s!\nThis isn't the\ntime to use that!", save.player.name) }
+end
+
+-- PLATINUM'S REFUSAL IS ROWAN'S, not Oak's (Gen4ItemUse.translateRefusal):
+-- every refusal above, through one exit
+do
+  local inner = ItemEffects.use
+  function ItemEffects.use(data, save, ...)
+    local kind, msgs, extra = inner(data, save, ...)
+    if kind == "failed" then
+      msgs = require("src.inventory.Gen4ItemUse").translateRefusal(data, save, msgs)
+    end
+    return kind, msgs, extra
+  end
 end
 
 return ItemEffects

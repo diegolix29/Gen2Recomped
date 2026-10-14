@@ -1,0 +1,13 @@
+{
+  "format": 4,
+  "generation": 5,
+  "romSha1": "26ad0b9967aa279c4a266ee69f52b9b2332399a5",
+  "gameCode": "IRBO",
+  "title": "POKEMON B",
+  "notes": [
+    "A Nintendo DS cartridge is a filesystem: every extraction stage opens a file by",
+    "its path (or, for most of this game, by its numbered /a/x/y/z path), so this",
+    "manifest carries only which dump is this game -- RomImporter reads romSha1.",
+    "Decomp: squiddonaut/pokeblack (pokeblack.us.nds)."
+  ]
+}

@@ -150,10 +150,13 @@ if cacheDir then
   check(bag ~= nil, 'the cache carries gen4_bag_art (tools/gen4_art_extract bag)')
   if bag then
     local need = { "item_highlight_0", "item_highlight_1", "pocket_highlight_0", "arrow_left", "arrow_right",
-                   "item_return", "entry_icons", "special_chars", "sub_borders", "sub_dial", "dial_button_0" }
+                   "item_return", "entry_icons", "special_chars", "sub_borders", "sub_dial", "dial_button_0",
+                   -- the touch screen's faces and the action-menu / moving pieces
+                   "dial_button_1", "dial_button_2", "shockwave_0", "shockwave_1", "moving_bar",
+                   "item_highlight_1", "pocket_highlight_1" }
     for p = 0, 7 do
       need[#need + 1] = "bag_male_" .. p; need[#need + 1] = "bag_female_" .. p
-      need[#need + 1] = ("pocket_button_%d_0"):format(p)
+      for f = 0, 2 do need[#need + 1] = ("pocket_button_%d_%d"):format(p, f) end
     end
     local missing = {}
     for _, k in ipairs(need) do if not bag[k] then missing[#missing + 1] = k end end
@@ -173,7 +176,14 @@ if cacheDir then
     for _, l in ipairs({ "normal", "cobalt", "bronze", "silver", "gold", "black", "no_dex" }) do
       need[#need + 1] = "front_" .. l; need[#need + 1] = "back_" .. l
     end
-    for i = 0, 7 do need[#need + 1] = "badge_" .. i end
+    for i = 0, 7 do
+      need[#need + 1] = "badge_" .. i
+      -- TrainerCase_DrawBadgeDirt's four palette rows
+      for d = 0, 3 do need[#need + 1] = ("badge_%d_%d"):format(i, d) end
+    end
+    -- the polish sparkles, the button's press effect and its three faces
+    for f = 0, 3 do need[#need + 1] = "two_sparkles_" .. f; need[#need + 1] = "four_sparkles_" .. f end
+    for f = 0, 2 do need[#need + 1] = "button_effect_" .. f; need[#need + 1] = "case_button_" .. f end
     local missing = {}
     for _, k in ipairs(need) do if not card[k] then missing[#missing + 1] = k end end
     check(#missing == 0, 'gen4_trainer_card_art carries every key the card draws (missing: ' .. table.concat(missing, ", ") .. ')')

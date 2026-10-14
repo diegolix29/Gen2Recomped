@@ -25,13 +25,31 @@ Storage.ROWS=ROWS
 function Storage:uiSize() return 256,192 end
 function Storage:wantsFillScale() return true end
 function Storage:sgbPalettes() return {require('src.render.PaletteFX').trueColorZone(0,0,31,23)} end
-function Storage.new(game,opts) return setmetatable({game=game,opts=opts or {},index=1},Storage) end
+-- What the boxes and the party hold, as one string: the Journal's "Used a
+-- PC Box." is written when a visit changed anything there (box_app_manager.c
+-- BoxAppMan_FlagRecordBoxUseInJournal -- a move, a deposit, a withdrawal, a
+-- release, an item given or taken)
+local function digest(save)
+  local out={}
+  local function mon(m) if type(m)~='table' then return '-' end return tostring(m.species)..':'..tostring(m.personality or m.pid or '')..':'..tostring(m.item or m.heldItem or '') end
+  for _,m in ipairs(save.party or {}) do out[#out+1]=mon(m) end
+  for b,box in pairs(save.boxes or {}) do
+    if type(box)=='table' then for k,m in pairs(box) do out[#out+1]=b..'/'..tostring(k)..'='..mon(m) end end
+  end
+  table.sort(out)
+  return table.concat(out,'|')
+end
+function Storage.new(game,opts) return setmetatable({game=game,opts=opts or {},index=1,before=game.save and digest(game.save)},Storage) end
 function Storage:word(n,fallback)
  local text=T.resolve(self.game.data,Storage.BANK,n,self.game)
  if type(text)~='string' or text=='' then return fallback end
  return (text:gsub('[\v\f]+','\n'))
 end
-function Storage:close() self.game.stack:pop();if self.opts.onCancel then self.opts.onCancel() end;if self.opts.onDone then self.opts.onDone() end end
+function Storage:close()
+  if self.before and self.game.save and digest(self.game.save)~=self.before then
+    pcall(function() local J=require('src.pokemon.Gen4Journal');J.location(self.game.save,{type=J.EVENT.USED_PC_BOX}) end)
+  end
+  self.game.stack:pop();if self.opts.onCancel then self.opts.onCancel() end;if self.opts.onDone then self.opts.onDone() end end
 function Storage:choose() local row=ROWS[self.index];if not row[3] then return self:close() end;Screens.push(self.game,'BoxMenu',{mode=row[3]}) end
 function Storage:update()
  local i=self.game.input

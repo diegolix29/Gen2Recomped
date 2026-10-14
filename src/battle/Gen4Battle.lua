@@ -562,7 +562,7 @@ function Gen4Battle.spriteYOffset(battle, battler)
   local data = (battle and (battle.data or (battle.game or {}).data)) or {}
   local rec = ((data.gen4_species_sprites or {}).species or {})[id]
   if type(rec) ~= "table" then return 0 end
-  local back = (battle and battler == battle.player)
+  local back = (battle and (battler == battle.player or battler.isPlayer == true))
   local n = tonumber(back and rec.backOffset or rec.frontOffset)
   return n or 0
 end
@@ -776,16 +776,39 @@ function Gen4Battle.drawEnemyTrainer(battle)
   return one(battle.trainerPic, 1)
 end
 
+-- WHO STANDS WHERE.  A single battle is the solo pair, battler types 1 and 0.
+-- A double puts BattleState position p (0 player left, 1 foe left, 2 player
+-- right, 3 foe right) on battler type p + 2 -- the cartridge's own order,
+-- PLAYER_SLOT_1, ENEMY_SLOT_1, PLAYER_SLOT_2, ENEMY_SLOT_2 -- and draws the
+-- far side first: the foe's slot 2 (type 5, y 42), its slot 1 (type 3), then
+-- the player's slot 1 (type 2) and slot 2 (type 4, y 120), nearest last.
+function Gen4Battle.doubleSlots(battle)
+  return battle and battle.isDouble and battle:isDouble() and battle.battlerAt and true or false
+end
+
+function Gen4Battle.battlerRows(battle)
+  if not Gen4Battle.doubleSlots(battle) then
+    return {
+      { battler = battle.enemy,  pos = Gen4Battle.battlerPos(battle, 1), slot = 1, side = "enemy" },
+      { battler = battle.player, pos = Gen4Battle.battlerPos(battle, 0), slot = 0, side = "player" },
+    }
+  end
+  local rows = {}
+  for _, p in ipairs({ 3, 1, 0, 2 }) do
+    local b = battle:battlerAt(p)
+    rows[#rows + 1] = { battler = b, pos = Gen4Battle.battlerPos(battle, p + 2), slot = p + 2,
+                        side = (p % 2 == 1) and "enemy" or "player" }
+  end
+  return rows
+end
+
 function Gen4Battle.drawBattlers(battle)
   if hideNativeScene(battle) then return end
   local g = love.graphics
   g.setColor(1, 1, 1, 1)
   -- The foe first, so where the two overlap the player's Pokemon is in front --
   -- which is what standing nearer the camera means.
-  local pairs_ = {
-    { battler = battle.enemy,  pos = Gen4Battle.battlerPos(battle, 1) },
-    { battler = battle.player, pos = Gen4Battle.battlerPos(battle, 0) },
-  }
+  local pairs_ = Gen4Battle.battlerRows(battle)
   for _, row in ipairs(pairs_) do
     local battler = row.battler
     if battler and not battler.fainted
@@ -1139,8 +1162,11 @@ function Gen4Battle.drawParticles(battle)
       if tileS > 1 or tileT > 1 then
         -- REPEAT WRAP IS SET ON THE IMAGE ITSELF, which is shared through the
         -- asset cache -- safe here because a particle texture is drawn from
-        -- nowhere else, and stated so the next caller knows.
-        img:setWrap("repeat", "repeat")
+        -- nowhere else, and stated so the next caller knows. A texture whose
+        -- SPLTextureParam sets FLIP mirrors every other copy: a quarter-circle
+        -- tiled 2x2 is a ring, not four notched squares.
+        local art = q.art or {}
+        img:setWrap(art.flipS and "mirroredrepeat" or "repeat", art.flipT and "mirroredrepeat" or "repeat")
         g.draw(img, tiledQuad(w, h, tileS, tileT),
                fx, fy, (tonumber(q.rotation) or 0)+turn,
                sx*perspective / tileS, sy*perspective / tileT, w * tileS / 2, h * tileT / 2)
@@ -1208,6 +1234,7 @@ Gen4Battle.CLASSIC_DY = (192 - 144) / 2
 Gen4Battle.HEALTHBOX_ART = {
   player = { key = "healthbox_player_singles", ox = -64, oy = -32 },
   enemy  = { key = "healthbox_enemy",          ox = -64, oy = -28 },
+  playerDoubles = { key = "healthbox_player_doubles", ox = -64, oy = -28 },
 }
 Gen4Battle.HEALTHBOX_SIZE = { w = 128, h = 64 }
 
@@ -1619,9 +1646,21 @@ function Gen4Battle.drawHealthboxes(battle)
     { side = "enemy",  battler = battle.enemy,  slot = 1 },
     { side = "player", battler = battle.player, slot = 0 },
   }
+  -- A DOUBLE has four boxes (healthbox.c sHealthBoxTemplate_PlayerSlot1 ..
+  -- _EnemySlot2): the foe's two in the solo enemy art at types 3 and 5, the
+  -- player's two in healthbox_player_doubles on the short cell at 2 and 4.
+  local double = Gen4Battle.doubleSlots(battle) and not battle.gen4Safari
+  if double then
+    sides = {}
+    for _, p in ipairs({ 1, 3, 0, 2 }) do
+      sides[#sides + 1] = { side = (p % 2 == 1) and "enemy" or "player",
+                            battler = battle:battlerAt(p), slot = p + 2, double = true }
+    end
+  end
   local drew = 0
   for _, row in ipairs(sides) do
     local art = Gen4Battle.HEALTHBOX_ART[row.side]
+    if row.double and row.side == "player" then art = Gen4Battle.HEALTHBOX_ART.playerDoubles end
     -- THE SAFARI BOX stands where the player's would: "SAFARI BALLS" and
     -- "Left: NN" in FONT_SYSTEM at the cell rows HealthBox_DrawBallCount and
     -- _DrawBallsLeftMessage copy them to (tile rows 2 and 4, from column 2).
@@ -1675,6 +1714,7 @@ function Gen4Battle.drawHealthboxes(battle)
     end
     ::continue::
   end
+  if double then return drew >= 2 end
   return drew == 2
 end
 
@@ -3035,7 +3075,10 @@ function Gen4Battle.drawBottomScreen(battle, SecondScreen, over)
     else
       rect = Gen4Battle.MOVE_RECTS[battle.moveIndex or 1]
     end
-    if rect and not Gen4Battle.drawCursorCorners(battle, rect) then
+    -- hidden until a key is pressed (BattleSystem_MenuKeys); a cache
+    -- without the corners keeps its always-on wash
+    local hidden = battleArtData(battle) and not battle.gen4CursorActive
+    if rect and not hidden and not Gen4Battle.drawCursorCorners(battle, rect) then
       local Theme = require("src.ui.Theme")
       local Font = require("src.render.Font")
       g.setColor(1, 1, 1, 0.25)
@@ -3184,11 +3227,91 @@ Gen4Battle.BALL_STATUS_ANIM = { [0] = 0, 1, 3, 2 }
 -- (BattleSubscreen_ShowBallSprites at command selection, hidden again the
 -- moment a menu is left).  The player's six at (12 + 19i, 13), the foe's six
 -- at (246 - 12i, 9) and only in a trainer battle.
+-- THE BALL OF A POKEMON CLOSE TO LEVELLING UP WOBBLES (battle_subscreen.c
+-- SysTask_AnimatePartyBalls).  Each ball whose Pokemon is at 87% or more of
+-- the way to its next level (Pokemon_GetPercentToNextLevel; 0 when fainted,
+-- and in link, Safari, Frontier and Pal Park battles) waits 10 + 0..7 frames,
+-- then rocks: right for `duration` frames, left for twice that, right again
+-- -- each frame turning 0x800 (11.25 degrees) and sliding 0x180 (1.5 px) --
+-- twice, the second time with `duration` one less, and starts over.
+function Gen4Battle.expPercents(battle, party)
+  local out = { 0, 0, 0, 0, 0, 0 }
+  if battle.gen4Safari or battle.noItems or battle.link then return out end
+  local Growth = require("src.pokemon.Growth")
+  local data = battle.data or (battle.game and battle.game.data) or {}
+  local n = 0
+  for _, mon in ipairs(party or {}) do
+    local egg = mon and (mon.isEgg or mon.egg)
+    if mon and mon.species and mon.species ~= 0 and not egg and n < 6 then
+      n = n + 1
+      local def = data.pokemon and data.pokemon[mon.species]
+      local level = tonumber(mon.level) or 1
+      if def and (tonumber(mon.hp) or 0) > 0 and level < 100 then
+        local base = Growth.expForLevel(def.growthRate, level)
+        local nxt = Growth.expForLevel(def.growthRate, level + 1)
+        local exp = tonumber(mon.exp) or base
+        if nxt > base then out[n] = math.floor(math.max(0, exp - base) * 100 / (nxt - base)) end
+      end
+    end
+  end
+  return out
+end
+
+function Gen4Battle.ballWobbleStep(st, percent, rand)
+  if st.phase == 0 then
+    if percent < 87 then return end
+    st.delay = 10 + (rand or 0) % 8
+    st.duration, st.count, st.bounce, st.x, st.rot = 2, 0, 0, 0, 0
+    st.phase = 1
+  elseif st.phase == 1 then
+    if st.delay > 0 then st.delay = st.delay - 1 else st.phase = 2 end
+  elseif st.phase == 2 or st.phase == 4 then
+    st.rot, st.x, st.count = st.rot + 1, st.x + 1.5, st.count + 1
+    if st.count >= st.duration then
+      st.count = 0
+      if st.phase == 2 then st.phase = 3
+      else
+        st.rot, st.x = 0, 0
+        if st.bounce < 1 then
+          st.bounce = st.bounce + 1
+          if st.duration > 1 then st.duration = st.duration - 1 end
+          st.phase = 2
+        else
+          st.bounce, st.phase = 0, 0
+        end
+      end
+    end
+  elseif st.phase == 3 then
+    st.rot, st.x, st.count = st.rot - 1, st.x - 1.5, st.count + 1
+    if st.count >= st.duration * 2 then st.count = 0; st.phase = 4 end
+  end
+end
+
 function Gen4Battle.drawSubscreenBalls(battle)
   if not battleArt(battle) then return false end
-  local mine = Gen4Battle.stockStatus(playerParty(battle))
+  local party = playerParty(battle)
+  local mine = Gen4Battle.stockStatus(party)
+  local percents = Gen4Battle.expPercents(battle, party)
+  battle.gen4BallWobble = battle.gen4BallWobble or {}
+  local frame = math.floor(battle.frame or 0)
+  local last = battle.gen4BallWobbleFrame or frame
+  local steps = math.max(0, math.min(8, frame - last))
+  battle.gen4BallWobbleFrame = frame
   for i = 0, 5 do
-    drawArt(battle, "stock_player_" .. Gen4Battle.BALL_STATUS_ANIM[mine[i + 1]], 12 + 19 * i, 13)
+    local st = battle.gen4BallWobble[i] or { phase = 0, x = 0, rot = 0 }
+    battle.gen4BallWobble[i] = st
+    for _ = 1, steps do Gen4Battle.ballWobbleStep(st, percents[i + 1], love.math.random(0, 7)) end
+    local key = "stock_player_" .. Gen4Battle.BALL_STATUS_ANIM[mine[i + 1]]
+    local art = battleArt(battle)
+    local row = art and art[key]
+    local img = row and image(row.path)
+    if img and (st.rot or 0) ~= 0 or (img and (st.x or 0) ~= 0) then
+      love.graphics.setColor(1, 1, 1, 1)
+      love.graphics.draw(img, 12 + 19 * i + math.floor(st.x or 0), 13, (st.rot or 0) * math.pi / 16,
+                         1, 1, -(row.originX or 0), -(row.originY or 0))
+    else
+      drawArt(battle, key, 12 + 19 * i, 13)
+    end
   end
   if battle.kind == "trainer" then
     local theirs = Gen4Battle.stockStatus(battle.enemyParty)
@@ -3227,6 +3350,58 @@ Gen4Battle.TARGET_NAME_SPOTS = {
   [2] = { x = 196, y = 116 }, [3] = { x = 60, y = 32 },
 }
 
+-- sTargetSelectIconPositions: only the foes' two get an icon (slots 1, 3)
+Gen4Battle.TARGET_ICON_SPOTS = { [1] = { x = 196, y = 56 }, [3] = { x = 60, y = 56 } }
+
+-- The icon's animation (BattleSubscreen_NewPokeIconSprite): still when
+-- fainted, otherwise faster the healthier -- HealthBar_Color 4 (full) anim 1
+-- .. 1 (red) anim 4, a status condition anim 5.  The icon sheets carry two
+-- frames; pl_poke_icon's shared_anim_32k steps them every 4 / 6 / 12 / 20
+-- frames.  Anim 5 holds frame 0 for 32 frames and then nudges the cell for
+-- 2 + 2 (its position frames), drawn here as a one-pixel shake.
+Gen4Battle.ICON_ANIM_PERIOD = { [1] = 4, [2] = 6, [3] = 12, [4] = 20 }
+function Gen4Battle.iconAnimFor(mon)
+  local hp = tonumber(mon and mon.hp) or 0
+  if hp <= 0 then return 0 end
+  if mon.status and mon.status ~= "" then return 5 end
+  local max = math.max(1, (mon.stats and mon.stats.hp) or mon.maxHp or 1)
+  local px = math.floor(hp * 48 / max)
+  if px >= 48 then return 1 elseif px > 24 then return 2 elseif px > 9 then return 3 end
+  return 4
+end
+
+local iconImages = {}
+function Gen4Battle.drawTargetIcon(battle, mon, cx, cy)
+  local data = battle.data or (battle.game and battle.game.data) or {}
+  local icons = data.icons
+  local def = data.pokemon and data.pokemon[mon.species]
+  local entry = (icons and icons.bySpecies and icons.bySpecies[mon.species]) or (def and def.icon)
+  local path = type(entry) == "table" and entry.image or entry
+  if type(path) ~= "string" then return false end
+  if iconImages[path] == nil then
+    local ok, img = pcall(require("src.render.Assets").image, path)
+    iconImages[path] = ok and img or false
+  end
+  local img = iconImages[path]
+  if not img then return false end
+  local iw, ih = img:getDimensions()
+  local fh = math.min(ih, tonumber(type(entry) == "table" and entry.frameHeight) or 32)
+  local frames = math.max(1, math.floor(ih / fh))
+  local anim = Gen4Battle.iconAnimFor(mon)
+  local f, dx = 0, 0
+  local tick = math.floor(battle.frame or 0)
+  if anim == 5 then
+    local t = tick % 36
+    if t >= 32 then dx = (t < 34) and 1 or -1 end
+  elseif anim > 0 and frames > 1 then
+    f = math.floor(tick / Gen4Battle.ICON_ANIM_PERIOD[anim]) % frames
+  end
+  love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.draw(img, love.graphics.newQuad(0, f * fh, iw, fh, iw, ih),
+                     math.floor(cx - iw / 2) + dx, math.floor(cy - fh / 2))
+  return true
+end
+
 -- slot -> index into battle.targetChoices, for the slots that can be chosen
 function Gen4Battle.targetSlots(battle)
   local out = {}
@@ -3262,6 +3437,12 @@ function Gen4Battle.drawTargetSelect(battle, layer)
     end
     g.draw(layer, quad(Gen4Battle.TARGET_CANCEL), Gen4Battle.TARGET_CANCEL.left, Gen4Battle.TARGET_CANCEL.top)
   end
+  -- THE FOES' ICONS (BattleSubscreen_NewPokeIconSprite, slots 1 and 3 only)
+  for slot, i in pairs(slots) do
+    local spot = Gen4Battle.TARGET_ICON_SPOTS[slot]
+    local b = battle.targetChoices[i]
+    if spot and b and b.mon then pcall(Gen4Battle.drawTargetIcon, battle, b.mon, spot.x, spot.y) end
+  end
   local faced = Font.pushFace("subscreen")
   for slot, i in pairs(slots) do
     local b = battle.targetChoices[i]
@@ -3269,22 +3450,34 @@ function Gen4Battle.drawTargetSelect(battle, layer)
     local okP, Pokemon = pcall(require, "src.pokemon.Pokemon")
     local gender = okP and Pokemon.genderOf and b and b.mon
                    and Pokemon.genderOf(battle.data, b.mon)
-    if gender == "male" then name = name .. "♂" elseif gender == "female" then name = name .. "♀" end
+    -- BattleStrings 962 / 963: the nickname, then {COLOR 3}♂ or {COLOR 4}♀
+    -- -- the symbol in palette 6's colours 7/8 or 9/10 (fg = 2n + 1)
+    local sym = (gender == "male" and "♂") or (gender == "female" and "♀") or nil
     local a, s = 4, 5
     if slot % 2 == 1 then a, s = 1, 2 end
+    local spot = Gen4Battle.TARGET_NAME_SPOTS[slot]
+    local nw = Font.width and Font.width(name) or (#name * 8)
+    local sw = sym and (Font.width and Font.width(sym) or 8) or 0
+    local x = math.floor(spot.x - (nw + sw) / 2)
     local tone = ink and ink[a] and Font.beginTwoTone(rgb01(ink[a]), rgb01(ink[s]))
     if not tone then g.setColor(0, 0, 0, 1) end
-    local spot = Gen4Battle.TARGET_NAME_SPOTS[slot]
-    local tw = Font.width and Font.width(name) or (#name * 8)
-    Font.draw(name, math.floor(spot.x - tw / 2), spot.y - 8)
+    Font.draw(name, x, spot.y - 8)
     if tone then Font.endTwoTone() end
+    if sym then
+      local fa, fs = 7, 8
+      if gender == "female" then fa, fs = 9, 10 end
+      local t2 = ink and ink[fa] and Font.beginTwoTone(rgb01(ink[fa]), rgb01(ink[fs]))
+      if not t2 then g.setColor(0, 0, 0, 1) end
+      Font.draw(sym, x + nw, spot.y - 8)
+      if t2 then Font.endTwoTone() end
+    end
   end
   if faced then Font.popFace() end
   -- CANCEL in the bar's own colours, as the move list's is
   drawLabelAt(battle, Strings("CANCEL"), Gen4Battle.CANCEL_LABEL_SPOT)
   local chosen = battle.targetChoices and battle.targetChoices[battle.targetIndex or 1]
   local rect = chosen and Gen4Battle.TARGET_RECTS[tonumber(chosen.position) or -1]
-  if rect then Gen4Battle.drawCursorCorners(battle, rect) end
+  if rect and battle.gen4CursorActive then Gen4Battle.drawCursorCorners(battle, rect) end
   g.setColor(1, 1, 1, 1)
   return true
 end
@@ -3425,6 +3618,20 @@ function Gen4Battle.partyScreenId(battle)
   if not bottomScreenUp(battle.game) then return nil end
   local ok, P = pcall(require, "src.ui.Gen4BattleParty")
   if ok and P.available(data) then return "Gen4BattleParty" end
+  return nil
+end
+
+-- WHICH BAG A PLATINUM BATTLE OPENS: the cartridge's battle bag on the
+-- bottom screen (src/ui/Gen4BattleBag.lua) by the same rule as the party
+-- list -- bottom screen up, the art in the cache, no mod serving "BagMenu".
+-- nil means "BagMenu", the field bag, as before.
+function Gen4Battle.bagScreenId(battle)
+  if not (battle and battle.gen4Layout and battle:gen4Layout()) then return nil end
+  local data = battle.data or (battle.game and battle.game.data)
+  if data and data.screens and data.screens.BagMenu then return nil end
+  if not bottomScreenUp(battle.game) then return nil end
+  local ok, B = pcall(require, "src.ui.Gen4BattleBag")
+  if ok and B.available(data) then return "Gen4BattleBag" end
   return nil
 end
 

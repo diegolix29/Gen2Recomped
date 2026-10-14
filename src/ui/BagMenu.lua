@@ -282,6 +282,36 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
     Underground.enter(game, ow)
     return
   end
+  -- PLATINUM: an item whose use is a field script (Gen4ItemUse) -- the berry
+  -- patch's planting, mulching and watering, the Vs. Seeker.  The bag closes,
+  -- the item goes in VAR_0x8000 (SCRIPT_DATA_PARAMETER_0) and the script runs
+  -- with the faced object as its target, as sub_02068540 starts it.
+  if result == "gen4_script" and extra then
+    list:close()
+    local ow = game.overworld
+    local rows = require("src.world.Gen4TileScripts").compile(game.data, extra.band, extra.entry)
+    if ow and rows then
+      local C = require("src.script.Gen4Commands")
+      if C.setVar then C.setVar(game.save, 0x8000, extra.item) end
+      ow.runner:run(rows, { npc = extra.npc, mapId = ow.map and ow.map.id })
+    end
+    return
+  end
+  -- Mail: the mail reader over the bag, back to the bag when it closes
+  -- (StartMenu_ExitMail returns to the bag); nothing is used up
+  if result == "gen4_mail" and extra then
+    local MailView = require("src.ui.Gen4MailView")
+    game.stack:push(MailView.new(game, extra.mailType))
+    return
+  end
+  -- Honey: taken from the bag and Sweet Scent's lure task run
+  if result == "honey" then
+    list:close()
+    consume(game, id)
+    local ow = game.overworld
+    if ow and ow.gen4SweetScent then ow:gen4SweetScent() end
+    return
+  end
   if result == "bicycle" then
     -- StartMenu_Item .useOrTossItem (engine/menus/start_sub_menus.asm):
     -- while BIT_ALWAYS_ON_BIKE of wStatusFlags6 is set -- the Cycling Road,
@@ -314,12 +344,17 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
       game.save.onBike = false
       game.save.bikeKind = nil
       Music.playMap(game.data, ow and ow.map.id, false)
-      showMessages(game, { Strings("%s got off\nthe BICYCLE.", save_name(game)) })
+      if not require("src.core.GameVersion").isGen4() then
+        showMessages(game, { Strings("%s got off\nthe BICYCLE.", save_name(game)) })
+      end
     elseif bikeAllowed() then
       game.save.onBike = true
       game.save.bikeKind = payload
       Music.playMap(game.data, ow.map.id, true)
-      showMessages(game, { Strings("%s got on\nthe BICYCLE!", save_name(game)) })
+      -- Platinum's UseBicycleFromMenu closes the bag and mounts, silently
+      if not require("src.core.GameVersion").isGen4() then
+        showMessages(game, { Strings("%s got on\nthe BICYCLE!", save_name(game)) })
+      end
     else
       showMessages(game, { Strings("No cycling\nallowed here.") })
     end
@@ -345,6 +380,12 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
     if not battle then
       showMessages(game, { Strings("OAK: %s!\nThis isn't the\ntime to use that!",
                               game.save.player.name) })
+      return
+    end
+    -- BattleBag's hasTwoOpponents: no ball while two wild Pokemon stand
+    if battle.kind == "wild" and battle.wildFoesStanding and battle:wildFoesStanding() > 1 then
+      showMessages(game, { (game.data.text and game.data.text.TEXT_B0002_00044)
+        or Strings("It's no good! It's impossible to aim\nwhen there are two POKéMON!") })
       return
     end
     consume(game, id)
@@ -405,6 +446,15 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
         stack:pop(); guard = guard + 1
       end
     end)
+    return
+  end
+
+  -- PLATINUM'S JOURNAL, over the Bag (src/ui/Gen4Journal.lua)
+  if result == "journal" then
+    local ok = pcall(function()
+      game.stack:push(require("src.ui.Gen4Journal").new(game, { save = game.save }))
+    end)
+    if not ok then showMessages(game, { Strings("Can't use that here.") }) end
     return
   end
 
@@ -718,7 +768,22 @@ local function pickTargetAndUse(game, battle, id, list)
   if def and def.machine then
     opts.tmhm = { move = def.machine.move, kind = def.machine.kind }
   end
-  require("src.ui.Screens").push(game, "PartyMenu", opts)
+  -- PLATINUM'S BATTLE PARTY LIST picks the target on the bottom screen when
+  -- the battle says it is the party screen there (BattleState:
+  -- gen4ItemTargetScreen); it asks for the move itself (its RESTORE WHICH
+  -- MOVE? page) and hands it to `onMove`.
+  local screenId = "PartyMenu"
+  if battle and type(battle.gen4ItemTargetScreen) == "function" and not opts.tmhm then
+    local okS, sid = pcall(battle.gen4ItemTargetScreen, battle)
+    if okS and sid then
+      screenId = sid
+      opts.mode, opts.itemId = "useItem", id
+      if wantsMove then
+        opts.onMove = function(mon, mi) useOn(game, battle, id, mon, list, mi) end
+      end
+    end
+  end
+  require("src.ui.Screens").push(game, screenId, opts)
 end
 
 -- TEXT_BANK_BAG, line 8 of generated/text_banks.txt (zero-based 7), and the

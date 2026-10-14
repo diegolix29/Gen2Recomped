@@ -150,6 +150,14 @@ local ENTRY_Y = 32
 local FALLBACK_BG = { 0.24, 0.27, 0.36 }
 local FALLBACK_ALT = { 0.19, 0.22, 0.30 }
 
+-- THE CARTRIDGE'S SOUND EFFECTS (naming_screen.c's Sound_PlayEffect calls),
+-- by their SDAT names: SE_CONFIRM_sseq_3 is SEQ_SE_DP_SELECT.
+local function se(self, name, opts)
+  local data = self.game and self.game.data
+  local ok, Sound = pcall(require, "src.core.Sound")
+  if ok and type(Sound) == "table" and Sound.playSe and data then return Sound.playSe(data, name, opts) end
+end
+
 function Gen4NamingScreen:uiSize() return W, H end
 function Gen4NamingScreen:wantsFillScale() return true end
 function Gen4NamingScreen:wantsEdgeBleed() return false end
@@ -276,6 +284,7 @@ function Gen4NamingScreen:press(cell)
     -- cartridge's CHAR_SPACE cells do in the middle of a page.
     if cell.value ~= "" and #self.glyphs < self.maxLen then
       self.glyphs[#self.glyphs + 1] = cell.value
+      se(self, "SEQ_SE_DP_BOX02")   -- ns.c 3019
       -- the cursor's pop (seq 60): a dot swelling and shrinking, 2 ticks a
       -- frame; then, if the name is full, the cursor goes to OK
       self.pop = { tick = 0, x = select(1, self:cursorPlace()), y = select(2, self:cursorPlace()) }
@@ -291,20 +300,25 @@ function Gen4NamingScreen:press(cell)
     if #self.glyphs > 0 then
       self.glyphs[#self.glyphs] = nil
       self.pressed = { id = "back", tick = 0 }
+      se(self, "SEQ_SE_DP_SELECT")   -- ns.c 2970
     end
   elseif id == "ok" then
     self.pressed = { id = "ok", tick = 0 }
+    se(self, "SEQ_SE_DP_PIRORIRO")   -- ns.c 2979
     self:close(self:typed())
   end
 end
 
 -- A page change (ns.c 2213-2265): the new panel slides in from the left, 24
 -- pixels a 30 Hz frame, the old one drops away 10 a frame, and when the new
--- one lands the overlay and its buttons wiggle.
+-- one lands the overlay and its buttons wiggle.  The turn whooshes
+-- (SEQ_SE_DP_SYU03, ns.c 1301/1309 for SELECT, 2931 for a tab) and the landing
+-- clicks (SEQ_SE_DP_NAMEIN_01, ns.c 2263, in tickTimers).
 function Gen4NamingScreen:turnTo(page)
   if page == self.page then return end
   self.slide = { from = self.page, frame = 0 }
   self.page = page
+  se(self, "SEQ_SE_DP_SYU03")
 end
 
 -- THE MOVE (NamingScreen_MoveCursor, ns.c 2489-2526): the grid wraps; a step
@@ -353,6 +367,7 @@ function Gen4NamingScreen:tickTimers(dt)
         if 238 - 24 * self.slide.frame <= -1 then
           self.slide = nil
           self.wiggle = 0
+          se(self, "SEQ_SE_DP_NAMEIN_01")   -- ns.c 2263
         end
       elseif self.wiggle then
         self.wiggle = self.wiggle + 1
@@ -377,21 +392,30 @@ function Gen4NamingScreen:update(dt)
     return
   end
   -- THE CURSOR STARTS HIDDEN, and the first d-pad or A press only shows it
-  -- (ns.c 2584-2587, 2854-2857)
+  -- (ns.c 2584-2587, 2854-2857).  A d-pad press clicks even then, because
+  -- ProcessDirectionInputs plays SE_CONFIRM before it looks (ns.c 2539-2560);
+  -- A shows the cursor silently.
   if not self.cursorShown then
     for _, k in ipairs({ "left", "right", "up", "down", "a" }) do
-      if input:wasPressed(k) then self.cursorShown = true; self:placed(); return end
+      if input:wasPressed(k) then
+        if k ~= "a" then se(self, "SEQ_SE_DP_SELECT") end
+        self.cursorShown = true; self:placed(); return
+      end
     end
   end
-  if input:wasPressed("left") then self:move(-1, 0) end
-  if input:wasPressed("right") then self:move(1, 0) end
-  if input:wasPressed("up") then self:move(0, -1) end
-  if input:wasPressed("down") then self:move(0, 1) end
+  -- every d-pad step clicks (ns.c 2539-2560)
+  for _, step in ipairs({ { "left", -1, 0 }, { "right", 1, 0 }, { "up", 0, -1 }, { "down", 0, 1 } }) do
+    if input:wasPressed(step[1]) then
+      se(self, "SEQ_SE_DP_SELECT")
+      self:move(step[2], step[3])
+    end
+  end
   if input:wasPressed("a") then self:press(self:cell(self.row, self.col)) end
   if input:wasPressed("b") then self:press({ kind = "button", value = "back" }) end
   if input:wasPressed("select") then self:turnTo(self.page % 3 + 1) end
-  -- START goes to OK (12, 0) rather than confirming
+  -- START goes to OK (12, 0) rather than confirming, with a click (ns.c 2568)
   if input:wasPressed("start") then
+    se(self, "SEQ_SE_DP_SELECT")
     self.cursorShown = true
     self.row, self.col = 1, 12
     self:placed()

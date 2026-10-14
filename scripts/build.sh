@@ -90,7 +90,7 @@ say "manifests:$MANIFESTS"
 # mods/ ships too: the launcher's MODS tab lists what is installed, and the
 # bundled example mods (DramaticShapes among them) live there.
 (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
-  main.lua conf.lua src data assets mods tools/save-editor \
+  main.lua conf.lua src data assets mods tools/save-editor tools/map-editor \
   $MANIFESTS \
   main.lua conf.lua src data assets tools/save-editor \
   tools/rom_manifest.json tools/rom_manifest_blue.json \
@@ -111,7 +111,13 @@ fi
 # ROM import fails in the built app (dev reads them off the source tree, so
 # the miss only ever shows up in a build -- the Yellow manifest shipped this
 # way once).
+# tools/map-editor too: the editor's MAP pages require it pcall'd, so a build
+# without it opened a MAP EDITOR with an empty body for every game --
+# scripts/pack_love.sh shipped it, this list did not.
 for required in tools/save-editor/App.lua tools/save-editor/Kit.lua \
+                tools/save-editor/panels/Party.lua \
+                tools/map-editor/MapEdits.lua tools/map-editor/ModExport.lua \
+                tools/map-editor/panels/Preview.lua; do
                 tools/save-editor/panels/Party.lua \
                 src/ui/kit/Kit.lua \
                 tools/rom_manifest.json tools/rom_manifest_blue.json \
@@ -169,6 +175,10 @@ build_mac() {
   # drop any bundled placeholder .love and fuse ours in
   find "$out_app/Contents/Resources" -maxdepth 1 -name '*.love' -delete
   cp "$LOVE_FILE" "$out_app/Contents/Resources/game.love"
+  if [ -f "$ROOT/translation/rom-translate" ]; then
+    mkdir -p "$out_app/Contents/Resources/translation"
+    cp "$ROOT/translation/rom-translate" "$out_app/Contents/Resources/translation/"
+  fi
 
   local plist="$out_app/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$plist" 2>/dev/null \
@@ -259,6 +269,10 @@ build_win() {
   cp "$love_dir"/license.txt "$out_dir"/ 2>/dev/null || true
 
   cat "$love_dir/love.exe" "$LOVE_FILE" > "$out_dir/$APP_NAME.exe"
+  if [ -f "$ROOT/translation/rom-translate.exe" ]; then
+    mkdir -p "$out_dir/translation"
+    cp "$ROOT/translation/rom-translate.exe" "$out_dir/translation/"
+  fi
 
   local zip_out="$DIST/win/$APP_NAME-win64.zip"
   rm -f "$zip_out"
@@ -317,6 +331,10 @@ build_linux() {
   unsquashfs -q -no-xattrs -o "$sfs_offset" -d "$appdir" "$love_appimage" >/dev/null
 
   cp "$LOVE_FILE" "$appdir/game.love"
+  if [ -f "$ROOT/translation/rom-translate" ]; then
+    mkdir -p "$appdir/translation"
+    cp "$ROOT/translation/rom-translate" "$appdir/translation/"
+  fi
   # `sed -i` takes a MANDATORY backup suffix on BSD and forbids one on GNU, so
   # no single spelling works on both -- and `sed -i ''` on Linux silently ate
   # the next argument as the script, which is why this step could only ever run

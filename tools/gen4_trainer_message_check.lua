@@ -210,6 +210,8 @@ end
 section("4. the wiring: lowered, emitted, handled")
 local vm = slurp("src/script/Gen4ScriptVM.lua") or ""
 local cmds = slurp("src/script/Gen4Commands.lua") or ""
+-- ...and the module Gen4Commands loads at its end for the Battle Tower
+cmds = cmds .. "\n" .. (slurp("src/script/Gen4BattleTowerCommands.lua") or "")
 ok(#vm > 0, "src/script/Gen4ScriptVM.lua did not open")
 ok(#cmds > 0, "src/script/Gen4Commands.lua did not open")
 -- The six `scripts_battles.s` commands this pass lowered.  `getmovementtype`

@@ -94,8 +94,8 @@
 --     tile-major over 24x8 tiles, eight bytes a tile, one byte a row, bit n =
 --     pixel n from the left.
 --
--- WHAT THE PORT CANNOT FILL IN, named rather than faked: SCORE (no
--- `GameRecords_GetTrainerScore`) prints 0; ADVENTURE STARTED and the whole
+-- SCORE is `GameRecords_GetTrainerScore` (src/pokemon/Gen4GameRecords.lua).
+-- WHAT THE PORT CANNOT FILL IN, named rather than faked: ADVENTURE STARTED and the whole
 -- back are records the save does not keep, so they print the cartridge's own
 -- blanks and zeroes; nothing writes a signature yet (the cartridge's signing
 -- screen is src/applications/signature.c, not this one), so the box is empty
@@ -329,19 +329,31 @@ function Gen4TrainerCard:close()
   if self.onCancel then self.onCancel() end
 end
 
-local function sfx(self, name, pitch)
+local function sfx(self, name, pitch, handle)
   local data = self.game and self.game.data
   if not data then return end
   local ok, Sound = pcall(require, "src.core.Sound")
-  if not (ok and type(Sound) == "table" and Sound.play) then return end
-  local okP, src = pcall(Sound.play, data, name)
-  if okP and pitch and type(src) == "userdata" and src.setPitch then pcall(src.setPitch, src, pitch) end
+  if not (ok and type(Sound) == "table" and Sound.playSe) then return end
+  -- The cartridge's SSEQ effect on its own SE player (NitroAudio); the badge
+  -- chime's pitch is a playback-rate factor on that player.
+  local opts = (pitch or handle) and { pitch = pitch, handle = handle } or nil
+  pcall(Sound.playSe, data, name, opts)
+end
+
+local function chimeSounding(self, handle)
+  local data = self.game and self.game.data
+  local ok, Sound = pcall(require, "src.core.Sound")
+  if not (data and ok and type(Sound) == "table" and Sound.isSePlaying) then return false end
+  local okP, playing = pcall(Sound.isSePlaying, data, "SEQ_SE_DP_BADGE_C", handle)
+  return okP and playing
 end
 
 -- ------------------------------------------------------------- the loop --
 
 function Gen4TrainerCard:update()
   self.t = (self.t or 0) + 1
+  -- `TrainerCaseApp_Init`: SEQ_SE_DP_CARD3 as the case opens
+  if not self.openSfx then self.openSfx = true; sfx(self, "SEQ_SE_DP_CARD3") end
   local shown = self:subscreenShown()
   if self.state == "flip" then
     if self:flipStep() then self.state = "main" end
@@ -429,6 +441,7 @@ function Gen4TrainerCard:mainState()
       if self.page == PAGE_CASE then self.page = PAGE_FRONT end
       self:startFlip()
     elseif input == INPUT_B then
+      sfx(self, "SEQ_SE_DP_SELECT") -- main.c: SE_CONFIRM_sseq_3 on the way out
       self:close()
     elseif input == INPUT_SELECT then
       -- the port's key path to the button
@@ -448,7 +461,8 @@ function Gen4TrainerCard:singleScreenState()
       self.page = self.page % PAGE_CASE + 1
     end
   elseif input:wasPressed("b") or input:wasPressed("start") then
-    if self.page ~= PAGE_FRONT then self.page = PAGE_FRONT else self:close() end
+    if self.page ~= PAGE_FRONT then self.page = PAGE_FRONT
+    else sfx(self, "SEQ_SE_DP_SELECT"); self:close() end
   end
 end
 
@@ -679,7 +693,25 @@ end
 function Gen4TrainerCard:chime(badge)
   local level = Gen4TrainerCard.polishLevel(self:polish(badge))
   local pitch = (CHIME_PITCH[badge] or 0) - 152 * (LEVEL_4_SPARKLES - level)
-  sfx(self, "SEQ_SE_DP_BADGE_C", 2 ^ (pitch / 768))
+  -- badge_chimes.c: four SE players kept most-recent-first.  A chime goes to
+  -- the player already ringing this badge, else a quiet one, else the least
+  -- recently used; that player moves to the front.
+  local players = self.chimePlayers
+  if not players then
+    players = { { handle = 1 }, { handle = 2 }, { handle = 3 }, { handle = 4 } }
+    self.chimePlayers = players
+  end
+  for _, p in ipairs(players) do
+    if p.badge and not chimeSounding(self, p.handle) then p.badge = nil end
+  end
+  local at
+  for i, p in ipairs(players) do if p.badge == badge then at = i; break end end
+  if not at then for i, p in ipairs(players) do if not p.badge then at = i; break end end end
+  at = at or #players
+  local p = table.remove(players, at)
+  p.badge = badge
+  table.insert(players, 1, p)
+  sfx(self, "SEQ_SE_DP_BADGE_C", 2 ^ (pitch / 768), p.handle)
 end
 
 -- ------------------------------------------------------------ pointer --
@@ -781,7 +813,9 @@ function Gen4TrainerCard:frontRows()
     rows[#rows + 1] = { Strings("POKéDEX"), tostring(seen),
                         FRONT_Y.dex, PARTIAL_RIGHT }
   end
-  rows[#rows + 1] = { Strings("SCORE"), "0", FRONT_Y.score, PARTIAL_RIGHT }
+  -- GameRecords_GetTrainerScore (src/pokemon/Gen4GameRecords.lua)
+  local score = require("src.pokemon.Gen4GameRecords").trainerScore(save)
+  rows[#rows + 1] = { Strings("SCORE"), tostring(score), FRONT_Y.score, PARTIAL_RIGHT }
   -- hours padded to three, TWO spaces where the blinking colon goes
   rows[#rows + 1] = {
     Strings("TIME"),

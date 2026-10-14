@@ -157,6 +157,14 @@ local Q = {
 Gen4SummaryMenu.CONDITION_QUADS = Q
 Gen4SummaryMenu.CONDITION_COLOUR = { 8 / 31, 1, 15 / 31, 20 / 31 }
 
+-- THE CARTRIDGE'S SOUND EFFECTS (main.c / subscreen.c Sound_PlayEffect), by
+-- their SDAT names: SE_CONFIRM_sseq_3 is SEQ_SE_DP_SELECT.
+local function se(self, name, opts)
+  local data = self.game and self.game.data
+  local ok, Sound = pcall(require, "src.core.Sound")
+  if ok and type(Sound) == "table" and Sound.playSe and data then return Sound.playSe(data, name, opts) end
+end
+
 function Gen4SummaryMenu:uiSize() return W, H end
 function Gen4SummaryMenu:wantsFillScale() return true end
 function Gen4SummaryMenu:wantsEdgeBleed() return false end
@@ -338,7 +346,12 @@ function Gen4SummaryMenu:changePage(delta)
   -- touch button back in its resting face before the page changes
   self.subLit=nil
   for at,i in ipairs(pages) do
-    if self.page==i then self.page=pages[(at-1+delta)%#pages+1];return end
+    if self.page==i then
+      self.page=pages[(at-1+delta)%#pages+1]
+      -- a page that actually changes flips with SEQ_SE_DP_SELECT5 (main.c 1345)
+      if self.page~=i then se(self,"SEQ_SE_DP_SELECT5") end
+      return
+    end
   end
   self:ensureVisiblePage()
 end
@@ -358,8 +371,10 @@ function Gen4SummaryMenu:update(dt)
   local input = self.game.input
   if not input then return end
   if self.moveMode then
-    if input:wasPressed('up') then self.moveIndex=(self.moveIndex-2)%5+1
-    elseif input:wasPressed('down') then self.moveIndex=self.moveIndex%5+1
+    -- HandleInput_MoveDetails / _MoveSwap: a step that moves the selector
+    -- clicks SE_CONFIRM (main.c 688/697, 740/749)
+    if input:wasPressed('up') then self.moveIndex=(self.moveIndex-2)%5+1;se(self,"SEQ_SE_DP_SELECT")
+    elseif input:wasPressed('down') then self.moveIndex=self.moveIndex%5+1;se(self,"SEQ_SE_DP_SELECT")
     elseif input:wasPressed('a') then self:selectMove()
     elseif input:wasPressed('b') then self:backFromMove()
     end
@@ -367,11 +382,20 @@ function Gen4SummaryMenu:update(dt)
   end
   if self.ribbonMode then
     local count=#self:ribbonList()
-    if input:wasPressed('b') then self.ribbonMode=nil
+    -- HandleInput_RibbonSelect: A or B puts the info away with
+    -- SEQ_SE_DP_DECIDE (main.c 829)
+    if input:wasPressed('b') or input:wasPressed('a') then
+      se(self,"SEQ_SE_DP_DECIDE")
+      self.ribbonMode=nil
     elseif count>0 then
       local delta=input:wasPressed('right') and 1 or input:wasPressed('left') and -1
         or input:wasPressed('up') and -4 or input:wasPressed('down') and 4
-      if delta then self.ribbonIndex=((self.ribbonIndex or 1)-1+delta)%count+1 end
+      if delta then
+        local before=self.ribbonIndex or 1
+        self.ribbonIndex=(before-1+delta)%count+1
+        -- ChangeSelectedRibbon clicks only when the cursor moved (main.c 2117)
+        if self.ribbonIndex~=before then se(self,"SEQ_SE_DP_SELECT") end
+      end
     end
     return
   end
@@ -385,11 +409,16 @@ function Gen4SummaryMenu:update(dt)
   elseif input:wasPressed('down') then
     self:changePokemon(1)
   elseif input:wasPressed('a') and (key=='moves' or key=='contestMoves') then
+    -- the move info slides out with SEQ_SE_DP_SYU01 (main.c 620/624)
+    se(self,"SEQ_SE_DP_SYU01")
     self.moveMode=true;self.moveIndex=1
   elseif input:wasPressed('a') and key=='ribbons' then
-    if #self:ribbonList()>0 then self.ribbonMode=true;self.ribbonIndex=1 end
+    -- only with a ribbon to show (main.c 627-631)
+    if #self:ribbonList()>0 then se(self,"SEQ_SE_DP_DECIDE");self.ribbonMode=true;self.ribbonIndex=1 end
   elseif input:wasPressed("b")
          or (input:wasPressed('a') and key=='exit') then
+    -- main.c 608 (B) and 634 (A on EXIT)
+    se(self,"SEQ_SE_DP_DECIDE")
     self:close()
   end
 end
@@ -539,17 +568,28 @@ function Gen4SummaryMenu:drawMemo()
   end
 end
 
+-- B: out of a swap with SEQ_SE_DP_DECIDE (main.c 773), out of the details
+-- with SEQ_SE_DP_SYU01 (main.c 723)
 function Gen4SummaryMenu:backFromMove()
-  if self.swapMove then self.swapMove=nil
-  else self.moveMode=nil;self.moveIndex=nil end
+  if self.swapMove then se(self,"SEQ_SE_DP_DECIDE");self.swapMove=nil
+  else se(self,"SEQ_SE_DP_SYU01");self.moveMode=nil;self.moveIndex=nil end
 end
 
+-- A in the details (HandleInput_MoveDetails / _MoveSwap): CANCEL slides the
+-- info back with SEQ_SE_DP_SYU01 (main.c 706), a move starts a swap with
+-- SEQ_SE_DP_DECIDE (main.c 715) unless the moves are locked (silent); in a
+-- swap A always says SEQ_SE_DP_DECIDE (main.c 760/766), CANCEL included,
+-- and goes back to the details rather than out of them
 function Gen4SummaryMenu:selectMove()
   local index=self.moveIndex
-  if index==5 then self.swapMove=nil;self:backFromMove();return end
+  if index==5 then
+    if self.swapMove then se(self,"SEQ_SE_DP_DECIDE");self.swapMove=nil;return end
+    self:backFromMove();return
+  end
   local moves=self.mon.moves or {}
   if not moves[index] then return end
   if self.readOnlyMoves then return end
+  se(self,"SEQ_SE_DP_DECIDE")
   if self.swapMove then
     moves[index],moves[self.swapMove]=moves[self.swapMove],moves[index]
     self.swapMove=nil
@@ -628,6 +668,8 @@ function Gen4SummaryMenu:pressSubButton(index)
   local b=layout and layout.buttons[index]
   if not b then return false end
   self.subLit=nil
+  -- SUMMARY_BUTTON_STATE_INIT_ANIM (subscreen.c 192)
+  se(self,"SEQ_SE_DP_BUTTON9")
   self.subPress={index=index,frame=0,key=b.key}
   self.tapT=0
   local egg=Party.isEgg(self.mon)
@@ -685,7 +727,10 @@ function Gen4SummaryMenu:touchpressed(id,px,py)
   local x,y=(px-r.x)/r.scaleX,(py-r.y)/r.scaleY
   if not self.moveMode and not self.ribbonMode and y>=16 and y<32 then
     for _,tab in ipairs(self:pageTabs()) do
-      if x>=tab.x-8 and x<tab.x-8+tab.width then self.page=tab.page;return true end
+      if x>=tab.x-8 and x<tab.x-8+tab.width then
+        if self.page~=tab.page then se(self,"SEQ_SE_DP_SELECT5") end
+        self.page=tab.page;return true
+      end
     end
   end
   local key=self:pageKey()
@@ -694,13 +739,19 @@ function Gen4SummaryMenu:touchpressed(id,px,py)
     local index=math.min(self.ribbonIndex or 1,math.max(1,#ribbons))
     local scroll=self:ribbonScroll(index)
     local slot=math.floor((x-116)/32)+math.floor((y-36)/40)*4+1
-    if ribbons[scroll+slot] then self.ribbonIndex=scroll+slot;self.ribbonMode=true end
-  elseif key=='exit' and x>=144 and x<216 and y>=80 and y<104 then self:close()
-  elseif self.ribbonMode and x<104 then self.ribbonMode=nil
+    -- these top-screen taps are the port's stand-ins for A / B, so they say
+    -- what the button they stand in for says
+    if ribbons[scroll+slot] then
+      if not self.ribbonMode then se(self,"SEQ_SE_DP_DECIDE")
+      elseif self.ribbonIndex~=scroll+slot then se(self,"SEQ_SE_DP_SELECT") end
+      self.ribbonIndex=scroll+slot;self.ribbonMode=true
+    end
+  elseif key=='exit' and x>=144 and x<216 and y>=80 and y<104 then se(self,"SEQ_SE_DP_DECIDE");self:close()
+  elseif self.ribbonMode and x<104 then se(self,"SEQ_SE_DP_DECIDE");self.ribbonMode=nil
   elseif (key=='moves' or key=='contestMoves') and x>=128 and y>=32 then
     local index=math.floor((y-32)/32)+1
     if index<=5 then
-      if not self.moveMode then self.moveMode=true;self.moveIndex=index
+      if not self.moveMode then se(self,"SEQ_SE_DP_SYU01");self.moveMode=true;self.moveIndex=index
       else self.moveIndex=index;self:selectMove() end
     end
   elseif self.moveMode and x<128 then self:backFromMove()

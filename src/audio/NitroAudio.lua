@@ -8,13 +8,27 @@ local function u8(s,o) return s:byte(o+1) end
 local function u16(s,o) local a,b=s:byte(o+1,o+2);return b and a+b*256 end
 local function u32(s,o) local a,b,c,d=s:byte(o+1,o+4);return d and a+b*256+c*65536+d*16777216 end
 local function track(at) return {at=at,wait=0,program=0,volume=127,expression=127,pan=64,transpose=0,bend=0,bendRange=2,noteWait=true,calls={},loops={}} end
-function Audio.new(data,def)
- local path=assert(data.audio.ndsArchive,'missing imported SDAT')
+-- The imported SDAT, opened once per path and shared by every player (BGM and
+-- each sound effect alike).
+function Audio.archive(data)
+ local path=assert(data and data.audio and data.audio.ndsArchive,'missing imported SDAT')
  local arc=archives[path]
  if not arc then
-  local bytes=assert(love.filesystem.read(require('src.render.Assets').resolve(path)))
-  arc=assert(Sdat.open(bytes));archives[path]=arc
+  local resolved=require('src.render.Assets').resolve(path)
+  local bytes,why=love.filesystem.read(resolved)
+  -- The game mounts the version cache over the read path; a tool run with
+  -- POKEPORT_ASSET_ROOT has no mount and reads the cache folder directly.
+  local root=not bytes and os.getenv('POKEPORT_ASSET_ROOT')
+  if root then
+   local f=io.open(root..'/'..resolved,'rb')
+   if f then bytes=f:read('*a');f:close() end
+  end
+  arc=assert(Sdat.open(assert(bytes,why)));archives[path]=arc
  end
+ return arc
+end
+function Audio.new(data,def)
+ local arc=Audio.archive(data)
  local seq=assert(Sdat.sequence(arc,assert(def.nds)),'missing SDAT sequence')
  local at,size=Sdat.fileAt(arc,seq.file);local bytes=arc.data:sub(at+1,at+size)
  assert(bytes:sub(1,4)=='SSEQ','not a native SSEQ')
@@ -26,6 +40,9 @@ function Audio.new(data,def)
  return self
 end
 function Player:setVolume(v) self.queue:setVolume(v) end
+-- A playback-rate factor over every voice (sound-effect pitch shifts).
+function Player:setPitch(v) self.pitch=tonumber(v) or 1 end
+function Player:getPitch() return self.pitch or 1 end
 function Player:getVolume() return self.queue:getVolume() end
 function Player:setFilter(...) return self.queue:setFilter(...) end
 function Player:setLooping(v) self.looping=v end
@@ -139,7 +156,7 @@ function Player:render()
     local index=math.floor(v.pos)+1;local gain=v.gain
     if v.release>0 then gain=gain*v.release/(RATE*0.04);v.release=v.release-1;if v.release==0 then table.remove(self.voices,n) end end
     local value=(pcm[index] or 0)*gain
-    left=left+value*v.left;right=right+value*v.right;v.pos=v.pos+v.step
+    left=left+value*v.left;right=right+value*v.right;v.pos=v.pos+v.step*(self.pitch or 1)
    end
   end
   sound:setSample(i,1,math.max(-1,math.min(1,left)))

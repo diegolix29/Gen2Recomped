@@ -191,6 +191,7 @@ end
 -- ---------------------------------------------------------------------------
 
 function RomExtractorGen3:beginStage(name)
+  self.stageName=name
   self.stage = self.stage + 1
   if self.progress then
     self.progress(self.stage - 1, STAGE_COUNT, name, 0, 1)
@@ -205,10 +206,12 @@ function RomExtractorGen3:tick(name, current, total)
 end
 
 function RomExtractorGen3:write(name, value)
+  if self.checkpoint and self.stageName=='Gen3 constants' then self.checkpoint('Writing '..name..'.lua') end
   LuaWriter.write("data/generated/" .. name .. ".lua", value)
 end
 
 function RomExtractorGen3:saveImage(image, relative)
+  if self.checkpoint and self.stageName=='Gen3 constants' then self.checkpoint('Encoding '..relative) end
   ImageWriter.save(image, "assets/generated/" .. relative)
 end
 
@@ -18463,6 +18466,208 @@ RomExtractorGen3.FRONTIER_PARTIES = {
   -- open level with a floor, not the Frontier's flat 50
   LEVEL_FLOOR = 30,
 }
+
+-- THE FRONTIER TRAINERS' WORDS: struct BattleFrontierTrainer carries three
+-- six-word easy chat phrases after the name -- speechBefore at +12, speechWin
+-- at +24, speechLose at +36 -- which GetOpponentIntroSpeech and the battle's
+-- end lines read (FrontierSpeechToString). Written as their own module,
+-- keyed like gen3FrontierParties.trainers (one based).
+function RomExtractorGen3:extractFrontierSpeech()
+  self:beginStage("Gen3 Frontier speech")
+  local P = RomExtractorGen3.FRONTIER_PARTIES
+  local rom = self.rom
+  local out = {}
+  local function words(o)
+    local w = {}
+    for k = 0, 5 do w[k + 1] = rom:u16(o + k * 2) end
+    return w
+  end
+  for i = 0, P.TRAINER_COUNT - 1 do
+    local o = P.TRAINERS + i * P.TRAINER_STRIDE
+    out[i + 1] = { before = words(o + 12), win = words(o + 24), lose = words(o + 36) }
+  end
+  -- ...and the three tents', keyed like gen3FrontierParties.tents (by the
+  -- VAR_FRONTIER_FACILITY their lobby sets)
+  out.tents = {}
+  for _, spec in ipairs(P.TENTS) do
+    local t = {}
+    for i = 0, P.TENT_TRAINERS - 1 do
+      local o = spec.trainers + i * P.TRAINER_STRIDE
+      t[i + 1] = { before = words(o + 12), win = words(o + 24), lose = words(o + 36) }
+    end
+    out.tents[spec.var] = t
+  end
+  -- ...and the Battle Pike's NPC rooms (battle_pike.c sNPCSpeeches: 42 rows
+  -- of six words at 086123E4, found by its first row and checked row by row
+  -- against the decomp's table), zero based like BufferNPCMessage's ids
+  out.pikeNpc = {}
+  for i = 0, 41 do out.pikeNpc[i] = words(0x6123E4 + i * 12) end
+  -- ...and the Battle Pyramid's post-battle hints (sPostBattleTexts)
+  out.pyramidHints = self:pyramidHintTexts()
+  -- ...and the Battle Tower's multi partners' five lines by facility class
+  out.partnerTexts = self:multiPartnerTexts()
+  self:write("gen3_frontier_speech", out)
+  Logger.info("Gen3 Frontier speech: %d trainers' three phrases", #out)
+end
+
+-- THE BATTLE PYRAMID'S POST-BATTLE HINTS (battle_pyramid.c sPostBattleTexts):
+-- six text groups -- one per trainer manner (sTrainerTextGroups) -- of three
+-- lists each: the exit's direction (4: up, left, right, down), the items left
+-- (9: zero to eight) and the trainers left (8: zero to seven). Only C points
+-- at them, so they are FOUND rather than named: every "exit is in" string,
+-- the 4-pointer direction tables whose first entry is one of them, the
+-- groups' 3-pointer tables that start with one of those, and the 6-pointer
+-- table that starts with that group (the other five word it differently, so
+-- they are checked for shape) -- each step a whole-ROM search for a pointer.
+-- Returned as hints[group][kind][n], all zero based; nil if the shape is
+-- not there (another ROM).
+function RomExtractorGen3:pyramidHintTexts()
+  local rom = self.rom
+  local data = rom.data
+  if type(data) ~= "string" then return nil end
+  local rev = self:charmapReverse()
+  local needle = {}
+  for ch in ("exit is in"):gmatch(".") do
+    local code = (ch == " ") and 0x00 or rev[ch]
+    if not code then return nil end
+    needle[#needle + 1] = string.char(code)
+  end
+  needle = table.concat(needle)
+  local function ptrTo(addr)
+    local v = 0x08000000 + addr
+    return string.char(v % 256, math.floor(v / 256) % 256, math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256)
+  end
+  local function pointersTo(addr)
+    local found, from, p = {}, 1, ptrTo(addr)
+    while true do
+      local at = data:find(p, from, true)
+      if not at then break end
+      if (at - 1) % 4 == 0 then found[#found + 1] = at - 1 end
+      from = at + 1
+    end
+    return found
+  end
+  local function deref(at)
+    local v = rom:u32(at)
+    return (v >= 0x08000000 and v < 0x0A000000) and (v - 0x08000000) or nil
+  end
+  -- the strings: back to the byte after the previous terminator
+  local dirTables = {}
+  local from = 1
+  while true do
+    local at = data:find(needle, from, true)
+    if not at then break end
+    from = at + 1
+    local start = at - 1
+    while start > 0 and data:byte(start) ~= 0xFF do start = start - 1 end
+    for _, t in ipairs(pointersTo(start)) do dirTables[t] = true end
+  end
+  -- the groups: a 3-pointer table whose first entry is a direction table
+  local groupTables = {}
+  for t in pairs(dirTables) do
+    for _, g in ipairs(pointersTo(t)) do groupTables[g] = true end
+  end
+  -- the top: six consecutive pointers -- the first to the group found (only
+  -- group 1 words it "exit is in"), every one to three pointers to lists
+  local function shaped(gt)
+    for kind = 0, 2 do
+      local list = gt and deref(gt + kind * 4)
+      if not (list and deref(list)) then return false end
+    end
+    return true
+  end
+  local top
+  for g in pairs(groupTables) do
+    for _, at in ipairs(pointersTo(g)) do
+      local ok = true
+      for k = 0, 5 do
+        if not shaped(deref(at + k * 4)) then ok = false break end
+      end
+      if ok and (not top or at < top) then top = at end
+    end
+  end
+  if not top then return nil end
+  local COUNTS = { [0] = 4, 9, 8 }
+  local hints = {}
+  for g = 0, 5 do
+    local gt = deref(top + g * 4)
+    hints[g] = {}
+    for kind = 0, 2 do
+      local list = deref(gt + kind * 4)
+      hints[g][kind] = {}
+      for n = 0, COUNTS[kind] - 1 do
+        local sp = list and deref(list + n * 4)
+        hints[g][kind][n] = sp and self:readText(sp, 256) or ""
+      end
+    end
+  end
+  Logger.info("Gen3 Frontier speech: the Pyramid's hints at %06X", top)
+  return hints
+end
+
+-- THE BATTLE TOWER'S MULTI PARTNERS' LINES (battle_tower.c
+-- sPartnerTrainerTextTables): fifty { u32 facilityClass, const u8 *const
+-- strings[5] } rows -- intro, the first Pokemon, the second and the
+-- question, yes, no. Found from the LASS's intro ("...m a LASS!"): the
+-- pointers to it are the head of her five-string list, and the row holding
+-- that list with FACILITY_CLASS_LASS (0x47) in front is the table's first.
+-- Returns [facilityClass] = { [0] = intro, mon1, mon2Ask, accept, reject }.
+function RomExtractorGen3:multiPartnerTexts()
+  local rom = self.rom
+  local data = rom.data
+  if type(data) ~= "string" then return nil end
+  local rev = self:charmapReverse()
+  local needle = {}
+  for ch in ("m a LASS!"):gmatch(".") do
+    local code = (ch == " ") and 0x00 or rev[ch]
+    if not code then return nil end
+    needle[#needle + 1] = string.char(code)
+  end
+  needle = table.concat(needle)
+  local function ptrTo(addr)
+    local v = 0x08000000 + addr
+    return string.char(v % 256, math.floor(v / 256) % 256, math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256)
+  end
+  local function pointersTo(addr)
+    local found, from, p = {}, 1, ptrTo(addr)
+    while true do
+      local at = data:find(p, from, true)
+      if not at then break end
+      if (at - 1) % 4 == 0 then found[#found + 1] = at - 1 end
+      from = at + 1
+    end
+    return found
+  end
+  local function deref(at)
+    local v = rom:u32(at)
+    return (v >= 0x08000000 and v < 0x0A000000) and (v - 0x08000000) or nil
+  end
+  local at = data:find(needle, 1, true)
+  if not at then return nil end
+  local start = at - 1
+  while start > 0 and data:byte(start) ~= 0xFF do start = start - 1 end
+  local top
+  for _, list in ipairs(pointersTo(start)) do
+    for _, row in ipairs(pointersTo(list)) do
+      if row >= 4 and rom:u32(row - 4) == 0x47 then top = row - 4 end
+    end
+  end
+  if not top then return nil end
+  local out = {}
+  for i = 0, 49 do
+    local class = rom:u32(top + i * 8)
+    local list = deref(top + i * 8 + 4)
+    if not list or class > 0xFF then break end
+    local lines = {}
+    for k = 0, 4 do
+      local sp = deref(list + k * 4)
+      lines[k] = sp and self:readText(sp, 512) or ""
+    end
+    out[class] = lines
+  end
+  Logger.info("Gen3 Frontier speech: the multi partners' lines at %06X", top)
+  return out
+end
 
 function RomExtractorGen3:extractFrontierParties()
   self:beginStage("Gen3 Frontier teams")
@@ -39675,6 +39880,76 @@ end
 -- checked rather than scanned for.
 -- ---------------------------------------------------------------------------
 
+-- ---------------------------------------------------------------------------
+-- THE MIRAGE TOWER'S COLLAPSE (mirage_tower.c)
+--
+-- Taking a fossil on 4F brings the ceiling down (16 crumble sprites and a
+-- camera shake) and warps the player out to Route 111, where the tower is put
+-- on BG0 as a picture -- 73 tiles through a 6x12 tilemap, in the map's own BG
+-- palette 6 -- shaken two pixels side to side, then eaten a pixel at a time
+-- from the bottom row up while it sinks, as the fossil you left falls and
+-- dissolves into the sand. None of it is in the map; it is all in mirage_tower.c's
+-- rodata, which sits in one run, verified against pokeemerald's graphics:
+--
+--   0617274  sMirageTower_Gfx           73 tiles, 4bpp
+--   0617B94  sMirageTowerTilemap        72 entries (6 x 12)
+--   0617C24  sFossil_Pal                (unused)
+--   0617C44  sFossil_Gfx                16x16, 4bpp
+--   0617CC4  sMirageTowerCrumbles_Gfx   16x16, 4bpp
+--
+-- The fossil and the crumbles draw with OAM palette 0, which in the field is
+-- the player's own (PALSLOT_PLAYER) -- so their colours follow Brendan or May,
+-- as the cartridge's comment on it says. Both palettes ride along.
+RomExtractorGen3.MIRAGE_TOWER = {
+  TILES = 0x617274, TILE_COUNT = 73,
+  TILEMAP = 0x617B94, COLS = 6, ROWS = 12,
+  FOSSIL = 0x617C44, CRUMBLES = 0x617CC4,
+  PAL_TAG_BRENDAN = 0x1100, PAL_TAG_MAY = 0x1110,
+}
+
+function RomExtractorGen3:extractMirageTower()
+  self:beginStage("Gen3 Mirage Tower")
+  if self:isFireRedManifest() then return end
+  local M = RomExtractorGen3.MIRAGE_TOWER
+  local rom = self.rom
+  local tilemap = {}
+  for i = 0, M.COLS * M.ROWS - 1 do
+    local entry = rom:u16(M.TILEMAP + i * 2)
+    -- the shape is the check: every entry names one of the 73 tiles. The
+    -- top four bits are its BG palette (6, the secondary tileset's first:
+    -- CopyToBgTilemapBufferRect_ChangePalette's 17 keeps the entry as it is)
+    if entry % 1024 >= M.TILE_COUNT then
+      Logger.warn("gen3 Mirage Tower: tilemap entry %d is %04X, not a tower tile -- not read", i, entry)
+      return
+    end
+    tilemap[i + 1] = entry
+  end
+  local function hex(at, n)
+    return (rom:sub(at, n):gsub(".", function(c) return ("%02x"):format(c:byte()) end))
+  end
+  local players = {}
+  local palTable = self:symbol("sObjectEventSpritePalettes")
+  local palCount = self:layoutValue("objectEventPaletteCount", 0)
+  if palTable and palCount > 0 then
+    local pals = self:objectGfxPalettes(palTable, palCount)
+    players.brendan = pals[M.PAL_TAG_BRENDAN]
+    players.may = pals[M.PAL_TAG_MAY]
+  end
+  local constants = self._constants or {}
+  constants.gen3MirageTower = {
+    tiles = hex(M.TILES, M.TILE_COUNT * 32),
+    tilemap = tilemap, cols = M.COLS, rows = M.ROWS,
+    fossil = hex(M.FOSSIL, 128),
+    crumbles = hex(M.CRUMBLES, 128),
+    playerPalettes = players,
+    source = ("ROM:mirage_tower.c rodata %08X..%08X"):format(M.TILES + 0x08000000, M.CRUMBLES + 128 + 0x08000000),
+  }
+  self._constants = constants
+  self:write("constants", constants)
+  Logger.info("Gen3 Mirage Tower: %d tiles, %dx%d map, player palettes %s/%s", M.TILE_COUNT, M.COLS, M.ROWS,
+              tostring(players.brendan ~= nil), tostring(players.may ~= nil))
+end
+
 RomExtractorGen3.POKEMON_JUMP = {
   TABLE = 0x02FB464,      -- the literal in IsSpeciesInJumpTable's pool
   ROWS = 100, STRIDE = 4, KINDS = 3,
@@ -40518,7 +40793,7 @@ RomExtractorGen3.DATA_STAGES = {
   "extractTypeChart", "extractTrainers", "extractBattleAI",
   "extractMachines", "extractVsSeeker",
   "extractBerries", "extractTrades", "extractMultichoice",
-  "extractFrontierParties", "extractStoragePanels",
+  "extractFrontierParties", "extractFrontierSpeech", "extractStoragePanels",
   "extractEncounters", "extractEggMoves", "extractDexEntries",
   "extractTrainerClasses", "extractTrainerMoney", "extractTutorMoves", "extractBattleTables",
   "extractBattlerCoords",
@@ -40537,7 +40812,7 @@ RomExtractorGen3.DATA_STAGES = {
   "extractBoxWallpapers", "extractSpritePriority", "extractGabbyAndTy",
   "extractRotatingTiles",
   "extractMovementScripts", "extractScriptText", "extractTilesets",
-  "extractScenes", "extractRayquazaScene",
+  "extractScenes", "extractRayquazaScene", "extractMirageTower",
   "extractFont", "extractBraille", "extractRegiChambers",
   "extractOverworldSprites",
   "extractFieldEffects", "extractEmotes", "extractHealMachine",

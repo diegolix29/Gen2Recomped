@@ -176,6 +176,19 @@ end
 function Gen3Flash.circle(game, viewW, viewH)
   local r = record(game and game.data)
   if not r then return nil end
+  -- THE BATTLE PYRAMID'S DARK is its own radius (frontier.pyramidLightRadius),
+  -- drawn by the same window: 32 on a new floor, wider with each trainer
+  if require("src.core.GameVersion").get() == "emerald" then
+    local ok, radius = pcall(function()
+      return require("src.script.Gen3BattlePyramid").lightRadius(game)
+    end)
+    if ok and radius then
+      local w = (tonumber(viewW) or r.screen[1]) / 2
+      local h = (tonumber(viewH) or r.screen[2]) / 2
+      if radius * radius >= w * w + h * h then return nil end
+      return { radius = radius }
+    end
+  end
   local level = Gen3Flash.level(game)
   if level <= 0 then return nil end
   -- mid-animation the window is wherever the one-pixel step has got to

@@ -289,6 +289,16 @@ function Player:refreshForm(data)
   -- there is no bicycle either, so both sheets become the mon's
   local monId = pokemonModeSprite(data)
   if monId then walkId, bikeId = monId, monId end
+  -- HEARTGOLD / SOULSILVER'S ROCKET DISGUISE (PLAYER_STATE_ROCKET):
+  -- SPRITE_RHERO 258 / SPRITE_RHEROINE 259 while `save.hgssRocketCostume`
+  local okG, Game = pcall(require, "src.core.Game")
+  local save = okG and Game and Game.save
+  if save and save.hgssRocketCostume then
+    local okO, OW = pcall(require, "src.world.OverworldController")
+    local girl = save.player and save.player.gender == "girl"
+    local id = okO and OW.gen4SpriteFor and OW.gen4SpriteFor(data, girl and 259 or 258)
+    if id and data.sprites and data.sprites[id] then walkId, bikeId = id, id end
+  end
   -- The pose follows the character, so it is refreshed even when the walking
   -- sheets did not change (a rip that only produced Kris's fish art).
   self:refreshFishTiles(data)
