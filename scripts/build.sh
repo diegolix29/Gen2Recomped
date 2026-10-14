@@ -118,11 +118,6 @@ for required in tools/save-editor/App.lua tools/save-editor/Kit.lua \
                 tools/save-editor/panels/Party.lua \
                 tools/map-editor/MapEdits.lua tools/map-editor/ModExport.lua \
                 tools/map-editor/panels/Preview.lua; do
-                tools/save-editor/panels/Party.lua \
-                src/ui/kit/Kit.lua \
-                tools/rom_manifest.json tools/rom_manifest_blue.json \
-                tools/rom_manifest_yellow.json tools/rom_manifest_gold.json \
-                tools/rom_manifest_silver.json; do
   grep -qxF "$required" "$LOVE_LISTING" \
     || fail "game.love is missing $required"
   unzip -Z1 "$LOVE_FILE" | grep -qx "$required" \
