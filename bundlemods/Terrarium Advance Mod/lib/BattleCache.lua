@@ -806,11 +806,20 @@ function C.holdBattle(game,mons,owner)
     end
     r.lastMs=math.max(0,(clock()-started)*1000);r.maxMs=math.max(r.maxMs,r.lastMs)
     if not ok or not result then
-      r.failedRow=row
-      return runtimeFailure(game,r,ok and why or result,'model')
+      -- If the species is unsupported (dex > 386 for Colosseum), skip it gracefully
+      -- instead of treating it as a failure
+      if why == "unsupported species" then
+        r.failedRow=nil
+        quickValidated[rowKey(row)]=A.sessionCacheIdentity()
+        -- Don't increment prepared count for unsupported species
+      else
+        r.failedRow=row
+        return runtimeFailure(game,r,ok and why or result,'model')
+      end
+    else
+      r.failedRow=nil
+      quickValidated[rowKey(row)]=A.sessionCacheIdentity();r.prepared=r.prepared+1
     end
-    r.failedRow=nil
-    quickValidated[rowKey(row)]=A.sessionCacheIdentity();r.prepared=r.prepared+1
   end
   persistReusePreference(true,true)
   r.failures=0;r.logged=nil

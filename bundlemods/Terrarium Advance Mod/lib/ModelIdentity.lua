@@ -47,7 +47,7 @@ function M.resolve(game,battler)
   if not dex or dex%1~=0 or dex<1
       or (V.ColosseumDex and type(V.ColosseumDex.supported)=="function" and not supported)
       or (not V.ColosseumDex and dex>386) then
-    return nil,"No supported National Dex mapping for "..tostring(species)
+    return nil,nil  -- Unsupported dex (e.g., Gen 4 Pokemon 387+), return nil for both dex and variant
   end
   return dex,V.ShinySupport.variant(battler)
 end
