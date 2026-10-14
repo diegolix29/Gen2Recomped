@@ -3415,15 +3415,6 @@ function A:render(ctx,arena,drawActors)
       ctx.groundY=worldY/math.max(0.001,figureScale)
       if arena then arena.groundY=worldY;arena.liveField=true end
       local rebound=bindArenaCanvas(out)
-      if rebound and nativeWorld then
-        -- renderPose left the engine's FBO bound. On desktop the arena's old
-        -- internal depth was often that same buffer, still holding the world.
-        -- Drop it before the colour blit so Colosseum actors start from a
-        -- clean depth and only test against each other.
-        if depthActive then
-          pcall(love.graphics.clear,0.025,0.075,0.145,1,true,true)
-        end
-      end
       if rebound and nativeWorld and type(SnapN.blit)=="function" then
         -- Gen 4: lay the engine-drawn world in now that the arena is bound again
         safeArenaPass(ctx,"overworldBlit",function() SnapN.blit(w,h) end)
