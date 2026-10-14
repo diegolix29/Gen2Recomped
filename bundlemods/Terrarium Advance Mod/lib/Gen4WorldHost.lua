@@ -393,6 +393,10 @@ local function wantFieldActor(e, state)
     local ok, PM = pcall(V.require, "PlayerModel")
     if ok and PM and PM.loaded and PM.loaded() then return true end
   end
+  -- Platinum's walkers as smooth 3D bodies built from their own sheet
+  -- (lib/Gen4NpcModels.lua). Asked last: everything above has its own path.
+  local okN, Npc = pcall(V.require, "Gen4NpcModels")
+  if okN and Npc and Npc.wants and Npc.wants(e, state) then return true end
   return false
 end
 
@@ -541,6 +545,7 @@ local function drawFieldActors(state, ground)
     local SF = V.require("StadiumFollower")
     local PM = V.require("PlayerModel")
     local Hd = V.require("Gen4HdPokemon")
+    local okNpc, NpcM = pcall(V.require, "Gen4NpcModels")
     local Mat4 = V.require("Mat4")
     for _, p in ipairs(posed) do
       local drew = false
@@ -575,6 +580,12 @@ local function drawFieldActors(state, ground)
         m = Mat4.mul(m, Mat4.scale(scale, scale, scale))
         drew = pcall(Voxel3D.draw, mdl.mesh, mdl.texture, m)
       end
+      -- An NPC body: only when its mesh is built; until then (or on any
+      -- failure) the flat sprite keeps drawing, so nobody vanishes.
+      if not drew and not playerTried and okNpc and NpcM and NpcM.drawPose then
+        local okB, rB = pcall(NpcM.drawPose, p, ground)
+        drew = okB and rB == true
+      end
       if drew then
         Host._drew3d[p.skipKey] = true
       elseif Hd and Hd.drawPose and not playerTried then
@@ -601,71 +612,26 @@ function Host.overlay3D(ground)
   if Host.effectsOn() then
     pcall(drawGrass, ow, ground)
   end
+  -- NPC bodies are built here, a few ms a frame (never inside the draw)
+  do
+    local okN, Npc = pcall(V.require, "Gen4NpcModels")
+    if okN and Npc and Npc.pump then pcall(Npc.pump) end
+  end
   pcall(drawFieldActors, ow, ground)
   Host._drawGround = nil
 end
 
 
--- ---------------------------------------------------------------------------
--- Battle plumbing shared by renderBattle / afterBattle.
---
--- WHY THIS IS CAREFUL. renderBattle runs EVERY FRAME of a 3D battle (the 3D-BTL
--- ladder, all rungs) and drives the engine's own free-camera pass on the map the
--- fight is staged on. Whatever it leaves behind stays on that map's Gen4Ground:
---   * a camera that is not the player's (the engine then draws with the battle
---     lens, or believes a free camera owns the frame when the player is on the
---     cartridge camera and view3d should be nil),
---   * a free pass left open (canvas still bound),
---   * a canvas allocated per frame and never released -- GPU memory runs out, the
---     engine's allocation fails, and Gen4Ground latches `liveOff` / `noDepth`
---     "for the rest of the session": flat 2D stand-in, characters projected through
---     a free camera that is not drawing. A NEW map builds a new ground, which is
---     why only the map the fight was on stayed broken.
--- So: the battle uses its OWN camera object (swapped onto the ground for the call
--- and always swapped back), one reusable canvas, and a guaranteed cleanup.
-
-local function reusableCanvas(slot, w, h)
-  local g = love and love.graphics
-  if not g then return nil end
-  local c = Host[slot]
-  if c and Host[slot .. "W"] == w and Host[slot .. "H"] == h then return c end
-  if c and c.release then pcall(c.release, c) end
-  Host[slot], Host[slot .. "W"], Host[slot .. "H"] = nil, nil, nil
-  local ok, made = pcall(g.newCanvas, w, h)
-  if not (ok and made) then return nil end
-  Host[slot], Host[slot .. "W"], Host[slot .. "H"] = made, w, h
-  return made
-end
-
-local function releaseCanvas(slot)
-  local c = Host[slot]
-  if c and c.release then pcall(c.release, c) end
-  Host[slot], Host[slot .. "W"], Host[slot .. "H"] = nil, nil, nil
-end
-
-local function hostLog(level, fmt, ...)
-  local l = V and V.mod and V.mod.log
-  if l and type(l[level]) == "function" then
-    local okF, msg = pcall(string.format, fmt, ...)
-    pcall(l[level], l, "Gen4WorldHost: " .. (okF and msg or fmt))
-  end
-end
-
--- Close the engine's free pass if one is open (it is module-global state, so any
--- ground can close it). Uses the bridge's untouched endFree when it has one, so a
--- cleanup never runs the effects a second time.
-local function closeFreePass(ground)
-  local Ground = engineRequire("src.render.Gen4Ground")
-  if not (Ground and Ground.freeOpen) then return false end
-  local B = V and V.Gen4Bridge
-  local raw = (B and B.originalEndFree) or Host._endFree or (ground and ground.endFree)
-  if type(raw) == "function" then pcall(raw, ground) end
-  return true
-end
-
 -- Battle: draw Sinnoh from the staged BattleCam, then let Stadium /
 -- Colosseum actors paint into the same framebuffer via Voxel3D "current".
-local function renderBattleBody(ground, view, state, arena, textures)
+function Host.renderBattle(state, arena, textures, token)
+  local ground = Host.groundOf(state) or Host.groundOf(state and { map = arena.map })
+  if arena and arena.map and arena.map.renderer and arena.map.renderer.gen4Ground then
+    ground = arena.map.renderer.gen4Ground
+  end
+  if not ground then return nil end
+  if arena and arena.discs and not arena.showTerrain then return nil end
+
   local BattleScene = V.require("BattleScene")
   local BattleCam = V.require("BattleCam")
   local Voxel3D = V.require("Voxel3D")
@@ -703,9 +669,16 @@ local function renderBattleBody(ground, view, state, arena, textures)
     curve = 0,
   }
 
-  -- `view` is the battle's OWN camera object (swapped onto ground.view3d by the
-  -- caller). field3d would derive fov from the cartridge camera distance, which
-  -- is not this fight's lens; third-person uses view.fovY as-is.
+  local Gen4View = engineRequire("src.render.Gen4View")
+  if not Gen4View then return nil end
+  local view = ground.view3d
+  if not view then
+    view = Gen4View.new("third")
+    ground.view3d = view
+  end
+  local savedMode = view.mode
+  -- field3d derives fov from the cartridge camera distance, which is not
+  -- this fight's lens. Third-person uses view.fovY as-is.
   view.mode = "third"
   view.x, view.y, view.z = worldCam.eye[1], worldCam.eye[2], worldCam.eye[3]
   local dx = worldCam.focus[1] - worldCam.eye[1]
@@ -717,11 +690,14 @@ local function renderBattleBody(ground, view, state, arena, textures)
   view.fovY = math.deg(worldCam.fov or view.fovY or 50)
   ground.cameraPlaced = true
 
+  Host._inBattle = true
   local drawFree = Host._drawFree or ground.drawFree
   local endFree = Host._endFree or ground.endFree
   local painted = drawFree(ground, pw, ph)
   if not painted then
+    view.mode = savedMode
     if endFree then pcall(endFree, ground) end
+    Host._inBattle = false
     return nil
   end
   pcall(Host.overlay3D, ground)
@@ -791,18 +767,14 @@ local function renderBattleBody(ground, view, state, arena, textures)
     end)
     Voxel3D.endScene()
   end)
-  -- a throw inside the scene above must not leave a Voxel3D scene open
-  pcall(Voxel3D.endScene)
 
-  -- Take the colour while the pass is still open, into ONE reusable canvas (it
-  -- used to be a new canvas every frame, never released).
   local Gen4Ground = engineRequire("src.render.Gen4Ground")
   local src = Gen4Ground and Gen4Ground.freeColour
   local colour = nil
   if src and love and love.graphics then
     local g = love.graphics
-    local dest = reusableCanvas("_battleCanvas", pw, ph)
-    if dest then
+    local okNew, dest = pcall(g.newCanvas, pw, ph)
+    if okNew and dest then
       local prev = { g.getCanvas() }
       pcall(g.setCanvas, dest)
       g.setColor(1, 1, 1, 1)
@@ -820,13 +792,18 @@ local function renderBattleBody(ground, view, state, arena, textures)
     end
   end
   if endFree then pcall(endFree, ground) end
-  if not colour then return nil end
+  Host._inBattle = false
+  if not colour then
+    view.mode = savedMode
+    return nil
+  end
 
   local vp = (view and view.matrix) and view:matrix(pw, ph) or Voxel3D.vp
   local pmx, pmy = BattleScene.toGB(vp, arena.player[1] + ox, groundY,
                                     arena.player[2] + oz, lx, ly, s, pw, ph)
   local emx, emy = BattleScene.toGB(vp, arena.enemy[1] + ox, groundY,
                                     arena.enemy[2] + oz, lx, ly, s, pw, ph)
+  view.mode = savedMode
   if not (pmx and emx) then
     pmx, pmy = 40, 100
     emx, emy = 120, 40
@@ -843,94 +820,6 @@ local function renderBattleBody(ground, view, state, arena, textures)
     vp = vp,
     gen4World = true,
   }
-end
-
-function Host.renderBattle(state, arena, textures, token)
-  local ground = Host.groundOf(state) or Host.groundOf(state and { map = arena.map })
-  if arena and arena.map and arena.map.renderer and arena.map.renderer.gen4Ground then
-    ground = arena.map.renderer.gen4Ground
-  end
-  if not ground then return nil end
-  if arena and arena.discs and not arena.showTerrain then return nil end
-
-  local Gen4View = engineRequire("src.render.Gen4View")
-  if not Gen4View then return nil end
-
-  -- The battle gets its own camera object. The ground's real view3d (the
-  -- player's third-person / tilt-rung camera, or nil on the cartridge camera) is
-  -- never written to, so there is nothing to put back wrongly and no stray view
-  -- to leave behind.
-  local bview = Host._battleView
-  if not bview then
-    bview = Gen4View.new("third")
-    Host._battleView = bview
-  end
-  local realView, realPlaced = ground.view3d, ground.cameraPlaced
-  ground.view3d = bview
-  Host._inBattle = true
-
-  local ok, shot = pcall(renderBattleBody, ground, bview, state, arena, textures)
-
-  -- ALWAYS, whatever happened above
-  Host._inBattle = false
-  closeFreePass(ground)
-  ground.view3d, ground.cameraPlaced = realView, realPlaced
-
-  if not ok then
-    if not Host._battleWarned then
-      Host._battleWarned = true
-      hostLog("warn", "renderBattle failed (state restored): %s", tostring(shot))
-    end
-    return nil
-  end
-  return shot
-end
-
--- Call when a fight ends (OverworldBattle.finish, ArenaOverworldSnapshot.clear).
--- Makes the map the fight was on drawable again no matter what the fight did to
--- it: closes a free pass left open, clears the per-fight flags, drops a camera
--- the tilt ladder does not want, and lifts the engine's own "stop drawing 3D for
--- the rest of the session" latches so it retries (one allocation attempt).
-function Host.afterBattle(state)
-  Host._inBattle, Host._poseDraw, Host._skippedOverworld = false, false, false
-  local ground = Host.groundOf(state)
-  closeFreePass(ground)
-  releaseCanvas("_battleCanvas")
-  if not ground then return false end
-  ground.cameraPlaced = nil
-
-  local lifted = {}
-  if ground.liveOff then
-    ground.liveOff = nil
-    ground.liveW, ground.liveH = nil, nil
-    lifted[#lifted + 1] = "liveOff"
-  end
-  if ground.noDepth then
-    ground.noDepth = nil
-    lifted[#lifted + 1] = "noDepth"
-  end
-  if #lifted > 0 then
-    hostLog("warn", "%s was latched off for %s after the fight; cleared so the 3D world retries",
-            table.concat(lifted, "+"), tostring(ground.def and ground.def.id))
-  end
-
-  -- the camera the tilt ladder asks for: nil on the cartridge rung, else the
-  -- named free mode. A view that disagrees is re-derived by the engine itself.
-  local Camera = engineRequire("src.render.Gen4Camera")
-  if Camera and type(Camera.mode) == "function" and ground.viewPitch == nil then
-    local okM, want = pcall(Camera.mode)
-    if okM then
-      local have = ground.view3d and ground.view3d.mode or nil
-      if (want == nil and ground.view3d ~= nil) or (want ~= nil and have ~= want) then
-        if type(ground.applyCamera) == "function" then
-          pcall(ground.applyCamera, ground)
-        else
-          ground.view3d = nil
-        end
-      end
-    end
-  end
-  return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -1091,7 +980,6 @@ function Host.renderPose(state, pocket, pose, w, h)
 
   Host._inBattle = false
   Host._poseDraw = false
-  if not okAll then closeFreePass(ground) end
   if state then state.entities, state.ghosts = savedEntities, savedGhosts end
   view.mode, view.x, view.y, view.z = saved.mode, saved.x, saved.y, saved.z
   view.yaw, view.pitch, view.fovY = saved.yaw, saved.pitch, saved.fovY
@@ -1142,7 +1030,10 @@ function Host.install()
         return innerFreeEntity(self, mapX, mapY, camX, camY, rise, draw,
                                depthLift)
       end
-      if Host.isSkipped(mapX, mapY) then
+      -- `depthLift` is only ever passed by the "!" / "?" bubble over a
+      -- character (Gen4Emotes). It is drawn at the character's position, so a
+      -- position match would swallow it along with the flat sprite it is not.
+      if depthLift == nil and Host.isSkipped(mapX, mapY) then
         -- drawn as a 3D model instead: only the ground shadow is left to
         -- draw for a flyer
         if type(Host.flightLift) == "function" then

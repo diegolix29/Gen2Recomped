@@ -51,7 +51,7 @@ S.ALPHA = 128           -- alpha (0..255) at or above which a texel is body
 
 S.DEFAULT = {
   ss = 1,               -- field samples per pixel per axis (2 = 8x the nodes)
-  blur = 3,             -- passes of [1 2 1]/4 along each axis
+  blur = 2,             -- passes of [1 2 1]/4 along each axis
   iso = 0.45,           -- density level of the surface (0.5 = exact edge)
   ramp = 1.0,           -- px over which a section's density falls from 1 to 0
   minDepth = 3,         -- px: the thinnest any part may be front to back

@@ -1,0 +1,106 @@
+--- a/main.lua
++++ b/main.lua
+@@ -196,6 +196,8 @@
+ local DrawDistance = V.require("DrawDistance")
+ -- Gen 4 only: how far the voxel trees reach (DrawDistance above never runs on Platinum)
+ local Gen4Distance = V.require("Gen4Distance")
++-- Gen 4 only: Platinum's NPCs as smooth 3D bodies built from their own sprites
++local Gen4NpcModels = V.require("Gen4NpcModels")
+ local OverworldBattle = V.require("OverworldBattle")
+ local WildRoamers = V.require("WildRoamers")
+ local BattleExit = V.require("BattleExit")
+@@ -239,6 +241,8 @@
+   pcall(function() V.require("Gen4Spawn").install() end)
+   -- Gen 4 World Host: draws roamers, followers, and actors in native 3D world
+   pcall(function() Gen4WorldHost.install() end)
++  -- NPC sprites -> smooth 3D bodies (Gen4NpcModels), drawn by Gen4WorldHost
++  pcall(function() Gen4NpcModels.install() end)
+ end
+ -- Battle UI hiding system for all generations
+ local BattleBoxXY = V.require("BattleBoxXY")
+@@ -966,6 +970,16 @@
+     .. "ground. Lower is faster.",
+     when = function() return Gen4Bridge.isGen4() end,
+     full = true, cat = "perf" },
++  { Gen4NpcModels.setting,
++    "Platinum's people as smooth 3D bodies. Each NPC is rebuilt from the four "
++    .. "real sides of its own sprite sheet (south, north, west, east) into a "
++    .. "closed, rounded mesh that wears that art, turns to face where it looks "
++    .. "and walks with the sheet's own step frames. Bodies are built a few "
++    .. "milliseconds a frame; until one is ready the flat sprite keeps drawing. "
++    .. "Needs the third / first person or a CAM TILT camera (the default "
++    .. "cartridge camera stays flat). OFF restores the flat cards.",
++    when = function() return Gen4Bridge.isGen4() end,
++    full = true, cat = "world" },
+   { Grass3D.simpleMeshes,
+     "Simplified meshes for roads, ground and decorative grass. ON uses "
+     .. "simple quad meshes (4 vertices) instead of detailed grass meshes "
+--- a/lib/Gen4WorldHost.lua
++++ b/lib/Gen4WorldHost.lua
+@@ -393,6 +393,10 @@
+     local ok, PM = pcall(V.require, "PlayerModel")
+     if ok and PM and PM.loaded and PM.loaded() then return true end
+   end
++  -- Platinum's walkers as smooth 3D bodies built from their own sheet
++  -- (lib/Gen4NpcModels.lua). Asked last: everything above has its own path.
++  local okN, Npc = pcall(V.require, "Gen4NpcModels")
++  if okN and Npc and Npc.wants and Npc.wants(e, state) then return true end
+   return false
+ end
+ 
+@@ -541,6 +545,7 @@
+     local SF = V.require("StadiumFollower")
+     local PM = V.require("PlayerModel")
+     local Hd = V.require("Gen4HdPokemon")
++    local okNpc, NpcM = pcall(V.require, "Gen4NpcModels")
+     local Mat4 = V.require("Mat4")
+     for _, p in ipairs(posed) do
+       local drew = false
+@@ -575,6 +580,12 @@
+         m = Mat4.mul(m, Mat4.scale(scale, scale, scale))
+         drew = pcall(Voxel3D.draw, mdl.mesh, mdl.texture, m)
+       end
++      -- An NPC body: only when its mesh is built; until then (or on any
++      -- failure) the flat sprite keeps drawing, so nobody vanishes.
++      if not drew and not playerTried and okNpc and NpcM and NpcM.drawPose then
++        local okB, rB = pcall(NpcM.drawPose, p, ground)
++        drew = okB and rB == true
++      end
+       if drew then
+         Host._drew3d[p.skipKey] = true
+       elseif Hd and Hd.drawPose and not playerTried then
+@@ -601,6 +612,11 @@
+   if Host.effectsOn() then
+     pcall(drawGrass, ow, ground)
+   end
++  -- NPC bodies are built here, a few ms a frame (never inside the draw)
++  do
++    local okN, Npc = pcall(V.require, "Gen4NpcModels")
++    if okN and Npc and Npc.pump then pcall(Npc.pump) end
++  end
+   pcall(drawFieldActors, ow, ground)
+   Host._drawGround = nil
+ end
+@@ -1014,7 +1030,10 @@
+         return innerFreeEntity(self, mapX, mapY, camX, camY, rise, draw,
+                                depthLift)
+       end
+-      if Host.isSkipped(mapX, mapY) then
++      -- `depthLift` is only ever passed by the "!" / "?" bubble over a
++      -- character (Gen4Emotes). It is drawn at the character's position, so a
++      -- position match would swallow it along with the flat sprite it is not.
++      if depthLift == nil and Host.isSkipped(mapX, mapY) then
+         -- drawn as a 3D model instead: only the ground shadow is left to
+         -- draw for a flyer
+         if type(Host.flightLift) == "function" then
+--- a/lib/Gen4Bridge.lua
++++ b/lib/Gen4Bridge.lua
+@@ -396,7 +396,7 @@
+ -- these, so a graphics reset, a mod reload or a cache reset left the old
+ -- meshes (and, on a lost GL context, dead ones) in place.
+ function Bridge.invalidateAll()
+-  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass" }) do
++  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass", "Gen4NpcModels" }) do
+     local ok, mod = pcall(V.require, name)
+     if ok and type(mod) == "table" and type(mod.invalidate) == "function" then
+       local okI, err = pcall(mod.invalidate)

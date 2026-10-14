@@ -196,6 +196,8 @@ local ViewBox = V.require("ViewBox")
 local DrawDistance = V.require("DrawDistance")
 -- Gen 4 only: how far the voxel trees reach (DrawDistance above never runs on Platinum)
 local Gen4Distance = V.require("Gen4Distance")
+-- Gen 4 only: Platinum's NPCs as smooth 3D bodies built from their own sprites
+local Gen4NpcModels = V.require("Gen4NpcModels")
 local OverworldBattle = V.require("OverworldBattle")
 local WildRoamers = V.require("WildRoamers")
 local BattleExit = V.require("BattleExit")
@@ -239,6 +241,8 @@ if Gen4Bridge.isGen4() and Gen4Bridge.install() then
   pcall(function() V.require("Gen4Spawn").install() end)
   -- Gen 4 World Host: draws roamers, followers, and actors in native 3D world
   pcall(function() Gen4WorldHost.install() end)
+  -- NPC sprites -> smooth 3D bodies (Gen4NpcModels), drawn by Gen4WorldHost
+  pcall(function() Gen4NpcModels.install() end)
 end
 -- Battle UI hiding system for all generations
 local BattleBoxXY = V.require("BattleBoxXY")
@@ -966,6 +970,16 @@ local SETTINGS = {
     .. "ground. Lower is faster.",
     when = function() return Gen4Bridge.isGen4() end,
     full = true, cat = "perf" },
+  { Gen4NpcModels.setting,
+    "Platinum's people as smooth 3D bodies. Each NPC is rebuilt from the four "
+    .. "real sides of its own sprite sheet (south, north, west, east) into a "
+    .. "closed, rounded mesh that wears that art, turns to face where it looks "
+    .. "and walks with the sheet's own step frames. Bodies are built a few "
+    .. "milliseconds a frame; until one is ready the flat sprite keeps drawing. "
+    .. "Needs the third / first person or a CAM TILT camera (the default "
+    .. "cartridge camera stays flat). OFF restores the flat cards.",
+    when = function() return Gen4Bridge.isGen4() end,
+    full = true, cat = "world" },
   { Grass3D.simpleMeshes,
     "Simplified meshes for roads, ground and decorative grass. ON uses "
     .. "simple quad meshes (4 vertices) instead of detailed grass meshes "
