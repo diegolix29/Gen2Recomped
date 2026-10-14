@@ -113,10 +113,15 @@ function Gen4StartMenu.new(game, opts)
   -- which the record marks hidden for the ordinary field, appears, and SAVE
   -- goes.
   self.safari = (game.save or {}).safari ~= nil
+  -- ...AND DURING HEARTGOLD / SOULSILVER'S BUG-CATCHING CONTEST (flag 0x996):
+  -- BAG and SAVE are off and RETIRE runs std 10404 (start_menu.c 220-315)
+  self.bugContest = require("src.world.HgssBugContest").running(game.save)
   for _, row in ipairs(source) do
     local hidden = row.hidden
     if self.safari then
       hidden = (row.id == "save" or row.id == "chat")
+    elseif self.bugContest then
+      hidden = (row.id == "save" or row.id == "chat" or row.id == "bag")
     end
     if not hidden and self:available(row.id) then
       self.rows[#self.rows + 1] = {
@@ -124,6 +129,17 @@ function Gen4StartMenu.new(game, opts)
         label = self:labelFor(row),
         icon = self:iconFor(row),
       }
+    end
+  end
+  -- a contest's RETIRE when the record behind this menu has no such row
+  -- (HeartGold / SoulSilver's cache carries no start-menu record)
+  if self.bugContest then
+    local has = false
+    for _, r in ipairs(self.rows) do if r.id == "retire" then has = true end end
+    if not has then
+      local text = (game.data or {}).text or {}
+      local label = text["TEXT_B0196_00008"] or "RETIRE"
+      table.insert(self.rows, math.max(1, #self.rows), { id = "retire", label = label })
     end
   end
   -- FieldSystem.menuCursorPos: the menu opens on the option it was left on
@@ -236,6 +252,11 @@ function Gen4StartMenu:select()
   local id = row.id
   if id == "exit" then return self:close() end
   self.game.stack:pop()
+  if id == "retire" and self.bugContest then
+    require("src.world.HgssBugContest").runStd(self.game.overworld, 10404)
+    if self.onCancel then self.onCancel() end
+    return
+  end
   if id == "retire" then
     -- `StartMenu_SelectRetire`: SCRIPT_ID(SAFARI_GAME, 21) -- "Would you like
     -- to retire from the Safari Game?" and, on yes, back to the gate

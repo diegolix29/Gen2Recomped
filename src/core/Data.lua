@@ -165,7 +165,7 @@ local GEN4_MODULES = {
 local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
                         "gen4_naming", "gen4_dex", "gen4_models",
                         "gen4_terrain", "gen4_distortion_world",
-                        "gen4_weather_sys", "gen4_mail_gra",
+                        "gen4_weather_sys", "gen4_mail_gra", "gen4_voltorb_flip", "gen4_follow_mon", "gen5_battle_ui",
                         "gen4_species_sprites",
                         "gen4_move_anims", "gen4_particles",
                         "gen4_cellactors",
@@ -2502,8 +2502,14 @@ function Data:unloadGenerated()
   -- and on every version switch.  A module left in package.loaded is the
   -- other half of that bug: the next Play would be served the PREVIOUS game's
   -- tables, which is exactly what this function exists to prevent.
+  -- ...AND THE GEN 4 / GEN 5 ONES, MARKER INCLUDED. requiredModules decides
+  -- the generation by whether `gen4_map_headers` loads, through `require` --
+  -- so with Platinum's (or HeartGold's, or Black's) still in package.loaded a
+  -- Gen 2 game picked next was read as a Gen 4 cache and refused to boot for
+  -- want of map_layouts. Reported from play on Prism after a Gen 4 session.
+  local extra = { "gen4_map_headers", "gen5_version", "gen4_version" }
   for _, list in ipairs({ SHARED_MODULES, CLASSIC_MODULES, GEN3_MODULES,
-                          OPTIONAL }) do
+                          GEN4_MODULES, GEN4_PREFIXED, OPTIONAL, extra }) do
     for _, name in ipairs(list) do
       package.loaded["data.generated." .. name] = nil
     end

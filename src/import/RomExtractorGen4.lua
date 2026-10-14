@@ -2622,7 +2622,9 @@ end
 -- Gen 4 record with a shape of its own would have meant touching every one of
 -- them to gain nothing.
 function RomExtractorGen4:extractMonIcons()
-  local arc = self:archiveAt(Gen4Icons.PATH)
+  -- HGSS keys its own numbered archive (Gen4Versions: /a/0/2/0, the same
+  -- shape with four more sheets, its palette table found the same way)
+  local arc = self:archiveAt(PATH.monIcons or Gen4Icons.PATH)
   if not arc then return nil end
 
   local okArm, arm9 = pcall(function() return self.rom:arm9() end)
@@ -6905,12 +6907,31 @@ RomExtractorGen4.STAGE_CHAIN = {
   -- window frames, in the `gen4_graphics` shape the battle screen reads
   battle_graphics = function(self)
     self:beginStage("graphics")
+    -- the whole battle interface, Platinum's importers over HGSS's archives
+    -- (src/import/Gen4HgssBattleUi.lua); the backdrops alone if that fails
+    local uiOk, uiErr = require("src.import.Gen4HgssBattleUi").extract(self)
+    if uiOk then
+      local gfx, n = self._graphicsIndex or {}, 0
+      for _ in pairs(gfx.backgrounds or {}) do n = n + 1 end
+      self.battleGraphicsReport = { interface = true, backgrounds = n,
+        healthboxParts = gfx.healthboxParts ~= nil, healthboxDigits = gfx.healthboxDigits ~= nil,
+        subscreen = gfx.subscreen ~= nil }
+      return
+    end
+    print("hgss battle interface did not extract: " .. tostring(uiErr))
     local backgrounds, written, skipped = require("src.import.Gen4HgssBattle").backgrounds(self)
     self:write("gen4_graphics", { backgrounds = backgrounds, terrain = {}, battleObjects = {},
       screens = {}, palettes = {}, skipped = skipped, frames = self._winFrames })
     self.battleGraphicsReport = { backgrounds = written, skipped = #skipped }
   end,
   species_sprites = function(self) self:extractSpeciesSprites() end,
+  -- HGSS's walking Pokemon (src/import/Gen4HgssFollowMon.lua)
+  follow_mon = function(self)
+    self:beginStage("follow_mon")
+    local rec = require("src.import.Gen4HgssFollowMon").build(self)
+    self:write("gen4_follow_mon", rec)
+    self.followMonReport = rec.counts
+  end,
   trainer_sprites = function(self) self:extractTrainerSprites() end,
   heights = function(self) self:extractHeights() end,
   -- HGSS's constants from their own module (Platinum's stage reads Sinnoh-only
@@ -7000,10 +7021,22 @@ function RomExtractorGen4:run()
   self:extractDistortionWorld()
   self:extractWeatherSys()
   self:extractMailGra()
+  self:extractVoltorbFlip()
   return self.wrote
 end
 
 -- Platinum's mail stationery (Gen4MailGra), for the bag's Mail USE
+-- HeartGold / SoulSilver's Voltorb Flip art (Gen4VoltorbFlip)
+function RomExtractorGen4:extractVoltorbFlip()
+  if require("src.import.Gen4Versions").family(self.version) ~= "hgss" then return end
+  local ok, rec, why = pcall(require("src.import.Gen4VoltorbFlip").extract, self)
+  if ok and rec then
+    self:write("gen4_voltorb_flip", rec)
+  else
+    self:write("gen4_voltorb_flip", { refused = tostring(ok and why or rec) })
+  end
+end
+
 function RomExtractorGen4:extractMailGra()
   if require("src.import.Gen4Versions").family(self.version) == "hgss" then return end
   local ok, rec, why = pcall(require("src.import.Gen4MailGra").extract, self)

@@ -194,6 +194,19 @@ if h then
   local gfxBgs = (h.gen4_graphics or {}).backgrounds or {}
   check(bgr.backgrounds == 138 and gfxBgs.plain_day and gfxBgs.forest_night_gray,
     'battle backdrops: all 138, under the names the battle screen asks for')
+  -- the battle interface (Gen4HgssBattleUi): Platinum's importers over
+  -- /a/0/0/8, /a/0/0/7, /a/0/7/1, /a/0/7/7 and /a/0/1/6
+  local gfx = h.gen4_graphics or {}
+  local art = h.gen4_battle_art or {}
+  check(bgr.interface and gfx.healthboxParts and gfx.healthboxParts.overlay == 12
+    and gfx.healthboxDigits and gfx.subscreen and (gfx.battleObjects or {}).healthbox_player_singles,
+    'battle interface: healthboxes, their parts out of overlay 12, the digits and the touch screen')
+  check(art.cursor_0_0 and art.stock_player_0 and art.contest_net_1_0 and art.contest_ball_0_0
+    and art.bparty_digits and h.gen4_move_buttons ~= nil,
+    "battle art: the cursor, the party balls, the contest's net and Sport Ball, the move buttons")
+  local icons = (h.gen4_species_sprites or {}).icons
+  check(icons and icons.count and icons.count > 500 and icons.bySpecies[123],
+    ('party icons out of /a/0/2/0: %s'):format(tostring(icons and icons.count)))
   check(require('src.import.Gen4HgssBattle').background(3, 0).palette == 176 + 9,
     "forest's day palette is member 185 (bg*3 + 0xB0 + time), not Platinum's 181")
   -- the text: HGSS's font archive under the names it shares with Platinum's

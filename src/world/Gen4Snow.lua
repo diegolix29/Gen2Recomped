@@ -17,6 +17,7 @@ local M = {}
 -- different fog offset (ov5_021D823C)
 M.IDS = { SNOWING = 5, HEAVY_SNOW = 6, BLIZZARD = 7 }
 M.UNNAMED_HEAVY = 21
+M.ASHFALL = 9
 
 local function Game() return package.loaded["src.core.Game"] end
 
@@ -41,6 +42,8 @@ function M.wanted()
   local _, name = W.lookFor(raw)
   if name and M.IDS[name] then return M.IDS[name] end
   if tonumber(raw) == M.UNNAMED_HEAVY then return 6 end
+  -- SLOW_ASHFALL, Stark Mountain's ash (Gen4SnowView's weather 9)
+  if tonumber(raw) == M.ASHFALL then return M.ASHFALL end
   return nil
 end
 

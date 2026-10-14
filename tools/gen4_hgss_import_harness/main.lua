@@ -38,9 +38,13 @@ function love.load()
     if only then
       local methods = X.STAGE_METHODS or {}
       for name in only:gmatch("[%w_]+") do
-        local method = methods[name] or name
-        assert(type(x[method]) == "function", "no stage " .. name)
-        x[method](x)
+        local chained = X.STAGE_CHAIN and X.STAGE_CHAIN[name]
+        if chained then chained(x)
+        else
+          local method = methods[name] or name
+          assert(type(x[method]) == "function", "no stage " .. name)
+          x[method](x)
+        end
       end
     else
       x:run()

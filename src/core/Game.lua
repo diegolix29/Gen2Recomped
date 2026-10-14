@@ -1505,6 +1505,23 @@ end
 function Game:gamepadaxis(joystick, axis, value)
   -- past-deadzone only, so resting-stick drift can't hide the overlay
   if math.abs(value) > 0.5 then TouchControls:noteGamepad() end
+  -- the triggers and the right stick as bindable pseudo-buttons (Input
+  -- AXIS_BUTTONS): a press goes to BindingsMenu's capture when one is armed,
+  -- the same routing as a real pad button
+  local top = self.stack and self.stack:top()
+  for _, t in ipairs(Input:axisTransitions(axis, value)) do
+    local name, down = t[1], t[2]
+    if down then
+      if top and top.onGamepadPressed then
+        top:onGamepadPressed(name)
+      else
+        Input:padButton(name, true)
+      end
+    else
+      Input:padButton(name, false)
+      if top and top.onGamepadReleased then top:onGamepadReleased(name) end
+    end
+  end
   Input:gamepadaxis(joystick, axis, value)
 end
 

@@ -234,7 +234,8 @@ end
 if os.getenv("AUTO_BATTLE") then
   local Commands = require("src.script.Commands")
   Commands.start_battle = function(ctx, kind, id)
-    ctx.lastBattleResult = os.getenv("AUTO_BATTLE")
+    -- AUTO_BATTLE_WILD=caught: a different result for a wild battle
+    ctx.lastBattleResult = (kind == "wild" and os.getenv("AUTO_BATTLE_WILD")) or os.getenv("AUTO_BATTLE")
     print(("[auto battle] %s %s -> %s"):format(tostring(kind), tostring(id), ctx.lastBattleResult))
   end
 end
@@ -368,3 +369,4 @@ if probe then
     return table.unpack and table.unpack(r) or unpack(r)
   end
 end
+

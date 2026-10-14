@@ -50,7 +50,7 @@ X.BANK = {
   item = 54, itemDescription = 53, nature = 24, typeName = 199, typeUpper = 287,
   trainer = 190, trainerClass = 191, mapLabel = 89, dexEntry = 235, dexCategory = 260,
 }
-X.STAGES = { "text", "species", "moves", "items", "trainers", "maps", "field", "constants", "encounters", "fonts", "scripts" }
+X.STAGES = { "text", "species", "moves", "items", "trainers", "maps", "field", "constants", "encounters", "fonts", "scripts", "species_sprites" }
 X.ALL_STAGES = { "text", "species", "moves", "items", "trainers", "abilities", "encounters", "maps", "events",
   "scripts", "graphics", "fonts", "overworld", "species_sprites", "trainer_sprites", "cries", "models", "field" }
 X.SPECIES_COUNT = 649
@@ -499,6 +499,20 @@ function X:extractScripts()
   return out
 end
 
+-- THE BATTLE PICTURES (src/import/Gen5BattleSprites.lua): every species'
+-- front, back, shiny and female stills, stamped on its species row the way
+-- Platinum's are, then the species module written again with them
+function X:extractBattleSprites()
+  self:beginStage("species_sprites")
+  local index = require("src.import.Gen5BattleSprites").build(self)
+  self:write("gen4_species_sprites", index)
+  if self._pokemon then self:write("pokemon", self._pokemon) end
+  self.battleSpriteReport = index.counts
+  -- ...and the battle's own interface (src/import/Gen5BattleUi.lua)
+  local ui = require("src.import.Gen5BattleUi").build(self)
+  if ui then self:write("gen5_battle_ui", ui) end
+end
+
 function X:run()
   self:extractConstants()
   self:extractScripts()
@@ -511,6 +525,7 @@ function X:run()
   self:extractItems()
   self:extractTrainers()
   self:extractField()
+  self:extractBattleSprites()
   local skipped = {}
   for _, name in ipairs(X.ALL_STAGES) do
     local done = false

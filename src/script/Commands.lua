@@ -186,6 +186,28 @@ local function gen4Markup(text, game)
       return param0 and "" or nil
     end
     if GEN4_DROP[name] then return "" end
+    -- BLACK AND WHITE (src/import/Gen5Text): a message's 0xF000 escapes come
+    -- through as {VARn} (0x01xx, argument slot n - 1) and {CMD xxxx args}.
+    -- 0x0200..0x0208 are NUMBERS from a slot (the first argument) -- "won
+    -- {CMD 0203 1} battles in a row"; everything else is formatting and
+    -- timing (0xFF00 colour, 0xBDxx alignment, 0xBE02 / 0xBE05 waits, 0xBE09
+    -- the speaker's name box) and is dropped. Reported in N's Castle as
+    -- "N: {C...": 4,269 strings carried one, printed brace and all, and
+    -- VAR4 and up (683 more) had nothing reading them.
+    local n = name:match("^VAR(%d+)$")
+    if n and rest == "" then
+      local value = slots and slots[tonumber(n)]
+      return type(value) == "string" and value or (value ~= nil and tostring(value) or "")
+    end
+    if name == "CMD" then
+      local cmd, slot = rest:match("^%s*(%x+)%s*(%d*)")
+      local code = cmd and tonumber(cmd, 16)
+      if code and code >= 0x0200 and code <= 0x02FF and slot ~= "" then
+        local value = slots and slots[tonumber(slot) + 1]
+        return value ~= nil and tostring(value) or ""
+      end
+      return ""
+    end
     return nil
   end))
 end

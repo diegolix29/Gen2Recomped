@@ -18,6 +18,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# THE BUNDLED MODS (scripts/bundled_mods.txt), packed into game.love
+BUNDLED_MODS=""
+if [ -f "$ROOT/scripts/bundled_mods.txt" ]; then
+  while IFS= read -r line; do
+    line="${line%%#*}"; line="${line//[[:space:]]/}"
+    [ -n "$line" ] && [ -d "$ROOT/mods/$line" ] && BUNDLED_MODS="$BUNDLED_MODS mods/$line"
+  done < "$ROOT/scripts/bundled_mods.txt"
+fi
 ANDROID_DIR="$ROOT/mobile/android"
 EMBED_ASSETS="$ANDROID_DIR/app/src/embed/assets"
 LOVE_FILE="$EMBED_ASSETS/game.love"
@@ -263,15 +271,24 @@ pack_love_archive() {
     # was the only packer that had them apart -- scripts/pack_love.sh carries
     # both, and its own header records that the map editor was missed there
     # once already.
+    #
+    # ...EXCEPT THE BUNDLED MODS (scripts/bundled_mods.txt), now asked for on
+    # every platform: "the dramatic shapes mod isnt prepackaging with the game
+    # release packages on any platforms". The crash above came from ELEVEN
+    # mods a working folder happened to hold; only the listed one ships now,
+    # without its development material. It cannot be deleted from inside
+    # the APK, but it can be switched off in MODS like any other.
     (cd "$root" && zip -q -9 -r "$archive" \
       main.lua conf.lua src data assets tools/save-editor tools/map-editor \
-      $manifests \
+      $manifests $BUNDLED_MODS \
       -x '*.DS_Store' -x '*/.git/*' -x '*/.DS_Store' \
-      -x 'data/generated/*' -x 'assets/generated/*')
+      -x 'data/generated/*' -x 'assets/generated/*' -x '*/generated/*' \
+      -x 'mods/*/tests/*' -x 'mods/*/tools/*' -x 'mods/*/oxr/*' -x 'mods/*.zip' \
+      -x 'mods/*/CHANGELOG.md' -x 'mods/*_PLAN.md' -x 'mods/*/.git*')
     return
   fi
 
-  python3 - "$root" "$archive" "$manifests" <<'PY'
+  python3 - "$root" "$archive" "$manifests $BUNDLED_MODS" <<'PY'
 import fnmatch
 import os
 import pathlib
@@ -281,10 +298,13 @@ import zipfile
 root = pathlib.Path(sys.argv[1]).resolve()
 archive = pathlib.Path(sys.argv[2])
 manifest_words = [w for w in sys.argv[3].split() if w]
-# mods/ intentionally absent -- see the note on the zip path above.
+# only the bundled mods (in the word list beside the manifests) -- see the
+# note on the zip path above
 includes = ["main.lua", "conf.lua", "src", "data", "assets",
             "tools/save-editor", "tools/map-editor", *manifest_words]
-excludes = ["*.DS_Store", "*/.DS_Store", "*/.git/*", "data/generated/*", "assets/generated/*"]
+excludes = ["*.DS_Store", "*/.DS_Store", "*/.git/*", "data/generated/*", "assets/generated/*",
+            "*/generated/*", "mods/*/tests/*", "mods/*/tools/*", "mods/*/oxr/*", "mods/*.zip",
+            "mods/*/CHANGELOG.md", "mods/*_PLAN.md", "mods/*/.git*"]
 
 def excluded(rel: str) -> bool:
     rel = rel.replace("\\", "/")
@@ -444,10 +464,10 @@ pack_game_love() {
   rm -f "$LOVE_FILE"
   # tools/save-editor ships with the app: the launcher's Edit button on a save
   # row opens it in-process, so it must be inside the archive (see build.sh).
-  # Deliberately NO fused mods: a mod inside game.love sits in the read-only
-  # APK, so the mod manager's Delete can't remove it and it reappears every
-  # launch.  Pokewalker ships as an importable .zip instead, which gives it
-  # a real install/upgrade/delete lifecycle.
+  # Only the bundled mods (scripts/bundled_mods.txt) are fused: a mod inside
+  # game.love sits in the read-only APK, so the mod manager's Delete can't
+  # remove it (it can be switched off). Pokewalker ships as an importable
+  # .zip instead, which gives it a real install/upgrade/delete lifecycle.
   pack_love_archive "$LOVE_FILE" "$ROOT" "$MANIFESTS"
   local archive_entries
   archive_entries="$(archive_list "$LOVE_FILE")"
@@ -456,6 +476,11 @@ pack_game_love() {
   fi
   grep -qx 'tools/save-editor/App.lua' <<< "$archive_entries" \
     || fail "game.love is missing the save editor (Edit on a save row would crash)"
+  local bundled
+  for bundled in $BUNDLED_MODS; do
+    grep -qx "$bundled/manifest.json" <<< "$archive_entries" \
+      || fail "game.love is missing the bundled mod $bundled"
+  done
   local required
   for required in $MANIFESTS; do
     grep -qx "$required" <<< "$archive_entries" \

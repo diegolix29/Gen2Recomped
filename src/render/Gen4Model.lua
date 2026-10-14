@@ -170,6 +170,13 @@ uniform float yCut;
 // (lo, hi] in model z: a band of the cut pass that is left unpainted -- the
 // ground just BEHIND the player, see Gen4Ground:livePass. Empty by default.
 uniform vec2 zKeep;
+// THE DS'S DEPTH FOG (Gen4DepthFog): x = how the depth turns back into eye
+// distance (0 off, 1 linear a + z * b, 2 perspective near a far b, 3 ortho),
+// w = the cartridge camera is orthographic; B = that camera's near / far, the
+// fog offset and the depth one table entry spans; C = the colour
+uniform vec4 depthFogA;
+uniform vec4 depthFogB;
+uniform vec3 depthFogC;
 vec4 effect(vec4 colour, Image tex, vec2 uv, vec2 screen)
 {
     if (vModelY <= yCut) { discard; }
@@ -182,7 +189,30 @@ vec4 effect(vec4 colour, Image tex, vec2 uv, vec2 screen)
     // occludes whatever is behind it.  Discarding is what makes that correct
     // rather than merely usually correct.
     if (texel.a < 0.5) { discard; }
-    return texel * colour;
+    vec4 c = texel * colour;
+    if (depthFogA.x > 0.5) {
+        float zn = gl_FragCoord.z * 2.0 - 1.0;
+        float d;
+        if (depthFogA.x < 1.5) {
+            d = depthFogA.y + zn * depthFogA.z;
+        } else if (depthFogA.x < 2.5) {
+            d = 2.0 * depthFogA.y * depthFogA.z / (depthFogA.z + depthFogA.y - zn * (depthFogA.z - depthFogA.y));
+        } else {
+            d = depthFogA.y + (zn * 0.5 + 0.5) * (depthFogA.z - depthFogA.y);
+        }
+        float rn = depthFogB.x;
+        float rf = depthFogB.y;
+        float dz;
+        if (depthFogA.w > 0.5) {
+            dz = (d - rn) / (rf - rn) * 2.0 - 1.0;
+        } else {
+            dz = (rf + rn) / (rf - rn) - 2.0 * rf * rn / ((rf - rn) * max(d, 1.0));
+        }
+        float depth = (dz * 0.5 + 0.5) * 32767.0;
+        float dens = clamp((depth - depthFogB.z) / depthFogB.w * 4.0 / 127.0, 0.0, 124.0 / 127.0);
+        c.rgb = mix(c.rgb, depthFogC, dens);
+    }
+    return c;
 }
 #endif
 ]]
@@ -1922,6 +1952,11 @@ function Gen4Model.new(record)
     -- texture -- under half. A shape lit by NORMAL commands issues no COLOR,
     -- so its vertices stay pure white: a non-white vertex is the lightmap.
     local unlit = shape.unlit
+    -- A CACHE THAT CARRIES THE FLAG says lit by leaving it off (Gen4Ground
+    -- sets `lightKnown`): the DS replaces a vertex's colour when a NORMAL
+    -- lights it, so whatever colour such a shape packed is not drawn
+    local litByNormal = (unlit == nil and shape.lightKnown and not Gen4Model.legacyLight) and true or false
+    if litByNormal then unlit = false end
     if unlit == nil and shade and lit then
       for i = 0, count - 1 do
         local at = i * stride
@@ -1933,6 +1968,7 @@ function Gen4Model.new(record)
       local at = i * stride
       local r, g, b = shape.vertices:byte(at + 11, at + 13)
       r, g, b = r or 255, g or 255, b or 255
+      if litByNormal and shade and lit then r, g, b = 255, 255, 255 end
       -- ...not on a shape with no NORMALs (Gen4ModelPack `unlit`):
       -- its vertex colours ARE its lighting
       if shade and lit and not unlit then
@@ -2514,6 +2550,8 @@ local NO_SPREAD = { 0, 0 }
 -- so a caller that never touches it renders exactly as it did.  `Gen4Ground`
 -- sets it immediately before its chunk draws and puts it back to zero after.
 Gen4Model.billboardYaw = 0
+-- G4OLDLIGHT=1: the guess from packed colours alone, for comparing
+Gen4Model.legacyLight = (os.getenv and os.getenv("G4OLDLIGHT")) and true or nil
 -- A model-z band the height cut leaves unpainted, or nil. Set per chunk by
 -- the canopy pass; see `Gen4Ground:livePass`.
 Gen4Model.zKeep = nil
@@ -2558,6 +2596,15 @@ function Gen4Model:draw(viewProjection, pose, materials, yCut, spread, depthComp
     shader:send("zKeep", band and { band[1], band[2] } or { 1.0e9, -1.0e9 })
   end
   shader:send("heightSpread", spread or NO_SPREAD)
+  -- THE DEPTH FOG (Gen4DepthFog), off unless a pass has turned it on
+  if shaderCuts then
+    local fog = Gen4Model.depthFog
+    shader:send("depthFogA", fog and fog.a or { 0, 0, 0, 0 })
+    if fog then
+      shader:send("depthFogB", fog.b)
+      shader:send("depthFogC", fog.c)
+    end
+  end
   -- SENT ON EVERY DRAW, for the reason `yCut` and `heightSpread` are: an unset
   -- uniform reads as zero, and relying on that is how the texture matrix once
   -- collapsed every model to a single texel.

@@ -97,14 +97,13 @@ local A = {
   restoreoverworld = "returntofield",  -- CallTask_RestoreOverworld
   playeronbikecheck = "checkplayeronbike", playeronbikeset = "setplayerbike",
 
-  -- the partner Pokemon walking behind the player
-  togglefollowingpokemonmovement = NOOP, waitfollowingpokemonmovement = NOOP,
-  followingpokemonmovement = NOOP, setfollowmoninhibitstate = NOOP,
-  scrcmd_609 = NOOP,                         -- nudges the partner if active
-  -- 605 (face the partner to the player, bb), 606 / 607 (partner permission
-  -- on this map), 608 (stop it): every one of them is guarded by
-  -- FollowMon_IsActive in scrcmd_c.c, and no partner walks in this port
-  scrcmd_605 = NOOP, scrcmd_606 = NOOP, scrcmd_607 = NOOP, scrcmd_608 = NOOP,
+  -- the partner Pokemon walking behind the player: lowered by name in
+  -- Gen4ScriptVM onto src/world/HgssFollowMon.lua (602 pause, 604 movement,
+  -- 600 recall, 606 / 607 back to the player, 609 reset, 783 inhibit); 603
+  -- waits for a follower that is never mid-step here, and 605 / 608 are
+  -- placement and the ball animation
+  waitfollowingpokemonmovement = NOOP,
+  scrcmd_605 = NOOP, scrcmd_608 = NOOP,
 
   -- DOORS. 307..311 are Platinum's door-animation family under numbers:
   -- 307 (hw, hw, var, var, byte -- matrix cell, tile, slot) loads it, 310
@@ -167,10 +166,6 @@ local A = {
   -- GameStats_AddScore: the trainer card's SCORE for a stat (a gym win, ...),
   -- not a game record; this port keeps no score yet
   addspecialgamestat = NOOP,
-  -- "is the partner walking": never, in this port, so the answer is a
-  -- constant -- { k } in an order is a literal operand
-  scrcmd_729 = { "setvarfromvalue", { 1, { 0 } } },  -- TRUE when active
-  scrcmd_730 = { "setvarfromvalue", { 1, { 1 } } },  -- TRUE when NOT active
 
   -- string buffers
   bufferplayersname = "bufferplayername", bufferrivalsname = "bufferrivalname",

@@ -171,7 +171,7 @@ function BattleState:isWideBattleLayout()
   -- Emerald's own healthboxes on the surface's own edges and Emerald's own
   -- bottom strip spanning it.  This function is the Game Boy layout's
   -- question and keeps the Game Boy layout's answer.
-  if GameVersion.isGen3() or GameVersion.isGen4() then return false end
+  if GameVersion.isGen3() or GameVersion.isGen4() or GameVersion.isGen5() then return false end
   local options = self.game and self.game.save and self.game.save.options
   return options and options.battleLayout == "wide" or false
 end
@@ -205,7 +205,9 @@ end
 -- No wide option here, unlike Hoenn: the DS screen IS the layout, and there is
 -- no narrower cartridge shape underneath it to widen.
 function BattleState:gen4Layout()
-  return GameVersion.isGen4() and true or false
+  -- Black and White ride the same two-screen battle: their pictures are
+  -- imported in its shape (src/import/Gen5BattleSprites.lua and on)
+  return (GameVersion.isGen4() or GameVersion.isGen5()) and true or false
 end
 
 -- BATTLE LAYOUT = WIDE, ANSWERED IN EMERALD'S OWN TERMS.
@@ -3605,10 +3607,17 @@ function BattleState:enter()
   -- a mod can vary it per save.  It loads through getImage like every other
   -- battle pic, so a replacement keeps the SGB recolor, the transition
   -- fade, the ground-padding measurement and battle_sprite_scales.
+  -- A DEMO FOUGHT BY A REAL PLAYER CHARACTER (Platinum's Dawn or Lucas,
+  -- HeartGold's Lyra or Ethan -- Gen4Commands' catching tutorials): their own
+  -- back pic, the player form of the demo save's gender, not Gen 1's old man.
+  -- Reported from play: "in the dawn catching tutorial ... its showing the
+  -- old man placeholder sprite rather than dawns sprite".
+  local counterpart = self.counterpartBack and true or false
   local backPath, backTrueColor =
     require("src.pokemon.Sprites").playerPath(self.data, "back",
-      { kind = "battle", demo = self.demo, oakDemo = self.oakDemo,
+      { kind = "battle", demo = self.demo and not counterpart, oakDemo = self.oakDemo,
         pokedudeDemo = self.pokedudeDemo ~= nil,
+        save = counterpart and self.game.save or nil,
         battle = self })
   local backPalette=namedPalette(self.data,"MEWMON")
   if not self.demo and not backTrueColor then
@@ -4127,7 +4136,7 @@ end
 -- battle's while it is up, and letting a miss fall through would work the d-pad
 -- underneath it.
 function BattleState:touchpressed(_, px, py)
-  if not GameVersion.isGen4() then return false end
+  if not (GameVersion.isGen4() or GameVersion.isGen5()) then return false end
   local over
   if self.phase == "menu" then over = "action"
   elseif self.phase == "moveSelect" then over = "moves"
@@ -4140,11 +4149,23 @@ function BattleState:touchpressed(_, px, py)
   -- the buttons are somewhere else: `menuPresentation` answers "bottom" only
   -- when the second screen is actually up and carrying them.
   local presentation, SecondScreen = Gen4B.menuPresentation(self, self.phase)
+  local kind, index
+  if presentation == "compact" then
+    -- THE STRIP UNDER THE BATTLE (single-screen play): the same buttons,
+    -- tapped where they are drawn, in the battle's own screen pixels
+    local r = require("src.render.Renderer").uiPresentation
+    if not r or px < r.x or py < r.y or px >= r.x + r.w or py >= r.y + r.h then return false end
+    kind, index = Gen4B.compactHit((px - r.x) / r.scaleX, (py - r.y) / r.scaleY, over)
+    if not kind then return false end
+  else
   if presentation ~= "bottom" or not SecondScreen then return false end
 
   local x, y = SecondScreen.toLocal(self.game, px, py)
   if not x then return false end
-  local kind, index = Gen4B.bottomHit(x, y, over)
+  local okG5, G5 = pcall(require, "src.battle.Gen5BattleHud")
+  if okG5 and G5.active(self) then kind, index = G5.bottomHit(x, y, over)
+  else kind, index = Gen4B.bottomHit(x, y, over) end
+  end
   local input = self.game and self.game.input
   if not input then return true end
   -- a tap hides the keypad cursor; the overlay press below must not be
@@ -4420,6 +4441,27 @@ function BattleState:update(dt)
         row = math.min(1, row + 1)
       end
       self.menuIndex = row * 2 + col + 1
+    end
+    -- B ON THE SECOND POKEMON'S MENU GOES BACK TO THE FIRST. Reported from
+    -- play: "when you select a move for the first pokemon, you cannot
+    -- reverse/rechange it by hitting the b button like you can in the rom".
+    -- Platinum's command screen for the right flank carries BACK (and B), and
+    -- it undoes the left flank's choice -- its target and any switch it had
+    -- reserved -- and asks for it again. Not when the left flank was never
+    -- asked (fainted, or locked into a move it cannot choose).
+    if input:wasPressed("b") and self:isDouble()
+       and self:choosingSlotNow() == BattleState.POS.PLAYER_RIGHT then
+      local left = self:battlerAt(BattleState.POS.PLAYER_LEFT)
+      local pend = self.pendingActions and self.pendingActions[BattleState.POS.PLAYER_LEFT]
+      if left and not left.ally and (left.mon and left.mon.hp or 0) > 0 and pend
+         and not self:menuLockedAction(left) then
+        self.pendingActions[BattleState.POS.PLAYER_LEFT] = nil
+        if self.chosenTargets then self.chosenTargets[BattleState.POS.PLAYER_LEFT] = nil end
+        self.choosingSlot = BattleState.POS.PLAYER_LEFT
+        self.menuIndex, self.moveIndex = 1, 1
+        pcall(function() require("src.core.Sound").play(self.game.data, "SEQ_SE_DP_DECIDE") end)
+        return
+      end
     end
     if input:wasPressed("a") then
       local choice = self:menuActions()[self.menuIndex]
@@ -8435,6 +8477,20 @@ function BattleState:fillEmptySlots()
           break
         end
       end
+      local promptSlot = isPlayer and not (self.ally and pos == BattleState.POS.PLAYER_RIGHT)
+                         and not (self.palace or self.arena)
+      if pick and promptSlot then
+        -- THE PLAYER CHOOSES WHO GOES IN. Reported from play: "On double
+        -- battles, when your pokemon faints, it auto-sends out the next one,
+        -- without asking you what one". The cartridge opens the party screen
+        -- for each of the player's fallen slots in turn (the forced
+        -- "choose a Pokemon" list, no cancel); the rest of the slots, and the
+        -- side check, wait until it is answered.
+        local rest = {}
+        for _, q in ipairs(pending) do if q > pos then rest[#rest + 1] = q end end
+        self:promptDoubleReplacement(pos, rest)
+        return
+      end
       if pick then
         local allySlot = isPlayer and self.ally and pos == BattleState.POS.PLAYER_RIGHT
         self:placeBattler(pos, makeBattler(self.data, pick, isPlayer,
@@ -8454,6 +8510,57 @@ function BattleState:fillEmptySlots()
   end
   -- ...and only once nobody can be sent out at all is the side beaten
   self:checkSideBeaten()
+end
+
+-- The party screen for one of the player's empty slots in a double battle;
+-- once a Pokemon is sent out the remaining slots (`rest`) are filled.
+-- Closed without a pick, it opens again, as the singles' ChooseNextMon does.
+function BattleState:promptDoubleReplacement(pos, rest)
+  local game = self.game
+  local done = false
+  local function onSwitch(mon)
+    if done or not mon then return end
+    if Party.isEgg(mon) then
+      self:say(self:romText("_EggNoWillText", "An EGG can't\nbattle!"))
+      return
+    end
+    if (mon.hp or 0) <= 0 then
+      self:say(self:romText("_NoWillText", "There's no will\nto fight!"))
+      return
+    end
+    for p = 0, 3 do
+      local b = self:battlerAt(p)
+      if b and b.mon == mon then
+        self:say(Strings("%s is already\nin battle!", b.name or ""))
+        return
+      end
+    end
+    done = true
+    self:placeBattler(pos, makeBattler(self.data, mon, true, game.save))
+    self:syncSides()
+    local who = self:battlerAt(pos)
+    self.nextInsert = 0
+    self:sayNext(self:sendOutText(who.name))
+    self:actNext(function()
+      require("src.core.Sound").playCry(self.data, who.mon.species)
+      HeldItems.onEntry(self, who)
+    end)
+    self:actNext(function() self:abilitySwitchIn(who) end)
+    self:actNext(function()
+      self.pendingReplacements = (#rest > 0) and rest or nil
+      self:fillEmptySlots()
+    end)
+  end
+  self:ui(function()
+    return self:buildScreen(Gen4Battle.partyScreenId(self) or "PartyMenu", {
+      battle = self,
+      forceSwitch = true,
+      onSwitch = onSwitch,
+    })
+  end)
+  self:act(function()
+    if not done then self:promptDoubleReplacement(pos, rest) end
+  end)
 end
 
 -- IS EITHER SIDE OUT OF POKEMON?  Latched, because the victory and defeat
@@ -10159,7 +10266,7 @@ function BattleState:bugContestBall()
   self.afterQueue = "menu"
   BugContest.useBall(save)
   self:say(self:romText("_ItemUseText001", "%s used\n%s!",
-                        save.player.name, Strings("PARK BALL")))
+                        save.player.name, Strings(self.contestBallName or "PARK BALL")))
   self:act(function()
     require("src.core.Sound").play(self.data, "Ball_Toss")
     self.lastBall = "PARK_BALL"

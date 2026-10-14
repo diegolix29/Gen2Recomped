@@ -1605,6 +1605,8 @@ end
 -- All or nothing on purpose: one Platinum box beside one Game Boy panel is
 -- worse than two of either, and the caller's fallback is the whole stand-in.
 function Gen4Battle.drawHealthboxes(battle)
+  -- BLACK AND WHITE'S boxes (src/battle/Gen5BattleHud.lua)
+  do local okG5, G5 = pcall(require, "src.battle.Gen5BattleHud") if okG5 and G5.active(battle) then return G5.drawHealthboxes(battle) end end
   local g = love.graphics
   local sides = {
     { side = "enemy",  battler = battle.enemy,  slot = 1 },
@@ -1938,6 +1940,12 @@ function Gen4Battle.actionLabels(battle)
     out[i] = Strings(type(word) == "string" and word
                      or Gen4Battle.ACTION_LABELS[i])
   end
+  -- HEARTGOLD / SOULSILVER'S BUG-CATCHING CONTEST: BALL in the bag's place
+  -- (battle_input.c 1898-1902, msg_0197 #1270)
+  if battle and battle.bugContest then
+    local t = battle.data and battle.data.text
+    out[2] = (t and t["TEXT_B0197_01270"]) or Strings("BALL")
+  end
   return out
 end
 
@@ -1984,6 +1992,8 @@ local moveButtons
 -- write -- the other screen, or a slot too small for two lines -- so they go
 -- in the message box, which is empty while a move is being chosen either way.
 function Gen4Battle.drawMoveDetail(battle)
+  -- Black and White put PP on the buttons themselves
+  do local okG5, G5 = pcall(require, "src.battle.Gen5BattleHud") if okG5 and G5.active(battle) then return end end
   local Font = require("src.render.Font")
   local Strings = require("src.core.Strings")
   local T, ROWS = Gen4Battle.MESSAGE_TEXT, Gen4Battle.MESSAGE_ROWS
@@ -2618,6 +2628,24 @@ Gen4Battle.MOVE_STRIP_PAD = 0
 -- edge and gives the panel the room.
 Gen4Battle.MOVE_STRIP_INSET = 4
 
+-- A TAP ON THE STRIP: which compact button holds (x, y), in the battle's
+-- own screen pixels -- "action"/"move" and the index, or nil
+function Gen4Battle.compactHit(x, y, over)
+  local function inside(rx, ry, rw, rh)
+    return rw > 0 and x >= rx and x < rx + rw and y >= ry and y < ry + rh
+  end
+  if over == "action" then
+    for i = 1, 4 do
+      if inside(Gen4Battle.compactButtonRect(i)) then return "action", i end
+    end
+  elseif over == "moves" then
+    for i = 1, 4 do
+      if inside(Gen4Battle.compactMoveRect(i)) then return "move", i end
+    end
+  end
+  return nil
+end
+
 function Gen4Battle.compactMoveRect(i)
   local S, pad = Gen4Battle.MOVE_STRIP, Gen4Battle.MOVE_STRIP_PAD
   local c, r = (i - 1) % 2, math.floor((i - 1) / 2)
@@ -2639,6 +2667,7 @@ end
 -- needs a graphics device and the check harness has none. A decision nobody can
 -- test off-device is one that gets tested by playing.
 function Gen4Battle.hasSubscreenArt(battle)
+  do local okG5, G5 = pcall(require, "src.battle.Gen5BattleHud") if okG5 and G5.active(battle) then return true end end
   local gfx = graphics(battle)
   local rec = gfx and gfx.subscreen
   local row = rec and rec.layers and rec.layers.action
@@ -2775,6 +2804,7 @@ end
 -- The compact MOVE list: the four buttons along the bottom of the screen, each
 -- carrying its own type colours, type icon and PP (see MOVE_STRIP).
 function Gen4Battle.drawCompactMoves(battle)
+  do local okG5, G5 = pcall(require, "src.battle.Gen5BattleHud") if okG5 and G5.active(battle) then return G5.drawCompactMoves(battle) end end
   local Font = require("src.render.Font")
   local ok, Sub = pcall(require, "src.import.Gen4Subscreen")
   local art = subscreenLayer(battle, "moves")
@@ -2821,12 +2851,26 @@ function Gen4Battle.drawCompactMoves(battle)
 end
 
 -- The compact action menu: Platinum's four buttons in the message box's strip.
+-- The strip has no top row for the contest's "x{n}", so the count rides on
+-- the BALL button itself there ("BALL x20"); the bottom screen keeps its own
+local function compactLabels(battle)
+  local labels = Gen4Battle.actionLabels(battle)
+  if battle and battle.bugContest and battle.bugContestBalls then
+    local okN, n = pcall(battle.bugContestBalls, battle)
+    local t = battle.data and battle.data.text or {}
+    local fmt = t["TEXT_B0197_01271"] or "x{n}"
+    if okN and n then labels[2] = labels[2] .. " " .. fmt:gsub("{[^}]*}", tostring(n), 1) end
+  end
+  return labels
+end
+
 function Gen4Battle.drawCompactActions(battle)
+  do local okG5, G5 = pcall(require, "src.battle.Gen5BattleHud") if okG5 and G5.active(battle) then return G5.drawCompactActions(battle) end end
   local Font = require("src.render.Font")
   local ok, Sub = pcall(require, "src.import.Gen4Subscreen")
   local art = subscreenLayer(battle, "action")
   if not (ok and art) then return false end
-  local labels = Gen4Battle.actionLabels(battle)
+  local labels = compactLabels(battle)
   local selected = battle.menuIndex or 1
   for i = 1, 4 do
     local slot = Gen4Battle.COMPACT_SLOTS[i]
@@ -2995,6 +3039,7 @@ function Gen4Battle.bottomHit(x, y, over)
   return nil
 end
 function Gen4Battle.drawBottomScreen(battle, SecondScreen, over)
+  do local okG5, G5 = pcall(require, "src.battle.Gen5BattleHud") if okG5 and G5.active(battle) then return G5.drawBottomScreen(battle, SecondScreen, over) end end
   local base = subscreenLayer(battle, "base")
   if over == "target" then
     local layer = subscreenLayer(battle, Gen4Battle.TARGET_LAYER)
@@ -3029,6 +3074,8 @@ function Gen4Battle.drawBottomScreen(battle, SecondScreen, over)
     Gen4Battle.drawBottomLabels(battle, over)
     -- The party balls along the top, on the action menu only.
     if over == "action" then pcall(Gen4Battle.drawSubscreenBalls, battle) end
+    -- ...and the Bug-Catching Contest's net, Sport Ball and caught Pokemon over them
+    if over == "action" and battle.bugContest then pcall(Gen4Battle.drawContestStrip, battle) end
     -- THE CURSOR IS THE CARTRIDGE'S: cursor_renderer.c's four red corners at
     -- the chosen button's touch rect inset by eight.  Only a cache without
     -- gen4_battle_art falls back to the engine's own marker and wash.
@@ -3114,6 +3161,62 @@ local function drawArt(battle, key, x, y, alpha)
   love.graphics.draw(img, math.floor(x + (row.originX or 0)), math.floor(y + (row.originY or 0)))
   love.graphics.setColor(1, 1, 1, 1)
   return true
+end
+
+-- THE BUG-CATCHING CONTEST'S STRIP along the top of the action menu
+-- (pokeheartgold battle_input.c, BattleInput_CreateMainMenuObjects and
+-- BattleInput_CreateBugContestGraphics): the caught Pokemon's gender and
+-- level (msg_0197 #1272-1274) at x 136 / 144, the Sport Balls left
+-- ("x{n}", #1271) at x 224 -- left-aligned text objects on OAM y 16, a
+-- 16-row window from y 8 -- in TEXT_COLOR(12,13,0) / (14,15,0) / (9,8,0)
+-- of sub OBJ palette 3; the net (sequence 1) at (88, 8) and the Sport Ball
+-- at (208, 16) over the party balls.
+function Gen4Battle.drawContestStrip(battle)
+  local Font = require("src.render.Font")
+  local g = love.graphics
+  local t = battle.data and battle.data.text or {}
+  local _, anims = battleArtData(battle)
+  local ink = anims and anims.subscreenInk and anims.subscreenInk.contest
+  local function colour(i)
+    local c = ink and ink[i]
+    if c then g.setColor(c[1] / 255, c[2] / 255, c[3] / 255, 1) else g.setColor(0, 0, 0, 1) end
+  end
+  drawArt(battle, "contest_net_1_0", 88, 8)
+  drawArt(battle, "contest_ball_0_0", 208, 16)
+  local save = battle.game and battle.game.save
+  local run = save and save.g2BugContest
+  local mon = run and run.hgss and run.caught
+  if mon then
+    -- its party icon, frame 0, centred on (120, 8) (SetBugContestPokemonIcon)
+    local icons = battle.data and battle.data.icons
+    local entry = icons and icons.bySpecies and icons.bySpecies[tonumber(mon.species)]
+    local img = entry and image(type(entry) == "table" and entry.image or entry)
+    if img then
+      local iw, ih = img:getDimensions()
+      local fh = math.min(ih, tonumber(type(entry) == "table" and entry.frameHeight) or 32)
+      g.setColor(1, 1, 1, 1)
+      g.draw(img, love.graphics.newQuad(0, 0, iw, fh, iw, ih), 120 - math.floor(iw / 2), 8 - math.floor(fh / 2))
+    end
+    local okP, Pokemon = pcall(require, "src.pokemon.Pokemon")
+    local gender = okP and Pokemon.genderOf and Pokemon.genderOf(battle.data, mon)
+    local sign = (gender == "male" and (t["TEXT_B0197_01272"] or "♂"))
+              or (gender == "female" and (t["TEXT_B0197_01273"] or "♀")) or nil
+    if sign then
+      colour(gender == "male" and 12 or 14)
+      Font.draw(sign, 136, 8)
+    end
+    local lv = (t["TEXT_B0197_01274"] or "Lv. {n}"):gsub("{ALN_RIGHT}", "")
+    lv = lv:gsub("{[^}]*}", tostring(mon.level or ""), 1)
+    colour(9)
+    Font.draw(lv, 144, 8)
+  end
+  if battle.bugContestBalls then
+    local fmt = t["TEXT_B0197_01271"] or "x{n}"
+    local s = fmt:gsub("{[^}]*}", ("%d"):format(battle:bugContestBalls()), 1)
+    colour(9)
+    Font.draw(s, 224, 8)
+  end
+  g.setColor(0, 0, 0, 1)
 end
 
 -- The frame of `prefix` sequence `seq` showing `tick` frames in (looping),

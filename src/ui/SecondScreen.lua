@@ -254,14 +254,22 @@ end
 -- once in the field left `secondScreenUp` false behind them, and every battle
 -- afterwards came up with the menu stowed for no reason they could see.
 function SecondScreen.stowed(game)
-  if SecondScreen.mode(game) == "off" then return true end
-  return options(game).secondScreenStowed and true or false
+  local mode = SecondScreen.mode(game)
+  if mode == "off" then return true end
+  local v = options(game).secondScreenStowed
+  -- SINGLE-SCREEN PLAY (SWAP) STARTS WITH THE BATTLE MENU AS THE STRIP.
+  -- Requested from play: on one screen a swap hides the whole battle every
+  -- time the menu comes up, so until the player asks for the full bottom
+  -- screen (L, or BATTLE MENU: 2ND) the menu sits in the strip under the
+  -- battle. An explicit answer either way is kept.
+  if v == nil then return mode == "swap" end
+  return v and true or false
 end
 
 function SecondScreen.stow(game, away)
   if not (game and game.save and game.save.options) then return false end
   if SecondScreen.mode(game) == "off" then return true end
-  game.save.options.secondScreenStowed = away and true or nil
+  game.save.options.secondScreenStowed = away and true or false
   return SecondScreen.stowed(game)
 end
 

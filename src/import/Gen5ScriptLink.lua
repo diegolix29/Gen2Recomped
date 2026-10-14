@@ -356,11 +356,50 @@ L.ALIASES = {
   [0x021] = { "bwqueueentry", "w" },
   -- RELIC CASTLE'S QUICKSAND (the pits' coord scripts, members 320..328 and
   -- 370): 0x0C1 <zone, x, z> is the fall -- a warp with no facing, only the
-  -- castle's pits use it; and 0x0D8 <value, var> stores IsTMHM(value)
-  -- (handler 0x21AF6C5 -> 0x2021288: item 328..425 or 618..620), which on
-  -- B3F's pit picks between its two landing tiles
+  -- castle's pits use it; and 0x0D8 <n, var> stores whether condition n of
+  -- a ten-row table holds (handler 0x215AEB9 -> 0x2159F54; the table at
+  -- 0x2170FB0 in overlay 10, rows { ?, n, var 0x4031 + n, value }) -- on
+  -- B3F's pit it picks between the two landing tiles, in the player's room
+  -- between the Wii's two lines
   [0x0C1] = { "warp", "www", { 1, 1, 2, 3 } },
-  [0x0D8] = { "bwistmhm", "ww" },
+  -- OPELUCID GYM (overlay 46, Gen5DragonGym): 0x196 lists the dragons'
+  -- lines as the save says, 0x19A <statue, side> flips a switch, 0x199
+  -- <statue> settles the head and its lines; 0x197 <statue, side> and 0x198
+  -- <n> are the switch's and the player's animations
+  -- THE ELITE FOUR'S LIFTS (zones 140-143, gimmick 0x2C): 0x1A2 <n>, run by
+  -- the entry floor's platform trigger at (15, 25), starts overlay task n - 1
+  -- that raises the platform into the member's floor above -- the rows
+  -- between are solid and the upper floor stands 0x33 up. The overlay is
+  -- not decoded; the ride is a lift up the player's column (Gen4Commands)
+  [0x1A2] = { "bwe4lift", "w" },
+  [0x196] = { "bwdragoninit", "" }, [0x19A] = { "bwdragonflip", "ww" },
+  [0x199] = { "bwdragonsettle", "w" }, [0x197] = { "noop", "ww" }, [0x198] = { "noop", "w" },
+  [0x0D8] = { "bwcondition", "ww" },
+  -- 0x121 <var, 5>: how many of the party can battle (not an egg, not
+  -- fainted) -- the legendary's "able to battle" test in N's Castle (Z278,
+  -- M0556 S1A78: none able and the dragon only stares), beside 0x103's count
+  [0x121] = { "bwpartyable", "ww", { 1 } },
+  -- 0x245 <mode, var>: N's Castle's dragon joining the party (Z278, M0556
+  -- S187F): mode 0 answers whether the party has room, mode 1 adds the
+  -- version's dragon -- Reshiram on Black, Zekrom on White, level 50 -- and
+  -- a full party first sends one to the PC (S19BA)
+  [0x245] = { "bwlegend", "ww" },
+  -- THE SCRIPTED WILD BATTLES (17 of them -- N's Castle's dragon, the
+  -- legendaries): 0x178 <species, level, flags var> starts it, 0x17B <var>
+  -- answers 1 when the battle ended without a loss (caught, knocked out or
+  -- fled -- N's Castle reads the catch only then), 0x17C <var> whether it got
+  -- away uncaught (N's Castle sets 0x133 when it was caught and removes the
+  -- dragon), and 0x17A <n> closes the battle's field effect. 0x013 <var,
+  -- value> adds to a var -- the battle's flag word, 0x100 | 1 | 0x10.
+  [0x178] = { "startwildbattle", "www", { 1, 2 } },
+  [0x17B] = { "bwbattleok", "w" },
+  [0x17C] = { "checkdidnotcapture", "w" },
+  [0x17A] = { "noop", "w" },
+  [0x013] = { "addvar", "ww" },
+  -- 0x156 <kind>: THE GAME CLEAR. Kind 0 closes N's Castle (Z278, the last
+  -- row before 0x40B6 = 6): the ending plays and the game goes on in the
+  -- player's room; kind 1 is the Champion's room after Alder (Z145)
+  [0x156] = { "bwgameclear", "w" },
   -- Clay's lifts: 0x190 <lift> moves lift n to its other height (the panel
   -- script flips the lift's flag 0x0A + n after), carrying the player when
   -- standing on it (Gen5DriftveilGym); 0x191 <n> / 0x1B5 the arrival lift

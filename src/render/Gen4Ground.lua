@@ -265,7 +265,9 @@ function Gen4Ground.forMap(map, data)
   -- run at 1,823). The map sees a terrain record with that chunk size, and
   -- everything that reads chunkUnits / chunkTiles through self.terrain then
   -- places the chunks right.
-  if def and def.gen5NoGrid then
+  -- ...and the one grid map built from a 64 x 64 chunk, the Pokemon
+  -- League's grounds (Gen5Field.bigGrid: chunk scale 2)
+  if def and (def.gen5NoGrid or (def.gen5 and (def.gen5ChunkScale or 1) > 1)) then
     local k = def.gen5ChunkScale or 4
     terrain = setmetatable({ chunkUnits = (terrain.chunkUnits or 512) * k,
                              chunkTiles = (terrain.chunkTiles or 32) * k }, { __index = terrain })
@@ -1356,6 +1358,8 @@ local function placement(object)
   }
 end
 
+Gen4Ground.placement = placement
+
 -- The chunk store, opened once and read in ranges.
 --
 -- Not read whole: the packed geometry is 17.7 MB and a map needs a few chunks
@@ -1437,10 +1441,32 @@ function Gen4Ground:modelFor(land)
         -- correct shadows opaque on every existing cache.
         material = s.material,
         alpha = s.alpha,
+        -- THE CARTRIDGE'S OWN LIGHTING FLAG (Gen4ModelPack: no NORMAL in the
+        -- display list). On a cache that carries it, a shape without it is
+        -- LIT: Stark Mountain's floor (chunk 172, `criffp_lm52`) issues a
+        -- NORMAL before every vertex with light 0 on, yet its packed colours
+        -- run 0..255, and guessed "lightmapped" from them it drew as black
+        -- pits across the mountain. See Gen4Model's `lightKnown`.
+        unlit = s.unlit,
       }
     end
   end
   if #shapes == 0 then return nil end
+  -- whether this cache was written with the flag at all (any shape has it)
+  local terrain = self.terrain
+  if terrain.unlitKnown == nil then
+    local known = false
+    for _, c in pairs(terrain.chunks or {}) do
+      for _, sh in ipairs(type(c) == "table" and c.shapes or {}) do
+        if sh.unlit ~= nil then known = true; break end
+      end
+      if known then break end
+    end
+    rawset(terrain, "unlitKnown", known)
+  end
+  if terrain.unlitKnown then
+    for _, sh in ipairs(shapes) do sh.lightKnown = true end
+  end
   return Gen4Model.new({ name = ("chunk%d"):format(land),
                          posScale = record.posScale, shapes = shapes,
                          -- WHERE THE CHUNK'S SHAPES STAND.
@@ -1842,6 +1868,17 @@ function Gen4Ground:livePass(camX, camY, vw, vh, yCut)
   if pcy - 1 < y0 then y0 = pcy - 1 end
   if pcy + 1 > y1 then y1 = pcy + 1 end
 
+  -- THE DS'S DEPTH FOG (Gen4DepthFog). This pass's depth row is
+  -- -(sinP * y + cosP * (z - top - half)) / LIVE_DEPTH, a distance along the
+  -- camera's own axis, so the eye distance is the camera's at the feet plus
+  -- how far a fragment's row lies beyond theirs.
+  do
+    local datum = (spread and spread[2]) or 0
+    local cosP = self.heightScale or 0
+    local feetRel = feetZ - top - self.half
+    local dist = (self.camera and tonumber(self.camera.distance)) or 667
+    require("src.render.Gen4DepthFog").begin(self, 1, dist + sinP * datum + cosP * feetRel, LIVE_DEPTH)
+  end
   if self.drawAllChunks then x0, y0, x1, y1 = 0, 0, grid.width - 1, grid.height - 1 end
   for cy = y0, y1 do
     for cx = x0, x1 do
@@ -1973,6 +2010,7 @@ function Gen4Ground:livePass(camX, camY, vw, vh, yCut)
       Logger.warn("gen4 surf mount: %s", tostring(errM))
     end
   end
+  require("src.render.Gen4DepthFog").finish()
   return drawn
 end
 
@@ -2323,6 +2361,14 @@ function Gen4Ground:drawFree(vw, vh)
   local camCx = math.floor(view.x / px)
   local camCy = math.floor(view.z / px)
   local vp = view:matrix(tw, th)
+  -- THE DS'S DEPTH FOG (Gen4DepthFog), on this pass's own projection
+  do
+    local cfg = (view.mode == "field3d") and view.config or nil
+    local ortho = cfg and cfg.projection == "orthographic"
+    require("src.render.Gen4DepthFog").begin(self, ortho and 3 or 2,
+      ortho and (tonumber(cfg.near) or Gen4View.NEAR) or Gen4View.NEAR,
+      ortho and (tonumber(cfg.far) or Gen4View.FAR) or Gen4View.FAR)
+  end
 
   local g = love.graphics
   local previous = { g.getCanvas() }
@@ -2388,6 +2434,14 @@ function Gen4Ground:drawFree(vw, vh)
           end
         end
       end
+    end
+  end
+  -- THE DISTORTION WORLD'S NEXT FLOOR, drawn below this one (Gen4DistNeighbour)
+  if self.def and self.def.gen4DistWorld then
+    local okN, errN = pcall(function() require("src.render.Gen4DistNeighbour").draw(self, vp) end)
+    if not okN and not self.neighbourWarned then
+      self.neighbourWarned = true
+      Logger.warn("gen4 distortion world next floor: %s", tostring(errN))
     end
   end
   -- PLATINUM'S SURF MOUNT (Gen4SurfMount), with the world's depth
@@ -3284,6 +3338,7 @@ end
 -- have is a path that never reaches the close -- so a missed close costs one
 -- frame rather than the session.
 function Gen4Ground:endFree()
+  require("src.render.Gen4DepthFog").finish()
   if not Gen4Ground.freeOpen then return false end
   local g = love.graphics
   local previous = Gen4Ground.freePrevious
@@ -4200,7 +4255,20 @@ function Gen4Ground:clearCameraLine(v)
     local tx, ty = math.floor((sx - ox) / 16), math.floor((sz - oz) / 16)
     if tx ~= homeX or ty ~= homeY then
       local word = self:permissionWordAt(tx, ty)
-      if word and word >= 0x8000 and not Behaviors.isSurfable(word % 256) then
+      -- ...AND STANDS ON SOMETHING. A blocked cell with no ground under it is
+      -- the void past an edge, not a wall: reported from play in the
+      -- Distortion World, where third person "collides with the edge of the
+      -- islands and pushes in towards the character" and "locks to the width
+      -- of the walkable area" -- every cell off an island is blocked air.
+      local solid = word and word >= 0x8000 and not Behaviors.isSurfable(word % 256)
+      -- (the Distortion World's floors have height plates under every island
+      -- tile, so "no plate" there is exactly "air"; maps without plates, such
+      -- as Black and White's, keep the old rule)
+      if solid and self.def and self.def.gen4DistWorld and self.heightsAt then
+        local hs = self:heightsAt(tx, ty)
+        if not hs or #hs == 0 then solid = false end
+      end
+      if solid then
         local top = self:groundY(tx * 16 + 8, ty * 16 + 8) + Gen4Ground.CAMERA_OBSTACLE
         if sy < top then hit = d break end
       end

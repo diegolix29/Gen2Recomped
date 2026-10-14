@@ -154,7 +154,27 @@ function C.build(x)
     trades = arc and Gen4Trades.all(arc, names, 13) or nil
     if trades then trades.source = "ROM:/a/1/1/2 (13 records of 84 bytes) + bank 200" end
   end
+  -- THE POKEDEX'S HEIGHTS AND WEIGHTS (dex_mon_measures.c): /a/0/7/4
+  -- (NARC_application_zukanlist_zkn_data_zukan_data) member 0 is one u32 per
+  -- species in decimetres, member 1 the weights in hectograms, 494 rows from
+  -- species 0. The Lake of Rage's Magikarp length record measures by them.
+  local dexHeights, dexWeights
+  do
+    local arc = x:archiveAt("/a/0/7/4")
+    local function table32(i)
+      local b = arc and arc:get(i)
+      if not b then return nil end
+      local t = {}
+      for k = 0, math.floor(#b / 4) - 1 do
+        local p, q, r, w = b:byte(k * 4 + 1, k * 4 + 4)
+        t[k] = p + q * 256 + r * 65536 + w * 16777216
+      end
+      return t
+    end
+    dexHeights, dexWeights = table32(0), table32(1)
+  end
   local constants = {
+    dexHeights = dexHeights, dexWeights = dexWeights,
     gen4Trades = trades,
     gen = 4, generation = 4, family = "hgss",
     experienceTables = curves,

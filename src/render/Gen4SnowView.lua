@@ -58,6 +58,9 @@ V.WEATHER = {
           inDelay = 8, inFog = 254, outDelay = 0, outFog = 127, warm = { 2, 3 }, flakes = "heavyFlakes" },
   [7] = { ramp = { 1, 30, 10, 1, -4, 2, 3 }, steady = { 10, 1, 10, 1, -4, 2, 3 }, out = { 0, 12, 4, -4 },
           inDelay = 16, inFog = 127, outDelay = 20, outFog = 127, warm = { 2, 2 }, flakes = "snowFlakes", layer = true },
+  -- SLOW_ASHFALL (ov5_021DA244): Stark Mountain's ash, with its own BG2 layer
+  [9] = { ramp = { 1, 12, 1, 6, -1, 4, 0 }, steady = { 1, 6, 1, 6, -1, 4, 0 }, out = { 0, 12, 1, -1 },
+          inDelay = 0, inFog = 127, outDelay = 9, outFog = 127, warm = { 2, 16 }, flakes = "ashFlakes", ash = true },
 }
 
 -- ------------------------------------------------------------------ pool
@@ -258,8 +261,50 @@ local function updateBlizzard(st, p)
   return true
 end
 
-local SPAWN = { [5] = spawnSnow, [6] = spawnHeavy, [7] = spawnBlizzard }
-local UPDATE = { [5] = updateSnow, [6] = updateHeavy, [7] = updateBlizzard }
+-- ----------------------------------------------------- SLOW_ASHFALL (9)
+
+-- ov5_021DA5A0
+local function spawnAsh(st, count)
+  if st.b1 == 1 then count = count * 2 end
+  for i = 0, count - 1 do
+    local p = alloc(st)
+    if not p then break end
+    p.frame = rng(4)
+    p.t = 0
+    p.linger = 10 + rng(20)
+    p.x = -32 + rng(414)
+    if st.b1 == 1 and i >= count / 2 then
+      p.y = -40 - rng(20)
+    else
+      p.y = -8 - rng(20)
+    end
+    wrap(p)
+  end
+end
+
+-- ov5_021DA6BC: a pixel down a frame; gone off the bottom, or (fading out)
+-- when its linger runs down
+local function updateAsh(st, p)
+  if p.t >= 1 then
+    p.y = p.y + 1
+    p.t = 0
+    wrap(p)
+  end
+  p.t = p.t + 1
+  if st.b5 == 1 then
+    p.linger = p.linger - 1
+    if p.linger <= 0 then st.b1 = 1; return false end
+  end
+  local yi = math.floor(p.y)
+  if (yi < -284 and yi > -296) or (yi > 212 and yi < 232) then
+    st.b1 = 1
+    return false
+  end
+  return true
+end
+
+local SPAWN = { [5] = spawnSnow, [6] = spawnHeavy, [7] = spawnBlizzard, [9] = spawnAsh }
+local UPDATE = { [5] = updateSnow, [6] = updateHeavy, [7] = updateBlizzard, [9] = updateAsh }
 
 -- ov5_021D6FF0: head to tail, a flake may remove itself
 local function updateAll(st)
@@ -357,6 +402,7 @@ function V.tick(camDx, camDy)
       st.b0 = w.outDelay
       st.fog = w.outFog
       st.layer = false
+      if st.id == 9 then st.b5 = 1 end
       st.state = 4
     end
   elseif st.state == 4 then
@@ -383,6 +429,19 @@ function V.tick(camDx, camDy)
     end
   end
   if st.id == 7 then st.bg = (st.bg + 12) % 256 end
+  -- the ash layer (ov5_021DA244's tail): it rides the camera, slides 2/5 of a
+  -- pixel down a frame, and every 31st frame jumps 32 to the right
+  if st.id == 9 then
+    local function trunc(v) return v < 0 and math.ceil(v) or math.floor(v) end
+    local dx = trunc((camDx or 0) * V.CAM_X)
+    local dy = trunc((camDy or 0) * V.CAM_Y)
+    st.ashX = ((st.ashX or 0) + dx) % 256
+    st.ashY = (st.ashY or 0) - dy * 5
+    if st.ashY < 0 then st.ashY = st.ashY + 2048 end
+    st.ashT = (st.ashT or 0) + 2
+    if st.ashT > 60 then st.ashT = 0; st.ashX = (st.ashX + 32) % 256 end
+    st.ashY = (st.ashY + 2) % 2048
+  end
 end
 
 -- -------------------------------------------------------------- drawing
@@ -426,6 +485,14 @@ function V.draw(w, h)
     if img then
       local n = st.bg
       local q = g.newQuad(2 * n - left / s, -n, w / s, h / s, 256, 256)
+      g.draw(img, q, 0, 0, 0, s, s)
+    end
+  end
+  -- the ash on BG2, shown from the steady state until the fade-out begins
+  if cfg.ash and (st.state == 3) and not st.stopping then
+    local img = image(rec.ashLayer)
+    if img then
+      local q = g.newQuad((st.ashX or 0) - left / s, -math.floor((st.ashY or 0) / 5), w / s, h / s, 256, 256)
       g.draw(img, q, 0, 0, 0, s, s)
     end
   end

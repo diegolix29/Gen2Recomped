@@ -1231,6 +1231,20 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   -- pokered keeps STRENGTH across a same-map battle return (EnterMap skips
   -- the reset when BIT_BATTLE_OVER_OR_BLACKOUT is set).
   self.strengthActive = false
+  -- PLATINUM / HGSS keep the bit in the SAVE (SystemFlag_HandleStrengthActive)
+  -- and FieldSystem_InitFlagsWarp / _InitFlagsOnMapChange clear it on every
+  -- map change -- but a game CONTINUED from a save comes back with it, and
+  -- the push (field_control.c) reads the save. Reported from play: saved
+  -- after using Strength, reloaded, and every boulder answered with the
+  -- "already active" text while refusing to move -- the boulder script read
+  -- the saved bit, the pusher only the field's.
+  if GameVersion.isGen4() and Game.save and Game.save.gen4FieldMoveFlags then
+    if opts and opts.via == "boot" then
+      self.strengthActive = Game.save.gen4FieldMoveFlags.strength and true or false
+    else
+      Game.save.gen4FieldMoveFlags.strength = nil
+    end
+  end
   -- Cut trees grow back when the map reloads (like the original)
   if self.cutBlocks and self.cutBlocks[mapId] then
     for _, c in ipairs(self.cutBlocks[mapId]) do
@@ -1631,6 +1645,8 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
   -- After rebuildEntities, so the map's own cast is already there to be
   -- adopted when the map owns a real object for him.
   require("src.world.Gen4Follower").onMapEntered(Game, self)
+  -- HGSS's walking Pokemon (src/world/HgssFollowMon.lua)
+  require("src.world.HgssFollowMon").onMapEntered(Game, self)
 
   -- opts.keepMusic: the Oak-escort warp keeps MUSIC_MEET_PROF_OAK
   -- playing into the lab (BIT_NO_MAP_MUSIC in wStatusFlags7);
@@ -3282,6 +3298,14 @@ function OverworldState:update(dt)
   if self.map and self.map.def and self.map.def.header then
     require("src.world.Gen4SurfMount").tick(self)
   end
+  -- ...and HeartGold / SoulSilver's Bug-Catching Contest clock and endings
+  if Game.save and Game.save.g2BugContest and Game.save.g2BugContest.hgss then
+    local okB, errB = pcall(require("src.world.HgssBugContest").update, self, dt)
+    if not okB and not self.hgssContestWarned then
+      self.hgssContestWarned = true
+      Logger.warn("hgss bug contest: %s", tostring(errB))
+    end
+  end
   -- ...and Black/White's queued arrival script (op 0x021)
   if self.gen5QueuedEntry then
     local okQ, errQ = pcall(require("src.world.Gen5PostWarp").update, self)
@@ -3861,6 +3885,7 @@ function OverworldState:update(dt)
   end
   require("src.world.PikachuFollower").update(Game, self)
   require("src.world.Gen4Follower").update(Game, self)
+  require("src.world.HgssFollowMon").update(Game, self)
 
   for _, g in ipairs(self.ghosts) do
     -- the same reasoning as ghostCell: a ghost that names no neighbour is
@@ -4240,6 +4265,25 @@ function OverworldState:checkGen4EntranceWarp(dir)
     local same = here and ahead and here.def and ahead.def
                  and (here.def.extentOf or here.def.index) == (ahead.def.extentOf or ahead.def.index)
     if ahead and not same then self:takeWarp(ahead.def) return true end
+    -- A DOORWAY A TILE TO THE SIDE OF THE PRESS. 63 of Black's 271 kind-2
+    -- warps have no walkable cell beside them at all -- the Champion's room
+    -- (Z144) puts the way into N's Castle at (14, 0), the corner above a
+    -- corridor that runs 15..17, so no press ever landed on it and the story
+    -- stopped there. Taken from the wall cell next to the one pressed, and
+    -- only for a warp nothing can stand beside.
+    if not ahead then
+      local function open(x, y) return map:inBounds(x, y) and not map:gen4TerrainBlocked(x, y) end
+      local sx, sy = (dir == "up" or dir == "down") and 1 or 0, (dir == "left" or dir == "right") and 1 or 0
+      for _, k in ipairs({ -1, 1 }) do
+        local wx, wy = tx + sx * k, ty + sy * k
+        local side = map:warpAtCell(wx, wy)
+        if side and side.def and not (open(wx + 1, wy) or open(wx - 1, wy)
+                                      or open(wx, wy + 1) or open(wx, wy - 1)) then
+          self:takeWarp(side.def)
+          return true
+        end
+      end
+    end
     -- A DOOR SET BACK FROM THE WATER: Dragonspiral Tower's entrance (Z206's
     -- warp to Z207, kind 2) stands one solid cell beyond the lake's last
     -- water row, so a surfer pressing into the wall at the water's edge
@@ -5037,6 +5081,8 @@ function OverworldState:handleInput()
       -- worth nothing at all: no step, no turn, and no bump -- the cartridge
       -- plays no collision sound on that path either.
       if self:checkAcroSideJump(dir) then return "jumped" end
+      -- PLATINUM'S BIKE RAMPS (Gen4BikeRamp): on foot or too slow, a wall
+      if require("src.world.Gen4BikeRamp").blocks(self, dir) then return nil end
       if Collision.railHolds(self.map, self.player, dir) then return nil end
       local result, why =
         self.player:tryMove(dir, self.map, self.cast or self.entities)
@@ -6898,6 +6944,10 @@ function OverworldState:interact()
       -- after landing -- exactly when you turn round to face it (#407).
       -- talk() lands the follower on its cell first.
       require("src.world.PikachuFollower").talk(Game, self, npc)
+    elseif npc.hgssFollowMon then
+      -- HGSS's walking Pokemon: std 9700's face-the-player and its talk
+      -- rules, answered mid-step like the Pikachu above
+      if not npc.hidden then require("src.world.HgssFollowMon").talk(Game, self, npc) end
     elseif not npc.moving then
       self:talkTo(npc)
     end
@@ -9015,6 +9065,19 @@ end
 -- for them already agree with the cartridge's first two rungs.
 function OverworldState:bikeFrames()
   local p = self.player
+  -- PLATINUM'S TWO GEARS (pokeplatinum src/player_move.c). Third gear rides
+  -- WALK_SLIGHTLY_FASTER, 3 field frames a tile; fourth picks its action off
+  -- the speed it has built (PlayerAvatar_GetMovementActionFromSpeed):
+  -- SLIGHTLY_FAST 6, FAST 4, SLIGHTLY_FASTER 3, FASTER 2 -- doubled here for
+  -- the engine's 60 frames to the field's 30. Reported from play: the bike
+  -- "cant change the speed ... like you can in platinum".
+  if p and p.gen4Gear ~= nil and self.map and self.map.def and self.map.def.generation == 4 then
+    if p.gen4Gear == 1 then
+      local GEAR4 = { [0] = 12, 8, 6, 4 }
+      return GEAR4[math.max(0, math.min(3, math.floor(p.gen4Speed or 0)))]
+    end
+    return 6
+  end
   if not (p and (p.machBike or p.acroBike)) then return nil end
   local rules = self:bikeRules()
   local frames = rules and rules.speedFrames
@@ -9126,8 +9189,13 @@ function OverworldState:updateGen4Bike()
   -- WITHOUT THIS THE SLOPES WOULD BE IMPASSABLE RATHER THAN HARD -- the gear
   -- that can bank speed would be unreachable, which is a worse bug than the
   -- one being fixed.
-  if input and input.wasPressed and input:wasPressed("b") then
+  if input and input.wasPressed and input:wasPressed("b")
+     and not require("src.world.Gen4BikeRamp").isRamp(map, p.cellX, p.cellY) then
     p.gen4Gear = (p.gen4Gear == 1) and 0 or 1
+    -- SEQ_SE_DP_GEAR up into fourth, SEQ_SE_DP_GEAR2 down into third
+    pcall(function()
+      require("src.core.Sound").play(G.data, p.gen4Gear == 1 and "SEQ_SE_DP_GEAR" or "SEQ_SE_DP_GEAR2")
+    end)
     -- A gear change is not riding. Carrying a run across it would make the
     -- slow gear a way to bank speed, which is the one thing it cannot do.
     p.gen4Speed = 0
@@ -9471,6 +9539,8 @@ function OverworldState:checkGen4BikeSlope()
 end
 
 function OverworldState:checkMuddySlope()
+  -- PLATINUM'S BIKE RAMPS: standing on one launches you (Gen4BikeRamp)
+  if require("src.world.Gen4BikeRamp").arrive(self) then return true end
   if self:checkGen4BikeSlope() then return true end
   if not GameVersion.isGen3() then return false end
   local map, p = self.map, self.player
@@ -12507,6 +12577,7 @@ function OverworldState:onStepComplete()
   self.todSteps = (self.todSteps or 0) + 1
   -- UpdatePikachuHappinessAndMood rides the step counter (poison.asm)
   require("src.world.PikachuFollower").onStep(Game.save)
+  require("src.world.HgssFollowMon").onStep(Game, self)
   -- Original Gen 2 friendship shares the egg step counter in stepEggs.
   -- Keep the existing walking rule for other datasets.
   if GameVersion.get()=="emerald" then
@@ -12868,6 +12939,23 @@ function OverworldState:onStepComplete()
   -- park rolls its OWN table (ContestMons) and ignores the map's wildmons
   -- entirely.  Guarded on the run being live, so visiting the park outside the
   -- contest still rolls the ordinary National Park slots.
+  -- HEARTGOLD / SOULSILVER'S CONTEST: the park's land tiles roll the
+  -- contest table while its clock runs (src/world/HgssBugContest)
+  do
+    local HBC = require("src.world.HgssBugContest")
+    if HBC.running(Game.save) and self.map.id == HBC.CONTEST_MAP then
+      local battle = HBC.encounter(self)
+      if battle then
+        battle.onFinish = function(result)
+          local s = HBC.state(Game.save)
+          if s then s.afterBattle = result end
+          self:afterBattle(result, battle)
+        end
+        self:pushBattle(battle)
+      end
+      return
+    end
+  end
   local BugContest = require("src.world.BugContest")
   if BugContest.active(Game.save)
      and self.map.id == BugContest.contestMap()

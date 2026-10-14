@@ -930,6 +930,17 @@ function Commands.g4_warp(ctx, header, x, z, direction)
   if def and def.gen5 and def.width and (wx >= def.width or wz >= def.height) then
     wx, wz = wx - (def.originX or 0), wz - (def.originY or 0)
   end
+  -- THE DISTORTION WORLD'S FLOORS are this port's maps cut out of the floor's
+  -- own grid at the floor's offset, and a script names the floor's tile:
+  -- Spear Pillar's "Warp MAP_HEADER_DISTORTION_WORLD_1F, 55, 40" is 1F's
+  -- (55, 40), the map's (34, 30). Taken as the map's own, the player
+  -- arrived in the air beside the island -- reported from play as "when
+  -- first entering the distorted world via the story it has you floating in
+  -- the middle of the air".
+  if def and def.gen4DistWorld then
+    local okF, m = pcall(function() return require("src.world.Gen4DistSurface").floorFor(def) end)
+    if okF and m then wx, wz = wx - (m.offsetX or 0), wz - (m.offsetZ or 0) end
+  end
   return Commands.warp(ctx, mapId, wx, wz, DIRECTION[valueOf(ctx, direction)])
 end
 
@@ -1067,16 +1078,142 @@ end
 function Commands.g4_bw_queue_entry(ctx, n)
   local ow = ctx.overworld
   if ow then
-    ow.gen5QueuedEntry = { entry = math.floor(valueOf(ctx, n) or 0), from = ow.map and ow.map.id }
+    ow.gen5QueuedEntry = { entry = math.floor(valueOf(ctx, n) or 0), from = ow.map and ow.map.id,
+                           sameMap = ow.gen5FieldReturn or nil }
   end
 end
 
--- BLACK / WHITE 0x0D8 (0x2021288): TM01..HM06 are items 328..425, TM93..95
--- are 618..620
-function Commands.g4_bw_is_tmhm(ctx, value, var)
-  local v = math.floor(valueOf(ctx, value) or 0)
-  local yes = (v >= 328 and v <= 425) or (v >= 618 and v <= 620)
+-- BLACK / WHITE 0x0D8 <n, var>: var = whether condition n holds.  The ten
+-- rows of overlay 10's table at 0x2170FB0 (0x2159F04 finds a row by n,
+-- 0x2159F54 compares): event var 0x4031 + n against its own value
+Commands.BW_CONDITIONS = {
+  [0] = { 0x4031, 0x1220 }, { 0x4032, 0x0224 }, { 0x4033, 0x0206 }, { 0x4034, 0x1209 }, { 0x4035, 0x0316 },
+  { 0x4036, 0x1227 }, { 0x4037, 0x0830 }, { 0x4038, 0x0408 }, { 0x4039, 0x0120 }, { 0x403A, 0x1028 },
+}
+-- BLACK / WHITE 0x156 <kind>: the game clear (see Gen5ScriptLink). The
+-- ending's own art is not imported, so kind 0 records the clear and puts the
+-- player back in their room, where the game goes on after the credits
+Commands.BW_HOME = { map = "Z391", x = 5, y = 6 }
+function Commands.g4_bw_game_clear(ctx, kind)
+  local k = math.floor(valueOf(ctx, kind) or 0)
+  if ctx.save then
+    ctx.save.gen5GameClear = true
+    if k == 1 then ctx.save.gen5ChampionClear = true end
+  end
+  Logger.info("gen5 game clear (kind %d)", k)
+  if k == 0 then
+    local G = ctx.game
+    local field = G and G.data and G.data.field
+    local boot = field and field.boot or field
+    local home = Commands.BW_HOME
+    Commands.warp(ctx, (boot and boot.startMap) or home.map, (boot and boot.startX) or home.x,
+                  (boot and boot.startY) or home.y, "down")
+  end
+end
+
+-- BLACK / WHITE 0x17B <var>: 1 unless the last battle was lost
+function Commands.g4_bw_battle_ok(ctx, var)
+  setVar(ctx.save, tonumber(var), ctx.lastBattleResult == "lose" and 0 or 1)
+end
+
+-- BLACK / WHITE 0x121 <var>: the party members able to battle
+function Commands.g4_bw_party_able(ctx, var)
+  local Party = require("src.pokemon.Party")
+  local n = 0
+  for _, mon in ipairs((ctx.save and ctx.save.party) or {}) do
+    if (mon.hp or 0) > 0 and not Party.isEgg(mon) then n = n + 1 end
+  end
+  setVar(ctx.save, tonumber(var), n)
+end
+
+-- BLACK / WHITE 0x245 <mode, arg>: N'S CASTLE'S DRAGON INTO THE PARTY (Z278,
+-- M0556 S187F). The dragon caught in the throne room goes to the Box when the
+-- party is full, and N needs it in the party for his battle:
+--   mode 0 <var>   1 when the dragon is already in the party, or there is
+--                  room for it
+--   mode 1         the dragon from the Box into the party
+--   mode 2 <var>   the party Pokemon in slot `var` to the Box, the dragon in
+--                  its place ("Send which Pokemon back to your Box?")
+-- Reshiram on Black, Zekrom on White; if it is nowhere at all (a save that
+-- never caught it) mode 1 gives one at level 50, the battle's own level.
+Commands.BW_LEGEND = { black = 643, white = 644 }
+local function legendSpecies()
+  local GV = require("src.core.GameVersion")
+  return Commands.BW_LEGEND[GV.get()] or Commands.BW_LEGEND.black
+end
+local function legendInBoxes(save, species)
+  for b, box in pairs(save.boxes or {}) do
+    for slot, mon in pairs(box) do
+      if type(mon) == "table" and tonumber(mon.species) == species then return b, slot, mon end
+    end
+  end
+end
+function Commands.g4_bw_legend(ctx, mode, arg)
+  local save = ctx.save
+  if not save then return end
+  save.party = save.party or {}
+  local party, species = save.party, legendSpecies()
+  local inParty = false
+  for _, mon in ipairs(party) do if tonumber(mon.species) == species then inParty = true end end
+  local m = math.floor(valueOf(ctx, mode) or 0)
+  if m == 0 then
+    setVar(save, tonumber(arg), (inParty or #party < 6) and 1 or 0)
+    return
+  end
+  if inParty then return end
+  local b, slot, mon = legendInBoxes(save, species)
+  if m == 2 then
+    local pick = math.floor(valueOf(ctx, arg) or -1) + 1
+    local out = party[pick]
+    if not (out and mon) then return end
+    save.boxes[b][slot] = out
+    party[pick] = mon
+    return
+  end
+  if mon and #party < 6 then
+    save.boxes[b][slot] = nil
+    party[#party + 1] = mon
+  elseif not mon then
+    Commands.g4_give_pokemon(ctx, species, 50, 0, nil)
+  end
+end
+
+function Commands.g4_bw_condition(ctx, n, var)
+  local row = Commands.BW_CONDITIONS[math.floor(valueOf(ctx, n) or -1)]
+  local yes = row and getVar(ctx.save, row[1]) == row[2]
   setVar(ctx.save, tonumber(var), yes and 1 or 0)
+end
+
+-- BLACK / WHITE 0x1A2: an Elite Four room's lift. The platform carries the
+-- player up their own column, past the solid rows, to the first floor tile
+-- that has floor beyond it (the lone tile in the shaft, (15, 16), does not)
+function Commands.g4_bw_e4_lift(ctx, n)
+  local ow = ctx.overworld
+  local map = ow and ow.map
+  local p = ow and ow.player
+  if not (map and p) then return end
+  local x = p.cellX
+  local function open(cx, cy) return cy >= 0 and map:isWalkableCell(cx, cy) end
+  local y, seenSolid = p.cellY - 1, false
+  while y > 0 do
+    if not open(x, y) then seenSolid = true
+    elseif seenSolid and open(x, y - 1) then break end
+    y = y - 1
+  end
+  if y <= 0 then return end
+  return Commands.warp(ctx, map.id, x, y, "up")
+end
+
+-- OPELUCID GYM (Gen5DragonGym): 0x196, 0x19A <statue, side>, 0x199 <statue>
+function Commands.g4_bw_dragon_init(ctx)
+  require("src.world.Gen5DragonGym").apply(ctx.overworld, ctx.save)
+end
+function Commands.g4_bw_dragon_flip(ctx, statue, side)
+  require("src.world.Gen5DragonGym").flip(ctx.save, math.floor(valueOf(ctx, statue) or 0),
+                                          math.floor(valueOf(ctx, side) or 0))
+end
+function Commands.g4_bw_dragon_settle(ctx, statue)
+  require("src.world.Gen5DragonGym").settle(ctx.overworld, ctx.save, math.floor(valueOf(ctx, statue) or 0))
 end
 
 function Commands.g4_bw_lift_move(ctx, n)
@@ -1837,7 +1974,14 @@ function Commands.g4_wait_animation(ctx, tag)
   ctx.runner:yield()
 end
 Commands.g4_wait_fade = noop
-Commands.g4_return_to_field = noop
+-- ...a no-op here (the battle has already handed the field back), except that
+-- on Black / White it is the field RELOADING: a 0x021 queued after it (N's
+-- Castle, M0556 S09D8: `returntofield; 40B6 = 4; queue entry 15; return`)
+-- runs on that reload, with no warp to wait for (Gen5PostWarp)
+function Commands.g4_return_to_field(ctx)
+  local ow = ctx and ctx.overworld
+  if ow and ow.map and ow.map.def and ow.map.def.gen5 then ow.gen5FieldReturn = true end
+end
 Commands.g4_menu_close = noop
 
 function Commands.g4_fanfare(ctx, songId)
@@ -2148,8 +2292,9 @@ end
 
 -- `<destVar> <canExitWithB> <initialCursorPos> <bank>`.  `bank` is nil for a
 -- map's own script, which is resolved per-map at the moment the line is read.
-function Commands.g4_menu_init(ctx, destVar, canExitWithB, cursor, bank)
+function Commands.g4_menu_init(ctx, destVar, canExitWithB, cursor, bank, anchorX, anchorY)
   ctx.g4Menu = {
+    anchorX = tonumber(anchorX), anchorY = tonumber(anchorY),
     destVar = destVar,
     cancelable = (tonumber(canExitWithB) or 0) ~= 0,
     cursor = (tonumber(cursor) or 0) + 1,
@@ -2174,6 +2319,22 @@ local function menuLine(ctx, entry)
   end
   local data = ctx.game and ctx.game.data
   local text = data and data.text and data.text[label]
+  -- `{CURSOR_X n}` moves the printer to n pixels from the row's start -- the
+  -- Game Corner's "50 Coins{CURSOR_X 60}$1,000" is a price column -- so the
+  -- row is padded out to it rather than the two halves run together
+  if type(text) == "string" and text:find("{CURSOR_X", 1, true) then
+    local okF, Font = pcall(require, "src.render.Font")
+    text = text:gsub("^(.-){CURSOR_X (%d+)}", function(before, px)
+      local left = Commands.gen4Markup and Commands.gen4Markup(before, ctx.game) or before
+      local want = tonumber(px) or 0
+      local guard = 0
+      while okF and Font.width and Font.width(left .. " ") <= want and guard < 40 do
+        left, guard = left .. " ", guard + 1
+      end
+      if guard == 0 then left = left .. " " end
+      return left
+    end, 1)
+  end
   text = Commands.gen4Markup and Commands.gen4Markup(text, ctx.game) or text
   -- A line the cache has no string for keeps the label, which names the bank
   -- and the entry: a menu of blank rows says nothing, and a menu that reads
@@ -2226,14 +2387,38 @@ function Commands.g4_menu_show(ctx)
       pick(row.value)
     end }
   end
-  ctx.game.stack:push(Menu.new(ctx.game, items, {
+  -- HGSS draws the window at the script's own tile (x, y), the frame one tile
+  -- outside it (ov01_021EDC84 clears both edge-anchor bits at init), so the
+  -- Game Corner's menu at (1, 1) sits clear of the coin and money boxes on
+  -- the right; Platinum keeps this port's own placement
+  local tx, ty
+  if menu.anchorX and menu.anchorY
+     and require("src.import.Gen4ScriptBands").family == "hgss" then
+    tx, ty = math.max(0, menu.anchorX - 1), math.max(0, menu.anchorY - 1)
+  end
+  local menuState_ = Menu.new(ctx.game, items, {
+    tx = tx, ty = ty,
     -- `canExitWithB == 0` means B does nothing at all -- the player is made to
     -- choose.  17 of the cartridge's 186 menus are that kind.
     cancelable = menu.cancelable,
     onCancel = menu.cancelable and function() pick(MENU_CANCEL) end or nil,
     index = menu.cursor,
     onHighlight = menu.onHighlight,
-  }))
+  })
+  -- placed in DS tiles, so drawn on the DS surface rather than centred on it
+  -- as Game Boy furniture (Game:draw's classicOffset)
+  if tx then
+    menuState_.uiSize = function() return require("src.ui.Theme").uiSize() end
+    -- and as wide as its widest row in PIXELS (ov01_021EDC84: the text width
+    -- rounded up to a tile), plus the cursor's column and the frame
+    local okF, Font = pcall(require, "src.render.Font")
+    if okF and Font.width then
+      local widest = 0
+      for _, it in ipairs(items) do widest = math.max(widest, Font.width(it.label or "")) end
+      menuState_.tw = math.max(4, math.ceil(widest / 8) + 3)
+    end
+  end
+  ctx.game.stack:push(menuState_)
   runner:yield()
 end
 
@@ -2656,6 +2841,7 @@ function Commands.g4_catching_tutorial(ctx)
   local demoGame = setmetatable({ save = save }, { __index = game })
   local battle = require("src.battle.BattleState").newWild(demoGame, 399, 2)
   battle:makeDudeDemo(save.player.name)
+  battle.counterpartBack = true
   battle.demoBallCount = "x20"
   battle.onFinish = function()
     if ctx.runner then ctx.runner:resume() end
@@ -2665,6 +2851,95 @@ function Commands.g4_catching_tutorial(ctx)
   if ctx.runner then ctx.runner:yield() end
 end
 Commands.meta.g4_catching_tutorial = { foreground = true, blocking = true }
+
+-- HEARTGOLD / SOULSILVER `CasinoGame`: VOLTORB FLIP until the player quits
+function Commands.g4_casino_game(ctx)
+  local game = ctx.game
+  local VF = require("src.ui.HgssVoltorbFlip")
+  if not VF.available(game) then
+    Logger.warn("gen4 casino: Voltorb Flip's art is not in this cache (re-import HeartGold / "
+                .. "SoulSilver: extractVoltorbFlip) -- the machine does nothing")
+    return
+  end
+  game.stack:push(VF.new(game, function()
+    if ctx.runner then ctx.runner:resume() end
+  end))
+  if ctx.runner then ctx.runner:yield() end
+end
+Commands.meta.g4_casino_game = { foreground = true, blocking = true }
+
+-- HEARTGOLD / SOULSILVER'S BUG-CATCHING CONTEST (src/world/HgssBugContest.lua;
+-- pokeheartgold scrcmd_pokemon_misc.c 1455-1551)
+local function BC() return require("src.world.HgssBugContest") end
+local function setBuf(ctx, slot, text)
+  if not ctx.game then return end
+  ctx.game.stringBuffers = ctx.game.stringBuffers or {}
+  ctx.game.stringBuffers[(tonumber(slot) or 0) + 1] = tostring(text or "")
+end
+
+-- 785 <action, weekday>: 0 starts the run, anything else ends it
+function Commands.g4_bug_contest_action(ctx, action, weekday)
+  if math.floor(valueOf(ctx, action) or 0) == 0 then
+    BC().start(ctx.save, math.floor(valueOf(ctx, weekday) or 0))
+  else
+    BC().finish(ctx.save)
+  end
+end
+
+-- 786 <place>: the entrant at that place -- the player's name, or the NPC's
+-- name (msg_0246 78 + id) and class; the species and the score
+function Commands.g4_bug_contest_winner(ctx, place)
+  local s = BC().state(ctx.save)
+  if not (s and s.ranking) then return end
+  local p = math.floor(valueOf(ctx, place) or 0)
+  local c = s.all[s.ranking[p + 1]]
+  if not c then return end
+  local text = ctx.game.data and ctx.game.data.text or {}
+  if p == s.placement then
+    setBuf(ctx, 0, ctx.save.player and ctx.save.player.name or "")
+  else
+    setBuf(ctx, 0, text[("TEXT_B0246_%05d"):format(78 + c.id)] or "")
+    setBuf(ctx, 2, BC().CLASSES[c.id] or "")
+  end
+  Commands.g4_buffer(ctx, 1, "species", c.species)
+  setBuf(ctx, 3, tostring(c.score))
+end
+
+-- 787 <varPlacement, varPrize, varSpecies>
+function Commands.g4_bug_contest_judge(ctx, vPlace, vPrize, vSpecies)
+  local place, prize, species = BC().judge(ctx.save)
+  setVar(ctx.save, tonumber(vPlace), place or 3)
+  setVar(ctx.save, tonumber(vPrize), prize or 295)
+  setVar(ctx.save, tonumber(vSpecies), species or 0)
+end
+
+-- 788 <slot, varOut>: the caught Pokemon's name; 1 when it goes to the PC
+function Commands.g4_bug_contest_mon_nick(ctx, slot, varOut)
+  local s = BC().state(ctx.save)
+  local mon = s and s.caught
+  if not mon then setVar(ctx.save, tonumber(varOut), 0) return end
+  local name = mon.nickname or mon.name
+  if not name then
+    local def = ctx.game.data and ctx.game.data.pokemon and ctx.game.data.pokemon[tonumber(mon.species)]
+    name = def and def.name or ""
+  end
+  setBuf(ctx, slot, name)
+  setVar(ctx.save, tonumber(varOut), (s.partyCount or 0) >= 6 and 1 or 0)
+end
+
+-- 789 <slot>: the minutes left, never below 1
+function Commands.g4_bug_contest_time_left(ctx, slot)
+  setBuf(ctx, valueOf(ctx, slot), tostring(BC().minutesLeft(ctx.save)))
+end
+
+-- 790 <id, varOut>: whether NPC entrant `id` is in this run
+function Commands.g4_bug_contest_registered(ctx, id, varOut)
+  local s = BC().state(ctx.save)
+  local want = math.floor(valueOf(ctx, id) or -1)
+  local yes = 0
+  for _, c in ipairs(s and s.contestants or {}) do if c.id == want then yes = 1 end end
+  setVar(ctx.save, tonumber(varOut), yes)
+end
 
 -- HEARTGOLD / SOULSILVER'S DEMONSTRATION, Route 29: BattleSetup_New_Tutorial
 -- (battle_setup.c). The player's side is the friend -- the name is bank 445
@@ -2684,6 +2959,7 @@ function Commands.g4_hgss_catching_tutorial(ctx)
   local demoGame = setmetatable({ save = save }, { __index = game })
   local battle = require("src.battle.BattleState").newWild(demoGame, 19, 2)
   battle:makeDudeDemo(save.player.name)
+  battle.counterpartBack = true
   battle.demoBallCount = "x20"
   battle.onFinish = function()
     if ctx.runner then ctx.runner:resume() end
@@ -4526,6 +4802,11 @@ end
 function Commands.g4_set_flag_var(ctx, operand)
   ctx.save.flags = ctx.save.flags or {}
   ctx.save.flags[('FLAG_G4_%04X'):format(getVar(ctx.save,operand))] = true
+end
+
+function Commands.g4_clear_flag_var(ctx, operand)
+  ctx.save.flags = ctx.save.flags or {}
+  ctx.save.flags[('FLAG_G4_%04X'):format(getVar(ctx.save,operand))] = nil
 end
 
 function Commands.g4_open_bag(ctx, mode)
@@ -7558,6 +7839,153 @@ function Commands.g4_coin_window(ctx, which, left, top)
     ow.gen4CoinWindow = MW.coinPanelFor(ctx.game, valueOf(ctx, left), valueOf(ctx, top))
   elseif ow.gen4CoinWindow then
     ow.gen4CoinWindow = MW.coinPanelFor(ctx.game, ow.gen4CoinWindow.left, ow.gen4CoinWindow.top)
+  end
+end
+
+-- HGSS's POINTS BOX (overlay_22.c ScrCmd_116 / 117 / 118 -> ov01_021EEC00 /
+-- EEC68 / EEC7C): a 10 x 2 window at (x, y) holding, by `kind`, the coins
+-- (msg_0191 #193), the Battle Points (#220) or the Pokeathlon's athlete points
+-- (#223), the number in five space-padded digits right-aligned in 80 px --
+-- Platinum's coin window in all but the bank and the three kinds.
+Commands.HGSS_POINTS = { [0] = 193, [1] = 220, [2] = 223 }
+function Commands.g4_points_window(ctx, which, kind, left, top)
+  local ow = ctx.overworld
+  if not ow then return end
+  if which == "hide" then ow.gen4CoinWindow = nil return end
+  local was = ow.gen4CoinWindow
+  if which == "update" and not was then return end
+  local k = math.floor(valueOf(ctx, kind) or 0)
+  local save = ctx.save or {}
+  local n
+  if k == 1 then n = require("src.pokemon.Gen4BattleTower").bp(save)
+  elseif k == 2 then n = tonumber(save.hgssAthletePoints) or 0
+  else n = GC().coins(save) end
+  local digits = tostring(math.floor(n))
+  local amount = (" "):rep(math.max(0, 5 - #digits)) .. digits
+  local game = ctx.game or {}
+  local saved = game.stringBuffers and game.stringBuffers[1]
+  local Text = require("src.import.Gen4Text")
+  Text.buffer(game, amount)
+  local line = Text.resolve(game.data, 191, Commands.HGSS_POINTS[k] or 193, game)
+  if game.stringBuffers then game.stringBuffers[1] = saved end
+  if type(line) ~= "string" or line == "" then line = amount end
+  ow.gen4CoinWindow = {
+    left = which == "show" and math.floor(valueOf(ctx, left) or 0) or was.left,
+    top = which == "show" and math.floor(valueOf(ctx, top) or 0) or was.top,
+    amount = line, coins = true, tilesW = 10, tilesH = 2,
+  }
+end
+
+-- HGSS MomGiftCheck: 1 while Mom's gift queue holds anything
+function Commands.g4_mom_gift_check(ctx, destVar)
+  local q = ctx.save and ctx.save.hgssMomGifts
+  setVar(ctx.save, destVar, (type(q) == "table" and #q > 0) and 1 or 0)
+end
+
+-- HGSS ScrCmd_840: the map's kind by header id -- the 25 rows of
+-- sPokemonCenterMaps (MAP_EVERYWHERE, 0, included) answer 1, the Pokemon
+-- League's entrance (MAP_T10R0101, 300) answers 2
+Commands.HGSS_POKECENTERS = { [501] = true, [475] = true, [428] = true, [434] = true,
+  [358] = true, [393] = true, [482] = true, [508] = true, [407] = true, [69] = true,
+  [158] = true, [166] = true, [236] = true, [185] = true, [226] = true, [81] = true,
+  [246] = true, [293] = true, [514] = true, [511] = true, [466] = true, [169] = true,
+  [528] = true, [534] = true, [0] = true }
+function Commands.g4_hgss_map_kind(ctx, mapId, destVar)
+  local id = math.floor(valueOf(ctx, mapId) or -1)
+  local kind = Commands.HGSS_POKECENTERS[id] and 1 or (id == 300 and 2 or 0)
+  setVar(ctx.save, destVar, kind)
+end
+
+-- HGSS's Magikarp length record -- see src/pokemon/HgssSizeRecord.lua
+function Commands.g4_size_record(ctx, op, a, b, c)
+  local S = require("src.pokemon.HgssSizeRecord")
+  local data = ctx.game and ctx.game.data
+  local save = ctx.save or {}
+  local function buffer(slot, text)
+    if not ctx.game then return end
+    ctx.game.stringBuffers = ctx.game.stringBuffers or {}
+    ctx.game.stringBuffers[(tonumber(slot) or 0) + 1] = text
+  end
+  if op == "compare" then
+    setVar(save, a, S.compare(data, save, partyMon(ctx, b)))
+  elseif op == "update" then
+    local mon = partyMon(ctx, a)
+    if mon then save.hgssSizeRecord = S.hash(mon) end
+  elseif op == "mon" then
+    local mon = partyMon(ctx, c)
+    if not mon then return end
+    local whole, tenth = S.format(data, tonumber(mon.species) or 0, S.hash(mon))
+    buffer(valueOf(ctx, a), whole)
+    buffer(valueOf(ctx, b), tenth)
+  elseif op == "record" then
+    local whole, tenth = S.format(data, math.floor(valueOf(ctx, c) or 0), S.record(save))
+    buffer(valueOf(ctx, a), whole)
+    buffer(valueOf(ctx, b), tenth)
+  end
+end
+
+-- a string slot filled with entry <entry> of message bank <bank>, markup run
+function Commands.g4_buffer_bank_line(ctx, slot, bank, entry)
+  if not ctx.game then return end
+  local T = require("src.import.Gen4Text")
+  local data = ctx.game.data
+  local text = data and data.text and data.text[T.label(tonumber(bank) or 0, math.floor(valueOf(ctx, entry) or 0))]
+  if Commands.gen4Markup then text = Commands.gen4Markup(text, ctx.game) end
+  ctx.game.stringBuffers = ctx.game.stringBuffers or {}
+  ctx.game.stringBuffers[(tonumber(slot) or 0) + 1] = type(text) == "string" and text or ""
+end
+
+-- BUENA'S PASSWORD (sys_vars.c Save_VarsFlags_UpdateBuenasPasswordSet, run by
+-- the new-day handler): VAR_BUENAS_PASSWORD_SET (0x4033) is rerolled once a
+-- day to LCRandom() % 30, never the same set twice running; the show reads
+-- category line msg_0066 #40 + 3 * (set / 3) and password set % 3
+function Commands.g4_buenas_password(ctx, msgVar, indexVar)
+  local save = ctx.save or {}
+  local today = require("src.world.HgssApricorns").today()
+  if save.hgssBuenasDay ~= today then
+    local old = tonumber(getVar(save, 0x4033)) or 0
+    local new = love.math.random(0, 29)
+    if new == old then new = (new + 1) % 30 end
+    setVar(save, 0x4033, new)
+    save.hgssBuenasDay = today
+  end
+  local set = (tonumber(getVar(save, 0x4033)) or 0) % 30
+  setVar(save, msgVar, 40 + 3 * math.floor(set / 3))
+  setVar(save, indexVar, set % 3)
+end
+
+-- HGSS's walking Pokemon -- see src/world/HgssFollowMon.lua
+function Commands.g4_follow(ctx, op, a)
+  local F = require("src.world.HgssFollowMon")
+  local game, ow = ctx.game, ctx.overworld
+  if not (game and F.active(game)) then
+    if op == "active" then setVar(ctx.save, a, 0)
+    elseif op == "inactive" then setVar(ctx.save, a, 1)
+    elseif op == "tall" or op == "slot" then setVar(ctx.save, a, 0) end
+    return
+  end
+  if op == "active" then setVar(ctx.save, a, F.isActive(game, ow) and 1 or 0)
+  elseif op == "inactive" then setVar(ctx.save, a, F.isActive(game, ow) and 0 or 1)
+  elseif op == "slot" then
+    local _, i = F.lead(ctx.save)
+    setVar(ctx.save, a, i and (i - 1) or 0)
+  elseif op == "tall" then
+    local mon = F.lead(ctx.save)
+    setVar(ctx.save, a, (mon and not F.allowedIndoors(game, mon)) and 1 or 0)
+  elseif op == "mood" then
+    local mon = F.lead(ctx.save)
+    local d = math.floor(valueOf(ctx, a) or 0)
+    if d >= 128 then d = d - 256 end
+    if mon then mon.hgssMood = math.max(-127, math.min(127, (tonumber(mon.hgssMood) or 0) + d)) end
+  elseif op == "movement" then
+    -- 56 hides it (tracking the player), 48 / 55 trail as usual
+    local t = math.floor(valueOf(ctx, a) or 48)
+    F.command(game, ow, t == 56 and "recall" or "unrecall")
+  elseif op == "talk" then
+    local npc = ow and F.current(ow)
+    if npc and not npc.hidden then F.talk(game, ow, npc) end
+  else
+    F.command(game, ow, op, a and valueOf(ctx, a))
   end
 end
 

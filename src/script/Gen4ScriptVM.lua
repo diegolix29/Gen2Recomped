@@ -215,6 +215,8 @@ L.clearflag = function(ins, s) emit(s, { "clear_flag", flagName(ins.args[1]) }) 
 L.checkflag = function(ins, s) emit(s, { "g4_check_flag", flagName(ins.args[1]) }) end
 L.checkflagfromvar = function(ins,s) emit(s, {'g4_check_flag_var',ins.args[1],ins.args[2]}) end
 L.setflagfromvar = function(ins,s) emit(s, {'g4_set_flag_var',ins.args[1]}) end
+-- HeartGold / SoulSilver's ClearFlagVar <var>: the flag the var names, cleared
+L.clearflagvar = function(ins,s) emit(s, {'g4_clear_flag_var',ins.args[1]}) end
 L.openbag = function(ins,s) emit(s,{'g4_open_bag',ins.args[1]}) end
 L.getselecteditem = function(ins,s) emit(s,{'g4_selected_item',ins.args[1]}) end
 L.checkpockethasitems = function(ins,s) emit(s,{'g4_pocket_has_items',ins.args[1],ins.args[2]}) end
@@ -667,7 +669,9 @@ local function menuInit(ins, s, bank)
   -- own rules on a screen of a different size.  Passing a foreign coordinate
   -- through would put the box off the edge; the cursor row and the B rule are
   -- real behaviour and are kept.
-  emit(s, { "g4_menu_init", ins.args[5], ins.args[4], ins.args[3], bank })
+  -- ...but carried along, last, for the family whose menu does sit there
+  -- (HGSS: ov01_021EDF78 / EDC84, the window's top-left at (x, y))
+  emit(s, { "g4_menu_init", ins.args[5], ins.args[4], ins.args[3], bank, ins.args[1], ins.args[2] })
 end
 
 L.initglobaltextmenu = function(ins, s)
@@ -1335,6 +1339,64 @@ L.registerpokegearcard = function(ins, s) emit(s, { "g4_pokegear_card", ins.args
 L.registergearnumber = function(ins, s) emit(s, { "g4_pokegear_number", ins.args[1] }) end
 L.checkregisteredphonenumber = function(ins, s) emit(s, { "g4_pokegear_has_number", ins.args[1], ins.args[2] }) end
 L.scrcmd_804 = function(ins, s) emit(s, { "g4_pokegear_map_level", ins.args[1] }) end
+-- HGSS's points box (overlay_22.c ScrCmd_116-118, ov01_021EEC00): one
+-- 10 x 2 window for coins (0), Battle Points (1) or athlete points (2)
+L.scrcmd_116 = function(ins, s) emit(s, { "g4_points_window", "show", ins.args[1], ins.args[2], ins.args[3] }) end
+L.scrcmd_117 = function(_, s) emit(s, { "g4_points_window", "hide" }) end
+-- HGSS's CheckGiveCoins <destVar> <amount> is Platinum's checkcanaddcoins
+L.checkgivecoins = function(ins, s) L.checkcanaddcoins(ins, s) end
+-- HGSS commands that are Platinum's under another name or operand order
+-- (pokeheartgold scrcmd_c.c / scrcmd_party.c / field/scrcmd_pokemon_misc.c):
+-- ScrCmd_517 Party_HasMon <species, destVar>; ScrCmd_518 sets every party
+-- Deoxys to <form> (the Route 3 meteorite) as ChangeDeoxysForm does;
+-- CheckMonSeen <species, destVar>; GiveRibbon <slot, ribbon>; MonHasRibbon
+-- <destVar, slot, ribbon>; MonAddFriendship <value, slot>; WaitButtonOrDelay
+-- <frames> (A or B ends it early)
+L.scrcmd_517 = function(ins, s) emit(s, { "g4_party_has_species2", ins.args[1], ins.args[2] }) end
+L.scrcmd_518 = function(ins, s) emit(s, { "g4_deoxys_form", ins.args[1] }) end
+L.checkmonseen = function(ins, s) emit(s, { "g4_bw_dex_seen", ins.args[1], ins.args[2] }) end
+L.giveribbon = function(ins, s) emit(s, { "g4_set_mon_ribbon", ins.args[1], ins.args[2] }) end
+L.monhasribbon = function(ins, s) emit(s, { "g4_get_mon_ribbon", ins.args[1], ins.args[2], ins.args[3] }) end
+L.monaddfriendship = function(ins, s) emit(s, { "g4_increase_friendship", ins.args[1], ins.args[2] }) end
+L.waitbuttonordelay = function(ins, s) emit(s, { "g4_wait_ab_press_time", ins.args[1] }) end
+-- ScrCmd_374 hides an object (MapObject_SetVisible FALSE), MakeObjectVisible's
+-- other half; ScrCmd_446 is the current map id; ScrCmd_545 the Unown forms seen
+L.scrcmd_374 = function(ins, s) emit(s, { "g4_hide_object", ins.args[1] }) end
+L.scrcmd_446 = function(ins, s) emit(s, { "g4_get_map_id", ins.args[1] }) end
+L.scrcmd_545 = function(ins, s) emit(s, { "g4_unown_forms_seen", ins.args[1] }) end
+-- FollowerPokeIsEventTrigger <event, slot, destVar> (scrcmd_c.c 4379): 1 only
+-- for a distributed event Pokemon whose met data MonMetadataMatchesEvent
+-- accepts (Spiky-eared Pichu, the Arceus / Sinjoh events, the Celebi ones);
+-- this port carries no event met data, so every party Pokemon answers 0,
+-- which is also the cartridge's answer for anything caught in play
+L.followerpokeiseventtrigger = function(ins, s) emit(s, { "g4_set_var", ins.args[3], 0 }) end
+-- MysteryGift <stage> [dest] (pokeheartgold scrcmd_mystery_gift.c): SCR_MG_BEGIN
+-- .. SCR_MG_END2 are Platinum's MYSTERY_GIFT_LOAD .. UNLOAD_RECEIVED in the
+-- same order, so the marts' deliveryman runs on Platinum's handler
+L.mysterygift = function(ins, s) return L.mysterygiftgive(ins, s) end
+-- MomGiftCheck <destVar> (scrcmd_12.c): whether Mom's gift queue (filled when
+-- she shops with the player's savings, PhoneCallPersistentState) has an item
+-- for the mart's deliveryman; the queue is save.hgssMomGifts, empty until
+-- the phone's Mom calls are built
+L.momgiftcheck = function(ins, s) emit(s, { "g4_mom_gift_check", ins.args[1] }) end
+-- ScrCmd_840 <mapId, destVar> (scrcmd_c.c 2247): 1 for a Pokemon Center
+-- (map_header.c sPokemonCenterMaps), 2 for the League's entrance (300)
+L.scrcmd_840 = function(ins, s) emit(s, { "g4_hgss_map_kind", ins.args[1], ins.args[2] }) end
+-- THE LAKE OF RAGE'S MAGIKARP RECORD (scrcmd_size_record.c, src/pokemon/
+-- HgssSizeRecord.lua): SizeRecordCompare <destVar, slot>, SizeRecordUpdate
+-- <slot>, BufferMonSize <inches, tenths, slot>, BufferRecordSize <inches,
+-- tenths, species>
+L.sizerecordcompare = function(ins, s) emit(s, { "g4_size_record", "compare", ins.args[1], ins.args[2] }) end
+L.sizerecordupdate = function(ins, s) emit(s, { "g4_size_record", "update", ins.args[1] }) end
+L.buffermonsize = function(ins, s) emit(s, { "g4_size_record", "mon", ins.args[1], ins.args[2], ins.args[3] }) end
+L.bufferrecordsize = function(ins, s) emit(s, { "g4_size_record", "record", ins.args[1], ins.args[2], ins.args[3] }) end
+-- BufferSealName <slot, sealId> (scrcmd_strbuf.c 375 -> message_format.c
+-- BufferSealName): HGSS reads the seal's name straight out of msg_0015 by id
+L.buffersealname = function(ins, s) emit(s, { "g4_buffer_bank_line", ins.args[1], 15, ins.args[2] }) end
+-- GetBuenasPassword <msgVar, indexVar> (scrcmd_pokemon_misc.c 1251): today's
+-- category line and which of its three passwords, out of VAR_BUENAS_PASSWORD_SET
+L.getbuenaspassword = function(ins, s) emit(s, { "g4_buenas_password", ins.args[1], ins.args[2] }) end
+L.scrcmd_118 = function(ins, s) emit(s, { "g4_points_window", "update", ins.args[1] }) end
 L.checkbankbalance = function(ins, s) emit(s, { "g4_bank_balance_at_least", ins.args[1], ins.args[2] }) end
 L.bankorwalletisfull = function(ins, s) emit(s, { "g4_bank_or_wallet_full", ins.args[1], ins.args[2] }) end
 L.banktransaction = function(ins, s) emit(s, { "g4_bank_transaction", ins.args[1], ins.args[2] }) end
@@ -1474,8 +1536,25 @@ L.ecruteakgyminit = function(_, s) emit(s, { "g4_ecruteak_gym_init" }) end
 L.extinguishecruteakgymcandle = function(_, s) emit(s, { "g4_ecruteak_candle_out" }) end
 -- the following Pokemon's commands: none walks behind the player here, so
 -- "is it in the way" answers 0 and waiting for it is immediate
-L.scrcmd_596 = function(ins, s) emit(s, { "g4_set_var", ins.args[1], 0 }) end
-L.scrcmd_600 = function(_, s) emit(s, { "g4_noop", "follower wait" }) end
+-- HGSS'S WALKING POKEMON (src/world/HgssFollowMon.lua; scrcmd_c.c 4422-4577,
+-- 4799, 4863-4906, 5238): 596 too tall?, 600 recall into the ball, 601 face
+-- the player, 602 pause / unpause, 604 movement type (56 = hidden tracking),
+-- 606 out again on the next step, 607 onto the player, 609 reset, 711 talk,
+-- 727 the lead's slot, 729 / 730 active / not, 732 mood, 783 inhibit
+L.scrcmd_596 = function(ins, s) emit(s, { "g4_follow", "tall", ins.args[1] }) end
+L.scrcmd_600 = function(_, s) emit(s, { "g4_follow", "recall" }) end
+L.followmonfaceplayer = function(_, s) emit(s, { "g4_follow", "faceplayer" }) end
+L.togglefollowingpokemonmovement = function(ins, s) emit(s, { "g4_follow", "pause", ins.args[1] }) end
+L.followingpokemonmovement = function(ins, s) emit(s, { "g4_follow", "movement", ins.args[1] }) end
+L.scrcmd_606 = function(_, s) emit(s, { "g4_follow", "release" }) end
+L.scrcmd_607 = function(_, s) emit(s, { "g4_follow", "snap" }) end
+L.scrcmd_609 = function(_, s) emit(s, { "g4_follow", "reset" }) end
+L.followmoninteract = function(_, s) emit(s, { "g4_follow", "talk" }) end
+L.getfollowpokepartyindex = function(ins, s) emit(s, { "g4_follow", "slot", ins.args[1] }) end
+L.scrcmd_729 = function(ins, s) emit(s, { "g4_follow", "active", ins.args[1] }) end
+L.scrcmd_730 = function(ins, s) emit(s, { "g4_follow", "inactive", ins.args[1] }) end
+L.scrcmd_732 = function(ins, s) emit(s, { "g4_follow", "mood", ins.args[1] }) end
+L.setfollowmoninhibitstate = function(ins, s) emit(s, { "g4_follow", "inhibit", ins.args[1] }) end
 -- `ScreenShake ampX, ampY, count, period` (HGSS): the look-at target shakes
 L.screenshake = function(ins, s)
   emit(s, { "g4_screen_shake", ins.args[1], ins.args[2], ins.args[3], ins.args[4] })
@@ -1534,8 +1613,18 @@ L.bwdexseen = function(ins, s) emit(s, { "g4_bw_dex_seen", ins.args[1], ins.args
 L.bwliftmove = function(ins, s) emit(s, { "g4_bw_lift_move", ins.args[1] }) end
 -- BLACK / WHITE 0x021: the script the next warp's destination runs
 L.bwqueueentry = function(ins, s) emit(s, { "g4_bw_queue_entry", ins.args[1] }) end
--- BLACK / WHITE 0x0D8: var = whether the value is a TM or HM's item id
-L.bwistmhm = function(ins, s) emit(s, { "g4_bw_is_tmhm", ins.args[1], ins.args[2] }) end
+-- BLACK / WHITE: Opelucid Gym's dragons (Gen5DragonGym)
+L.bwdragoninit = function(_, s) emit(s, { "g4_bw_dragon_init" }) end
+-- BLACK / WHITE 0x1A2: an Elite Four room's lift
+L.bwe4lift = function(ins, s) emit(s, { "g4_bw_e4_lift", ins.args[1] }) end
+L.bwdragonflip = function(ins, s) emit(s, { "g4_bw_dragon_flip", ins.args[1], ins.args[2] }) end
+L.bwdragonsettle = function(ins, s) emit(s, { "g4_bw_dragon_settle", ins.args[1] }) end
+-- BLACK / WHITE 0x0D8: var = whether condition n of the field's table holds
+L.bwcondition = function(ins, s) emit(s, { "g4_bw_condition", ins.args[1], ins.args[2] }) end
+L.bwpartyable = function(ins, s) emit(s, { "g4_bw_party_able", ins.args[1] }) end
+L.bwbattleok = function(ins, s) emit(s, { "g4_bw_battle_ok", ins.args[1] }) end
+L.bwgameclear = function(ins, s) emit(s, { "g4_bw_game_clear", ins.args[1] }) end
+L.bwlegend = function(ins, s) emit(s, { "g4_bw_legend", ins.args[1], ins.args[2] }) end
 -- BLACK / WHITE: Nimbasa Gym's coaster switch
 L.bwcoasterswitch = function(ins, s) emit(s, { "g4_bw_coaster_switch", ins.args[1] }) end
 -- BLACK / WHITE: the season, var *= value, and the park visitor's table
@@ -3014,6 +3103,26 @@ L.starthoneytreebattle=function(_,s) emit(s,{'g4_honey_battle'}) end
 L.stophoneytreeshaking=function(_,s) emit(s,{'g4_honey_stop'}) end
 L.getpcboxesfreeslotcount = function(ins, s)
   emit(s, { "g4_pc_free_slots", ins.args[1] })
+end
+-- HEARTGOLD / SOULSILVER's spelling of the same count (ScrCmd_CountPCEmptySpace,
+-- the Bug-Catching Contest's registration asks it)
+L.countpcemptyspace = L.getpcboxesfreeslotcount
+-- HEARTGOLD / SOULSILVER scrcmd 780 `CasinoGame <machine, city>`: a Game
+-- Corner machine is Voltorb Flip (src/ui/HgssVoltorbFlip.lua); the machine
+-- and city only fed a luck value the app ignores
+L.casinogame = function(ins, s) emit(s, { "g4_casino_game", ins.args[1], ins.args[2] }) end
+-- HEARTGOLD / SOULSILVER'S BUG-CATCHING CONTEST (src/world/HgssBugContest.lua),
+-- scrcmds 784..790; 784 only loads the contest's overlay
+L.scriptoverlaycmd = function() end
+L.bugcontestaction = function(ins, s) emit(s, { "g4_bug_contest_action", ins.args[1], ins.args[2] }) end
+L.bufferbugcontestwinner = function(ins, s) emit(s, { "g4_bug_contest_winner", ins.args[1] }) end
+L.judgebugcontest = function(ins, s)
+  emit(s, { "g4_bug_contest_judge", ins.args[1], ins.args[2], ins.args[3] })
+end
+L.bufferbugcontestmonnick = function(ins, s) emit(s, { "g4_bug_contest_mon_nick", ins.args[1], ins.args[2] }) end
+L.bugcontestgettimeleft = function(ins, s) emit(s, { "g4_bug_contest_time_left", ins.args[1] }) end
+L.isbugcontestantregistered = function(ins, s)
+  emit(s, { "g4_bug_contest_registered", ins.args[1], ins.args[2] })
 end
 L.checkdidnotcapture = function(ins, s)
   emit(s, { "g4_did_not_capture", ins.args[1] })

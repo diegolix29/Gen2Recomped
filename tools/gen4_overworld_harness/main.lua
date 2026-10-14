@@ -108,9 +108,12 @@ function love.load()
     -- exists before anything ticks.
     local held = nil
     local pressA = false
+    -- BATTLE_MENU_SHOT=1: from the first tick a battle sits at its command
+    -- menu, nothing is pressed or held, so the picture at TICKS is that menu
+    local frozen = false
     Game.input = {
-      wasPressed  = function(_, k) return pressA and k == "a" end,
-      isDown      = function(_, k) return held ~= nil and k == held end,
+      wasPressed  = function(_, k) return not frozen and pressA and k == "a" end,
+      isDown      = function(_, k) return not frozen and held ~= nil and k == held end,
       wasReleased = function() return false end,
     }
 
@@ -419,6 +422,23 @@ function love.load()
     -- REPEL=<steps>: keep wild encounters off a story run (the cartridge's
     -- own repel rule -- nothing below the lead's level appears)
     if os.getenv("REPEL") and Game.save then Game.save.repelSteps = tonumber(os.getenv("REPEL")) end
+    -- ITEMS="444:1,4:20": bag items by id; COINS=n: the Coin Case's coins
+    if os.getenv("ITEMS") and Game.save then
+      Game.save.inventory = Game.save.inventory or {}
+      for id, n in os.getenv("ITEMS"):gmatch("(%d+):(%d+)") do Game.save.inventory[("ITEM_%03d"):format(tonumber(id))] = tonumber(n) end
+    end
+    if os.getenv("COINS") and Game.save then Game.save.coins = tonumber(os.getenv("COINS")) end
+    -- HGSS_CONTEST=<weekday>: a Bug-Catching Contest already running
+    if os.getenv("HGSS_CONTEST") and Game.save then
+      require("src.world.HgssBugContest").start(Game.save, tonumber(os.getenv("HGSS_CONTEST")) or 2)
+      Game.save.flags = Game.save.flags or {}
+      Game.save.flags["FLAG_G4_0996"] = true
+      -- HGSS_CONTEST_CAUGHT=<species>:<level>: already holding a catch
+      local cs, cl = (os.getenv("HGSS_CONTEST_CAUGHT") or ""):match("^(%d+):(%d+)$")
+      if cs then
+        Game.save.g2BugContest.caught = require("src.pokemon.Pokemon").new(Data, tonumber(cs), tonumber(cl))
+      end
+    end
     local Collision = require("src.world.Collision")
     local DIRS = { up = { 0, -1 }, down = { 0, 1 }, left = { -1, 0 }, right = { 1, 0 } }
     local function planStep(ow, tx, ty)
@@ -458,8 +478,20 @@ function love.load()
       return nil
     end
     for i = 1, ticks do
+      -- the music's own tick (Game:update runs it on its real-time clock,
+      -- which this loop never reaches): without it a script's `fadeoutbgm`
+      -- waits for a DS fade that never ends
+      pcall(require("src.core.Music").update, Game.data)
       -- PRESS_UNTIL=n: stop pressing after tick n (a press would re-talk to
       -- whatever is ahead once the walk starts)
+      if os.getenv("BATTLE_MENU_SHOT") and not frozen then
+        local st = Game.stack and Game.stack.states
+        local top = st and st[#st]
+        if top and top.battle and top.phase == "menu" then
+          frozen = true
+          print(("[battle menu shot] frozen at the command menu, tick %d"):format(i))
+        end
+      end
       pressA = pressEvery > 0 and (i % pressEvery == 0) and i <= (tonumber(os.getenv("PRESS_UNTIL") or "") or math.huge)
       -- STRENGTH=1: Strength active (as the boulder's field-move script leaves it)
       if os.getenv("STRENGTH") and OW and i == 1 then OW.strengthActive = true end
