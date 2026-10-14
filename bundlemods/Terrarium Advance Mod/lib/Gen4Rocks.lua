@@ -26,8 +26,20 @@
 -- drawing natively so fences never vanish. Lawn no longer paints the whole
 -- `imped` material transparent (that was turning fences into holes).
 --
+-- THE ROCK'S SURFACE
+--
+-- If assets/ground/grass/rock.png exists, every facet is painted with a piece of it:
+-- the picture is laid over the whole rock as ONE continuous surface (each facet is
+-- projected flat from the rock's centre, so neighbours line up), turned a different
+-- amount per rock, and filtered smoothly. The facet shading (lit from the upper
+-- front) is kept on top. Without that file the built-in 8x8 grey stone is used, as
+-- before, and the log says so once. Rocks.TEXTURE_FILE / Rocks.USE_FILE /
+-- Rocks.TEX_WINDOW / Rocks.FILTER / Rocks.TEX_MAX change this.
+-- The picture is shrunk to TEX_MAX (box-averaged) and uploaded with mipmaps: raw,
+-- a big picture on a small rock is what reads as grain.
+--
 -- KNOBS: Rocks.SIZE, MIN_W, MAX_W, FENCE_ASPECT, FENCE_MIN_W, Y_OFFSET, SINK,
--- WINDOW, enabled. Bridge.disabled.rocks turns it off.
+-- WINDOW, USE_FILE, TEXTURE_FILE, TEX_WINDOW, enabled. Bridge.disabled.rocks turns it off.
 
 local V = ...
 local Voxel3D = V.require("Voxel3D")
@@ -42,6 +54,11 @@ local Rocks = {
   MAX_W = 28,                    -- ...never wider than this
   FENCE_ASPECT = 1.75,           -- longest/shortest edge at or above this is a banner
   FENCE_MIN_W = 40,              -- ...or any card this long in XZ or Y (a rock is one tile)
+  USE_FILE = true,               -- wear assets/ground/grass/<TEXTURE_FILE> when it exists
+  TEXTURE_FILE = "rock.png",
+  TEX_WINDOW = 1.0,              -- fraction of the picture one rock shows (1 = all of it; less = a different part per rock)
+  TEX_MAX = 64,                  -- shrink rock.png to at most this many pixels a side (averaged), then mipmap it
+  FILTER = "linear",             -- "linear" is smooth; "nearest" keeps hard pixels (reads as grain on a small picture)
   HEIGHT = 0.9,                 -- rock height as a fraction of its width
   LUMP = 0.30,                   -- how lumpy the surface is (0 = smooth egg, 0.4 = very rough)
   SATELLITES = 2,                -- up to this many small stones beside each rock
@@ -81,8 +98,120 @@ local clock = (love and love.timer and love.timer.getTime) or os.clock
 -- a mossy tint. Each facet samples ONE texel, picked by hash.
 local GRID = 8
 local texture                 -- Image | false
+local fileMode = false        -- true: `texture` is rock.png and meshes carry picture UVs
+
+-- The picture's bytes: love.filesystem, then the engine's Assets, then plain io
+-- (the same fallbacks Gen4Flowers uses to read grass.png).
+local function readBytes(rel, abs)
+  if love and love.filesystem and love.filesystem.read then
+    for _, p in ipairs({ rel, abs }) do
+      local ok, data = pcall(love.filesystem.read, p)
+      if ok and type(data) == "string" and #data > 0 then return data end
+    end
+  end
+  local okA, Assets = pcall(require, "src.render.Assets")
+  if okA and Assets and Assets.read then
+    for _, p in ipairs({ abs, rel }) do
+      local ok, data = pcall(Assets.read, p)
+      if ok and type(data) == "string" and #data > 0 then return data end
+    end
+  end
+  if io and io.open then
+    local f = io.open(abs, "rb")
+    if f then
+      local data = f:read("*a")
+      f:close()
+      if type(data) == "string" and #data > 0 then return data end
+    end
+  end
+  return nil
+end
+
+-- Shrink an ImageData to at most `limit` pixels a side by AVERAGING the pixels each
+-- new one covers (a box filter, up to 6x6 samples per pixel). A big picture drawn on
+-- a rock a few dozen screen pixels wide, sampled raw, is what reads as grain: every
+-- screen pixel lands on a different speck of it.
+local function shrink(data, limit)
+  local w, h = data:getWidth(), data:getHeight()
+  if math.max(w, h) <= limit then return data, w, h end
+  local scale = limit / math.max(w, h)
+  local nw, nh = math.max(1, math.floor(w * scale + 0.5)), math.max(1, math.floor(h * scale + 0.5))
+  local out = love.image.newImageData(nw, nh)
+  local fx, fy = w / nw, h / nh
+  local nx, ny = math.max(1, math.min(6, math.ceil(fx))), math.max(1, math.min(6, math.ceil(fy)))
+  for y = 0, nh - 1 do
+    for x = 0, nw - 1 do
+      local r, g, b, a, n = 0, 0, 0, 0, 0
+      for sy = 0, ny - 1 do
+        for sx = 0, nx - 1 do
+          local px = math.min(w - 1, math.floor((x + (sx + 0.5) / nx) * fx))
+          local py = math.min(h - 1, math.floor((y + (sy + 0.5) / ny) * fy))
+          local pr, pg, pb, pa = data:getPixel(px, py)
+          r, g, b, a, n = r + pr, g + pg, b + pb, a + (pa or 1), n + 1
+        end
+      end
+      out:setPixel(x, y, r / n, g / n, b / n, a / n)
+    end
+  end
+  return out, nw, nh
+end
+
+-- assets/ground/grass/rock.png. Preferred route: decode it here, shrink it to
+-- TEX_MAX, and upload it with MIPMAPS and smooth filtering, so it stays calm at any
+-- distance. If the bytes cannot be read, fall back to the engine's Assets image
+-- (smooth filtering only). nil when the file is not there at all.
+local function loadFileTexture()
+  if not Rocks.USE_FILE then return nil end
+  local okA, Assets = pcall(require, "src.render.Assets")
+  local rel = "assets/ground/grass/" .. tostring(Rocks.TEXTURE_FILE)
+  local abs = tostring(V.path or "") .. "/" .. rel
+  local exists = false
+  if okA and Assets and Assets.exists then
+    local okE, e = pcall(Assets.exists, abs)
+    exists = okE and e and true or false
+  end
+  local filter = Rocks.FILTER or "linear"
+
+  local bytes = readBytes(rel, abs)
+  if bytes and love and love.image and love.filesystem and love.filesystem.newFileData then
+    local ok, img, info = pcall(function()
+      local raw = love.image.newImageData(love.filesystem.newFileData(bytes, tostring(Rocks.TEXTURE_FILE)))
+      local ow, oh = raw:getWidth(), raw:getHeight()
+      local data, w, h = shrink(raw, Rocks.TEX_MAX or 64)
+      local image = love.graphics.newImage(data, { mipmaps = true })
+      image:setFilter(filter, filter)
+      if image.setMipmapFilter then pcall(image.setMipmapFilter, image, "linear", 0) end
+      return image, { ow = ow, oh = oh, w = w, h = h }
+    end)
+    if ok and img then
+      once("size", "rock.png is %dx%d, used at %dx%d with mipmaps", info.ow, info.oh, info.w, info.h)
+      return img
+    end
+    once("decode", "could not decode rock.png here (%s) -- using the engine's copy", tostring(img))
+  end
+
+  if not exists then return nil end
+  local ok, img = pcall(Assets.image, abs)
+  if not (ok and img) then return nil end
+  pcall(img.setFilter, img, filter, filter)
+  return img
+end
+
+-- The texture the rocks wear. Decided BEFORE any rock mesh is built (prepare calls
+-- it first): the two surfaces need different UVs.
 local function rockTexture()
   if texture ~= nil then return texture or nil end
+  local file = loadFileTexture()
+  if file then
+    texture, fileMode = file, true
+    once("file", "rocks wear assets/ground/grass/%s", tostring(Rocks.TEXTURE_FILE))
+    return texture
+  end
+  fileMode = false
+  if Rocks.USE_FILE then
+    once("nofile", "no assets/ground/grass/%s -- rocks keep the built-in grey stone",
+         tostring(Rocks.TEXTURE_FILE))
+  end
   local ok, img = pcall(function()
     local data = love.image.newImageData(GRID, GRID)
     for y = 0, GRID - 1 do
@@ -256,6 +385,8 @@ local function boulder(b, cx, baseY, cz, w, seed)
   local hy = w * Rocks.HEIGHT * (0.8 + 0.4 * r3) * 0.5                          -- half height
   local yaw = r4 * 6.2832
   local cs, sn = math.cos(yaw), math.sin(yaw)
+  local turn = hash(seed * 1.7, 3.3) * 6.2832          -- how far this rock's picture is turned
+  local cosT, sinT = math.cos(turn), math.sin(turn)
   local p1, p2, p3 = r1 * 6.28, r2 * 6.28, r3 * 6.28
   local flatY = -0.38                                  -- unit-sphere y below which it is cut flat
   local pts = {}
@@ -286,17 +417,44 @@ local function boulder(b, cx, baseY, cz, w, seed)
       local shade = math.min(1.0, 0.50 + 0.55 * lit)
       if ny > 0.55 then shade = -shade end             -- faces the sky (same flag the voxel trees use)
       -- texel: mostly stone, sometimes a crack / light face / moss
-      local roll = hash(seed + fi * 3.3, fi + seed * 0.1)
-      local cell
-      if roll < 0.82 then cell = math.floor(hash(fi, seed) * 48)
-      elseif roll < 0.90 then cell = 48 + math.floor(hash(seed, fi) * 8)
-      else cell = 56 + math.floor(hash(fi * 2.1, seed) * 8) end
-      local u = ((cell % GRID) + 0.5) / GRID
-      local v = (math.floor(cell / GRID) % GRID + 0.5) / GRID
       local base = #b.verts
-      b.verts[base + 1] = { a[1], a[2] + lift, a[3], u, v, shade, 0 }
-      b.verts[base + 2] = { c2[1], c2[2] + lift, c2[3], u, v, shade, 0 }
-      b.verts[base + 3] = { d[1], d[2] + lift, d[3], u, v, shade, 0 }
+      if fileMode then
+        -- rock.png laid over the WHOLE rock as one continuous picture: each facet is
+        -- projected flat along its dominant axis, from the rock's own centre, so
+        -- neighbouring facets line up instead of each showing a different crop (that
+        -- read as noise). Per rock: a turn of the picture and, when TEX_WINDOW < 1, a
+        -- different part of it. UVs are clamped to 0..1, so no wrap mode is needed.
+        local ax, ay, az = math.abs(nx), math.abs(ny), math.abs(nz)
+        local k = (Rocks.TEX_WINDOW or 1) * 0.55 / w
+        local slack = (1 - (Rocks.TEX_WINDOW or 1)) * 0.5
+        local ccu = 0.5 + (hash(seed, 9.1) - 0.5) * 2 * slack
+        local ccv = 0.5 + (hash(9.7, seed) - 0.5) * 2 * slack
+        local function uv(p)
+          local p1, p2
+          if ay >= ax and ay >= az then p1, p2 = p[1] - cx, p[3] - cz      -- faces up/down
+          elseif ax >= az then p1, p2 = p[3] - cz, p[2] * 1.0              -- faces east/west
+          else p1, p2 = p[1] - cx, p[2] * 1.0 end                          -- faces north/south
+          local ru, rv = p1 * cosT - p2 * sinT, p1 * sinT + p2 * cosT
+          return math.max(0, math.min(1, ccu + ru * k)), math.max(0, math.min(1, ccv + rv * k))
+        end
+        local ua, va = uv(a)
+        local ub, vb = uv(c2)
+        local uc, vc = uv(d)
+        b.verts[base + 1] = { a[1], a[2] + lift, a[3], ua, va, shade, 0 }
+        b.verts[base + 2] = { c2[1], c2[2] + lift, c2[3], ub, vb, shade, 0 }
+        b.verts[base + 3] = { d[1], d[2] + lift, d[3], uc, vc, shade, 0 }
+      else
+        local roll = hash(seed + fi * 3.3, fi + seed * 0.1)
+        local cell
+        if roll < 0.82 then cell = math.floor(hash(fi, seed) * 48)
+        elseif roll < 0.90 then cell = 48 + math.floor(hash(seed, fi) * 8)
+        else cell = 56 + math.floor(hash(fi * 2.1, seed) * 8) end
+        local u = ((cell % GRID) + 0.5) / GRID
+        local v = (math.floor(cell / GRID) % GRID + 0.5) / GRID
+        b.verts[base + 1] = { a[1], a[2] + lift, a[3], u, v, shade, 0 }
+        b.verts[base + 2] = { c2[1], c2[2] + lift, c2[3], u, v, shade, 0 }
+        b.verts[base + 3] = { d[1], d[2] + lift, d[3], u, v, shade, 0 }
+      end
       b.map[#b.map + 1], b.map[#b.map + 2], b.map[#b.map + 3] = base + 1, base + 2, base + 3
     end
   end
@@ -376,6 +534,7 @@ function Rocks.isBuilt(land)
 end
 
 local function prepare(ground)
+  rockTexture()          -- picks file vs built-in surface before any mesh is built
   local view = ground and ground.view3d
   if not (Rocks.enabled and ground and view and ground.grid and ground.terrain
           and ground.slice and ground.chunkPx and ground.half) then
