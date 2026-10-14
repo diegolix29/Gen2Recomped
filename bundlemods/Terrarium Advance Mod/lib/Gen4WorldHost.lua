@@ -776,10 +776,9 @@ local function renderBattleBody(ground, view, state, arena, textures)
     -- due south. Pose cards against the map-local eye, then light them with
     -- the world eye the NSBMD pass already used.
     local mapEye = { cam.eye[1], worldCam.eye[2], cam.eye[3] }
-    Voxel3D.eye = mapEye
+    Voxel3D.eye = worldCam.eye
     local pull = V.require("BattleBillboard").PULL
     local cards = BattleScene.monCards(arena, groundY, textures) or {}
-    Voxel3D.eye = worldCam.eye
     local sh = love.graphics.getShader()
     if sh then
       pcall(sh.send, sh, "vp", "row", Voxel3D.vp)
