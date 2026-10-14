@@ -266,7 +266,14 @@ end
 
 function M.clear()
   pcall(logStats)
+  local wasGen4, endedOn = field and field.gen4, field and field.state
   field = nil
+  if wasGen4 then
+    local Host = gen4Host()
+    if Host and type(Host.afterBattle) == "function" then
+      pcall(Host.afterBattle, endedOn)
+    end
+  end
 end
 
 -- BattleCam pose in world pixels, so CBE's compositor and the voxel field

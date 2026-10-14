@@ -688,9 +688,17 @@ end
 
 function OverworldBattle.finish()
   if not session then return end
+  local endedOn = session.state
   restoreCast()
   session = nil
   Voxel3D.camera = nil
+  -- Platinum: the fight drove the engine's own free-camera pass on this map every
+  -- frame. Make the map drawable again whatever that left behind (open pass,
+  -- stray camera, the engine's "no more 3D this session" latches).
+  pcall(function()
+    local Host = V.require("Gen4WorldHost")
+    if Host and Host.afterBattle then Host.afterBattle(endedOn) end
+  end)
   pcall(function() V.require("Stadium").finish() end)
   
   -- Release Colosseum battle actors

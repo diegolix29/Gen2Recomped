@@ -222,7 +222,12 @@ local function runScene(ground, view, vw, vh, order, effects, tag)
       local ok, err = pcall(effects[name], scene)
       if not ok then
         report(tag .. name, "effect '%s' failed: %s", name, tostring(err))
-        Bridge.disabled[name] = true      -- don't fail every frame
+        -- Don't fail every frame -- but a failure under a BATTLE camera (a different
+        -- lens, aspect and eye height from anything the effect meets walking) must
+        -- not switch the effect off for the whole session, across every map.
+        local H = V.Gen4WorldHost
+        local inBattle = H and H._inBattle == true
+        if not inBattle then Bridge.disabled[name] = true end
       end
     end
   end
