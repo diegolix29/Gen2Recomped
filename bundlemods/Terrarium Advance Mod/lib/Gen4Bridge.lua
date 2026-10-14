@@ -401,7 +401,7 @@ end
 -- these, so a graphics reset, a mod reload or a cache reset left the old
 -- meshes (and, on a lost GL context, dead ones) in place.
 function Bridge.invalidateAll()
-  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass" }) do
+  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass", "Gen4NpcModels"}) do
     local ok, mod = pcall(V.require, name)
     if ok and type(mod) == "table" and type(mod.invalidate) == "function" then
       local okI, err = pcall(mod.invalidate)

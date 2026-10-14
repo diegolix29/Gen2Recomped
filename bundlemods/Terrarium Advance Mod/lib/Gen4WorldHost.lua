@@ -393,6 +393,10 @@ local function wantFieldActor(e, state)
     local ok, PM = pcall(V.require, "PlayerModel")
     if ok and PM and PM.loaded and PM.loaded() then return true end
   end
+  -- Platinum's walkers as smooth 3D bodies built from their own sheet
+  -- (lib/Gen4NpcModels.lua). Asked last: everything above has its own path.
+  local okN, Npc = pcall(V.require, "Gen4NpcModels")
+  if okN and Npc and Npc.wants and Npc.wants(e, state) then return true end
   return false
 end
 
@@ -541,6 +545,7 @@ local function drawFieldActors(state, ground)
     local SF = V.require("StadiumFollower")
     local PM = V.require("PlayerModel")
     local Hd = V.require("Gen4HdPokemon")
+    local okNpc, NpcM = pcall(V.require, "Gen4NpcModels")
     local Mat4 = V.require("Mat4")
     for _, p in ipairs(posed) do
       local drew = false
@@ -575,6 +580,12 @@ local function drawFieldActors(state, ground)
         m = Mat4.mul(m, Mat4.scale(scale, scale, scale))
         drew = pcall(Voxel3D.draw, mdl.mesh, mdl.texture, m)
       end
+      -- An NPC body: only when its mesh is built; until then (or on any
+      -- failure) the flat sprite keeps drawing, so nobody vanishes.
+      if not drew and not playerTried and okNpc and NpcM and NpcM.drawPose then
+        local okB, rB = pcall(NpcM.drawPose, p, ground)
+        drew = okB and rB == true
+      end
       if drew then
         Host._drew3d[p.skipKey] = true
       elseif Hd and Hd.drawPose and not playerTried then
@@ -600,6 +611,11 @@ function Host.overlay3D(ground)
   Host._drawGround = ground
   if Host.effectsOn() then
     pcall(drawGrass, ow, ground)
+  end
+  -- NPC bodies are built here, a few ms a frame (never inside the draw)
+  do
+    local okN, Npc = pcall(V.require, "Gen4NpcModels")
+    if okN and Npc and Npc.pump then pcall(Npc.pump) end
   end
   pcall(drawFieldActors, ow, ground)
   Host._drawGround = nil
