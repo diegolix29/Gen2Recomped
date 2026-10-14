@@ -23,7 +23,8 @@
 -- WHAT IS BUILT, AND WHEN
 --
 --   One body per (sheet, pose): the stand frame and the two step frames, each
---   from that pose's south and north pictures on a volumetric body. The body is turned
+--   from that pose's south and north pictures on a volumetric body, with a
+--   cropped strip of the east/west pictures on the rim. The body is turned
 --   by the NPC's world facing (eased, so a turn is not a snap) and the pose
 --   follows the sprite's own walk phase, so the walk is the sheet's real
 --   walk. Sheets are shared: fifty youngsters cost one set of bodies.
@@ -49,7 +50,7 @@ local Npc = {
   STEP_SECONDS = 0.004, -- slice of one build step
   FILTER = "nearest",   -- "nearest" keeps the pixel art crisp, "linear" softens
   includePlayer = false,
-  solid = { useSides = false },  -- front/back art only; sides fight the volume
+  solid = { useSides = false, sidePaint = true },  -- volume from front/back; cropped sides on the rim
   stats = { builds = 0, failed = 0, drawn = 0, sheets = 0 },
 }
 

@@ -118,15 +118,13 @@ do
   check(onClear == 0, "no vertex samples a transparent texel (" .. onClear .. ")")
   check(bestZframe == Fx.facings.down[1], "the most forward point wears the SOUTH picture")
   check(bestNZframe == Fx.facings.up[1], "the most rearward point wears the NORTH picture")
-  -- flanks wear front or back, never a side picture of a different pose
-  local sides = { [Fx.facings.left[1]] = true, [Fx.facings.right[1]] = true }
-  check(not sides[bestXframe] and not sides[bestNXframe],
-        "the flanks wear front/back, not the east/west pictures")
-  local used = 0
-  for _, f in ipairs({ 0, 3 }) do if (perFrame[f] or 0) > 20 then used = used + 1 end end
-  check(used == 2, "front and back pictures are used")
-  local sideHits = (perFrame[6] or 0) + (perFrame[9] or 0)
-  check(sideHits == 0, "no vertex wears a side picture (" .. sideHits .. ")")
+  -- +x is the body's LEFT (it faces +z): a cropped WEST strip; -x the EAST one
+  check(bestXframe == Fx.facings.left[1], "the +x rim wears a WEST strip")
+  check(bestNXframe == Fx.facings.right[1], "the -x rim wears an EAST strip")
+  check((perFrame[0] or 0) > 20 and (perFrame[3] or 0) > 20, "front and back pictures cover the body")
+  check((perFrame[6] or 0) > 5 and (perFrame[9] or 0) > 5, "a cropped strip of each side is used")
+  local nFront, nSide = (perFrame[0] or 0) + (perFrame[3] or 0), (perFrame[6] or 0) + (perFrame[9] or 0)
+  check(nFront > nSide * 1.5, "sides are only a rim, not the whole body")
 end
 
 -- the UV is exactly the documented planar projection for the picture a vertex
@@ -135,18 +133,27 @@ do
   local viewOf = {}
   for _, f in ipairs(Fx.facings.down) do viewOf[f] = "front" end
   for _, f in ipairs(Fx.facings.up) do viewOf[f] = "back" end
+  for _, f in ipairs(Fx.facings.left) do viewOf[f] = "left" end
+  for _, f in ipairs(Fx.facings.right) do viewOf[f] = "right" end
   local colFor = {
     front = function(x, z) return x + 16 end, back = function(x, z) return -x + 16 end,
+    right = function(x, z) return z + 16 end, left = function(x, z) return -z + 16 end,
   }
-  local worst = 0
+  local worstFB, worstRow = 0, 0
   for _, v in ipairs(r1.verts) do
     local frame = math.floor(v[5] * imgH / Fx.H)
-    local want = colFor[viewOf[frame]](v[1], v[3])
+    local kind = viewOf[frame]
+    local want = colFor[kind](v[1], v[3])
     want = math.max(0.5, math.min(31.5, want))
     local row = math.max(0.5, math.min(31.5, r1.base + 1 - v[2]))
-    worst = math.max(worst, math.abs(v[4] * imgW - want), math.abs(v[5] * imgH - frame * Fx.H - row))
+    worstRow = math.max(worstRow, math.abs(v[5] * imgH - frame * Fx.H - row))
+    if kind == "front" or kind == "back" then
+      worstFB = math.max(worstFB, math.abs(v[4] * imgW - want))
+    end
   end
-  check(worst < 1e-3, "every UV is the planar projection of its vertex (worst error " .. worst .. ")")
+  check(worstRow < 1e-3, "row UV is the planar projection (worst error " .. worstRow .. ")")
+  -- front/back UVs match except on the rim, where they are pulled off the outline
+  check(worstFB < 1.35, "front/back UV is planar or outline-pulled (worst error " .. worstFB .. ")")
 end
 
 -- a walking pose has two legs, not four

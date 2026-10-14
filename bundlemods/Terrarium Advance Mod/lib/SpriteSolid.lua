@@ -33,13 +33,14 @@
 --
 -- THE LOOK
 --
--- Each triangle takes its colour from the front or back picture (the +z /
--- -z half of the body). Side pictures are not mapped on: at a 3/4 camera
--- they show a different pose of the same person and fight the front art.
--- The vertex UV is the planar projection of the vertex into that picture.
--- Vertices are duplicated per picture, so the mid-body seam is a colour
--- change, never a crack. Texels just outside a silhouette are expected to
--- be colour-padded by `padRGBA`, because the mesh is rounder than the pixels.
+-- Front and back pictures cover the +z / -z halves. A side picture is used
+-- only on the rim (triangles that face sideways past `sideStart`): just the
+-- inner columns of that picture, with the outline cut off (`sideInset`), so
+-- a 3/4 view does not paste a whole profile onto the cheek. Near the rim the
+-- front/back UVs are also pulled off the silhouette, which is what used to
+-- stretch into a black slab on the depth. Vertices are duplicated per
+-- picture, so seams are colour changes, never cracks. Texels just outside a
+-- silhouette are expected to be colour-padded by `padRGBA`.
 --
 -- COORDINATES (model space, one unit = one sprite pixel)
 --   y up, 0 at the soles. x east when the body faces south, z forward (south).
@@ -60,8 +61,12 @@ S.DEFAULT = {
   minDepth = 3,         -- px: the thinnest any part may be front to back
   margin = 3,           -- empty px kept around the body for the blur
   below = 3,            -- virtual rows under the soles
-  frontBias = 1.2,      -- front/back win a triangle over a side by this factor
-  useSides = false,     -- true: east/west masks for depth AND side pictures
+  frontBias = 2.2,      -- front/back keep the face; sides only win on the rim
+  useSides = false,     -- true: east/west masks also drive the body's depth
+  sidePaint = true,     -- cropped side pictures on the flanks (needs L/R masks)
+  sideStart = 0.55,     -- |nx|/(|nx|+bias|nz|) at which a triangle wears a side
+  sideInset = 1.5,      -- px cut off each edge of a side picture
+  outlinePull = 1.25,   -- px the front/back UV is pulled off the silhouette on the rim
   light = { 0.15, 0.85, 0.5 },   -- body-attached key light (model space)
   floor = 0.66,         -- darkest shade; the shader wants a floor well above 0
 }
@@ -195,6 +200,42 @@ local function analyse(views, W, H, useSides)
     end
   end
   return wr, dr, top, base
+end
+
+-- Per row, the half-open [lo, hi) of opaque columns. Used to cut the outline
+-- off a side picture before it is mapped onto the rim.
+local function rowBounds(mask, W, H)
+  if not mask then return nil end
+  local b = {}
+  for r = 0, H - 1 do
+    local o, lo, hi = r * W, nil, nil
+    for i = 0, W - 1 do
+      if mask[o + i + 1] then
+        lo = lo or i
+        hi = i + 1
+      end
+    end
+    b[r] = lo and { lo, hi } or nil
+  end
+  return b
+end
+
+local function clampCol(col, bounds, row, W, inset)
+  local b
+  if bounds then
+    local ri = floor(row)
+    b = bounds[ri] or bounds[ri - 1] or bounds[ri + 1]
+  end
+  if b then
+    local lo, hi = b[1] + inset, b[2] - inset
+    if hi < lo + 1 then lo, hi = b[1], b[2] end
+    if col < lo + 0.5 then return lo + 0.5 end
+    if col > hi - 0.5 then return hi - 0.5 end
+    return col
+  end
+  if col < 0.5 then return 0.5 end
+  if col > W - 0.5 then return W - 0.5 end
+  return col
 end
 
 -- One row's cross-section: a list of ellipses { cx, cz, a, b } in model units.
@@ -529,39 +570,40 @@ function S.build(views, layout, opts, tick)
 
   -- ---- pictures: pick one per triangle, duplicate vertices per picture
   local VIEWS = { "front", "back", "right", "left" }
-  local VN = { { 0, 0, 1 }, { 0, 0, -1 }, { -1, 0, 0 }, { 1, 0, 0 } }
-  local BIAS = { o.frontBias, o.frontBias, 1, 1 }
   local colX = {
     function(x, z) return x + W / 2 end,       -- front
     function(x, z) return -x + W / 2 end,      -- back
     function(x, z) return z + W / 2 end,       -- right (east sprite)
     function(x, z) return -z + W / 2 end,      -- left  (west sprite)
   }
-  local nPic = o.useSides and 4 or 2
+  local paintSides = o.sidePaint and views.left and views.right
+      and layout.cellY.left and layout.cellY.right
+  local sideB = {
+    [3] = rowBounds(views.right, W, H),
+    [4] = rowBounds(views.left, W, H),
+  }
   local verts, map = {}, {}
   local made = {}
   local imgW, imgH = layout.imgW, layout.imgH
   local cellX = layout.cellX or 0
+  local sideStart = o.sideStart
+  local inset = o.sideInset
+  local pull = o.outlinePull
 
   for t = 1, #tris, 3 do
     local a, b, c = tris[t], tris[t + 1], tris[t + 2]
     -- drop triangles that collapsed onto the ground
     if not (P[a * 3 - 1] == 0 and P[b * 3 - 1] == 0 and P[c * 3 - 1] == 0) then
+      local nxs = N[a * 3 - 2] + N[b * 3 - 2] + N[c * 3 - 2]
+      local nzs = N[a * 3] + N[b * 3] + N[c * 3]
+      local ax, az = abs(nxs), abs(nzs) * o.frontBias
+      local sideFrac = ax / (ax + az + 1e-9)
       local best
-      if nPic == 2 then
-        -- Front hemisphere wears south, back wears north. Using centroid z
-        -- (not the normal) so a flank still shows the front/back art instead
-        -- of a side picture of a different pose.
-        best = (P[a * 3] + P[b * 3] + P[c * 3] >= 0) and 1 or 2
+      if paintSides and sideFrac >= sideStart then
+        -- Rim only: a cropped strip of the side picture, not the whole profile.
+        best = (nxs >= 0) and 4 or 3
       else
-        local nxs = N[a * 3 - 2] + N[b * 3 - 2] + N[c * 3 - 2]
-        local nzs = N[a * 3] + N[b * 3] + N[c * 3]
-        local bestScore = -math.huge
-        best = 1
-        for vi = 1, 4 do
-          local s = (nxs * VN[vi][1] + nzs * VN[vi][3]) * BIAS[vi]
-          if s > bestScore then best, bestScore = vi, s end
-        end
+        best = (P[a * 3] + P[b * 3] + P[c * 3] >= 0) and 1 or 2
       end
       for _, vid in ipairs({ a, b, c }) do
         local key = vid * 4 + best
@@ -570,8 +612,18 @@ function S.build(views, layout, opts, tick)
           local x, y, z = P[vid * 3 - 2], P[vid * 3 - 1], P[vid * 3]
           local col = colX[best](x, z)
           local row = base + 1 - y
-          if col < 0.5 then col = 0.5 elseif col > W - 0.5 then col = W - 0.5 end
           if row < 0.5 then row = 0.5 elseif row > H - 0.5 then row = H - 0.5 end
+          if best >= 3 then
+            col = clampCol(col, sideB[best], row, W, inset)
+          else
+            -- On the rim, the planar front/back UV sits on the silhouette
+            -- (often a black outline) and would stretch into a black slab.
+            if sideFrac > 0.25 and pull > 0 then
+              local d = pull * min(1, sideFrac / sideStart)
+              if col >= W / 2 then col = col - d else col = col + d end
+            end
+            if col < 0.5 then col = 0.5 elseif col > W - 0.5 then col = W - 0.5 end
+          end
           local cellY = layout.cellY[VIEWS[best]]
           verts[#verts + 1] = {
             x, y, z,
