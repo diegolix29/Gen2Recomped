@@ -118,12 +118,15 @@ do
   check(onClear == 0, "no vertex samples a transparent texel (" .. onClear .. ")")
   check(bestZframe == Fx.facings.down[1], "the most forward point wears the SOUTH picture")
   check(bestNZframe == Fx.facings.up[1], "the most rearward point wears the NORTH picture")
-  -- +x is the body's LEFT (it faces +z): that is the WEST sprite; -x the EAST one
-  check(bestXframe == Fx.facings.left[1], "the +x flank wears the WEST picture")
-  check(bestNXframe == Fx.facings.right[1], "the -x flank wears the EAST picture")
+  -- flanks wear front or back, never a side picture of a different pose
+  local sides = { [Fx.facings.left[1]] = true, [Fx.facings.right[1]] = true }
+  check(not sides[bestXframe] and not sides[bestNXframe],
+        "the flanks wear front/back, not the east/west pictures")
   local used = 0
-  for _, f in ipairs({ 0, 3, 6, 9 }) do if (perFrame[f] or 0) > 20 then used = used + 1 end end
-  check(used == 4, "all four pictures are used")
+  for _, f in ipairs({ 0, 3 }) do if (perFrame[f] or 0) > 20 then used = used + 1 end end
+  check(used == 2, "front and back pictures are used")
+  local sideHits = (perFrame[6] or 0) + (perFrame[9] or 0)
+  check(sideHits == 0, "no vertex wears a side picture (" .. sideHits .. ")")
 end
 
 -- the UV is exactly the documented planar projection for the picture a vertex
@@ -132,11 +135,8 @@ do
   local viewOf = {}
   for _, f in ipairs(Fx.facings.down) do viewOf[f] = "front" end
   for _, f in ipairs(Fx.facings.up) do viewOf[f] = "back" end
-  for _, f in ipairs(Fx.facings.left) do viewOf[f] = "left" end
-  for _, f in ipairs(Fx.facings.right) do viewOf[f] = "right" end
   local colFor = {
     front = function(x, z) return x + 16 end, back = function(x, z) return -x + 16 end,
-    right = function(x, z) return z + 16 end, left = function(x, z) return -z + 16 end,
   }
   local worst = 0
   for _, v in ipairs(r1.verts) do
@@ -160,8 +160,25 @@ do
   local bad = {}
   for k, v in pairs(views) do bad[k] = v end
   bad.left = { w = 16, h = 16 }
-  local r, why = S.build(bad, layout)
+  local r, why = S.build(bad, layout, { useSides = true })
   check(r == nil and why:find("left"), "a mismatched mask is refused with a reason")
+  -- default build ignores sides, so a missing left mask is fine
+  local noSide = { front = views.front, back = views.back }
+  r, why = S.build(noSide, layout)
+  check(r ~= nil, "front/back only is enough (" .. tostring(why) .. ")")
+  -- opt-in: four pictures, flanks wear east/west
+  local sided = S.build(views, layout, { useSides = true })
+  check(sided ~= nil, "useSides still builds a four-picture body")
+  if sided then
+    local bestX, bestNX, fx, fnx = -math.huge, math.huge, nil, nil
+    for _, v in ipairs(sided.verts) do
+      local frame = math.floor(v[5] * imgH / Fx.H)
+      if v[1] > bestX then bestX, fx = v[1], frame end
+      if v[1] < bestNX then bestNX, fnx = v[1], frame end
+    end
+    check(fx == Fx.facings.left[1], "useSides: +x flank wears WEST")
+    check(fnx == Fx.facings.right[1], "useSides: -x flank wears EAST")
+  end
   local empty = {}
   for k, v in pairs(views) do
     local e = { w = v.w, h = v.h }

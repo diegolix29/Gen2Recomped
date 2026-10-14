@@ -1,4 +1,4 @@
--- SpriteSolid: a smooth 3D body built from the four sides of a sprite.
+-- SpriteSolid: a smooth 3D body built from a sprite's front and back.
 --
 -- WHY THIS EXISTS
 --
@@ -7,17 +7,19 @@
 -- engine's Gen4Facings) plus two step frames per side. A free camera orbits
 -- that card, so every NPC is a paper cut-out in a 3D world.
 --
--- This module turns the four pictures of one pose into a closed, smooth,
--- textured mesh. It owns NO engine state and touches no LOVE API, so it runs
--- (and is tested) under plain Lua; lib/Gen4NpcModels.lua does the engine side.
+-- This module turns the front and back pictures of one pose into a closed,
+-- smooth, textured mesh (optional side pictures can still drive depth). It
+-- owns NO engine state and touches no LOVE API, so it runs (and is tested)
+-- under plain Lua; lib/Gen4NpcModels.lua does the engine side.
 --
 -- THE SHAPE
 --
--- 1. The four alpha masks give, for every pixel row, which stretches of the
---    body are occupied seen from the front/back (x runs) and from the sides
---    (z runs). A row's cross-section is one ellipse per (x run, z run): a leg
---    seen as 4 px wide from the front and 7 px deep from the side is a 4 x 7
---    ellipse, not a box.
+-- 1. The front/back alpha masks give, for every pixel row, which stretches of
+--    the body are occupied (x runs). Depth (z runs) is invented from each
+--    run's width so the body is volumetric without a side picture fighting
+--    the front silhouette. `useSides` opts back into reading east/west masks
+--    for z. A row's cross-section is one ellipse per (x run, z run): a leg
+--    4 px wide with invented depth 3 is a 4 x 3 ellipse, not a box.
 --    Runs pair by order when both views see the same count (two legs that
 --    are also two legs in profile), and as a product otherwise. Pairing by
 --    order is what stops a walking pose growing four legs.
@@ -31,12 +33,13 @@
 --
 -- THE LOOK
 --
--- Each triangle takes its colour from whichever of the four pictures it faces
--- most (front and back are favoured: that is where the face and the chest
--- are). The vertex UV is the planar projection of the vertex into that
--- picture. Vertices are duplicated per picture, so seams are colour changes,
--- never cracks. Texels just outside a silhouette are expected to be
--- colour-padded by `padRGBA`, because the mesh is rounder than the pixels.
+-- Each triangle takes its colour from the front or back picture (the +z /
+-- -z half of the body). Side pictures are not mapped on: at a 3/4 camera
+-- they show a different pose of the same person and fight the front art.
+-- The vertex UV is the planar projection of the vertex into that picture.
+-- Vertices are duplicated per picture, so the mid-body seam is a colour
+-- change, never a crack. Texels just outside a silhouette are expected to
+-- be colour-padded by `padRGBA`, because the mesh is rounder than the pixels.
 --
 -- COORDINATES (model space, one unit = one sprite pixel)
 --   y up, 0 at the soles. x east when the body faces south, z forward (south).
@@ -58,6 +61,7 @@ S.DEFAULT = {
   margin = 3,           -- empty px kept around the body for the blur
   below = 3,            -- virtual rows under the soles
   frontBias = 1.2,      -- front/back win a triangle over a side by this factor
+  useSides = false,     -- true: east/west masks for depth AND side pictures
   light = { 0.15, 0.85, 0.5 },   -- body-attached key light (model space)
   floor = 0.66,         -- darkest shade; the shader wants a floor well above 0
 }
@@ -168,8 +172,8 @@ local function runsOf(w, test)
 end
 
 -- Per row: the x runs (front/back seen together: the back picture is the
--- front's mirror) and the z runs (east/west seen together), in cell columns.
-local function analyse(views, W, H)
+-- front's mirror) and, when useSides, the z runs (east/west seen together).
+local function analyse(views, W, H, useSides)
   local F, Bk, L, R = views.front, views.back, views.left, views.right
   local wr, dr = {}, {}
   local top, base
@@ -178,9 +182,13 @@ local function analyse(views, W, H)
     wr[r] = runsOf(W, function(i)
       return F[o + i + 1] or Bk[o + (W - 1 - i) + 1]
     end)
-    dr[r] = runsOf(W, function(k)
-      return R[o + k + 1] or L[o + (W - 1 - k) + 1]
-    end)
+    if useSides and L and R then
+      dr[r] = runsOf(W, function(k)
+        return R[o + k + 1] or L[o + (W - 1 - k) + 1]
+      end)
+    else
+      dr[r] = {}
+    end
     if #wr[r] > 0 then
       top = top or r
       base = r
@@ -270,9 +278,9 @@ end
 
 -- build(views, layout [, opts [, tick]]) -> result | nil, reason
 --
---   views   { front, back, left, right } masks (S.maskFromRGBA), one pose
+--   views   { front, back [, left, right] } masks (S.maskFromRGBA), one pose
 --   layout  { imgW, imgH, cellW, cellH, cellX,
---             cellY = { front =, back =, left =, right = } }   (pixels)
+--             cellY = { front =, back = [, left =, right =] } }   (pixels)
 --   opts    S.DEFAULT overrides
 --   tick    called now and then; a job uses it to yield (see S.newJob)
 --
@@ -284,14 +292,16 @@ function S.build(views, layout, opts, tick)
   for k, v in pairs(S.DEFAULT) do o[k] = v end
   for k, v in pairs(opts or {}) do o[k] = v end
   local W, H = layout.cellW, layout.cellH
-  for _, key in ipairs({ "front", "back", "left", "right" }) do
+  local need = { "front", "back" }
+  if o.useSides then need[3], need[4] = "left", "right" end
+  for _, key in ipairs(need) do
     local m = views[key]
     if not (m and m.w == W and m.h == H) then
       return nil, "missing or mismatched " .. key .. " mask"
     end
   end
 
-  local wr, dr, top, base = analyse(views, W, H)
+  local wr, dr, top, base = analyse(views, W, H, o.useSides)
   if not top then return nil, "no body in the front/back views" end
   local bodyH = base - top + 1
   if bodyH < 4 then return nil, "body only " .. bodyH .. " rows tall" end
@@ -311,11 +321,14 @@ function S.build(views, layout, opts, tick)
   for r = top, base do
     local d = depthRunsFor(r)
     if not d then
-      local lo, hi = math.huge, -math.huge
-      for _, w in ipairs(wr[r]) do lo, hi = min(lo, w[1]), max(hi, w[2]) end
-      local width = hi - lo
-      local depth = max(o.minDepth, width * 0.55)
-      d = { { W / 2 - depth / 2, W / 2 + depth / 2 } }
+      -- No side picture: each front/back run becomes its own ellipse, depth
+      -- from that run's width, centred so the volume matches the art we paint.
+      d = {}
+      for i = 1, #wr[r] do
+        local wrun = wr[r][i]
+        local depth = max(o.minDepth, (wrun[2] - wrun[1]) * 0.85)
+        d[i] = { W / 2 - depth / 2, W / 2 + depth / 2 }
+      end
     end
     rows[r] = sections(wr[r], d, W, o.minDepth)
   end
@@ -524,6 +537,7 @@ function S.build(views, layout, opts, tick)
     function(x, z) return z + W / 2 end,       -- right (east sprite)
     function(x, z) return -z + W / 2 end,      -- left  (west sprite)
   }
+  local nPic = o.useSides and 4 or 2
   local verts, map = {}, {}
   local made = {}
   local imgW, imgH = layout.imgW, layout.imgH
@@ -533,12 +547,21 @@ function S.build(views, layout, opts, tick)
     local a, b, c = tris[t], tris[t + 1], tris[t + 2]
     -- drop triangles that collapsed onto the ground
     if not (P[a * 3 - 1] == 0 and P[b * 3 - 1] == 0 and P[c * 3 - 1] == 0) then
-      local nxs = N[a * 3 - 2] + N[b * 3 - 2] + N[c * 3 - 2]
-      local nzs = N[a * 3] + N[b * 3] + N[c * 3]
-      local best, bestScore = 1, -math.huge
-      for vi = 1, 4 do
-        local s = (nxs * VN[vi][1] + nzs * VN[vi][3]) * BIAS[vi]
-        if s > bestScore then best, bestScore = vi, s end
+      local best
+      if nPic == 2 then
+        -- Front hemisphere wears south, back wears north. Using centroid z
+        -- (not the normal) so a flank still shows the front/back art instead
+        -- of a side picture of a different pose.
+        best = (P[a * 3] + P[b * 3] + P[c * 3] >= 0) and 1 or 2
+      else
+        local nxs = N[a * 3 - 2] + N[b * 3 - 2] + N[c * 3 - 2]
+        local nzs = N[a * 3] + N[b * 3] + N[c * 3]
+        local bestScore = -math.huge
+        best = 1
+        for vi = 1, 4 do
+          local s = (nxs * VN[vi][1] + nzs * VN[vi][3]) * BIAS[vi]
+          if s > bestScore then best, bestScore = vi, s end
+        end
       end
       for _, vid in ipairs({ a, b, c }) do
         local key = vid * 4 + best

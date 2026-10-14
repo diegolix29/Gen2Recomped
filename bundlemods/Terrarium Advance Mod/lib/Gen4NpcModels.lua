@@ -1,8 +1,8 @@
 -- Gen4NpcModels: Platinum's NPCs as smooth 3D bodies built from their own art.
 --
 -- Platinum's overworld people are flat billboards in a real 3D world. This
--- builds, for every walker sheet, a closed smooth mesh out of the sheet's four
--- real sides (see lib/SpriteSolid.lua for the geometry) and draws it in place
+-- builds, for every walker sheet, a closed smooth mesh out of the sheet's
+-- front and back pictures (see lib/SpriteSolid.lua for the geometry) and draws it in place
 -- of the flat card, through the same seam Gen4WorldHost already uses for the
 -- player model, Colosseum/Stadium models and `model3d` actors.
 --
@@ -23,7 +23,7 @@
 -- WHAT IS BUILT, AND WHEN
 --
 --   One body per (sheet, pose): the stand frame and the two step frames, each
---   from that pose's south / north / west / east pictures. The body is turned
+--   from that pose's south and north pictures on a volumetric body. The body is turned
 --   by the NPC's world facing (eased, so a turn is not a snap) and the pose
 --   follows the sprite's own walk phase, so the walk is the sheet's real
 --   walk. Sheets are shared: fifty youngsters cost one set of bodies.
@@ -49,7 +49,7 @@ local Npc = {
   STEP_SECONDS = 0.004, -- slice of one build step
   FILTER = "nearest",   -- "nearest" keeps the pixel art crisp, "linear" softens
   includePlayer = false,
-  solid = {},           -- SpriteSolid option overrides, e.g. { ss = 2 }
+  solid = { useSides = false },  -- front/back art only; sides fight the volume
   stats = { builds = 0, failed = 0, drawn = 0, sheets = 0 },
 }
 
