@@ -104,7 +104,7 @@ fi
 # list a version but cannot import it. Resolve the manifest list from
 # src/core/GameVersion.lua so newly added versions are included automatically.
 manifest_paths() {
-  py - "$ROOT/src/core/GameVersion.lua" <<'PY'
+  python3 - "$ROOT/src/core/GameVersion.lua" <<'PY'
 import re, sys
 src = open(sys.argv[1]).read()
 print(" ".join(dict.fromkeys(re.findall(r'manifest\s*=\s*"([^"]+)"', src))))
@@ -114,7 +114,7 @@ PY
 # Gen2 versions declared in GameVersion.lua, so a newly added cart is covered
 # without touching this script.
 gen2_version_ids() {
-  py - "$ROOT/src/core/GameVersion.lua" <<'PY'
+  python3 - "$ROOT/src/core/GameVersion.lua" <<'PY'
 import re, sys
 src = open(sys.argv[1]).read()
 ids = [i for i, gen in re.findall(r'id\s*=\s*"([^"]+)"[^}]*?generation\s*=\s*(\d+)', src, re.S)
@@ -143,7 +143,7 @@ ensure_gen2_sources() {
 
 manifest_is_valid() {
   local path="$1"
-  py - "$path" <<'PY'
+  python3 - "$path" <<'PY'
 import json, pathlib, sys
 
 try:
@@ -195,7 +195,7 @@ archive_list() {
     unzip -Z1 "$archive"
     return
   fi
-  py - "$archive" <<'PY'
+  python3 - "$archive" <<'PY'
 import sys, zipfile
 with zipfile.ZipFile(sys.argv[1], "r") as zf:
     for name in zf.namelist():
@@ -210,7 +210,7 @@ archive_read_entry() {
     unzip -p "$archive" "$entry"
     return
   fi
-  py - "$archive" "$entry" <<'PY'
+  python3 - "$archive" "$entry" <<'PY'
 import sys, zipfile
 with zipfile.ZipFile(sys.argv[1], "r") as zf:
     sys.stdout.buffer.write(zf.read(sys.argv[2]))
@@ -230,7 +230,7 @@ archive_update_entry_from_file() {
     rm -rf "$stage"
     return
   fi
-  py - "$archive" "$entry" "$src_file" <<'PY'
+  python3 - "$archive" "$entry" "$src_file" <<'PY'
 import pathlib, sys, tempfile, zipfile
 archive, entry, src = sys.argv[1], sys.argv[2], sys.argv[3]
 data = pathlib.Path(src).read_bytes()
@@ -280,7 +280,7 @@ pack_love_archive() {
     return
   fi
 
-  py - "$root" "$archive" "$manifests" <<'PY'
+  python3 - "$root" "$archive" "$manifests" <<'PY'
 import fnmatch
 import os
 import pathlib
@@ -337,9 +337,9 @@ apply_android_branding() {
 
   say "applying Android branding (gradle.properties + permission trim)"
 
-  # Detect if running on Windows (Git Bash, MSYS, Cygwin) or Linux/macOS
+  # Detect if running on Windows (Git Bash) or Linux/macOS
   local is_windows=false
-  if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" || "$OSTYPE" == "cygwin" ]]; then
+  if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
     is_windows=true
   fi
 
@@ -396,7 +396,7 @@ path.write_text(text)
 PY
   else
     # Linux/macOS - use native paths
-    py - "$props" "$APPLICATION_ID" "$APP_NAME" "$VERSION" "$VERSION_CODE" <<'PY'
+    python3 - "$props" "$APPLICATION_ID" "$APP_NAME" "$VERSION" "$VERSION_CODE" <<'PY'
 import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 app_id, name, version, version_code = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
@@ -420,7 +420,7 @@ if version:
 path.write_text(text)
 PY
 
-    py - "$manifest" <<'PY'
+    python3 - "$manifest" <<'PY'
 import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
@@ -450,9 +450,9 @@ pack_game_love() {
   mkdir -p "$EMBED_ASSETS"
   rm -f "$LOVE_FILE"
   
-  # Detect if running on Windows (Git Bash, MSYS, Cygwin) or Linux/macOS
+  # Detect if running on Windows (Git Bash) or Linux/macOS
   local is_windows=false
-  if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" || "$OSTYPE" == "cygwin" ]]; then
+  if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
     is_windows=true
   fi
   
@@ -724,20 +724,7 @@ require_android_sdk() {
   printf 'sdk.dir=%s\n' "$sdk" > "$props"
 
   if ! command -v java >/dev/null 2>&1; then
-    # Try to find Android Studio's bundled JDK on Windows
-    local android_studio_jdk=""
-    if [ -d "/c/Program Files/Android/Android Studio/jbr" ]; then
-      android_studio_jdk="/c/Program Files/Android/Android Studio/jbr"
-    elif [ -d "/c/Program Files (x86)/Android/Android Studio/jbr" ]; then
-      android_studio_jdk="/c/Program Files (x86)/Android/Android Studio/jbr"
-    fi
-
-    if [ -n "$android_studio_jdk" ]; then
-      export PATH="$android_studio_jdk/bin:$PATH"
-      say "using Android Studio's bundled JDK at $android_studio_jdk"
-    else
-      fail "java not found. Install JDK 17 (Android Studio's bundled JDK is fine)."
-    fi
+    fail "java not found. Install JDK 17 (Android Studio's bundled JDK is fine)."
   fi
 
   if [ ! -d "$sdk/ndk/$NDK_VERSION" ]; then
@@ -783,9 +770,9 @@ run_gradle() {
     chmod +x "$build_dir/gradlew" 2>/dev/null || true
   fi
 
-  # Detect if running on Windows (Git Bash, MSYS, Cygwin) or Linux/macOS
+  # Detect if running on Windows (Git Bash) or Linux/macOS
   local is_windows=false
-  if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" || "$OSTYPE" == "cygwin" ]]; then
+  if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
     is_windows=true
   fi
 
@@ -871,7 +858,7 @@ install_second_display_host() {
   cp "$host" "$javadir/SecondDisplayHost.java"
 
   local PYBIN
-  PYBIN="$(command -v py || command -v python || command -v py)"
+  PYBIN="$(command -v python3 || command -v python || command -v py)"
   [ -n "$PYBIN" ] || fail "no python on PATH to patch the manifest"
 
   "$PYBIN" - "$manifest" "$APPLICATION_ID" <<'PY'
