@@ -38,6 +38,15 @@
 -- The picture is shrunk to TEX_MAX (box-averaged) and uploaded with mipmaps: raw,
 -- a big picture on a small rock is what reads as grain.
 --
+-- SEA ROCKS
+--
+-- The `searock` terrain texture (shore / reef rock; Gen4Lawn lists it) gets the same
+-- boulders, a little bigger. A long card becomes a loose string of rocks (varied sizes,
+-- gaps, pushed off the line); a flat polygon gets boulders scattered over it. The
+-- native shape is hidden once rocks stand in (SEA_HIDE_FLAT covers flat ones too).
+-- Knobs: SEA_BASE_W, SEA_W_VAR, SEA_MIN_W, SEA_MAX_W, SEA_SPACING, SEA_KEEP,
+-- SEA_JITTER, SEA_SINK, SEA_FLAT, SEA_FLAT_CELL, SEA_FLAT_MAX, SEA_HIDE_FLAT.
+--
 -- KNOBS: Rocks.SIZE, MIN_W, MAX_W, FENCE_ASPECT, FENCE_MIN_W, Y_OFFSET, SINK,
 -- WINDOW, USE_FILE, TEXTURE_FILE, TEX_WINDOW, enabled. Bridge.disabled.rocks turns it off.
 
@@ -48,6 +57,26 @@ local Mat4 = V.require("Mat4")
 local Rocks = {
   enabled = true,
   TEXTURES = { imped = true },   -- terrain texture names that are rocks OR fence banners
+  -- SEA ROCKS (`searock`, the shore/reef rock Gen4Lawn names): the same boulders, a bit
+  -- bigger than a route rock. A long card is NOT one rock per card in a straight line:
+  -- it gets a loose string of rocks of different sizes, some gaps, pushed off the line.
+  -- A flat searock polygon gets boulders scattered over it.
+  SEA_TEXTURES = { searock = true },
+  SEA_BASE_W = 30,               -- typical sea rock width (an `imped` rock is ~22; a tile is 16)
+  SEA_W_VAR = 0.25,              -- each rock is BASE x (1 +- this)
+  SEA_MIN_W = 18,                -- width limits
+  SEA_MAX_W = 42,
+  SEA_SPACING = 26,              -- along a long card: about one rock this often
+  SEA_KEEP = 0.68,               -- ...and this fraction of those spots get one (the rest are gaps) - reduced from 0.8 for ~15% less density
+  SEA_JITTER = 9,                -- ...each pushed up to this far off the card's line, either side
+  SEA_SINK = 2.0,                -- planted deeper: the shore is wet and uneven
+  SEA_SATELLITES = 1,
+  SEA_FLAT = true,               -- scatter boulders over a flat searock polygon
+  SEA_FLAT_CELL = 30,            -- ...about one boulder per CELL x CELL units of it - increased from 26 for ~15% less density
+  SEA_FLAT_MAX = 51,             -- ...and never more than this many per land - reduced from 60 for ~15% less density
+  -- Hide the native searock shape even when it holds a flat polygon (the picture you
+  -- see is usually that polygon). Turn off if hiding it ever leaves a hole in the shore.
+  SEA_HIDE_FLAT = true,
   WINDOW = 2,                    -- lands each way around the camera
   SIZE = 1.35,                    -- rock width as a fraction of the card's width
   MIN_W = 14,                    -- never narrower than this (world units; a tile is 16)
@@ -304,7 +333,8 @@ local function cardsOf(positions, tris)
       end
       local planeW = math.max(xmax - xmin, zmax - zmin)
       local planeH = math.max(0.01, ymax - ymin)
-      cards[#cards + 1] = { sx / 4, ymin, sz / 4, planeW, planeH }
+      cards[#cards + 1] = { sx / 4, ymin, sz / 4, planeW, planeH, corners = corners,
+                            x0 = xmin, x1 = xmax, z0 = zmin, z1 = zmax }
       i = i + 2
     else
       i = i + 1        -- not a pair: slide by one and try again
@@ -378,7 +408,7 @@ local function icosphere()
 end
 
 -- One boulder centred at (cx, cz), standing on baseY. `w` is its width.
-local function boulder(b, cx, baseY, cz, w, seed)
+local function boulder(b, cx, baseY, cz, w, seed, sink)
   local tpl = icosphere()
   local r1, r2, r3, r4 = hash(seed, 1.7), hash(2.3, seed), hash(seed + 4.1, seed - 9.2), hash(seed * 0.37, 5.5)
   local ax, az = 0.5 * w * (0.85 + 0.35 * r1), 0.5 * w * (0.85 + 0.35 * r2)   -- half widths
@@ -401,7 +431,7 @@ local function boulder(b, cx, baseY, cz, w, seed)
     local lx, lz = x * ax, z * az
     pts[i] = { cx + lx * cs - lz * sn, y * hy, cz + lx * sn + lz * cs }
   end
-  local lift = baseY - Rocks.SINK - flatY * hy       -- put the flat underside at the ground (minus the sink)
+  local lift = baseY - (sink or Rocks.SINK) - flatY * hy       -- put the flat underside at the ground (minus the sink)
   for fi, face in ipairs(tpl.faces) do
     local a, c2, d = pts[face[1]], pts[face[2]], pts[face[3]]
     -- face normal, oriented away from the rock's centre
@@ -460,17 +490,71 @@ local function boulder(b, cx, baseY, cz, w, seed)
   end
 end
 
-local function buildRock(b, cx, baseY, cz, cardW)
-  local w = math.max(Rocks.MIN_W, math.min(Rocks.MAX_W, cardW * Rocks.SIZE))
-  boulder(b, cx, baseY, cz, w, cx * 0.91 + cz * 1.73)
-  local extra = math.min(Rocks.SATELLITES or 0, math.floor(hash(cx + 5.5, cz - 1.1) * 3))
+-- `width` (optional) sets a sea rock's width directly; imped rocks size from the card.
+local function buildRock(b, cx, baseY, cz, cardW, sea, width)
+  local w, sink, satellites
+  if sea then
+    w = math.max(Rocks.SEA_MIN_W, math.min(Rocks.SEA_MAX_W, width or Rocks.SEA_BASE_W))
+    sink, satellites = Rocks.SEA_SINK, Rocks.SEA_SATELLITES or 0
+  else
+    w = math.max(Rocks.MIN_W, math.min(Rocks.MAX_W, cardW * Rocks.SIZE))
+    sink, satellites = Rocks.SINK, Rocks.SATELLITES or 0
+  end
+  boulder(b, cx, baseY, cz, w, cx * 0.91 + cz * 1.73, sink)
+  local extra = math.min(satellites, math.floor(hash(cx + 5.5, cz - 1.1) * 3))
   for k = 1, extra do
     local ang = hash(cx * k, cz + k) * 6.2832
     local dist = w * (0.55 + 0.25 * hash(cz, cx * k + 2))
     local sw = w * (0.28 + 0.2 * hash(cx + k, cz * 2.3))
-    boulder(b, cx + math.cos(ang) * dist, baseY, cz + math.sin(ang) * dist, sw, cx * 0.57 + cz * 2.11 + k * 7.7)
+    boulder(b, cx + math.cos(ang) * dist, baseY, cz + math.sin(ang) * dist, sw, cx * 0.57 + cz * 2.11 + k * 7.7, sink)
   end
   return 80
+end
+
+-- A random-looking width for a sea rock standing at (x, z).
+local function seaWidth(x, z)
+  local v = Rocks.SEA_W_VAR or 0.25
+  return (Rocks.SEA_BASE_W or 30) * (1 - v + 2 * v * hash(x * 1.3 + 7.1, z * 0.7 - 3.3))
+end
+
+-- One searock card -> a loose string of rocks along it (or one, for a compact card).
+-- Positions along the card are jittered, some are skipped, and each rock is pushed
+-- off the card's line by a different amount, so a long card never reads as a row.
+local function seaBouldersOnCard(b, c, ground)
+  local ex, ez = c.x1 - c.x0, c.z1 - c.z0
+  local alongX = ex >= ez
+  local len = alongX and ex or ez
+  local spacing = math.max(8, Rocks.SEA_SPACING or 26)
+  local n = math.max(1, math.floor(len / spacing + 0.5))
+  local mx, mz = (c.x0 + c.x1) * 0.5, (c.z0 + c.z1) * 0.5
+  local made = 0
+  local function waterY(x, z)
+    if ground and ground.groundY then
+      return ground:groundY(x, z) or c[2]
+    end
+    return c[2]
+  end
+  for i = 1, n do
+    if n == 1 then
+      local wy = waterY(c[1], c[3])
+      buildRock(b, c[1], wy, c[3], c[4], true, seaWidth(c[1], c[3]))
+      made = made + 1
+    elseif hash(c[1] * i + 1.3, c[3] + i * 2.9) < (Rocks.SEA_KEEP or 0.8) then
+      local t = (i - 0.5) / n + (hash(c[1] + i * 3.1, c[3] * 0.4) - 0.5) * 0.7 / n
+      local lat = (hash(c[3] + i * 1.7, c[1] * 0.3 + i) - 0.5) * 2 * (Rocks.SEA_JITTER or 9)
+      local px, pz
+      if alongX then px, pz = c.x0 + t * ex, mz + lat else px, pz = mx + lat, c.z0 + t * ez end
+      local wy = waterY(px, pz)
+      buildRock(b, px, wy, pz, c[4], true, seaWidth(px, pz))
+      made = made + 1
+    end
+  end
+  if made == 0 then      -- every spot happened to be a gap: keep the card's middle
+    local wy = waterY(c[1], c[3])
+    buildRock(b, c[1], wy, c[3], c[4], true, seaWidth(c[1], c[3]))
+    made = 1
+  end
+  return made
 end
 
 -- ------------------------------------------------------------------ lands --
@@ -484,17 +568,54 @@ Rocks.active = {}
 Rocks.coverVersion = 0
 local lastCoverSig = ""
 
+-- Which kind of rock shape is this? -> nil | "imped" | "sea"
+local function shapeKind(s)
+  local tex = tostring(s.texture or s.srcTexture or ""):lower()
+  local mat = tostring(s.material or s.srcMaterial or ""):lower()
+  if Rocks.SEA_TEXTURES[tex] or Rocks.SEA_TEXTURES[mat] then return "sea" end
+  for name in pairs(Rocks.SEA_TEXTURES) do
+    if tex:find(name, 1, true) or mat:find(name, 1, true) then return "sea" end
+  end
+  if Rocks.TEXTURES[tex] or Rocks.TEXTURES[mat]
+      or tex:find("imped", 1, true) or mat:find("imped", 1, true) then
+    return "imped"
+  end
+  return nil
+end
+
+-- Split a shape's triangles: up-facing (a floor) and the rest (standing cards).
+local function splitFlat(positions, tris)
+  local flat, upright, area = {}, {}, 0
+  for _, t in ipairs(tris) do
+    local a, b, c = positions[t[1]], positions[t[2]], positions[t[3]]
+    if a and b and c then
+      local ux, uy, uz = b[1] - a[1], b[2] - a[2], b[3] - a[3]
+      local vx, vy, vz = c[1] - a[1], c[2] - a[2], c[3] - a[3]
+      local nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+      local len = math.sqrt(nx * nx + ny * ny + nz * nz)
+      if len > 1e-6 then
+        if math.abs(ny) / len >= 0.6 then
+          flat[#flat + 1] = { a, b, c, len * 0.5 }
+          area = area + len * 0.5
+        else
+          upright[#upright + 1] = t
+        end
+      end
+    end
+  end
+  return flat, upright, area
+end
+
 local function buildLand(ground, land)
-  local out = { rocks = 0, fences = 0, shapes = {} }
+  local out = { rocks = 0, fences = 0, seaRocks = 0, shapes = {} }
   local record = ground.terrain.chunks[land]
   if not (record and record.shapes) then return out end
   local b = { verts = {}, map = {} }
-  local shapesSeen, leftover = 0, 0
+  local shapesSeen, leftover, seaShapes = 0, 0, 0
+  local seaCards, seaFlat, seaHidden = 0, 0, 0
   for _, s in ipairs(record.shapes) do
-    local tex = tostring(s.texture or s.srcTexture or ""):lower()
-    local mat = tostring(s.material or s.srcMaterial or ""):lower()
-    if Rocks.TEXTURES[tex] or Rocks.TEXTURES[mat]
-        or tex:find("imped", 1, true) or mat:find("imped", 1, true) then
+    local kind = shapeKind(s)
+    if kind == "imped" then
       shapesSeen = shapesSeen + 1
       local positions, tris = readShape(ground, s, record.posScale or 1)
       if positions then
@@ -517,6 +638,57 @@ local function buildLand(ground, land)
           out.shapes[#out.shapes + 1] = s
         end
       end
+    elseif kind == "sea" then
+      seaShapes = seaShapes + 1
+      local positions, tris = readShape(ground, s, record.posScale or 1)
+      if positions then
+        local flat, upright, area = splitFlat(positions, tris)
+        -- every upright card becomes a string of sea rocks
+        local cards = (#upright > 0) and cardsOf(positions, upright) or {}
+        local made = 0
+        for _, c in ipairs(cards) do
+          if #b.verts < 60000 then
+            local n = seaBouldersOnCard(b, c, ground)
+            made, out.seaRocks = made + n, out.seaRocks + n
+          end
+        end
+        -- a flat polygon: scatter boulders over it, thinned to the per-land cap
+        if Rocks.SEA_FLAT and #flat > 0 then
+          local cell = math.max(8, Rocks.SEA_FLAT_CELL or 26)
+          local expectedAll = area / (cell * cell)
+          local scale = expectedAll > Rocks.SEA_FLAT_MAX and (Rocks.SEA_FLAT_MAX / expectedAll) or 1
+          local function waterY(x, z)
+            if ground and ground.groundY then
+              return ground:groundY(x, z) or 0
+            end
+            return 0
+          end
+          for _, tri in ipairs(flat) do
+            local a, bb, c = tri[1], tri[2], tri[3]
+            local expected = tri[4] / (cell * cell) * scale
+            local mx, mz = (a[1] + bb[1] + c[1]) / 3, (a[3] + bb[3] + c[3]) / 3
+            local n = math.floor(expected)
+            if hash(mx, mz + 91) < expected - n then n = n + 1 end
+            for i = 1, n do
+              if #b.verts >= 60000 then break end
+              local r1, r2 = hash(mx * i, mz + i * 3.7), hash(mx + i * 5.1, mz * i)
+              if r1 + r2 > 1 then r1, r2 = 1 - r1, 1 - r2 end
+              local x = a[1] + r1 * (bb[1] - a[1]) + r2 * (c[1] - a[1])
+              local z = a[3] + r1 * (bb[3] - a[3]) + r2 * (c[3] - a[3])
+              local y = waterY(x, z)
+              buildRock(b, x, y, z, 0, true, seaWidth(x, z))
+              made, out.seaRocks = made + 1, out.seaRocks + 1
+            end
+          end
+        end
+        seaCards, seaFlat = seaCards + #cards, seaFlat + #flat
+        -- Hide the native shape once rocks stand in. A flat polygon is hidden too
+        -- unless SEA_HIDE_FLAT is off (then it stays, and Gen4Lawn repaints it).
+        if made > 0 and (#flat == 0 or Rocks.SEA_HIDE_FLAT) then
+          out.shapes[#out.shapes + 1] = s
+          seaHidden = seaHidden + 1
+        end
+      end
     end
   end
   if #b.verts > 0 then out.mesh = Voxel3D.newMesh(b.verts, b.map) end
@@ -524,6 +696,11 @@ local function buildLand(ground, land)
     once("land" .. tostring(land),
          "land %s: %d imped shape(s) -> %d rocks, %d fence banner(s) left native (%d shape(s) had no usable cards)",
          tostring(land), shapesSeen, out.rocks, out.fences, leftover)
+  end
+  if Rocks.LOG and seaShapes > 0 then
+    once("sea" .. tostring(land),
+         "land %s: %d searock shape(s) (%d upright card(s), %d flat triangle(s)) -> %d sea rocks; %d native shape(s) hidden",
+         tostring(land), seaShapes, seaCards, seaFlat, out.seaRocks, seaHidden)
   end
   return out
 end

@@ -65,7 +65,7 @@ local Lawn = {
     criff     = { image = "edges.png",   uv = 1 },
     criffp    = { image = "edges.png",   uv = 1 },
     criffp2   = { image = "edges.png",   uv = 1 },
-    searock   = { image = "5rock.png",   uv = 1 },
+    searock   = { image = "3d swap",   uv = 1 },
     fenter    = { image = "shadow tree.png",    uv = 1 },
     newstep   = { image = "9step.png",    uv = 1 },
     cyclestop = { image = "step.png",    uv = 1 },
