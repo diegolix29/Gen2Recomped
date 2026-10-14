@@ -98,11 +98,7 @@ local Lawn = {
     c1_d_2    = { image = "ground.png",  uv = 1 },
     c1_d_3    = { image = "ground.png",  uv = 1 },
     c1_d_4    = { image = "ground.png",  uv = 1 },
-    c1_f_ud   = { image = "horizontal fence.png", uv = 1 },
-    c1_f_l    = { image = "vertical fence.png", uv = 1 },
-    c1_f_r    = { image = "vertical fence.png", uv = 1 },
-    c1_f_k1   = { image = "fence corner.png", uv = 1 },
-    c1_f_k2   = { image = "fence corner.png", uv = 1 },
+    -- c1_f_* textures are fences: handled by Gen4Fence for proper 3D fences
     c1_o02    = { image = "metal aged.png",  uv = 1 },
     c1_o02b   = { image = "light.png",  uv = 1 },
     c1_lamp01 = { image = "lamp.png",    uv = 1 },

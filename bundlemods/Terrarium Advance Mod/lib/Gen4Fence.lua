@@ -64,7 +64,7 @@ local Mat4 = V.require("Mat4")
 
 local Fence = {
   enabled = true,
-  TEXTURES = { imped = true },     -- terrain texture / material names (lower case): rocks AND fence banners
+  TEXTURES = { imped = true, c1_f_ud = true, c1_f_l = true, c1_f_r = true, c1_f_k1 = true, c1_f_k2 = true },     -- terrain texture / material names (lower case): rocks AND fence banners
   PATTERNS = { "fence" },          -- substrings: a shape named like this is ALL fence (every card converts)
   WINDOW = 2,                      -- lands each way around the camera
 
