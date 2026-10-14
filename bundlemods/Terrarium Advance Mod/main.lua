@@ -198,8 +198,6 @@ local DrawDistance = V.require("DrawDistance")
 local Gen4Distance = V.require("Gen4Distance")
 -- Gen 4 only: Platinum's NPCs as smooth 3D bodies built from their own sprites
 local Gen4NpcModels = V.require("Gen4NpcModels")
--- Gen 1-3: NPCs as smooth 3D bodies built from their own sprites
-local Gen1NpcModels = V.require("Gen1NpcModels")
 local OverworldBattle = V.require("OverworldBattle")
 local WildRoamers = V.require("WildRoamers")
 local BattleExit = V.require("BattleExit")
@@ -245,10 +243,6 @@ if Gen4Bridge.isGen4() and Gen4Bridge.install() then
   pcall(function() Gen4WorldHost.install() end)
   -- NPC sprites -> smooth 3D bodies (Gen4NpcModels), drawn by Gen4WorldHost
   pcall(function() Gen4NpcModels.install() end)
-else
-  -- Gen 1-3: Install NPC 3D models for voxel world
-  print("[main] Installing Gen1NpcModels for Gen 1-3")
-  pcall(function() Gen1NpcModels.install() end)
 end
 -- Battle UI hiding system for all generations
 local BattleBoxXY = V.require("BattleBoxXY")
@@ -985,14 +979,6 @@ local SETTINGS = {
     .. "Needs the third / first person or a CAM TILT camera (the default "
     .. "cartridge camera stays flat). OFF restores the flat cards.",
     when = function() return Gen4Bridge.isGen4() end,
-    full = true, cat = "world" },
-  { Gen1NpcModels.setting,
-    "Gen 1-3 NPCs as smooth 3D bodies. Each NPC is rebuilt from its sprite "
-    .. "sheet into a closed, rounded mesh that wears that art, turns to face "
-    .. "where it looks and walks with the sheet's own step frames. Bodies are "
-    .. "built a few milliseconds a frame; until one is ready the flat sprite "
-    .. "keeps drawing. OFF restores the flat billboards.",
-    when = function() return not Gen4Bridge.isGen4() end,
     full = true, cat = "world" },
   { Grass3D.simpleMeshes,
     "Simplified meshes for roads, ground and decorative grass. ON uses "

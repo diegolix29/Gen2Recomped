@@ -1308,14 +1308,8 @@ local function drawCast(state, posed, me, atlasFor, yaw)
                      p.colors, p.lift, p.waterline, p.isPlayer, yaw, hdDef)
         end
       else
-        -- Try Gen1NpcModels 3D body first, fall back to 2D billboard
-        local okG1, Gen1NpcModels = pcall(V.require, "Gen1NpcModels")
-        local drew3d = okG1 and Gen1NpcModels and Gen1NpcModels.drawPose
-                      and Gen1NpcModels.drawPose(p, p.gh)
-        if not drew3d then
-          drawEntity(p.sprite, p.px, p.py, facing, p.phase, p.flip, p.gh,
-                     p.colors, p.lift, p.waterline, p.isPlayer, yaw, hdDef)
-        end
+        drawEntity(p.sprite, p.px, p.py, facing, p.phase, p.flip, p.gh,
+                   p.colors, p.lift, p.waterline, p.isPlayer, yaw, hdDef)
       end
     elseif not (p.isPlayer and hideMe) then
       culled = culled + 1
@@ -1537,7 +1531,6 @@ local function posesOf(state, spriteColors)
   -- does that, and keeps doing it -- so what is lost is an animation phase on
   -- a body nobody can see, recovered on the first frame it can.  Skipping it
   -- takes the sprite resolve with it, which is the expensive half.
-  print("[VoxelScene] posesOf() called")
   local skippedGhosts = 0
   for _, g in ipairs(state.ghosts or {}) do
     local seen = true
@@ -1634,14 +1627,6 @@ local function posesOf(state, spriteColors)
     end
   end
   if _pg then _pg() end
-  
-  -- Prepare Gen1NpcModels: queue sheet loads for all posed entities
-  local okG1, Gen1NpcModels = pcall(V.require, "Gen1NpcModels")
-  print("[VoxelScene] Gen1NpcModels require: ok=" .. tostring(okG1) .. ", module=" .. tostring(Gen1NpcModels ~= nil))
-  if okG1 and Gen1NpcModels and Gen1NpcModels.prepare then
-    print("[VoxelScene] Calling Gen1NpcModels.prepare with " .. #posed .. " entities")
-    pcall(Gen1NpcModels.prepare, posed)
-  end
   -- HOW MANY, not just how long: "cast: 114 ms" is a slow pass and "114 ms
   -- over 40 actors" is a crowd, and they do not have the same fix.  Shows up
   -- in the report's calls-per-frame column; costs nothing when F11 is off.
@@ -1964,12 +1949,6 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
   ShadowMap.finish()
   -- ...and only NOW is this frame's signature the one to compare against
   shadowSignatureCommit()
-  
-  -- Pump Gen1NpcModels build queue (time-sliced mesh building)
-  local okG1, Gen1NpcModels = pcall(V.require, "Gen1NpcModels")
-  if okG1 and Gen1NpcModels and Gen1NpcModels.pump then
-    pcall(Gen1NpcModels.pump)
-  end
 end
 
 -- Render the world. Without `eyes`, one frame into one canvas -- the flat
