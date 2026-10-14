@@ -27,7 +27,7 @@ love = { graphics = {
   getShader = function() return shader end,
   setShader = function(s) shader = s end,
   clear = rec("clear"), setColor = rec("setColor"),
-  draw = function(c, x, y, r, sx, sy) drawn[#drawn+1] = { c = c, sx = sx, sy = sy, depth = depth[1], blend = blend[2], bound = bound } end,
+  draw = function(c, x, y, r, sx, sy) drawn[#drawn+1] = { c = c, sx = sx, sy = sy, depth = depth[1], blend = blend[1], alpha = blend[2], bound = bound } end,
   push = rec("push"), pop = rec("pop"), origin = rec("origin"), setScissor = rec("setScissor"),
 }}
 
@@ -209,7 +209,7 @@ do
   check(Snap.blit(256, 192) == true, "blit succeeds")
   check(#drawn == 1 and drawn[1].c == Snap.field().worldColour, "blit draws the world canvas")
   check(drawn[1].depth == "always", "blit ignores depth")
-  check(drawn[1].blend == "premultiplied", "blit uses premultiplied alpha")
+  check(drawn[1].blend == "replace", "blit uses replace so Gen4 alpha-0 pixels stay opaque")
   check(depth[1] == "lequal" and depth[2] == true, "depth mode restored after blit")
   check(shader == "SHADER" and blend[2] == "alphamultiply", "shader and blend restored after blit")
   check(bound == arenaCanvas, "blit leaves the arena canvas bound")

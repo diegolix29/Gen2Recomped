@@ -472,8 +472,9 @@ end
 -- Lay the native world into the arena canvas. Called by Arena.lua AFTER it has
 -- rebound its own colour+depth target, because rendering the world binds the
 -- engine's canvases and leaves the arena unbound. Colour only: the engine's
--- depth buffer is a different attachment, so the actors (drawn next) sit in
--- front of the world and only test against each other.
+-- depth buffer is a different attachment (and on desktop was often the SAME
+-- internal buffer as the arena, which made Colosseum models flicker). Actors
+-- then sit in front of the world and only test against each other.
 function M.blit(w, h)
   if not (field and field.gen4 and field.worldColour) then return false end
   local g = love and love.graphics
@@ -486,7 +487,10 @@ function M.blit(w, h)
   local ok = pcall(function()
     g.setShader()
     if g.setDepthMode then g.setDepthMode("always", false) end
-    g.setBlendMode("alpha", "premultiplied")
+    -- Replace, not premultiplied: Gen4 shaders often write RGB with alpha 0
+    -- on desktop GL, and premultiplied then lets the arena show through the
+    -- snapshot (and through discarded model texels) every other frame.
+    g.setBlendMode("replace")
     g.setColor(1, 1, 1, 1)
     local sw = src.getWidth and src:getWidth() or w
     local sh = src.getHeight and src:getHeight() or h

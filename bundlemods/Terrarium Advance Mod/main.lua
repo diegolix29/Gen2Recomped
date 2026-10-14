@@ -3968,7 +3968,10 @@ local function initializeColosseumIntegration()
 local ArenaOverworldSnapshot = loadColosseumModule("ArenaOverworldSnapshot")
     BattleArtBridge = loadColosseumModule("BattleArtBridge")
     loadColosseumModule("ShinySupport")
-    loadColosseumModule("ModelIdentity")
+    local ModelIdentityRef = loadColosseumModule("ModelIdentity")
+    -- Observes the engine's Transform seams so a Transformed Pokemon's 3D
+    -- actor follows what it copied (see lib/ModelIdentity.lua).
+    if ModelIdentityRef and type(ModelIdentityRef.install) == "function" then pcall(ModelIdentityRef.install) end
     CurrentSpriteModels = loadColosseumModule("CurrentSpriteModels")
     -- CSM reads V.HDPokemonSheets (V here is the Colosseum namespace).
     namespace.HDPokemonSheets = mod.exports.hdPokemonSheets

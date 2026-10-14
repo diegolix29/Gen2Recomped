@@ -1,6 +1,24 @@
 -- Read-only National Dex and colour identity, shared by battle/cache consumers.
+--
+-- TRANSFORM
+-- The engine records a Transform by swapping the battler's *picture* and
+-- nothing else: mon.species stays DITTO the whole fight. Every Colosseum
+-- consumer (CurrentSpriteModels, BattleCache, PokemonActors, doubles) asks
+-- this module which model a battler is, so reading mon.species alone meant the
+-- 3D actor never changed after Transform, in any generation.
+--
+-- This module now also OBSERVES the two seams that report a Transform and keeps
+-- a small weak-keyed registry of "this mon currently looks like dex N":
+--   * the engine's `pokemon.sprite` hook: every battle pic is resolved through
+--     it with ctx.mon (the individual) and ctx.species (what is being drawn).
+--     A pic whose species differs from the mon's own species is a Transform,
+--     and one whose species matches clears it. Generation-neutral.
+--   * Gen-I BattleState:speciesSprite(species, isPlayerSide), the explicit seam
+--     the Stadium code already uses; it also names the side.
+-- Nothing is ever written to a mon (mons are saved); the registry is weak and
+-- is dropped when a battle ends or a side switches.
 local V=...
-local M={version=1}
+local M={version=2}
 local sourceNames,sourceDexByName=nil,{}
 local function sourceDex(species)
   if species==nil then return nil end
@@ -14,22 +32,29 @@ local function sourceDex(species)
   end
   return sourceDexByName[tostring(species):upper()]
 end
-function M.resolve(game,battler)
-  if type(battler)~="table" then return nil,"Pokemon identity unavailable" end
-  local mon=type(battler.mon)=="table" and battler.mon or battler
-  local species=mon.species or mon.id
-  local defs=game and game.data and game.data.pokemon
+
+local DEBUG=(os and os.getenv and os.getenv("CBE_TRANSFORM_DEBUG")=="1") or false
+local function logf(fmt,...)
+  if not DEBUG then return end
+  local log=V.mod and V.mod.log
+  if log and type(log.info)=="function" then pcall(log.info,log,fmt,...) end
+end
+
+-- species (id / name / number) -> National Dex number, or nil. `mon` is only
+-- used for the detached numeric hints a challenge clone may carry.
+local function lookupDex(defs,species,mon)
+  if species==nil then return nil end
   local def=defs and (defs[species] or defs[tostring(species)])
   -- Species identity wins over detached numeric hints. This keeps 3D actors and
   -- HUD portraits on the exact same National-Dex identity even when a challenge
   -- clone carries a stale/foreign `dex` field.
   local dex=tonumber(def and (def.nationalDex or def.dex or def.number or def.index))
     or sourceDex(species)
-    or tonumber(mon.nationalDex)
-    or tonumber(mon.speciesIndex)
-    or tonumber(mon.dex)
+  if not dex and type(mon)=="table" then
+    dex=tonumber(mon.nationalDex) or tonumber(mon.speciesIndex) or tonumber(mon.dex)
+  end
   if not dex and type(species)=="number" then dex=species end
-  if not dex and defs and species then
+  if not dex and defs then
     local wanted=tostring(species):upper()
     for _,candidate in pairs(defs) do
       if type(candidate)=="table" and (tostring(candidate.id):upper()==wanted
@@ -38,15 +63,168 @@ function M.resolve(game,battler)
       end
     end
   end
-  -- The Colosseum actor catalog now genuinely covers National Dex 1..386.
-  -- Keep identity validation tied to that catalog instead of the old Gen I/II
-  -- ceiling of 251 so cross-generation Mt. Battle consumers do not reject a
-  -- source-backed Hoenn actor solely because its National Dex number is >251.
-  local supported=dex and V.ColosseumDex and type(V.ColosseumDex.supported)=="function"
-    and V.ColosseumDex.supported(dex)
-  if not dex or dex%1~=0 or dex<1
-      or (V.ColosseumDex and type(V.ColosseumDex.supported)=="function" and not supported)
-      or (not V.ColosseumDex and dex>386) then
+  return dex
+end
+
+-- The Colosseum actor catalog now genuinely covers National Dex 1..386.
+-- Keep identity validation tied to that catalog instead of the old Gen I/II
+-- ceiling of 251 so cross-generation Mt. Battle consumers do not reject a
+-- source-backed Hoenn actor solely because its National Dex number is >251.
+local function validDex(dex)
+  if not dex or dex%1~=0 or dex<1 then return false end
+  local CD=V.ColosseumDex
+  if CD then
+    if type(CD.supported)=="function" then return CD.supported(dex) and true or false end
+    return true
+  end
+  return dex<=386
+end
+
+-- ------- transform registry
+local function newRegistry() return setmetatable({},{__mode="k"}) end
+local transforms=newRegistry()
+
+function M.transformDex(battler,mon)
+  local rec=type(mon)=="table" and transforms[mon] or nil
+  if not rec and type(battler)=="table" then
+    local r=transforms[battler]
+    -- Gen II hands out ONE wrapper per slot for the whole battle and swaps
+    -- .mon inside it, so a wrapper-keyed record is only valid for its own mon.
+    if r and (not battler.__cbeGen2Slot or r.mon==mon) then rec=r end
+  end
+  return rec and rec.dex or nil,rec
+end
+
+-- Record (or clear) what `mon` currently looks like. `species` is whatever the
+-- engine is drawing for it. `defs` is data.pokemon.
+function M.noteTransform(defs,mon,battler,species)
+  if type(mon)~="table" or species==nil then return false end
+  local own=lookupDex(defs,mon.species or mon.id,mon)
+  local target=lookupDex(defs,species,nil)
+  if target and own and target~=own and validDex(target) then
+    local rec={dex=target,species=species,mon=mon}
+    transforms[mon]=rec
+    if type(battler)=="table" then transforms[battler]=rec end
+    logf("ModelIdentity: %s now looks like dex %s (own dex %s)",tostring(mon.species or mon.id),tostring(target),tostring(own))
+    return true
+  end
+  if transforms[mon] then logf("ModelIdentity: %s transform cleared",tostring(mon.species or mon.id)) end
+  transforms[mon]=nil
+  if type(battler)=="table" then transforms[battler]=nil end
+  return false
+end
+
+function M.clear(mon,battler)
+  if type(mon)=="table" then transforms[mon]=nil end
+  if type(battler)=="table" then transforms[battler]=nil end
+end
+
+function M.clearAll() transforms=newRegistry() end
+
+-- ------- seams
+local state={hook=false,events=false,battleState=false,tries=0}
+
+local function observeSprite(ctx)
+  if type(ctx)~="table" or ctx.kind~="battle" then return end
+  local mon=ctx.mon
+  if type(mon)~="table" or ctx.species==nil then return end
+  M.noteTransform(ctx.data and ctx.data.pokemon,mon,nil,ctx.species)
+end
+
+local function battleDefs(battle)
+  local data=battle and (battle.data or (battle.game and battle.game.data))
+  return data and data.pokemon
+end
+
+local function onSpeciesSprite(battle,species,isPlayerSide)
+  if type(battle)~="table" then return end
+  -- A grow-in is a send-out, not a Transform.
+  if isPlayerSide and battle.sendingOut then return end
+  if not isPlayerSide and battle.enemySendingOut then return end
+  local battler=isPlayerSide and battle.player or battle.enemy
+  local mon=type(battler)=="table" and battler.mon or nil
+  M.noteTransform(battleDefs(battle),mon,battler,species)
+end
+
+local function onResolveSwitch(battle,newMon,after)
+  if type(battle)~="table" then return end
+  local battler=battle.player
+  if type(battler)=="table" then M.clear(battler.mon,battler) end
+  if after then M.clear(newMon) end
+end
+
+local function installBattleState()
+  if state.battleState then return true end
+  local req=V.engineRequire or require
+  local ok,B=pcall(req,"src.battle.BattleState")
+  if not ok or type(B)~="table" then return false end
+  if B.__cbeTransformIdentity then state.battleState=true;return true end
+  if type(B.speciesSprite)=="function" then
+    local inner=B.speciesSprite
+    B.speciesSprite=function(self,species,isPlayerSide,...)
+      pcall(onSpeciesSprite,self,species,isPlayerSide)
+      return inner(self,species,isPlayerSide,...)
+    end
+  end
+  if type(B.resolveSwitch)=="function" then
+    local inner=B.resolveSwitch
+    B.resolveSwitch=function(self,newMon,...)
+      pcall(onResolveSwitch,self,newMon,false)
+      local r1,r2,r3=inner(self,newMon,...)
+      -- Whatever the send-out drew while resolving is not a Transform.
+      pcall(onResolveSwitch,self,newMon,true)
+      return r1,r2,r3
+    end
+  end
+  B.__cbeTransformIdentity=true
+  state.battleState=true
+  return true
+end
+
+-- Idempotent. Safe to call as often as convenient; the BattleState seam is
+-- retried lazily because the engine module may not be loadable this early.
+function M.install()
+  local mod=V.mod
+  if mod and not state.hook and mod.hooks and type(mod.hooks.wrap)=="function" then
+    local ok=pcall(mod.hooks.wrap,mod.hooks,"pokemon.sprite",function(next,path,ctx)
+      local out=next(path,ctx)
+      pcall(observeSprite,ctx)
+      return out
+    end)
+    state.hook=ok and true or false
+  end
+  if mod and not state.events and mod.events and type(mod.events.on)=="function" then
+    local ok1=pcall(mod.events.on,mod.events,"battle.ended",function() M.clearAll() end)
+    local ok2=pcall(mod.events.on,mod.events,"battle.started",function() M.clearAll() end)
+    state.events=(ok1 and ok2) and true or false
+  end
+  if not state.battleState and state.tries<50 then
+    state.tries=state.tries+1
+    installBattleState()
+  end
+  return state.hook,state.battleState
+end
+
+function M.status()
+  return {hook=state.hook,events=state.events,battleState=state.battleState,tries=state.tries}
+end
+
+function M.resolve(game,battler,baseOnly)
+  if type(battler)~="table" then return nil,"Pokemon identity unavailable" end
+  if not state.battleState and state.tries<50 then M.install() end
+  local mon=type(battler.mon)=="table" and battler.mon or battler
+  local species=mon.species or mon.id
+  local defs=game and game.data and game.data.pokemon
+  -- A Transformed mon is drawn as what it copied. Unsupported targets (e.g. a
+  -- Gen 4 species the actor catalog cannot model) are ignored rather than
+  -- turning a valid actor into a "no dex mapping" error.
+  local dex
+  if baseOnly~=true then
+    local tdex=M.transformDex(battler,mon)
+    if tdex and validDex(tdex) then dex=tdex end
+  end
+  dex=dex or lookupDex(defs,species,mon)
+  if not validDex(dex) then
     return nil,nil  -- Unsupported dex (e.g., Gen 4 Pokemon 387+), return nil for both dex and variant
   end
   return dex,V.ShinySupport.variant(battler)

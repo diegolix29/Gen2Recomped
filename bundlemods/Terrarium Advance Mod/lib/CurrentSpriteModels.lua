@@ -616,7 +616,14 @@ local function stadiumActor(context,side)
     record.battler=battler
     return record.actor
   end
-  if record then retireStadiumActor(side,"replacement") end
+  -- Same slot occupant, different visual identity = Transform (ModelIdentity
+  -- reports what the mon copied). Keep the resident actor on screen until the
+  -- new body is actually available, then swap it in place; a cold cache must
+  -- not blank the Pokemon while the copied species' model loads. A genuinely
+  -- different occupant still retires through the normal replacement path.
+  local transformSwap=record~=nil and record.battler==battler
+  local keepActor=transformSwap and record.actor or nil
+  if record and not transformSwap then retireStadiumActor(side,"replacement") end
   local source=api.SELECTED or "selected"
   local cbe=P.modeId=="cbe:colosseum-pokemon"
   local streaming=cbe and api.cooperativePreparation==true
@@ -626,12 +633,12 @@ local function stadiumActor(context,side)
     local ok,available=pcall(api.available,source,dex)
     if not (ok and available) then
       P.stadiumError=ok and ("actor provider reports model "..tostring(dex).." unavailable") or tostring(available)
-      return nil
+      return keepActor
     end
   end
   local now=(love and love.timer and love.timer.getTime and love.timer.getTime()) or os.clock()
   local retry=P.stadiumRetry[side]
-  if cbe and retry and retry.key==key and retry.battle==context.battle and now<retry.at then return nil end
+  if cbe and retry and retry.key==key and retry.battle==context.battle and now<retry.at then return keepActor end
   local opts={side=side,context=context,battler=battler,
     allowStorageBattleBody=cbe and (P.mobileRuntime or streaming),allowLegacyMaterialBody=cbe,
     noSource=cbe and (P.mobileRuntime or streaming) or false}
@@ -660,9 +667,14 @@ local function stadiumActor(context,side)
     if not pending and P.modeId=="cbe:colosseum-pokemon" and V.BattleCache then
       V.BattleCache.noteRenderError(context.game,P.stadiumError)
     end
-    return nil
+    return keepActor
   end
   P.stadiumError=nil;P.stadiumPending=nil;P.stadiumRetry[side]=nil
+  if transformSwap then
+    -- The copied species' body is ready: drop the old one in place.
+    P.stadiumActors[side]=nil
+    releaseActorRecord(record,"transform")
+  end
   P.stadiumActors[side]={key=key,actor=actor,dex=dex,variant=variant,
     battler=battler,state="spawn"}
   return actor
@@ -910,6 +922,19 @@ local function syncStadiumActor(context,side)
   if actorGoneByBattle(context,side,battler,record.actor) then
     releaseStadiumActor(side,battler and battler.fainted and "faint-complete" or "hidden")
     return nil
+  end
+  -- Transform leaves the battler/mon tables alone and only changes what the mon
+  -- looks like (ModelIdentity). The identity checks above only run when the
+  -- battler table changed, so compare the resolved identity here too and let
+  -- stadiumActor() perform the in-place swap.
+  if record.dex then
+    local curDex,curVariant=dexFor(context,battler)
+    if curDex and (tonumber(curDex)~=tonumber(record.dex) or tostring(curVariant)~=tostring(record.variant))
+        and actorVisible(context,side,record.actor) then
+      local swapped=stadiumActor(context,side)
+      local now=P.stadiumActors[side]
+      return (now and now.actor) or swapped
+    end
   end
   return record.actor
 end

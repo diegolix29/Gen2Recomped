@@ -1965,25 +1965,35 @@ local function ensureCanvas(w,h)
   end
   if not okColor then error(out) end
   canvas=out;cw,ch=w,h
-  if ARENA_ANDROID then
-    local formats=canvasFormats()
-    for _,fmt in ipairs({"depth24stencil8","depth16"}) do
-      if formats[fmt]~=false then
-        local okDepth,d=pcall(love.graphics.newCanvas,w,h,{format=fmt,readable=false,dpiscale=1,msaa=0})
-        if okDepth then depthCanvas=d;depthMode="explicit";break end
+  -- Explicit depth on every OS, not only Android. `{canvas, depth=true}` is an
+  -- INTERNAL buffer LOVE desktop can share across setCanvas calls. The Gen 4
+  -- overworld snapshot binds Gen4Ground's colour+depth, then we rebound this
+  -- arena; actors then depth-tested against the world's leftover clip-space
+  -- and the Colosseum meshes flickered. A dedicated attachment stays ours.
+  local formats=canvasFormats()
+  local depthFmts=ARENA_ANDROID
+    and {"depth24stencil8","depth16"}
+    or {"depth24stencil8","depth24","depth32f","depth16"}
+  for _,fmt in ipairs(depthFmts) do
+    if formats[fmt]~=false then
+      local okDepth,d=pcall(love.graphics.newCanvas,w,h,{format=fmt,readable=false,dpiscale=1,msaa=0})
+      if not okDepth then
+        okDepth,d=pcall(love.graphics.newCanvas,w,h,{format=fmt,readable=false})
       end
+      if okDepth then depthCanvas=d;depthMode="explicit";break end
     end
-    if not depthMode then depthMode="auto" end
-  else
-    depthMode="auto"
   end
+  if not depthMode then depthMode="auto" end
   return canvas
 end
 local function bindArenaCanvas(out)
   if depthMode=="explicit" and depthCanvas then
     local ok,err=pcall(love.graphics.setCanvas,{out,depthstencil=depthCanvas})
+    if not ok then
+      ok,err=pcall(love.graphics.setCanvas,{out,depth=depthCanvas})
+    end
     if ok then depthActive=true;return true end
-    log(nil,"warn","explicit Android depth attachment rejected; retrying temporary depth: %s",tostring(err))
+    log(nil,"warn","explicit arena depth attachment rejected; retrying temporary depth: %s",tostring(err))
     depthCanvas=nil;depthMode="auto"
   end
   if depthMode=="auto" then
@@ -3405,6 +3415,15 @@ function A:render(ctx,arena,drawActors)
       ctx.groundY=worldY/math.max(0.001,figureScale)
       if arena then arena.groundY=worldY;arena.liveField=true end
       local rebound=bindArenaCanvas(out)
+      if rebound and nativeWorld then
+        -- renderPose left the engine's FBO bound. On desktop the arena's old
+        -- internal depth was often that same buffer, still holding the world.
+        -- Drop it before the colour blit so Colosseum actors start from a
+        -- clean depth and only test against each other.
+        if depthActive then
+          pcall(love.graphics.clear,0.025,0.075,0.145,1,true,true)
+        end
+      end
       if rebound and nativeWorld and type(SnapN.blit)=="function" then
         -- Gen 4: lay the engine-drawn world in now that the arena is bound again
         safeArenaPass(ctx,"overworldBlit",function() SnapN.blit(w,h) end)

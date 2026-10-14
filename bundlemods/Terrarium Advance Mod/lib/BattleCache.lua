@@ -146,7 +146,7 @@ function C.startupPlan(game,save,newGame)
     for i=1,math.min(6,#party) do
       local mon=party[i]
       if not isEgg(mon) then
-        local dex,variant=V.ModelIdentity.resolve(game,mon)
+        local dex,variant=V.ModelIdentity.resolve(game,mon,true)
         -- The narrow startup path must prepare the ACTUAL current-party variant.
         -- Hypothetical catalog shinies can remain on-demand, but moving an owned
         -- shiny back onto its first visible battle/menu frame defeats the point

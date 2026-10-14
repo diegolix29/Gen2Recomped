@@ -75,7 +75,7 @@ function P.rank(game,save,checkpoint)
   local levels,owned,partyCount={}, {},0
   local function mon(m,score,reason,required)
     local raw=unwrap(m);if not raw or egg(raw)then return end
-    local d,v=V.ModelIdentity.resolve(game,m)
+    local d,v=V.ModelIdentity.resolve(game,m,true)
     if not d then if required then return nil,v end;return end
     -- Cache selection always prepares the normal source unit. The actual shiny
     -- identity is preserved by gameplay and materializes on-demand.
