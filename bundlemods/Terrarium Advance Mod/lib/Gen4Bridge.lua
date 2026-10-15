@@ -234,8 +234,10 @@ local function runScene(ground, view, vw, vh, order, effects, tag)
   -- Building brightness is c1_lamp01 / c1_lamp02 via Gen4Glass + Tint.
   local lampLights = {}
   local lightScene = { ground = ground, view = view }
-  local okH, flameY = pcall(function() return V.require("StreetLamps").flameHeight() end)
-  if okH then Voxel3D.lampHeight = flameY end
+  -- the post is drawn at Gen4Lamps.SCALE, so its flame is that much higher than
+  -- the bake's own lantern height
+  local okH, flameY = pcall(function() return V.require("Gen4Lamps").flameOffset() end)
+  if okH and tonumber(flameY) then Voxel3D.lampHeight = flameY end
   if Bridge.lampCollector then
     local okL, lamps = pcall(Bridge.lampCollector, lightScene)
     if okL and type(lamps) == "table" then
@@ -472,6 +474,15 @@ function Bridge.install()
   else
     report("glass", "the glass pass did not load: %s", tostring(GG))
   end
+  -- Night light ON Platinum's own roads and walls (world space, depth tested).
+  -- After glass so it can use the wall meshes Glass just prepared. Gen4Tint's
+  -- screen-space discs stand down while this runs.
+  local okLt, GLt = pcall(V.require, "Gen4Light")
+  if okLt and type(GLt) == "table" and GLt.draw then
+    Bridge.register("light", GLt.draw)
+  else
+    report("light", "the light receiver did not load: %s", tostring(GLt))
+  end
   -- The voxel scene's sky (bands, clouds, sun/moon, stars, painted horizon, scenery)
   -- on Gen 4, with the engine's own horizon image hidden. Pre-terrain, so it is
   -- the backdrop. See lib/Gen4Sky.lua.
@@ -492,7 +503,7 @@ end
 function Bridge.invalidateAll()
   local S = sun()
   if S then pcall(S.invalidate) end
-  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass", "Gen4NpcModels", "Gen4Glass", "Gen4Lamps" }) do
+  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass", "Gen4NpcModels", "Gen4Glass", "Gen4Lamps", "Gen4Light" }) do
     local ok, mod = pcall(V.require, name)
     if ok and type(mod) == "table" and type(mod.invalidate) == "function" then
       local okI, err = pcall(mod.invalidate)

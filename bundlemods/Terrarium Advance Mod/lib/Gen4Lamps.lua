@@ -17,10 +17,20 @@ local Lamps = {
   enabled = true,
   LOG = true,
 
-  LIGHT_RADIUS = 220,    -- native-city pool (Gen4Tint additive, not voxel)
-  LIGHT_LIMIT = 8,
-  CLUSTER = 18,          -- same pole only (o02+o02b stacked). Not across the road.
-  SEAM = 12,             -- two chunks emitting the same pole
+  LIGHT_RADIUS = 96,     -- one post's pool, world units (6 tiles). Posts stand ~4
+                         -- tiles apart, so pools overlap a little and the dark
+                         -- between them survives
+  LIGHT_LIMIT = 8,       -- the voxel shader's lamp slots
+  -- WHAT FOLDS CARDS INTO ONE POST
+  --
+  -- A single pole is authored as a few cards (crossed quads, or pole + lantern)
+  -- that share one footprint, so they sit within a fraction of a tile of each
+  -- other. CLUSTER is that fraction. It used to be 96 -- six tiles -- which is
+  -- wider than a street: the poles on both kerbs, and the next pole along, all
+  -- folded into ONE post planted in the middle of the road, and the same 96 was
+  -- applied twice more (seams, lights). A tile is 16 units; a road is 3+ tiles.
+  CLUSTER = 12,          -- cards this close are the same pole
+  CLUSTER_MAX = 20,      -- ...even for a wide card (never reach the far kerb)
   SCALE = 1.8,           -- ~80% bigger than the Gen 1-3 mesh
   WINDOW = 2,
   BUILDS_PER_FRAME = 4,
@@ -144,28 +154,33 @@ local function cardsOf(positions, tris)
   return cards
 end
 
--- One post per CLUSTER of world units. Greedy merge so stacked cards
--- (pole + lantern of the SAME pole) become one mesh. Keep the lowest
--- card's XZ so the post stays on the original id, not halfway to its pair
--- across the street.
+-- Two cards belong to one pole when their footprints overlap: closer than
+-- CLUSTER, or closer than 3/4 of the wider card (a wide billboard is allowed to
+-- reach a little further), never further than CLUSTER_MAX.
+local function sameFootprint(wa, wb, dx, dz)
+  local r = math.min(Lamps.CLUSTER_MAX,
+                     math.max(Lamps.CLUSTER, 0.75 * math.max(wa or 0, wb or 0)))
+  return dx * dx + dz * dz <= r * r
+end
+
+-- One post per physical pole. Greedy, ANCHORED on the first card (never chained
+-- card to card), so a row of poles cannot creep together however many there are.
 local function clusterPosts(cards)
-  local r2 = Lamps.CLUSTER * Lamps.CLUSTER
   local used, out = {}, {}
   for i, c in ipairs(cards) do
     if not used[i] then
-      local foot = c
+      local sx, sy, sz, n = c[1], c[2], c[3], 1
       used[i] = true
       for j = i + 1, #cards do
         if not used[j] then
           local q = cards[j]
-          local dx, dz = q[1] - c[1], q[3] - c[3]
-          if dx * dx + dz * dz <= r2 then
+          if sameFootprint(c[4], q[4], q[1] - c[1], q[3] - c[3]) then
             used[j] = true
-            if q[2] < foot[2] then foot = q end
+            sx, sy, sz, n = sx + q[1], math.min(sy, q[2]), sz + q[3], n + 1
           end
         end
       end
-      out[#out + 1] = { x = foot[1], y = foot[2], z = foot[3] }
+      out[#out + 1] = { x = sx / n, y = sy, z = sz / n }
     end
   end
   return out
@@ -314,46 +329,16 @@ function Lamps.isCovered(record)
   return record ~= nil and Lamps.active[record] == true
 end
 
-function Lamps.collectLights(scene)
-  if not Lamps.enabled then return {} end
-  local ground = scene and scene.ground
-  local view = scene and scene.view
-  if not (ground and view) then return {} end
+-- ---------------------------------------------------------------- sites --
+--
+-- ONE list of world-space posts, resolved once per window and shared by the
+-- 3D draw, the voxel shader's lamp slots and the native-city light receiver.
+-- They used to each re-merge the posts at 96 units, so a post could be drawn
+-- in one place and light another.
+local siteCache = nil     -- { list = <the window list it was built from>, sites = {...} }
 
-  local okN, night = pcall(DayNight.windowLight)
-  night = okN and tonumber(night) or 0
-  if night <= 0.05 then return {} end
-
-  Lamps.prepare(ground)
-  local vx, vz = view.x or 0, view.z or 0
-  local out = {}
-  for _, item in ipairs(list) do
-    for _, p in ipairs(item.entry.posts or {}) do
-      local x, z = p.x + item.x, p.z + item.z
-      local dx, dz = x - vx, z - vz
-      out[#out + 1] = {
-        x = x,
-        y = p.y or 0,
-        z = z,
-        radius = Lamps.LIGHT_RADIUS,
-        power = night * 0.9,
-        d2 = dx * dx + dz * dz,
-      }
-    end
-  end
-  table.sort(out, function(a, b) return a.d2 < b.d2 end)
-  for i = #out, Lamps.LIGHT_LIMIT + 1, -1 do out[i] = nil end
-  if #out > 0 and Lamps.LOG then
-    note("lit", "feeding %d lamp flame(s) at night=%.2f", #out, night)
-  end
-  return out
-end
-
-local lastSites = {}
-
--- Merge posts that sit on a land seam (two chunks both emitted one).
-local function mergeWorld(sites)
-  local r2 = Lamps.SEAM * Lamps.SEAM
+-- A pole emitted by two lands on a seam folds to one; nothing else does.
+local function mergeSeam(sites)
   local used, out = {}, {}
   for i, s in ipairs(sites) do
     if not used[i] then
@@ -362,8 +347,7 @@ local function mergeWorld(sites)
       for j = i + 1, #sites do
         if not used[j] then
           local q = sites[j]
-          local dx, dz = q.wx - s.wx, q.wz - s.wz
-          if dx * dx + dz * dz <= r2 then
+          if sameFootprint(0, 0, q.wx - s.wx, q.wz - s.wz) then
             used[j] = true
             sx, sy, sz, n = sx + q.wx, math.min(sy, q.wy), sz + q.wz, n + 1
           end
@@ -375,19 +359,11 @@ local function mergeWorld(sites)
   return out
 end
 
-function Lamps.draw(scene)
-  if not Lamps.enabled then return end
-  lastSites = {}
-  local ground = scene and scene.ground
-  if not ground then return end
-  Lamps.prepare(ground)
-  if #list == 0 then return end
-
-  local lit = 0
-  local okN, night = pcall(DayNight.windowLight)
-  if okN and night then lit = night end
-
-  local sites = {}
+local function sitesFor(ground)
+  if siteCache and siteCache.list == list and siteCache.ground == ground then
+    return siteCache.sites
+  end
+  local raw = {}
   for _, item in ipairs(list) do
     for _, p in ipairs(item.entry.posts or {}) do
       local x, z = p.x + item.x, p.z + item.z
@@ -396,32 +372,103 @@ function Lamps.draw(scene)
         local gy = ground:groundY(x - (ground.offsetX or 0), z - (ground.offsetY or 0))
         if gy then y = gy end
       end
-      sites[#sites + 1] = { wx = x, wy = y, wz = z }
+      raw[#raw + 1] = { wx = x, wy = y, wz = z }
     end
   end
-  sites = mergeWorld(sites)
+  local sites = mergeSeam(raw)
+  siteCache = { list = list, ground = ground, sites = sites }
+  if Lamps.LOG and #sites > 0 then
+    local parts = {}
+    for i, s in ipairs(sites) do
+      if i > 16 then parts[#parts + 1] = "..."; break end
+      parts[#parts + 1] = string.format("(%.0f,%.0f)", s.wx, s.wz)
+    end
+    note("sites:" .. tostring(#sites) .. ":" .. tostring(Lamps.version),
+         "%d post(s) in the window: %s", #sites, table.concat(parts, " "))
+  end
+  return sites
+end
+
+-- The flame's world height above a post's feet: the bake's own lantern height,
+-- times the scale the post is drawn at (the shader hangs the flame lampHeight
+-- above lampY, and a 1.8x post has a 1.8x lantern).
+function Lamps.flameOffset()
+  local ok, h = pcall(function() return StreetLamps.flameHeight() end)
+  h = (ok and tonumber(h)) or 19
+  return h * Lamps.SCALE
+end
+
+local function nightNow()
+  local okN, night = pcall(DayNight.windowLight)
+  return okN and tonumber(night) or 0
+end
+
+-- The voxel shader's lamp slots (Voxel3D meshes: posts, trees, NPC bodies, the
+-- glass panes). One light per post, nearest first.
+function Lamps.collectLights(scene)
+  if not Lamps.enabled then return {} end
+  local ground = scene and scene.ground
+  local view = scene and scene.view
+  if not (ground and view) then return {} end
+
+  local night = nightNow()
+  if night <= 0.05 then return {} end
+
+  Lamps.prepare(ground)
+  local vx, vz = view.x or 0, view.z or 0
+  local out = {}
+  for _, s in ipairs(sitesFor(ground)) do
+    local dx, dz = s.wx - vx, s.wz - vz
+    out[#out + 1] = {
+      x = s.wx, y = s.wy, z = s.wz,
+      radius = Lamps.LIGHT_RADIUS,
+      power = night * 0.9,
+      d2 = dx * dx + dz * dz,
+    }
+  end
+  table.sort(out, function(a, b) return a.d2 < b.d2 end)
+  for i = #out, Lamps.LIGHT_LIMIT + 1, -1 do out[i] = nil end
+  if #out > 0 and Lamps.LOG then
+    note("lit", "feeding %d lamp flame(s) at night=%.2f", #out, night)
+  end
+  return out
+end
+
+local lastSites = {}
+
+function Lamps.draw(scene)
+  if not Lamps.enabled then return end
+  lastSites = {}
+  local ground = scene and scene.ground
+  if not ground then return end
+  Lamps.prepare(ground)
+  if #list == 0 then return end
+
+  local sites = sitesFor(ground)
   lastSites = sites
   if #sites == 0 then return end
   Voxel3D.seams(false)
   Voxel3D.glass(false)
-  pcall(StreetLamps.drawWorld, sites, lit)
+  pcall(StreetLamps.drawWorld, sites, nightNow())
   Voxel3D.seams(true)
   Voxel3D.glass(true)
 end
 
--- Native-city light: the posts that were just drawn, for Gen4Tint's additive
--- pass (Platinum's own shader never sees Voxel3D.lampLights).
+-- Native-city light: the posts that were just drawn, for Gen4Light (the
+-- world-space receiver; Platinum's own shader never sees Voxel3D.lampLights).
+-- y is the post's feet, fy the flame -- the point the light really comes from.
 function Lamps.worldLights()
   local out = {}
-  local okN, night = pcall(DayNight.windowLight)
-  night = okN and tonumber(night) or 0
+  local night = nightNow()
   if night <= 0.05 then return out end
+  local flame = Lamps.flameOffset()
   for _, s in ipairs(lastSites) do
     out[#out + 1] = {
       x = s.wx, y = s.wy, z = s.wz,
+      fy = s.wy + flame,
       radius = Lamps.LIGHT_RADIUS,
       power = night,
-      kind = "street",
+      kind = "post",
     }
   end
   return out
@@ -432,6 +479,8 @@ function Lamps.invalidate()
   resident = 0
   list = {}
   window = {}
+  siteCache = nil
+  lastSites = {}
   Lamps.active = {}
   Lamps.version = Lamps.version + 1
   Lamps.coverVersion = Lamps.coverVersion + 1

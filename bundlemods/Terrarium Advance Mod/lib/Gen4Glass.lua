@@ -81,13 +81,13 @@ local Glass = {
   -- c1_lamp01 / c1_lamp02: city building lights (not street posts).
   ALLOW = { c1_lamp01 = true, c1_lamp02 = true },
 
-  WHITE = 0.5,        -- every channel at least this: the palette's white
+  WHITE = 0.88,-- every channel at least this: the palette's white
   MIN_TEXELS = 4,       -- fewer glass texels than this is noise, not a pane
   MAX_FRACTION = 0.45,  -- more of the picture than this and it is not a window
 
-  WINDOW = 2,           -- lands each way around the camera
+  WINDOW = 3,           -- lands each way around the camera
   PULL = 0.6,           -- toward the eye, world units: the overlay's depth bias
-  SHADE = 0.9,          -- the overlay's own vertex shade (day glint's base only)
+  SHADE = 0.1,          -- the overlay's own vertex shade (day glint's base only)
 
   NIGHT_MIN = 0.02,     -- below this the lamps are out and nothing is drawn
   DAY_GLINT = false,    -- see the header
@@ -108,7 +108,7 @@ local Glass = {
   LIGHT_CLUSTER = 20,   -- merge pane samples this close (one window, one flame)
 
   stats = { textures = 0, glassTextures = 0, lands = 0, shapes = 0 },
-  version = 2,
+  version = 1,
 }
 
 local FX16, UV_UNITS = 4096, 16
@@ -387,12 +387,7 @@ local function harvestBuildingTerrain(ground, record, pts)
         for _, p in ipairs(pos) do
           sx, sy, sz, n = sx + p[1], sy + p[2], sz + p[3], n + 1
         end
-        -- lowest vertex as the wash origin so the pool sits on the wall, not in the sky
-        local ymin = pos[1][2]
-        for _, p in ipairs(pos) do
-          if p[2] < ymin then ymin = p[2] end
-        end
-        pts[#pts + 1] = { sx / n, ymin + (sy / n - ymin) * 0.35, sz / n }
+        pts[#pts + 1] = { sx / n, sy / n, sz / n }
       end
     end
   end
@@ -437,7 +432,7 @@ local function buildLand(ground, land)
       end
     end
   end
-  local pts, buildingPts = {}, {}
+  local pts = {}
   for _, bk in ipairs(order) do
     seal(bk)
     for _, mesh in ipairs(bk.meshes) do
@@ -447,9 +442,8 @@ local function buildLand(ground, land)
       pts[#pts + 1] = p
     end
   end
-  harvestBuildingTerrain(ground, record, buildingPts)
+  harvestBuildingTerrain(ground, record, pts)
   out.lights = clusterPoints(pts, Glass.LIGHT_CLUSTER)
-  out.buildingLights = clusterPoints(buildingPts, 36)
   Glass.stats.lands = Glass.stats.lands + 1
   if Glass.LOG and #out.lights > 0 then
     note("lights:" .. tostring(land),
@@ -690,8 +684,10 @@ function Glass.lights(wx, wz, limit)
   return out
 end
 
--- Building-wall washes for Gen4Tint. Not glass panes (those are overlay
--- flatten) and not street-lamp orbs -- a wide dim pool on the facade.
+-- Pane + building-wall light sources for Gen4Light (the world-space receiver on
+-- Platinum's own roads and walls), nearest first. y is the pane itself; the
+-- receiver lights from there, so a window lights the wall around it and the
+-- street below it, not the sky above.
 function Glass.screenLights(wx, wz)
   if not (Glass.enabled and DayNight) then return {} end
   local okN, night = pcall(DayNight.windowLight)
@@ -702,20 +698,34 @@ function Glass.screenLights(wx, wz)
   wx, wz = tonumber(wx) or 0, tonumber(wz) or 0
   local out = {}
   for _, item in ipairs(list) do
-    for _, p in ipairs(item.entry.buildingLights or {}) do
+    for _, p in ipairs(item.entry.lights or {}) do
       local x, z = p.x + item.x, p.z + item.z
       local dx, dz = x - wx, z - wz
       out[#out + 1] = {
         x = x, y = p.y or 0, z = z,
-        radius = 140,
-        power = night * 0.55,
-        kind = "building",
+        radius = (Glass.LIGHT_RADIUS or 48) * 4,
+        power = night * 0.4,
         d2 = dx * dx + dz * dz,
       }
     end
   end
   table.sort(out, function(a, b) return a.d2 < b.d2 end)
-  for i = #out, 16, -1 do out[i] = nil end
+  for i = #out, 33, -1 do out[i] = nil end
+  return out
+end
+
+-- The glass-bearing building meshes of the lands around the camera, with their
+-- land origin: { { mesh, x, z }, ... }. Gen4Light draws these (additive, depth
+-- tested) so a lit window lights the WALL it is in, not just the pane.
+function Glass.wallPieces()
+  local out = {}
+  local list = window.list
+  if not list then return out end
+  for _, item in ipairs(list) do
+    for _, piece in ipairs(item.entry.pieces or {}) do
+      if piece.mesh then out[#out + 1] = { mesh = piece.mesh, x = item.x, z = item.z } end
+    end
+  end
   return out
 end
 

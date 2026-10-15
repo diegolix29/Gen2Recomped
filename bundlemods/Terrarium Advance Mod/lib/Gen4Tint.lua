@@ -44,6 +44,74 @@ local Tint = {
 -- Below this the multiply is close enough to white to change no pixel.
 Tint.NEUTRAL = 0.999
 
+-- ---------------------------------------------------------------- settlements
+--
+-- Gen 4's deep night (DayNight.TINTS_DEEP: 36/44/80, about 0.14/0.17/0.31) is a
+-- fine colour for a dark route and far too dark for a town, where the lamps and
+-- lit windows are supposed to make the street readable. Gen 2 multiplies by
+-- 88/104/168 (about 0.35/0.41/0.66) everywhere, which is why its towns look
+-- open and Platinum's look like a wall.
+--
+-- So the multiply is eased toward a town floor while the camera is in a
+-- settlement, and left alone on a route. A settlement is detected from what the
+-- bridge already feeds us each frame: street posts count 1, lit windows count
+-- TOWN_PANE_WEIGHT. The result is smoothed, so walking into a town brightens it
+-- over ~TOWN_FADE seconds instead of popping.
+--
+-- THE KNOBS (all live; nothing needs a restart):
+--   TOWN_FLOOR   the darkest a town's multiply may be, r/g/b 0..1. Raise it for a
+--                brighter town, lower it for a darker one. {0.35, 0.41, 0.66} is
+--                exactly Gen 2's night; {0,0,0} turns the lift off.
+--   WILD_SCALE   multiplies the tint on routes and anywhere with no settlement.
+--                1 leaves routes alone, 0.8 makes them 20% darker.
+--   TOWN_FULL    how many post-equivalents count as "fully a town".
+Tint.TOWN_FLOOR = { 0.40, 0.46, 0.70 }
+Tint.WILD_SCALE = 1.0
+Tint.TOWN_FULL = 4
+Tint.TOWN_PANE_WEIGHT = 0.35
+Tint.TOWN_FADE = 1.2          -- seconds to ease in / out
+Tint.town = 0                 -- 0..1, smoothed; read by Gen4Light too
+
+local clock = (love and love.timer and love.timer.getTime) or os.clock
+
+-- The tint this frame will really be multiplied by, given the hour's own.
+-- Gen4Light divides by exactly this, so it must stay the single place that
+-- turns one into the other.
+function Tint.adjust(r, g, b)
+  local town = math.max(0, math.min(1, Tint.town or 0))
+  local w = tonumber(Tint.WILD_SCALE) or 1
+  if w ~= 1 then
+    local k = w + (1 - w) * town
+    r, g, b = r * k, g * k, b * k
+  end
+  local f = Tint.TOWN_FLOOR
+  if f and town > 0 then
+    r = r + (math.max(r, f[1] or 0) - r) * town
+    g = g + (math.max(g, f[2] or 0) - g) * town
+    b = b + (math.max(b, f[3] or 0) - b) * town
+  end
+  return math.min(1, r), math.min(1, g), math.min(1, b)
+end
+
+-- Called once per fx frame from feed(): how much of a settlement is around us.
+local function updateTown(lights)
+  local score = 0
+  if type(lights) == "table" then
+    for _, l in ipairs(lights) do
+      score = score + ((l.kind == "post") and 1 or Tint.TOWN_PANE_WEIGHT)
+    end
+  end
+  local target = math.max(0, math.min(1, score / math.max(0.1, Tint.TOWN_FULL)))
+  local now = clock()
+  local dt = Tint.townStamp and math.min(0.25, math.max(0, now - Tint.townStamp)) or nil
+  Tint.townStamp = now
+  if dt == nil then
+    Tint.town = target                          -- first frame: no fade from nothing
+  else
+    Tint.town = Tint.town + (target - Tint.town) * (1 - math.exp(-dt / math.max(0.05, Tint.TOWN_FADE)))
+  end
+end
+
 local function isGen4()
   local ok, GameVersion = pcall(require, "src.core.GameVersion")
   if not (ok and GameVersion and GameVersion.generation) then return false end
@@ -82,10 +150,7 @@ local function glowImage()
         local dx, dy = (x - c) / c, (y - c) / c
         local d = math.sqrt(dx * dx + dy * dy)
         local a = 0
-        if d < 1 then
-          local t = 1 - d
-          a = t * t * t
-        end
+        if d < 1 then a = (1 - d) * (1 - d) end
         data:setPixel(x, y, 1, 1, 1, a)
       end
     end
@@ -97,26 +162,39 @@ local function glowImage()
   return glowTex or nil
 end
 
+-- FALLBACK ONLY. Gen4Light (the world-space receiver) lights the real roads and
+-- walls, depth-tested, and sets `Light.ok` every frame it ran. These flat discs
+-- are painted over the finished frame with no depth, so they sit on top of
+-- characters and read as specks; they are only drawn when the receiver did NOT
+-- run this frame (its shader failed to compile, or the effect was disabled),
+-- or when Tint.FORCE_BLOBS is on.
+Tint.FORCE_BLOBS = false
+
+local function receiverRan()
+  local ok, Light = pcall(V.require, "Gen4Light")
+  if not (ok and type(Light) == "table") then return false end
+  local ran = Light.ok == true
+  Light.ok = false                      -- consumed: the next frame must prove it again
+  return ran
+end
+
 function Tint.feed(lights, vw, vh)
   Tint.blobs = {}
+  updateTown(lights)
+  if receiverRan() and not Tint.FORCE_BLOBS then return end
   vw, vh = tonumber(vw) or 0, tonumber(vh) or 0
   if vw < 1 or vh < 1 or type(lights) ~= "table" then return end
   local Voxel3D = V.require("Voxel3D")
   for _, l in ipairs(lights) do
-    local kind = l.kind or "street"
-    -- One sample per light, at the feet / wall -- never a second blob at the lantern
-    -- (that was the extra orb on top of every post and in the sky over glass).
+    -- ONE pool per light, where it lands. (There used to be a second "hot
+    -- spot" disc on the lantern: the light on top and bottom.)
     local ok, sx, sy, sc = pcall(Voxel3D.project, l.x or 0, l.y or 0, l.z or 0)
     if ok and sx and sy then
-      local street = kind ~= "building"
       Tint.blobs[#Tint.blobs + 1] = {
         nx = sx / vw,
         ny = sy / vh,
-        nr = ((l.radius or 220) * (tonumber(sc) or 1) * (street and 1.35 or 1.1)) / vw,
-        power = (tonumber(l.power) or 1) * (street and 0.85 or 0.45),
-        aspectX = street and 1.7 or 1.35,
-        aspectY = street and 0.55 or 1.15,
-        kind = kind,
+        nr = ((l.radius or 300) * (tonumber(sc) or 1) * 0.8) / vw,
+        power = (tonumber(l.power) or 1) * 0.9,
       }
     end
   end
@@ -132,6 +210,8 @@ function Tint.forFrame(renderer)
   local ok, tint = pcall(DayNight.tint, true)
   if not (ok and tint) then return nil end
   local r, g, b = tint[1] or 1, tint[2] or 1, tint[3] or 1
+  if r > Tint.NEUTRAL and g > Tint.NEUTRAL and b > Tint.NEUTRAL then return nil end
+  r, g, b = Tint.adjust(r, g, b)         -- settlement lift / route darkening
   if r > Tint.NEUTRAL and g > Tint.NEUTRAL and b > Tint.NEUTRAL then return nil end
   return r, g, b
 end
@@ -169,17 +249,15 @@ function Tint.paint(r, g, b)
     lamp = (okC and lamp) or { 1.0, 0.84, 0.5 }
     gfx.setBlendMode("add", "alphamultiply")
     for _, b in ipairs(blobs) do
-      local p = math.min(1.0, b.power or 1)
+      local p = math.min(1.4, (b.power or 1) * 1.15)
       local cx, cy = b.nx * w, b.ny * h
-      local rad = math.max(64, (b.nr or 0.14) * w)
+      local rad = math.max(48, (b.nr or 0.12) * w)
       gfx.setColor(lamp[1] * p, lamp[2] * p, lamp[3] * p, 1)
-      local ax, ay = b.aspectX or 1.6, b.aspectY or 0.6
       if glow then
-        gfx.draw(glow, cx, cy, 0,
-                 (rad * 2 * ax) / glow:getWidth(), (rad * 2 * ay) / glow:getHeight(),
+        gfx.draw(glow, cx, cy, 0, (rad * 2) / glow:getWidth(), (rad * 2) / glow:getHeight(),
                  glow:getWidth() * 0.5, glow:getHeight() * 0.5)
       else
-        gfx.ellipse("fill", cx, cy, rad * ax, rad * ay)
+        gfx.circle("fill", cx, cy, rad)
       end
     end
   end
