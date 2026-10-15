@@ -69,12 +69,24 @@ local function outdoorNow()
   local ow = Game and Game.overworld
   local map = ow and ow.map
   if not map then return false end
+  
+  -- Gen 4: use Gen4Spawn.isOutdoor (the real answer on Platinum)
+  local okS, Spawn = pcall(V.require, "Gen4Spawn")
+  if okS and type(Spawn) == "table" and Spawn.isOutdoor then
+    local ok, r = pcall(Spawn.isOutdoor, map)
+    if ok then return r and true or false end
+  end
+  
+  -- Gen 1-3: use Map.isOutdoor
   local okMap, Map = pcall(require, "src.world.Map")
-  if not okMap then return false end
-  local outdoor = map.def and Map.isOutdoor(map.def) or false
-  -- a canopy floor takes the hour's colour and nothing else of it, exactly as
-  -- it does in the 3D pass (BattleScene, VoxelScene)
-  return outdoor or DayNight.isCanopy(map)
+  if okMap then
+    local outdoor = map.def and Map.isOutdoor(map.def) or false
+    -- a canopy floor takes the hour's colour and nothing else of it, exactly as
+    -- it does in the 3D pass (BattleScene, VoxelScene)
+    return outdoor or DayNight.isCanopy(map)
+  end
+  
+  return false
 end
 
 -- Whether the WEATHER has anything to paint at this instant. Asked alongside
