@@ -1530,6 +1530,28 @@ function GT.draw(scene)
   Voxel3D.glass(true)
 end
 
+-- The sun pass's view of draw(): the same lands, thrown into the OPEN
+-- ShadowMap instead of the scene. Lands the shadow cannot reach are skipped.
+function GT.cast(ShadowMap, scene, box)
+  if not GT.enabled then return end
+  GT.prepare(scene.ground)
+  if #GT.list == 0 then return end
+  local ground = scene.ground
+  local half = (ground and (ground.half or (ground.chunkPx or 512) / 2)) or 256
+  for _, item in ipairs(GT.list) do
+    if (not box) or box.touches(item.x, item.z, half) then
+      local model = item.castModel
+      if not model then
+        model = Mat4.translate(item.x, GT.Y_OFFSET or 0, item.z)
+        item.castModel = model
+      end
+      for _, b in ipairs(item.entry.buckets) do
+        ShadowMap.draw((northLit and b.meshN) or b.mesh, b.tex, model)
+      end
+    end
+  end
+end
+
 -- Drop every baked tree: a map was edited, or the mod was reloaded.
 function GT.invalidate()
   for _, entry in pairs(landEntries) do

@@ -12,6 +12,17 @@
 
 local V = ...
 
+-- THE SUN. Like Gen4Bridge, this module used to have no way to reach the
+-- shadow system: it draws the 3D actors but never told ShadowMap about them,
+-- so nobody on Platinum threw a shadow. ShadowMap is the sun's depth pass and
+-- Shadows the player's ON / OFF row for it; the pass itself is filled by
+-- Gen4Bridge.castShadows, and this module's part is to RECORD what the actors
+-- draw so the pass can cast it (see Host.captureActors below).
+local okSM, ShadowMap = pcall(V.require, "ShadowMap")
+if not okSM then ShadowMap = nil end
+local okSh, Shadows = pcall(V.require, "Shadows")
+if not okSh then Shadows = nil end
+
 local Host = {
   installed = false,
     cbeNativeArena = false,
@@ -39,6 +50,39 @@ Host.stats = { draws = 0 }
 -- renderBattle, so the 3D-battle path is unchanged.
 Host._poseDraw = false
 function Host.inPose() return Host._poseDraw == true end
+
+-- Should the actors be recorded as shadow casters this frame? Both rows count:
+-- the ON / OFF row (Shadows) and the quality row (ShadowMap.wanted, which
+-- also folds the first one in).
+function Host.shadowsOn()
+  if Shadows and type(Shadows.enabled) == "function" then
+    local ok, on = pcall(Shadows.enabled)
+    if ok and on == false then return false end
+  end
+  if ShadowMap and type(ShadowMap.wanted) == "function" then
+    local ok, wanted = pcall(ShadowMap.wanted)
+    if ok then return wanted and true or false end
+  end
+  return false
+end
+
+local function bridge()
+  local ok, B = pcall(V.require, "Gen4Bridge")
+  if ok and type(B) == "table" then return B end
+  return nil
+end
+
+-- Run fn(), recording every Voxel3D.draw it makes as a shadow caster when
+-- shadows are on. Always runs fn exactly once, so a failure behaves as it
+-- did before; returns pcall's (ok, err).
+local function captureActors(fn)
+  local B = bridge()
+  if B and type(B.captureDraws) == "function" and Host.shadowsOn() then
+    return pcall(B.captureDraws, fn)
+  end
+  return pcall(fn)
+end
+Host.captureActors = captureActors
 
 local function engineRequire(name)
   local req = (V and V.engineRequire) or require
@@ -539,7 +583,7 @@ local function drawFieldActors(state, ground)
     if OS and OS.safePrepare then OS.safePrepare(posed) end
   end)
   if not beginFieldVoxel(state, ground) then return end
-  pcall(function()
+  captureActors(function()
     local OC = V.require("OverworldColosseum")
     local OS = V.require("OverworldStadium")
     local SF = V.require("StadiumFollower")
@@ -600,6 +644,20 @@ local function drawFieldActors(state, ground)
     end
   end)
   Voxel3D.endScene()
+  -- The Stadium rigs are skinned and do not go through Voxel3D.draw, so the
+  -- recording above never saw them; they cast through their own entry point,
+  -- from the matrix their draw just stored on the pose.
+  if Host.shadowsOn() then
+    local B = bridge()
+    local okS, OS = pcall(V.require, "OverworldStadium")
+    if B and B.recordCastFn and okS and OS and OS.safeCast then
+      for _, p in ipairs(posed) do
+        if p.stadiumMon and p.stadiumMatrix then
+          B.recordCastFn(function(SM) OS.safeCast(p, SM) end)
+        end
+      end
+    end
+  end
 end
 
 -- 3D grass into the still-bound gen4 target, before characters (depth test
@@ -681,7 +739,14 @@ end
 
 -- Battle: draw Sinnoh from the staged BattleCam, then let Stadium /
 -- Colosseum actors paint into the same framebuffer via Voxel3D "current".
-local function renderBattleBody(ground, view, state, arena, textures)
+function Host.renderBattle(state, arena, textures, token)
+  local ground = Host.groundOf(state) or Host.groundOf(state and { map = arena.map })
+  if arena and arena.map and arena.map.renderer and arena.map.renderer.gen4Ground then
+    ground = arena.map.renderer.gen4Ground
+  end
+  if not ground then return nil end
+  if arena and arena.discs and not arena.showTerrain then return nil end
+
   local BattleScene = V.require("BattleScene")
   local BattleCam = V.require("BattleCam")
   local Voxel3D = V.require("Voxel3D")
@@ -719,9 +784,16 @@ local function renderBattleBody(ground, view, state, arena, textures)
     curve = 0,
   }
 
-  -- `view` is the battle's OWN camera object (swapped onto ground.view3d by the
-  -- caller). field3d would derive fov from the cartridge camera distance, which
-  -- is not this fight's lens; third-person uses view.fovY as-is.
+  local Gen4View = engineRequire("src.render.Gen4View")
+  if not Gen4View then return nil end
+  local view = ground.view3d
+  if not view then
+    view = Gen4View.new("third")
+    ground.view3d = view
+  end
+  local savedMode = view.mode
+  -- field3d derives fov from the cartridge camera distance, which is not
+  -- this fight's lens. Third-person uses view.fovY as-is.
   view.mode = "third"
   view.x, view.y, view.z = worldCam.eye[1], worldCam.eye[2], worldCam.eye[3]
   local dx = worldCam.focus[1] - worldCam.eye[1]
@@ -733,11 +805,14 @@ local function renderBattleBody(ground, view, state, arena, textures)
   view.fovY = math.deg(worldCam.fov or view.fovY or 50)
   ground.cameraPlaced = true
 
+  Host._inBattle = true
   local drawFree = Host._drawFree or ground.drawFree
   local endFree = Host._endFree or ground.endFree
   local painted = drawFree(ground, pw, ph)
   if not painted then
+    view.mode = savedMode
     if endFree then pcall(endFree, ground) end
+    Host._inBattle = false
     return nil
   end
   pcall(Host.overlay3D, ground)
@@ -776,9 +851,10 @@ local function renderBattleBody(ground, view, state, arena, textures)
     -- due south. Pose cards against the map-local eye, then light them with
     -- the world eye the NSBMD pass already used.
     local mapEye = { cam.eye[1], worldCam.eye[2], cam.eye[3] }
-    Voxel3D.eye = worldCam.eye
+    Voxel3D.eye = mapEye
     local pull = V.require("BattleBillboard").PULL
     local cards = BattleScene.monCards(arena, groundY, textures) or {}
+    Voxel3D.eye = worldCam.eye
     local sh = love.graphics.getShader()
     if sh then
       pcall(sh.send, sh, "vp", "row", Voxel3D.vp)
@@ -816,40 +892,37 @@ local function renderBattleBody(ground, view, state, arena, textures)
   local colour = nil
   if src and love and love.graphics then
     local g = love.graphics
-    local dest = reusableCanvas("_battleCanvas", pw, ph)
-    if dest then
-      -- Cleared and drawn with "replace": the canvas is REUSED, so a transparent
-      -- pixel in this frame's colour must not show last frame through it.
-      local prevCanvas = g.getCanvas()
-      local blendMode, alphaMode = g.getBlendMode()
-      local depthCmp, depthWrite
-      if g.getDepthMode then depthCmp, depthWrite = g.getDepthMode() end
-      local okCopy = pcall(function()
-        g.setCanvas(dest)
-        if g.setDepthMode then g.setDepthMode() end
-        g.clear(0, 0, 0, 0)
-        g.setBlendMode("replace")
-        g.setColor(1, 1, 1, 1)
-        local sw = src.getWidth and src:getWidth() or pw
-        local sh = src.getHeight and src:getHeight() or ph
-        g.draw(src, 0, 0, 0, pw / sw, ph / sh)
-      end)
-      pcall(g.setBlendMode, blendMode, alphaMode)
-      pcall(g.setCanvas, prevCanvas)
-      if g.setDepthMode and depthCmp then pcall(g.setDepthMode, depthCmp, depthWrite) end
-      colour = okCopy and dest or src
+    local okNew, dest = pcall(g.newCanvas, pw, ph)
+    if okNew and dest then
+      local prev = { g.getCanvas() }
+      pcall(g.setCanvas, dest)
+      g.setColor(1, 1, 1, 1)
+      local sw, sh = src.getWidth and src:getWidth() or pw,
+                     src.getHeight and src:getHeight() or ph
+      if sw ~= pw or sh ~= ph then
+        pcall(g.draw, src, 0, 0, 0, pw / sw, ph / sh)
+      else
+        pcall(g.draw, src, 0, 0)
+      end
+      pcall(g.setCanvas, prev[1] or nil)
+      colour = dest
     else
       colour = src
     end
   end
   if endFree then pcall(endFree, ground) end
-  if not colour then return nil end
+  Host._inBattle = false
+  if not colour then
+    view.mode = savedMode
+    return nil
+  end
 
   local vp = (view and view.matrix) and view:matrix(pw, ph) or Voxel3D.vp
   local pmx, pmy = BattleScene.toGB(vp, arena.player[1] + ox, groundY,
                                     arena.player[2] + oz, lx, ly, s, pw, ph)
   local emx, emy = BattleScene.toGB(vp, arena.enemy[1] + ox, groundY,
                                     arena.enemy[2] + oz, lx, ly, s, pw, ph)
+  view.mode = savedMode
   if not (pmx and emx) then
     pmx, pmy = 40, 100
     emx, emy = 120, 40
@@ -1244,7 +1317,10 @@ function Host.install()
         return innerFreeEntity(self, mapX, mapY, camX, camY, rise, draw,
                                depthLift)
       end
-      if Host.isSkipped(mapX, mapY) then
+      -- `depthLift` is only ever passed by the "!" / "?" bubble over a
+      -- character (Gen4Emotes). It is drawn at the character's position, so a
+      -- position match would swallow it along with the flat sprite it is not.
+      if depthLift == nil and Host.isSkipped(mapX, mapY) then
         -- drawn as a 3D model instead: only the ground shadow is left to
         -- draw for a flyer
         if type(Host.flightLift) == "function" then
