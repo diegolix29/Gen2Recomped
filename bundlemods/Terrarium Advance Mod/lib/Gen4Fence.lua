@@ -961,6 +961,26 @@ function Fence.draw(scene)
   Voxel3D.glass(true)
 end
 
+-- The sun pass's view of draw() (see Gen4Trees.cast).
+function Fence.cast(ShadowMap, scene, box)
+  if not Fence.enabled then return end
+  local tex = fenceTexture()
+  if not tex then return end
+  prepare(scene.ground)
+  if #list == 0 then return end
+  local ground = scene.ground
+  local half = (ground and (ground.half or (ground.chunkPx or 512) / 2)) or 256
+  for _, item in ipairs(list) do
+    if (not box) or box.touches(item.x, item.z, half) then
+      local model = item.model
+      if not model then model = Mat4.translate(item.x, 0, item.z); item.model = model end
+      for _, mesh in ipairs(item.entry.meshes) do
+        ShadowMap.draw(mesh, tex, model)
+      end
+    end
+  end
+end
+
 function Fence.invalidate()
   for _, e in pairs(landEntries) do
     for _, m in ipairs(e.meshes or {}) do

@@ -671,6 +671,28 @@ function Flowers.draw(scene)
   Voxel3D.grassH, Voxel3D.grassLoad = prevH, prevLoad
 end
 
+-- The sun pass's view of draw() (see Gen4Trees.cast).
+function Flowers.cast(ShadowMap, scene, box)
+  if not Flowers.enabled then return end
+  local tex = flowerTexture()
+  if not tex then return end
+  prepare(scene.ground)
+  if #list == 0 then return end
+  local ground = scene.ground
+  local half = (ground and (ground.half or (ground.chunkPx or 512) / 2)) or 256
+  for _, item in ipairs(list) do
+    if (not box) or box.touches(item.x, item.z, half) then
+      local mats = item.mats
+      if not mats then mats = {}; item.mats = mats end
+      for i, b in ipairs(item.entry.buckets) do
+        local m = mats[i]
+        if not m then m = Mat4.translate(item.x, b.y, item.z); mats[i] = m end
+        ShadowMap.draw(b.mesh, tex, m)
+      end
+    end
+  end
+end
+
 function Flowers.invalidate()
   for _, e in pairs(landEntries) do
     for _, b in ipairs(e.buckets or {}) do
