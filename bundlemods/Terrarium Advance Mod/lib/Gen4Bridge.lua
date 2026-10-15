@@ -230,33 +230,34 @@ local function runScene(ground, view, vw, vh, order, effects, tag)
     proj = Mat4.mul(Mat4.scale(1, -1, 1), vp),
   }
 
-  -- Gather lamp lights for Gen 4 (from lamp textures and windows)
+  -- Street-lamp flames from Gen4Lawn post ids only (c1_o02 / c1_o02b).
+  -- Building brightness is c1_lamp01 / c1_lamp02 via Gen4Glass + Tint.
   local lampLights = {}
+  local lightScene = { ground = ground, view = view }
+  local okH, flameY = pcall(function() return V.require("StreetLamps").flameHeight() end)
+  if okH then Voxel3D.lampHeight = flameY end
   if Bridge.lampCollector then
-    local scene = { ground = ground, view = view }
-    local okL, lamps = pcall(Bridge.lampCollector, scene)
-    if okL then
+    local okL, lamps = pcall(Bridge.lampCollector, lightScene)
+    if okL and type(lamps) == "table" then
       for _, l in ipairs(lamps) do lampLights[#lampLights + 1] = l end
     end
   end
-  -- Add window lights from Gen4Glass
-  local okG, Glass = pcall(V.require, "Gen4Glass")
-  if okG and Glass and Glass.lights then
-    local cx, cy = view.x or 0, view.z or 0
-    local okL, glassLights = pcall(Glass.lights, cx, cy)
-    if okL then
-      for _, l in ipairs(glassLights) do lampLights[#lampLights + 1] = l end
-    end
-  end
-  -- Sort by distance and limit to 8 total
   table.sort(lampLights, function(a, b) return (a.d2 or 0) < (b.d2 or 0) end)
   for i = #lampLights, 9, -1 do lampLights[i] = nil end
   Voxel3D.lampLights = #lampLights > 0 and lampLights or nil
+  Voxel3D.lampFlicker = (#lampLights > 0) and 1 or 0
 
   local began = Voxel3D.beginScene(vw, vh, view.x, view.z, vw, vh, nil, "current")
   if not began then
     Voxel3D.camera = saved
+    if tag == "fx:" then
+      pcall(function() V.require("Gen4Tint").feed(nil) end)
+    end
     return
+  end
+  if tag == "fx:" then
+    local okC, col = pcall(function() return V.require("DayNight").lampColor() end)
+    if okC then Voxel3D.lampColor = col end
   end
   local scene = buildScene(ground, view, vw, vh)
   local Sun = sun()
@@ -283,6 +284,24 @@ local function runScene(ground, view, vw, vh, order, effects, tag)
         Bridge.disabled["shadows"] = true
       end
     end
+  end
+  -- Native Gen 4 city never samples Voxel3D.lampLights. Tint gets street
+  -- posts AND building wall-lights after the night multiply.
+  if tag == "fx:" then
+    local lights = {}
+    local okW, world = pcall(function() return V.require("Gen4Lamps").worldLights() end)
+    if okW and type(world) == "table" then
+      for _, l in ipairs(world) do lights[#lights + 1] = l end
+    elseif #lampLights > 0 then
+      for _, l in ipairs(lampLights) do lights[#lights + 1] = l end
+    end
+    local okG, panes = pcall(function()
+      return V.require("Gen4Glass").screenLights(view.x, view.z)
+    end)
+    if okG and type(panes) == "table" then
+      for _, l in ipairs(panes) do lights[#lights + 1] = l end
+    end
+    pcall(function() V.require("Gen4Tint").feed(lights, vw, vh) end)
   end
   Voxel3D.endScene()
   Voxel3D.camera = saved
@@ -436,6 +455,15 @@ function Bridge.install()
   else
     report("flowers", "the flower pass did not load: %s", tostring(GFl))
   end
+  -- 3D posts on Gen4Lawn's street-lamp ids (`c1_o02` / `c1_o02b`).
+  -- Opaque, before the glass overlay.
+  local okLp, GLp = pcall(V.require, "Gen4Lamps")
+  if okLp and type(GLp) == "table" then
+    if GLp.draw then Bridge.register("lamps", GLp.draw) end
+    Bridge.lampCollector = GLp.collectLights
+  else
+    report("lamps", "the lamp collector did not load: %s", tostring(GLp))
+  end
   -- Lit windows on Platinum's own buildings (the Gen 4 half of GlassMask).
   -- Blended, after the opaque passes, before grass.
   local okG, GG = pcall(V.require, "Gen4Glass")
@@ -443,14 +471,6 @@ function Bridge.install()
     Bridge.register("glass", GG.draw)
   else
     report("glass", "the glass pass did not load: %s", tostring(GG))
-  end
-  -- Point lights from Platinum's lamp textures (c1_lamp01, etc).
-  -- This collects lamp positions for the shader; no draw pass needed.
-  local okL, GL = pcall(V.require, "Gen4Lamps")
-  if okL and type(GL) == "table" then
-    Bridge.lampCollector = GL.collectLights
-  else
-    report("lamps", "the lamp collector did not load: %s", tostring(GL))
   end
   -- The voxel scene's sky (bands, clouds, sun/moon, stars, painted horizon, scenery)
   -- on Gen 4, with the engine's own horizon image hidden. Pre-terrain, so it is
@@ -472,7 +492,7 @@ end
 function Bridge.invalidateAll()
   local S = sun()
   if S then pcall(S.invalidate) end
-  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass", "Gen4NpcModels", "Gen4Glass" }) do
+  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass", "Gen4NpcModels", "Gen4Glass", "Gen4Lamps" }) do
     local ok, mod = pcall(V.require, name)
     if ok and type(mod) == "table" and type(mod.invalidate) == "function" then
       local okI, err = pcall(mod.invalidate)

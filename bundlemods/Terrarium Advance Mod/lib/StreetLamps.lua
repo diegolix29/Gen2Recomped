@@ -617,32 +617,30 @@ end
 -- at night a warm flatten wash so the lantern still reads as lit without
 -- splitting the GLB into parts.
 
-function StreetLamps.draw(map, outdoor)
-  if not StreetLamps.enabled() then return end
-  if not outdoor then return end
+-- Draw posts at already-resolved world positions. Each site is
+-- `{ wx, wy, wz }` (wy is the feet). Used by the Gen 1-3 town placer and
+-- by Gen4Lamps, which plants the same mesh on Platinum's lamp texture ids.
+function StreetLamps.drawWorld(sites, lit)
   if not Voxel3D.available() then return end
-  local sites = sitesFor(map)
-  if #sites == 0 then return end
-
-  local lit = 0
-  if outdoor then
-    local ok, n = pcall(DayNight.windowLight)
-    if ok and n then lit = n end
-  end
+  if not sites or #sites == 0 then return end
+  lit = tonumber(lit) or 0
   local lampColor = DayNight.lampColor()
+
+  local function yawOf(s)
+    if s.cx and s.cy then
+      return cellHash(s.mapId or s.id, s.cx, s.cy) * math.pi * 2
+    end
+    return cellHash("g4", math.floor((s.wx or 0) / 16), math.floor((s.wz or 0) / 16)) * math.pi * 2
+  end
 
   local authored = loadMesh3d()
   if authored then
     local tex = loadTex3d() or ensureTex()
-    -- Each post keeps its own facing, so a street is not a row of clones.
-    -- Worked once here and reused by the lantern pass below rather than
-    -- hashed twice: the two passes MUST agree or the panes rotate off the
-    -- ironwork they belong to.
     local xf = {}
     for i, s in ipairs(sites) do
-      local yaw = cellHash(map.id, s.cx, s.cy) * math.pi * 2
-      xf[i] = Mat4.mul(Mat4.translate(s.wx, groundOf(map, s), s.wz),
-                       Mat4.rotateY(yaw))
+      local sc = s.scale or 1
+      xf[i] = Mat4.mul(Mat4.translate(s.wx, s.wy or 0, s.wz),
+                       Mat4.mul(Mat4.rotateY(yawOf(s)), Mat4.scale(sc, sc, sc)))
     end
 
     -- The ironwork, under the hour's own light. It is a dark object at night
@@ -679,7 +677,8 @@ function StreetLamps.draw(map, outdoor)
   for _, s in ipairs(sites) do
     local t = tpl[s.style] or tpl.classic
     if t and t.pole then
-      local m = Mat4.translate(s.wx, groundOf(map, s), s.wz)
+      local sc = s.scale or 1
+      local m = Mat4.mul(Mat4.translate(s.wx, s.wy or 0, s.wz), Mat4.scale(sc, sc, sc))
       Voxel3D.draw(t.pole, tex, m, 0, m)
     end
   end
@@ -693,13 +692,33 @@ function StreetLamps.draw(map, outdoor)
   for _, s in ipairs(sites) do
     local t = tpl[s.style] or tpl.classic
     if t and t.head then
-      local m = Mat4.translate(s.wx, groundOf(map, s), s.wz)
+      local sc = s.scale or 1
+      local m = Mat4.mul(Mat4.translate(s.wx, s.wy or 0, s.wz), Mat4.scale(sc, sc, sc))
       Voxel3D.draw(t.head, tex, m, 0, m)
     end
   end
   if lit > 0.05 then
     Voxel3D.flatten(nil)
   end
+end
+
+function StreetLamps.draw(map, outdoor)
+  if not StreetLamps.enabled() then return end
+  if not outdoor then return end
+  if not Voxel3D.available() then return end
+  local found = sitesFor(map)
+  if #found == 0 then return end
+  local lit = 0
+  local ok, n = pcall(DayNight.windowLight)
+  if ok and n then lit = n end
+  local sites = {}
+  for i, s in ipairs(found) do
+    sites[i] = {
+      wx = s.wx, wy = groundOf(map, s), wz = s.wz,
+      style = s.style, cx = s.cx, cy = s.cy, mapId = map and map.id,
+    }
+  end
+  StreetLamps.drawWorld(sites, lit)
 end
 
 -- Shadow casters for the sun pass: poles only on the box models (heads are

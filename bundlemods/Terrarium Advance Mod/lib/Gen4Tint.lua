@@ -34,6 +34,11 @@ local Tint = {
   installed = false,
   enabled = true,         -- master switch (a quick way to compare with / without)
   last = nil,             -- {r, g, b} of the last painted frame, for probes
+  -- Screen-space lamp / window pools, fed from Gen4Bridge while the 3D
+  -- camera is live. Drawn ADDITIVE after the night multiply so Platinum's
+  -- own buildings and roads actually brighten (Voxel3D.lampLights never
+  -- reach the engine's shader).
+  blobs = {},
 }
 
 -- Below this the multiply is close enough to white to change no pixel.
@@ -61,6 +66,60 @@ local function outdoorNow()
   end
   local okC, canopy = pcall(DayNight.isCanopy, map)
   return okC and canopy and true or false
+end
+
+-- Project world-space flames into normalised window coords. Call while
+-- Voxel3D.beginScene is open so Voxel3D.project sees this frame's matrix.
+local glowTex = nil
+local function glowImage()
+  if glowTex then return glowTex end
+  local ok, img = pcall(function()
+    local n = 64
+    local data = love.image.newImageData(n, n)
+    local c = (n - 1) * 0.5
+    for y = 0, n - 1 do
+      for x = 0, n - 1 do
+        local dx, dy = (x - c) / c, (y - c) / c
+        local d = math.sqrt(dx * dx + dy * dy)
+        local a = 0
+        if d < 1 then
+          local t = 1 - d
+          a = t * t * t
+        end
+        data:setPixel(x, y, 1, 1, 1, a)
+      end
+    end
+    local t = love.graphics.newImage(data)
+    t:setFilter("linear", "linear")
+    return t
+  end)
+  glowTex = (ok and img) or false
+  return glowTex or nil
+end
+
+function Tint.feed(lights, vw, vh)
+  Tint.blobs = {}
+  vw, vh = tonumber(vw) or 0, tonumber(vh) or 0
+  if vw < 1 or vh < 1 or type(lights) ~= "table" then return end
+  local Voxel3D = V.require("Voxel3D")
+  for _, l in ipairs(lights) do
+    local kind = l.kind or "street"
+    -- One sample per light, at the feet / wall -- never a second blob at the lantern
+    -- (that was the extra orb on top of every post and in the sky over glass).
+    local ok, sx, sy, sc = pcall(Voxel3D.project, l.x or 0, l.y or 0, l.z or 0)
+    if ok and sx and sy then
+      local street = kind ~= "building"
+      Tint.blobs[#Tint.blobs + 1] = {
+        nx = sx / vw,
+        ny = sy / vh,
+        nr = ((l.radius or 220) * (tonumber(sc) or 1) * (street and 1.35 or 1.1)) / vw,
+        power = (tonumber(l.power) or 1) * (street and 0.85 or 0.45),
+        aspectX = street and 1.7 or 1.35,
+        aspectY = street and 0.55 or 1.15,
+        kind = kind,
+      }
+    end
+  end
 end
 
 -- The colour this frame should be multiplied by, or nil to leave it alone.
@@ -100,6 +159,30 @@ function Tint.paint(r, g, b)
   gfx.setBlendMode("multiply", "premultiplied")
   gfx.setColor(r, g, b, 1)
   gfx.rectangle("fill", 0, 0, w, h)
+
+  -- Native Gen 4 has no voxel lamp shader. Additive pools after the
+  -- multiply are the light source for streets and walls.
+  local blobs = Tint.blobs
+  local glow = glowImage()
+  if blobs and #blobs > 0 then
+    local okC, lamp = pcall(DayNight.lampColor)
+    lamp = (okC and lamp) or { 1.0, 0.84, 0.5 }
+    gfx.setBlendMode("add", "alphamultiply")
+    for _, b in ipairs(blobs) do
+      local p = math.min(1.0, b.power or 1)
+      local cx, cy = b.nx * w, b.ny * h
+      local rad = math.max(64, (b.nr or 0.14) * w)
+      gfx.setColor(lamp[1] * p, lamp[2] * p, lamp[3] * p, 1)
+      local ax, ay = b.aspectX or 1.6, b.aspectY or 0.6
+      if glow then
+        gfx.draw(glow, cx, cy, 0,
+                 (rad * 2 * ax) / glow:getWidth(), (rad * 2 * ay) / glow:getHeight(),
+                 glow:getWidth() * 0.5, glow:getHeight() * 0.5)
+      else
+        gfx.ellipse("fill", cx, cy, rad * ax, rad * ay)
+      end
+    end
+  end
 
   gfx.setBlendMode(blend or "alpha", alpha)
   gfx.setColor(pr or 1, pg or 1, pb or 1, pa or 1)

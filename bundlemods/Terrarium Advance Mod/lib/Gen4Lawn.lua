@@ -99,10 +99,11 @@ local Lawn = {
     c1_d_3    = { image = "ground.png",  uv = 1 },
     c1_d_4    = { image = "ground.png",  uv = 1 },
     -- c1_f_* textures are fences: handled by Gen4Fence for proper 3D fences
-    c1_o02    = { image = "metal aged.png",  uv = 1 },
-    c1_o02b   = { image = "light.png",  uv = 1 },
-    c1_lamp01 = { image = "lamp.png",    uv = 1 },
-    c1_lamp02 = { image = "lamp.png",    uv = 1 },
+    -- Street posts (Gen4Lamps). Building wall-lights are c1_lamp01 / c1_lamp02.
+    c1_o02    = { image = "lamp.png",    uv = 1 },
+    c1_o02b   = { image = "lamp.png",    uv = 1 },
+    c1_lamp01 = { image = "light.png",   uv = 1 },
+    c1_lamp02 = { image = "light.png",   uv = 1 },
 
     -- Veilstone (c02_*, c2_*) from land 48/49
     c02_base    = { image = "ground.png",   uv = 1 },
@@ -285,6 +286,25 @@ function Lawn.install()
 
   Lawn.installed = true
   return true
+end
+
+-- Street-post ids. c1_lamp01 / c1_lamp02 are building lights, not posts.
+function Lawn.lampIds()
+  local building = Lawn.buildingLightIds()
+  local ids = { ["c1_o02"] = true, ["c1_o02b"] = true }
+  for name, cfg in pairs(Lawn.TEXTURES) do
+    local key = tostring(name):lower()
+    if not building[key] then
+      local img = cfg and tostring(cfg.image or ""):lower()
+      if img == "lamp.png" then ids[key] = true end
+    end
+  end
+  return ids
+end
+
+-- Wall / window glow on city buildings (Gen4Glass + Tint), never a 3D post.
+function Lawn.buildingLightIds()
+  return { ["c1_lamp01"] = true, ["c1_lamp02"] = true }
 end
 
 function Lawn.invalidate()
