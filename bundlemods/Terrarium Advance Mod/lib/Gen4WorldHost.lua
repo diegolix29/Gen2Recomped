@@ -50,6 +50,23 @@ local function game()
   return engineRequire("src.core.Game")
 end
 
+-- Gen4Sun: the Gen 4 shadow pass (lib/ShadowMap + lib/Shadows). Neither of
+-- those was reachable from this file before, which is why Platinum maps cast
+-- nothing. nil when the module will not load: no shadows, nothing else lost.
+local sunMod, sunTried
+local function sun()
+  if not sunTried then
+    sunTried = true
+    local ok, S = pcall(V.require, "Gen4Sun")
+    if ok and type(S) == "table" then sunMod = S
+    elseif V.mod and V.mod.log and V.mod.log.warn then
+      pcall(V.mod.log.warn, V.mod.log, "Gen4WorldHost: shadows unavailable: " .. tostring(S))
+    end
+  end
+  return sunMod
+end
+Host.sun = sun
+
 function Host.generation()
   local GameVersion = engineRequire("src.core.GameVersion")
   if GameVersion and type(GameVersion.generation) == "function" then
@@ -617,7 +634,10 @@ function Host.overlay3D(ground)
     local okN, Npc = pcall(V.require, "Gen4NpcModels")
     if okN and Npc and Npc.pump then pcall(Npc.pump) end
   end
+  local S = sun()
+  if S then S.capturing = true end     -- NPCs, the player and Pokemon cast
   pcall(drawFieldActors, ow, ground)
+  if S then S.capturing = false end
   Host._drawGround = nil
 end
 
@@ -682,6 +702,8 @@ end
 -- Battle: draw Sinnoh from the staged BattleCam, then let Stadium /
 -- Colosseum actors paint into the same framebuffer via Voxel3D "current".
 function Host.renderBattle(state, arena, textures, token)
+  -- the overworld's sun map belongs to the overworld: do not shade a battle with it
+  do local S = sun(); if S then pcall(S.suspend) end end
   local ground = Host.groundOf(state) or Host.groundOf(state and { map = arena.map })
   if arena and arena.map and arena.map.renderer and arena.map.renderer.gen4Ground then
     ground = arena.map.renderer.gen4Ground
@@ -824,11 +846,9 @@ function Host.renderBattle(state, arena, textures, token)
     end)
     Voxel3D.endScene()
   end)
-  -- a throw inside the scene above must not leave a Voxel3D scene open
-  pcall(Voxel3D.endScene)
+    pcall(Voxel3D.endScene)
 
-  -- Take the colour while the pass is still open, into ONE reusable canvas (it
-  -- used to be a new canvas every frame, never released).
+
   local Gen4Ground = engineRequire("src.render.Gen4Ground")
   local src = Gen4Ground and Gen4Ground.freeColour
   local colour = nil
@@ -1109,6 +1129,7 @@ local function copyFreeColour(w, h)
 end
 
 function Host.renderPose(state, pocket, pose, w, h)
+  do local S = sun(); if S then pcall(S.suspend) end end
   w, h = math.floor(tonumber(w) or 0), math.floor(tonumber(h) or 0)
   if w < 2 or h < 2 then return nil, "bad size" end
   if not (pose and pose.eye and pose.focus and pose.fov) then
@@ -1246,6 +1267,19 @@ function Host.install()
       return false
     end
     Host._skippedOverworld = false
+    -- The sun pass switches canvases, so it runs BEFORE the engine opens its
+    -- colour+depth target, never inside it. Fills lib/ShadowMap from last
+    -- frame's recorded casters; the Bridge's receiver reads it at endFree.
+    local S = sun()
+    if S then
+      local okS, errS = pcall(S.cast, self, vw, vh)
+      if not okS and not Host._sunWarned then
+        Host._sunWarned = true
+        if V.mod and V.mod.log and V.mod.log.warn then
+          pcall(V.mod.log.warn, V.mod.log, "Gen4WorldHost: sun pass failed: " .. tostring(errS))
+        end
+      end
+    end
     local ok = innerDrawFree(self, vw, vh)
     if ok then pcall(Host.overlay3D, self) end
     return ok

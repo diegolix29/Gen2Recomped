@@ -340,21 +340,33 @@ end
 -- continuously with the camera reprojects every shadow edge a fraction of a
 -- texel every frame and the whole world's shadows crawl and shimmer while
 -- you walk.
-local function fit(cx, cy, vw, vh)
+-- `box` (optional) is {x0, z0, x1, z1 [, y0, y1]} in world units and replaces
+-- the voxel camera's own guess about what is on screen. Gen 4 has no
+-- Voxel.angle / Voxel.FOCAL to size a frustum from -- the engine owns that
+-- camera -- so lib/Gen4Sun passes the box it wants covered, caster margin
+-- included, and everything below (rung pick, texel snap, slack) runs as usual.
+local function fit(cx, cy, vw, vh, box)
   local f = sunDir()
   local view = Mat4.lookAt({ 0, 0, 0 }, f, { 0, 0, -1 })
 
-  local reach = ShadowMap.HEIGHT
-                * math.max(math.abs(ShadowMap.KX), math.abs(ShadowMap.KZ)) + 24
-  -- arity-ok: capMul is optional and defaults to ShadowMap.FAR_CAP
-  local north = groundReach(vh)
-  -- the view widens with distance, so the far ground spans more than the
-  -- near ground does; half the depth is a serviceable stand-in for the
-  -- frustum's true spread and costs a good deal less resolution
-  local spread = north * 0.5
-  local xs = { cx - vw / 2 - spread, cx + vw / 2 + spread + reach }
-  local ys = { -32, ShadowMap.HEIGHT }         -- -32 covers recessed water
-  local zs = { cy - north, cy + vh / 2 + reach }
+  local xs, ys, zs
+  if box then
+    xs = { box[1], box[3] }
+    zs = { box[2], box[4] }
+    ys = { box[5] or -32, box[6] or ShadowMap.HEIGHT }
+  else
+    local reach = ShadowMap.HEIGHT
+                  * math.max(math.abs(ShadowMap.KX), math.abs(ShadowMap.KZ)) + 24
+    -- arity-ok: capMul is optional and defaults to ShadowMap.FAR_CAP
+    local north = groundReach(vh)
+    -- the view widens with distance, so the far ground spans more than the
+    -- near ground does; half the depth is a serviceable stand-in for the
+    -- frustum's true spread and costs a good deal less resolution
+    local spread = north * 0.5
+    xs = { cx - vw / 2 - spread, cx + vw / 2 + spread + reach }
+    ys = { -32, ShadowMap.HEIGHT }         -- -32 covers recessed water
+    zs = { cy - north, cy + vh / 2 + reach }
+  end
 
   local l, r, b, t, zn, zf
   for _, x in ipairs(xs) do
@@ -563,11 +575,11 @@ end
 
 -- Begin the sun pass. Returns false when it could not start, in which case
 -- the caller must not draw into it or call finish.
-function ShadowMap.begin(cx, cy, vw, vh)
+function ShadowMap.begin(cx, cy, vw, vh, box)
   local sh = getShader()
   if not sh then return false end
   -- fit first: it is what decides which resolution rung this view wants
-  fit(cx, cy, vw, vh)
+  fit(cx, cy, vw, vh, box)
   local c = getCanvas(ShadowMap.res)
   if not c then return false end
   local ok = pcall(love.graphics.setCanvas, { c, depth = true })
