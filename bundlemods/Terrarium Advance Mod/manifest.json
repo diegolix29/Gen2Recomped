@@ -1,7 +1,7 @@
 {
   "id": "DRAMATIC_SHAPE",
   "name": "Advanced Terrarium Voxel Mod",
-  "version": "1.8.5",
+  "version": "1.8.7",
   "api": 2,
   "entry": "main.lua",
   "profile": "content",
@@ -20,7 +20,8 @@
     1,
     2,
     3,
-    4
+    4,
+    5
   ],
   "affects_link": false,
   "experimental": false,
