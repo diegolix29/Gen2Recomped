@@ -422,16 +422,6 @@ function Bridge.install()
   else
     report("sky", "the sky pass did not load: %s", tostring(GK))
   end
-  -- Day/night tint for Gen 4's native 3D world. Screen-space post-process.
-  local okT, GT = pcall(V.require, "Gen4Tint")
-  if okT and type(GT) == "table" and GT.draw then
-    Bridge.after[#Bridge.after + 1] = function(ground, view, vw, vh)
-      local scene = buildScene(ground, view, vw, vh)
-      pcall(GT.draw, scene)
-    end
-  else
-    report("tint", "the day/night tint pass did not load: %s", tostring(GT))
-  end
   return true
 end
 
