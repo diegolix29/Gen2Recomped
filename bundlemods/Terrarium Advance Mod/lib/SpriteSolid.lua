@@ -1,4 +1,4 @@
--- SpriteSolid: a smooth 3D body built from a sprite's front and back.
+-- SpriteSolid: a smooth 3D body built from the four sides of a sprite.
 --
 -- WHY THIS EXISTS
 --
@@ -7,19 +7,17 @@
 -- engine's Gen4Facings) plus two step frames per side. A free camera orbits
 -- that card, so every NPC is a paper cut-out in a 3D world.
 --
--- This module turns the front and back pictures of one pose into a closed,
--- smooth, textured mesh (optional side pictures can still drive depth). It
--- owns NO engine state and touches no LOVE API, so it runs (and is tested)
--- under plain Lua; lib/Gen4NpcModels.lua does the engine side.
+-- This module turns the four pictures of one pose into a closed, smooth,
+-- textured mesh. It owns NO engine state and touches no LOVE API, so it runs
+-- (and is tested) under plain Lua; lib/Gen4NpcModels.lua does the engine side.
 --
 -- THE SHAPE
 --
--- 1. The front/back alpha masks give, for every pixel row, which stretches of
---    the body are occupied (x runs). Depth (z runs) is invented from each
---    run's width so the body is volumetric without a side picture fighting
---    the front silhouette. `useSides` opts back into reading east/west masks
---    for z. A row's cross-section is one ellipse per (x run, z run): a leg
---    4 px wide with invented depth 3 is a 4 x 3 ellipse, not a box.
+-- 1. The four alpha masks give, for every pixel row, which stretches of the
+--    body are occupied seen from the front/back (x runs) and from the sides
+--    (z runs). A row's cross-section is one ellipse per (x run, z run): a leg
+--    seen as 4 px wide from the front and 7 px deep from the side is a 4 x 7
+--    ellipse, not a box.
 --    Runs pair by order when both views see the same count (two legs that
 --    are also two legs in profile), and as a product otherwise. Pairing by
 --    order is what stops a walking pose growing four legs.
@@ -33,17 +31,28 @@
 --
 -- THE LOOK
 --
--- Front and back pictures cover the +z / -z halves. A side picture is used
--- only on the rim (triangles that face sideways past `sideStart`): just the
--- inner columns of that picture, with the outline cut off (`sideInset`), so
--- a 3/4 view does not paste a whole profile onto the cheek. Near the rim the
--- front/back UVs are also pulled off the silhouette, which is what used to
--- stretch into a black slab on the depth. Vertices are duplicated per
--- picture, so seams are colour changes, never cracks. Texels just outside a
--- silhouette are expected to be colour-padded by `padRGBA`.
+-- Sampling the sprite straight from a triangle has two ugly failure modes:
+-- a hard cut wherever the picture changes (face -> hair), and streaks on any
+-- surface that no picture looks at (the top of a head is edge-on to all four).
+-- So the colours are BAKED into a small atlas of the body's own:
+--
+--   five cells: front, back, east, west (each one sprite cell) and TOP (a
+--   look straight down). Each triangle is projected into whichever of the five
+--   it faces most, so no triangle is ever stretched past ~55 degrees.
+--   Every texel is then coloured by BLENDING the four real pictures at that
+--   3D point, weighted by the way the surface faces (cos^blendPower of the
+--   angle to each picture; facing between two pictures gives both). A colour
+--   that is a function of the 3D point is the same on both sides of every
+--   seam, so there are no seams. Facing straight up the weights go uniform,
+--   which averages the four pictures' hair into the cap.
+--
+-- Vertices are duplicated per cell, so a cell edge is never a crack. `src` must
+-- be colour-padded (`padRGBA`) because the mesh is rounder than the pixels.
 --
 -- COORDINATES (model space, one unit = one sprite pixel)
 --   y up, 0 at the soles. x east when the body faces south, z forward (south).
+--   atlas: W wide; cells stacked front, back, east, west (H tall each), then
+--   top (W tall; col = x + W/2, row = z + W/2).
 --   A sprite cell is W x H; its centre column is x = 0 / z = 0.
 --   front (south sprite):  col = x + W/2        back (north):  col = -x + W/2
 --   right (east sprite):   col = z + W/2        left (west):   col = -z + W/2
@@ -61,12 +70,7 @@ S.DEFAULT = {
   minDepth = 3,         -- px: the thinnest any part may be front to back
   margin = 3,           -- empty px kept around the body for the blur
   below = 3,            -- virtual rows under the soles
-  frontBias = 2.2,      -- front/back keep the face; sides only win on the rim
-  useSides = false,     -- true: east/west masks also drive the body's depth
-  sidePaint = true,     -- cropped side pictures on the flanks (needs L/R masks)
-  sideStart = 0.55,     -- |nx|/(|nx|+bias|nz|) at which a triangle wears a side
-  sideInset = 1.5,      -- px cut off each edge of a side picture
-  outlinePull = 1.25,   -- px the front/back UV is pulled off the silhouette on the rim
+  blendPower = 3,       -- colour blend sharpness: 1 = very soft, 8 = nearly hard
   light = { 0.15, 0.85, 0.5 },   -- body-attached key light (model space)
   floor = 0.66,         -- darkest shade; the shader wants a floor well above 0
 }
@@ -95,30 +99,13 @@ end
 
 -- ------------------------------------------------------------- padding --
 
--- padRGBA(rgba, imgW, imgH, cw, ch [, radius [, thr]]) -> rgba
---
--- The mesh is rounder than the pixels, so a triangle near the edge of a
--- silhouette can land on a texel that was transparent. The shader discards
--- those, which would cut holes in the body. This grows each opaque texel's
--- colour outward `radius` px (inside its own cell, so one frame never bleeds
--- into the next) and makes the grown texels opaque. Original opaque texels
--- are untouched; anything further than `radius` from the art stays clear.
-function S.padRGBA(rgba, imgW, imgH, cw, ch, radius, thr)
-  radius = radius or 3
-  thr = thr or S.ALPHA
-  local n = imgW * imgH
-  local R, G, B, solid = {}, {}, {}, {}
-  for i = 0, n - 1 do
-    local r, g, b, a = byte(rgba, i * 4 + 1, i * 4 + 4)
-    if a and a >= thr then
-      R[i], G[i], B[i], solid[i] = r, g, b, true
-    end
-  end
+-- Grow colour outward from the `solid` texels, `radius` px, never across a
+-- row bound (rowLo/rowHi give each row's cell range).
+local function grow(R, G, B, solid, imgW, imgH, rowLo, rowHi, radius)
   for _ = 1, radius do
     local fill = {}
     for y = 0, imgH - 1 do
-      local cy0 = floor(y / ch) * ch
-      local cy1 = cy0 + ch - 1
+      local cy0, cy1 = rowLo[y], rowHi[y]
       for x = 0, imgW - 1 do
         local i = y * imgW + x
         if not solid[i] then
@@ -149,15 +136,41 @@ function S.padRGBA(rgba, imgW, imgH, cw, ch, radius, thr)
       R[f[1]], G[f[1]], B[f[1]], solid[f[1]] = f[2], f[3], f[4], true
     end
   end
+end
+
+local function packRGBA(R, G, B, solid, n)
   local out = {}
   for i = 0, n - 1 do
-    if solid[i] then
-      out[i + 1] = char(R[i], G[i], B[i], 255)
-    else
-      out[i + 1] = "\0\0\0\0"
-    end
+    out[i + 1] = solid[i] and char(R[i], G[i], B[i], 255) or "\0\0\0\0"
   end
   return table.concat(out)
+end
+
+-- padRGBA(rgba, imgW, imgH, cw, ch [, radius [, thr]]) -> rgba
+--
+-- The mesh is rounder than the pixels, so a point can project just outside a
+-- silhouette onto a texel that was transparent. This grows each opaque texel's
+-- colour outward `radius` px (inside its own cell, so one frame never bleeds
+-- into the next) and makes the grown texels opaque. Original opaque texels are
+-- untouched; anything further than `radius` from the art stays clear.
+function S.padRGBA(rgba, imgW, imgH, cw, ch, radius, thr)
+  radius = radius or 3
+  thr = thr or S.ALPHA
+  local n = imgW * imgH
+  local R, G, B, solid = {}, {}, {}, {}
+  for i = 0, n - 1 do
+    local r, g, b, a = byte(rgba, i * 4 + 1, i * 4 + 4)
+    if a and a >= thr then
+      R[i], G[i], B[i], solid[i] = r, g, b, true
+    end
+  end
+  local lo, hi = {}, {}
+  for y = 0, imgH - 1 do
+    lo[y] = floor(y / ch) * ch
+    hi[y] = lo[y] + ch - 1
+  end
+  grow(R, G, B, solid, imgW, imgH, lo, hi, radius)
+  return packRGBA(R, G, B, solid, n)
 end
 
 -- --------------------------------------------------------------- rows --
@@ -177,8 +190,8 @@ local function runsOf(w, test)
 end
 
 -- Per row: the x runs (front/back seen together: the back picture is the
--- front's mirror) and, when useSides, the z runs (east/west seen together).
-local function analyse(views, W, H, useSides)
+-- front's mirror) and the z runs (east/west seen together), in cell columns.
+local function analyse(views, W, H)
   local F, Bk, L, R = views.front, views.back, views.left, views.right
   local wr, dr = {}, {}
   local top, base
@@ -187,55 +200,15 @@ local function analyse(views, W, H, useSides)
     wr[r] = runsOf(W, function(i)
       return F[o + i + 1] or Bk[o + (W - 1 - i) + 1]
     end)
-    if useSides and L and R then
-      dr[r] = runsOf(W, function(k)
-        return R[o + k + 1] or L[o + (W - 1 - k) + 1]
-      end)
-    else
-      dr[r] = {}
-    end
+    dr[r] = runsOf(W, function(k)
+      return R[o + k + 1] or L[o + (W - 1 - k) + 1]
+    end)
     if #wr[r] > 0 then
       top = top or r
       base = r
     end
   end
   return wr, dr, top, base
-end
-
--- Per row, the half-open [lo, hi) of opaque columns. Used to cut the outline
--- off a side picture before it is mapped onto the rim.
-local function rowBounds(mask, W, H)
-  if not mask then return nil end
-  local b = {}
-  for r = 0, H - 1 do
-    local o, lo, hi = r * W, nil, nil
-    for i = 0, W - 1 do
-      if mask[o + i + 1] then
-        lo = lo or i
-        hi = i + 1
-      end
-    end
-    b[r] = lo and { lo, hi } or nil
-  end
-  return b
-end
-
-local function clampCol(col, bounds, row, W, inset)
-  local b
-  if bounds then
-    local ri = floor(row)
-    b = bounds[ri] or bounds[ri - 1] or bounds[ri + 1]
-  end
-  if b then
-    local lo, hi = b[1] + inset, b[2] - inset
-    if hi < lo + 1 then lo, hi = b[1], b[2] end
-    if col < lo + 0.5 then return lo + 0.5 end
-    if col > hi - 0.5 then return hi - 0.5 end
-    return col
-  end
-  if col < 0.5 then return 0.5 end
-  if col > W - 0.5 then return W - 0.5 end
-  return col
 end
 
 -- One row's cross-section: a list of ellipses { cx, cz, a, b } in model units.
@@ -319,30 +292,29 @@ end
 
 -- build(views, layout [, opts [, tick]]) -> result | nil, reason
 --
---   views   { front, back [, left, right] } masks (S.maskFromRGBA), one pose
---   layout  { imgW, imgH, cellW, cellH, cellX,
---             cellY = { front =, back = [, left =, right =] } }   (pixels)
+--   views   { front, back, left, right } masks (S.maskFromRGBA), one pose
+--   layout  { imgW, imgH, cellW, cellH, cellX, src =  the PADDED sheet (rgba),
+--             cellY = { front =, back =, left =, right = } }   (pixels)
 --   opts    S.DEFAULT overrides
 --   tick    called now and then; a job uses it to yield (see S.newJob)
 --
--- result  { verts, map, vertexCount, triangleCount, height, halfW, halfD }
--- verts are { x, y, z, u, v, shade, 0 } (Voxel3D.FORMAT); map is 1-based.
+-- result  { verts, map, atlas, atlasW, atlasH, vertexCount, triangleCount, ... }
+-- verts are { x, y, z, u, v, shade, 0 } (Voxel3D.FORMAT) with UVs into `atlas`
+-- (an rgba8 string, atlasW x atlasH); map is 1-based.
 function S.build(views, layout, opts, tick)
   tick = tick or noop
   local o = {}
   for k, v in pairs(S.DEFAULT) do o[k] = v end
   for k, v in pairs(opts or {}) do o[k] = v end
   local W, H = layout.cellW, layout.cellH
-  local need = { "front", "back" }
-  if o.useSides then need[3], need[4] = "left", "right" end
-  for _, key in ipairs(need) do
+  for _, key in ipairs({ "front", "back", "left", "right" }) do
     local m = views[key]
     if not (m and m.w == W and m.h == H) then
       return nil, "missing or mismatched " .. key .. " mask"
     end
   end
 
-  local wr, dr, top, base = analyse(views, W, H, o.useSides)
+  local wr, dr, top, base = analyse(views, W, H)
   if not top then return nil, "no body in the front/back views" end
   local bodyH = base - top + 1
   if bodyH < 4 then return nil, "body only " .. bodyH .. " rows tall" end
@@ -362,14 +334,11 @@ function S.build(views, layout, opts, tick)
   for r = top, base do
     local d = depthRunsFor(r)
     if not d then
-      -- No side picture: each front/back run becomes its own ellipse, depth
-      -- from that run's width, centred so the volume matches the art we paint.
-      d = {}
-      for i = 1, #wr[r] do
-        local wrun = wr[r][i]
-        local depth = max(o.minDepth, (wrun[2] - wrun[1]) * 0.85)
-        d[i] = { W / 2 - depth / 2, W / 2 + depth / 2 }
-      end
+      local lo, hi = math.huge, -math.huge
+      for _, w in ipairs(wr[r]) do lo, hi = min(lo, w[1]), max(hi, w[2]) end
+      local width = hi - lo
+      local depth = max(o.minDepth, width * 0.55)
+      d = { { W / 2 - depth / 2, W / 2 + depth / 2 } }
     end
     rows[r] = sections(wr[r], d, W, o.minDepth)
   end
@@ -568,80 +537,168 @@ function S.build(views, layout, opts, tick)
     tick()
   end
 
-  -- ---- pictures: pick one per triangle, duplicate vertices per picture
+  -- ---- cells: project each triangle into the cell it faces most
+  local src = layout.src
+  if not src then return nil, "layout.src (the padded sheet) is required" end
+  local imgW = layout.imgW
+  local AN = { { 0, 0, 1 }, { 0, 0, -1 }, { -1, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 } }
+  local VN = AN                                  -- 1..4 are the four pictures
   local VIEWS = { "front", "back", "right", "left" }
-  local colX = {
-    function(x, z) return x + W / 2 end,       -- front
-    function(x, z) return -x + W / 2 end,      -- back
-    function(x, z) return z + W / 2 end,       -- right (east sprite)
-    function(x, z) return -z + W / 2 end,      -- left  (west sprite)
-  }
-  local paintSides = o.sidePaint and views.left and views.right
-      and layout.cellY.left and layout.cellY.right
-  local sideB = {
-    [3] = rowBounds(views.right, W, H),
-    [4] = rowBounds(views.left, W, H),
-  }
+  local atlasW, atlasH = W, 4 * H + W
+  local origin = { 0, H, 2 * H, 3 * H, 4 * H }
+  local cellRows = { H, H, H, H, W }
+  local half = W / 2
+
+  -- (col, row) of a model point in cell c, unclamped
+  local function project(c, x, y, z)
+    if c == 1 then return x + half, base + 1 - y
+    elseif c == 2 then return -x + half, base + 1 - y
+    elseif c == 3 then return z + half, base + 1 - y
+    elseif c == 4 then return -z + half, base + 1 - y
+    end
+    return x + half, z + half
+  end
+  local function depthOf(c, x, y, z)             -- larger = nearer the viewer
+    if c == 1 then return z elseif c == 2 then return -z
+    elseif c == 3 then return -x elseif c == 4 then return x end
+    return y
+  end
+
   local verts, map = {}, {}
   local made = {}
-  local imgW, imgH = layout.imgW, layout.imgH
-  local cellX = layout.cellX or 0
-  local sideStart = o.sideStart
-  local inset = o.sideInset
-  local pull = o.outlinePull
+  local VP = {}                                  -- per output vertex: x y z nx ny nz cell
+  local function emit(vid, c)
+    local key = vid * 5 + c
+    local idx = made[key]
+    if idx then return idx end
+    local x, y, z = P[vid * 3 - 2], P[vid * 3 - 1], P[vid * 3]
+    local nx_, ny_, nz_ = N[vid * 3 - 2], N[vid * 3 - 1], N[vid * 3]
+    local col, row = project(c, x, y, z)
+    local rows = cellRows[c]
+    if col < 0.5 then col = 0.5 elseif col > W - 0.5 then col = W - 0.5 end
+    if row < 0.5 then row = 0.5 elseif row > rows - 0.5 then row = rows - 0.5 end
+    local ay = origin[c] + row
+    verts[#verts + 1] = { x, y, z, col / atlasW, ay / atlasH,
+                          shadeOf(nx_, ny_, nz_, o), 0 }
+    idx = #verts
+    VP[idx] = { x, y, z, nx_, ny_, nz_, c, col, ay }
+    made[key] = idx
+    return idx
+  end
 
   for t = 1, #tris, 3 do
-    local a, b, c = tris[t], tris[t + 1], tris[t + 2]
+    local a, b2, c3 = tris[t], tris[t + 1], tris[t + 2]
     -- drop triangles that collapsed onto the ground
-    if not (P[a * 3 - 1] == 0 and P[b * 3 - 1] == 0 and P[c * 3 - 1] == 0) then
-      local nxs = N[a * 3 - 2] + N[b * 3 - 2] + N[c * 3 - 2]
-      local nzs = N[a * 3] + N[b * 3] + N[c * 3]
-      local ax, az = abs(nxs), abs(nzs) * o.frontBias
-      local sideFrac = ax / (ax + az + 1e-9)
-      local best
-      if paintSides and sideFrac >= sideStart then
-        -- Rim only: a cropped strip of the side picture, not the whole profile.
-        best = (nxs >= 0) and 4 or 3
-      else
-        best = (P[a * 3] + P[b * 3] + P[c * 3] >= 0) and 1 or 2
+    if not (P[a * 3 - 1] == 0 and P[b2 * 3 - 1] == 0 and P[c3 * 3 - 1] == 0) then
+      local sx = N[a * 3 - 2] + N[b2 * 3 - 2] + N[c3 * 3 - 2]
+      local sy = N[a * 3 - 1] + N[b2 * 3 - 1] + N[c3 * 3 - 1]
+      local sz = N[a * 3] + N[b2 * 3] + N[c3 * 3]
+      local best, bestScore = 1, -math.huge
+      for c = 1, 5 do
+        local sc = sx * AN[c][1] + sy * AN[c][2] + sz * AN[c][3]
+        if sc > bestScore then best, bestScore = c, sc end
       end
-      for _, vid in ipairs({ a, b, c }) do
-        local key = vid * 4 + best
-        local idx = made[key]
-        if not idx then
-          local x, y, z = P[vid * 3 - 2], P[vid * 3 - 1], P[vid * 3]
-          local col = colX[best](x, z)
-          local row = base + 1 - y
-          if row < 0.5 then row = 0.5 elseif row > H - 0.5 then row = H - 0.5 end
-          if best >= 3 then
-            col = clampCol(col, sideB[best], row, W, inset)
-          else
-            -- On the rim, the planar front/back UV sits on the silhouette
-            -- (often a black outline) and would stretch into a black slab.
-            if sideFrac > 0.25 and pull > 0 then
-              local d = pull * min(1, sideFrac / sideStart)
-              if col >= W / 2 then col = col - d else col = col + d end
-            end
-            if col < 0.5 then col = 0.5 elseif col > W - 0.5 then col = W - 0.5 end
-          end
-          local cellY = layout.cellY[VIEWS[best]]
-          verts[#verts + 1] = {
-            x, y, z,
-            (cellX + col) / imgW, (cellY + row) / imgH,
-            shadeOf(N[vid * 3 - 2], N[vid * 3 - 1], N[vid * 3], o), 0,
-          }
-          idx = #verts
-          made[key] = idx
-        end
-        map[#map + 1] = idx
-      end
+      map[#map + 1] = emit(a, best)
+      map[#map + 1] = emit(b2, best)
+      map[#map + 1] = emit(c3, best)
     end
   end
   if #map == 0 then return nil, "no triangles" end
+  tick()
+
+  -- ---- bake: colour every texel by blending the four pictures at its point
+  local cellY = layout.cellY
+  local cellX = layout.cellX or 0
+  local power = o.blendPower
+  local weights = { 0, 0, 0, 0 }
+  local function colourAt(x, y, z, nx_, ny_, nz_)
+    local hl = sqrt(nx_ * nx_ + nz_ * nz_)
+    local mix = hl / 0.35
+    if mix > 1 then mix = 1 end
+    local cx_, cz_ = 0, 0
+    if hl > 1e-6 then cx_, cz_ = nx_ / hl, nz_ / hl end
+    local sr, sg, sb, sw = 0, 0, 0, 0
+    for c = 1, 4 do
+      local d = cx_ * VN[c][1] + cz_ * VN[c][3]
+      local w = (d > 0) and d ^ power or 0
+      w = (1 - mix) * 0.25 + mix * w
+      if w > 1e-4 then
+        local col, row = project(c, x, y, z)
+        local ci, ri = floor(col), floor(row)
+        if ci < 0 then ci = 0 elseif ci > W - 1 then ci = W - 1 end
+        if ri < 0 then ri = 0 elseif ri > H - 1 then ri = H - 1 end
+        local at = ((cellY[VIEWS[c]] + ri) * imgW + cellX + ci) * 4
+        local r, g, bb, al = byte(src, at + 1, at + 4)
+        if al and al >= S.ALPHA then
+          sr, sg, sb, sw = sr + r * w, sg + g * w, sb + bb * w, sw + w
+        end
+      end
+    end
+    if sw <= 0 then return nil end
+    return floor(sr / sw + 0.5), floor(sg / sw + 0.5), floor(sb / sw + 0.5)
+  end
+
+  local R, G, B, solid, zbuf = {}, {}, {}, {}, {}
+  for t = 1, #map, 3 do
+    local v1, v2, v3 = VP[map[t]], VP[map[t + 1]], VP[map[t + 2]]
+    local c = v1[7]
+    local x1, y1, x2, y2, x3, y3 = v1[8], v1[9], v2[8], v2[9], v3[8], v3[9]
+    local area = (x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1)
+    if abs(area) > 1e-9 then
+      local lo = origin[c]
+      local hi = lo + cellRows[c] - 1
+      local tx0, tx1 = floor(min(x1, x2, x3)), floor(max(x1, x2, x3))
+      local ty0, ty1 = floor(min(y1, y2, y3)), floor(max(y1, y2, y3))
+      if tx0 < 0 then tx0 = 0 end
+      if tx1 > W - 1 then tx1 = W - 1 end
+      if ty0 < lo then ty0 = lo end
+      if ty1 > hi then ty1 = hi end
+      for ty = ty0, ty1 do
+        for tx = tx0, tx1 do
+          local px_, py_ = tx + 0.5, ty + 0.5
+          local l2 = ((px_ - x1) * (y3 - y1) - (py_ - y1) * (x3 - x1)) / area
+          local l3 = ((x2 - x1) * (py_ - y1) - (y2 - y1) * (px_ - x1)) / area
+          local l1 = 1 - l2 - l3
+          if l1 >= -0.05 and l2 >= -0.05 and l3 >= -0.05 then
+            local x = l1 * v1[1] + l2 * v2[1] + l3 * v3[1]
+            local y = l1 * v1[2] + l2 * v2[2] + l3 * v3[2]
+            local z = l1 * v1[3] + l2 * v2[3] + l3 * v3[3]
+            local d = depthOf(c, x, y, z)
+            local at = ty * atlasW + tx
+            if zbuf[at] == nil or d > zbuf[at] then
+              local nx_ = l1 * v1[4] + l2 * v2[4] + l3 * v3[4]
+              local ny_ = l1 * v1[5] + l2 * v2[5] + l3 * v3[5]
+              local nz_ = l1 * v1[6] + l2 * v2[6] + l3 * v3[6]
+              local nl = sqrt(nx_ * nx_ + ny_ * ny_ + nz_ * nz_)
+              if nl > 1e-9 then nx_, ny_, nz_ = nx_ / nl, ny_ / nl, nz_ / nl end
+              local r, g, bb = colourAt(x, y, z, nx_, ny_, nz_)
+              if r then
+                R[at], G[at], B[at], solid[at] = r, g, bb, true
+                zbuf[at] = d
+              end
+            end
+          end
+        end
+      end
+    end
+    if t % 600 == 1 then tick() end
+  end
+
+  -- texels no triangle reached (cracks between tiny triangles): grow into them
+  local lo, hi = {}, {}
+  for c = 1, 5 do
+    for y = origin[c], origin[c] + cellRows[c] - 1 do
+      lo[y], hi[y] = origin[c], origin[c] + cellRows[c] - 1
+    end
+  end
+  grow(R, G, B, solid, atlasW, atlasH, lo, hi, 2)
+  local atlas = packRGBA(R, G, B, solid, atlasW * atlasH)
 
   return {
     verts = verts, map = map,
     vertexCount = #verts, triangleCount = #map / 3,
+    atlas = atlas, atlasW = atlasW, atlasH = atlasH,
+    cellOrigin = origin,
     height = bodyH, halfW = max(abs(xmin), abs(xmax)), halfD = max(abs(zmin), abs(zmax)),
     base = base, top = top,
   }

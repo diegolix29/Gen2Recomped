@@ -1,8 +1,8 @@
 -- Gen4NpcModels: Platinum's NPCs as smooth 3D bodies built from their own art.
 --
 -- Platinum's overworld people are flat billboards in a real 3D world. This
--- builds, for every walker sheet, a closed smooth mesh out of the sheet's
--- front and back pictures (see lib/SpriteSolid.lua for the geometry) and draws it in place
+-- builds, for every walker sheet, a closed smooth mesh out of the sheet's four
+-- real sides (see lib/SpriteSolid.lua for the geometry) and draws it in place
 -- of the flat card, through the same seam Gen4WorldHost already uses for the
 -- player model, Colosseum/Stadium models and `model3d` actors.
 --
@@ -23,8 +23,9 @@
 -- WHAT IS BUILT, AND WHEN
 --
 --   One body per (sheet, pose): the stand frame and the two step frames, each
---   from that pose's south and north pictures on a volumetric body, with a
---   cropped strip of the east/west pictures on the rim. The body is turned
+--   from that pose's south / north / west / east pictures, with its own small
+--   baked texture in which those four pictures are blended (see SpriteSolid),
+--   so there are no seams between face, side and back. The body is turned
 --   by the NPC's world facing (eased, so a turn is not a snap) and the pose
 --   follows the sprite's own walk phase, so the walk is the sheet's real
 --   walk. Sheets are shared: fifty youngsters cost one set of bodies.
@@ -48,9 +49,9 @@ local Npc = {
   MAX_BODIES = 120,     -- cached bodies before the least recently used go
   TURN_RATE = 14,       -- rad/s a body turns toward its facing
   STEP_SECONDS = 0.004, -- slice of one build step
-  FILTER = "nearest",   -- "nearest" keeps the pixel art crisp, "linear" softens
+  FILTER = "nearest",   -- "nearest" keeps the pixel art crisp, "linear" softens it
   includePlayer = false,
-  solid = { useSides = false, sidePaint = true },  -- volume from front/back; cropped sides on the rim
+  solid = {},           -- SpriteSolid option overrides, e.g. { ss = 2 }
   stats = { builds = 0, failed = 0, drawn = 0, sheets = 0 },
 }
 
@@ -167,8 +168,11 @@ local function readRGBA(data)
   return table.concat(out), w, h
 end
 
--- Read the sheet, keep its pixels for the masks and upload a colour-padded
--- copy for the bodies to wear. Returns true or false + reason.
+-- Read the sheet and keep two copies of its pixels: the raw one for the
+-- silhouettes, and a colour-padded one (colour grown a few px past every
+-- silhouette, inside its own cell) for the bodies to sample, because a body is
+-- rounder than the pixels. Nothing is uploaded here: each body bakes and
+-- uploads its own small texture. Returns true, or false + reason.
 local function loadSheet(rec)
   local Solid = lazy("SpriteSolid")
   if not Solid then return false, "SpriteSolid did not load" end
@@ -184,15 +188,7 @@ local function loadSheet(rec)
   end
   if h < need * rec.ch then return false, ("sheet is %d tall, poses need %d"):format(h, need * rec.ch) end
   rec.rgba, rec.imgW, rec.imgH = rgba, w, h
-  local padded = Solid.padRGBA(rgba, w, h, rec.cw, rec.ch, Npc.PAD)
-  local okI, image = pcall(function()
-    local id = love.image.newImageData(w, h, "rgba8", padded)
-    local img = love.graphics.newImage(id)
-    img:setFilter(Npc.FILTER, Npc.FILTER)
-    return img
-  end)
-  if not (okI and image) then return false, "could not upload the padded sheet" end
-  rec.image = image
+  rec.padded = Solid.padRGBA(rgba, w, h, rec.cw, rec.ch, Npc.PAD)
   Npc.stats.sheets = Npc.stats.sheets + 1
   return true
 end
@@ -209,7 +205,7 @@ local function startBody(rec, key, frames)
     cellY[k] = y0
   end
   local layout = { imgW = rec.imgW, imgH = rec.imgH, cellW = rec.cw, cellH = rec.ch,
-                   cellX = 0, cellY = cellY }
+                   cellX = 0, cellY = cellY, src = rec.padded }
   local body = { used = frameNo }
   body.job = Solid.newJob(views, layout, Npc.solid, clock)
   rec.bodies[key] = body
@@ -218,7 +214,8 @@ end
 
 local function release(body)
   if body.mesh and body.mesh.release then pcall(body.mesh.release, body.mesh) end
-  body.mesh = nil
+  if body.image and body.image.release then pcall(body.image.release, body.image) end
+  body.mesh, body.image = nil, nil
 end
 
 -- drop the least recently used finished bodies past the cap
@@ -260,12 +257,19 @@ local function finish(item)
   end
   local Voxel3D = lazy("Voxel3D")
   local mesh = Voxel3D and Voxel3D.newMesh(r.verts, r.map) or nil
-  if not mesh then
-    body.failed = "mesh upload failed"
+  local okI, image = pcall(function()
+    local id = love.image.newImageData(r.atlasW, r.atlasH, "rgba8", r.atlas)
+    local img = love.graphics.newImage(id)
+    img:setFilter(Npc.FILTER, Npc.FILTER)
+    return img
+  end)
+  if not (mesh and okI and image) then
+    if mesh and mesh.release then pcall(mesh.release, mesh) end
+    body.failed = "mesh or texture upload failed"
     Npc.stats.failed = Npc.stats.failed + 1
     return
   end
-  body.mesh = mesh
+  body.mesh, body.image = mesh, image
   body.height, body.tris = r.height, r.triangleCount
   bodyCount = bodyCount + 1
   Npc.stats.builds = Npc.stats.builds + 1
@@ -372,14 +376,14 @@ function Npc.drawPose(p, ground)
     return false
   end
   body.used = frameNo
-  if not body.mesh then return false end
+  if not (body.mesh and body.image) then return false end
 
   local Voxel3D, Mat4 = lazy("Voxel3D"), lazy("Mat4")
   if not (Voxel3D and Mat4) then return false end
   local yaw = yawFor(e, p.facing)
   local m = Mat4.translate((p.px or 0) + 8, p.gh or 0, (p.py or 0) + 8)
   if yaw ~= 0 then m = Mat4.mul(m, Mat4.rotateY(yaw)) end
-  local ok = pcall(Voxel3D.draw, body.mesh, rec.image, m)
+  local ok = pcall(Voxel3D.draw, body.mesh, body.image, m)
   if ok then Npc.stats.drawn = Npc.stats.drawn + 1 end
   return ok
 end
@@ -389,7 +393,6 @@ end
 function Npc.invalidate()
   for _, rec in pairs(recs) do
     for _, body in pairs(rec.bodies) do release(body) end
-    if rec.image and rec.image.release then pcall(rec.image.release, rec.image) end
   end
   for k in pairs(recs) do recs[k] = nil end
   for i = #queue, 1, -1 do queue[i] = nil end

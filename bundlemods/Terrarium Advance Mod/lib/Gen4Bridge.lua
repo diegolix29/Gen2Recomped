@@ -224,12 +224,7 @@ local function runScene(ground, view, vw, vh, order, effects, tag)
       local ok, err = pcall(effects[name], scene)
       if not ok then
         report(tag .. name, "effect '%s' failed: %s", name, tostring(err))
-        -- Don't fail every frame -- but a failure under a BATTLE camera (a different
-        -- lens, aspect and eye height from anything the effect meets walking) must
-        -- not switch the effect off for the whole session, across every map.
-        local H = V.Gen4WorldHost
-        local inBattle = H and H._inBattle == true
-        if not inBattle then Bridge.disabled[name] = true end
+        Bridge.disabled[name] = true      -- don't fail every frame
       end
     end
   end
@@ -415,7 +410,7 @@ end
 -- these, so a graphics reset, a mod reload or a cache reset left the old
 -- meshes (and, on a lost GL context, dead ones) in place.
 function Bridge.invalidateAll()
-  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass", "Gen4NpcModels"}) do
+  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass", "Gen4NpcModels" }) do
     local ok, mod = pcall(V.require, name)
     if ok and type(mod) == "table" and type(mod.invalidate) == "function" then
       local okI, err = pcall(mod.invalidate)
