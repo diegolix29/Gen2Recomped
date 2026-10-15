@@ -77,6 +77,24 @@ local function worldCovered()
   return (ow and ow.transitioning) and true or false
 end
 
+-- Gen4Sun: the Gen 4 half of lib/ShadowMap + lib/Shadows. VoxelScene fills the
+-- map on Gen 1-3 and never runs here, so this is what gives a Platinum map its
+-- cast shadows. Resolved once; nil if the module will not load (no shadows,
+-- everything else keeps working).
+local sunMod, sunTried
+local function sun()
+  if not sunTried then
+    sunTried = true
+    local ok, S = pcall(V.require, "Gen4Sun")
+    if ok and type(S) == "table" then sunMod = S
+    elseif V.mod and V.mod.log then
+      V.mod.log:warn("Gen4Bridge: shadows unavailable: " .. tostring(S))
+    end
+  end
+  return sunMod
+end
+Bridge.sun = sun
+
 local function frameEnd()
   local B = budget()
   if not B then return end
@@ -219,17 +237,28 @@ local function runScene(ground, view, vw, vh, order, effects, tag)
     return
   end
   local scene = buildScene(ground, view, vw, vh)
+  local Sun = sun()
   for _, name in ipairs(order) do
     if not Bridge.disabled[name] then
+      -- the meshes these effects draw are recorded as shadow casters (the sun
+      -- pass at the top of next frame's drawFree replays them)
+      if Sun and tag == "fx:" then Sun.capturing = Sun.CASTING[name] == true end
       local ok, err = pcall(effects[name], scene)
       if not ok then
         report(tag .. name, "effect '%s' failed: %s", name, tostring(err))
-        -- Don't fail every frame -- but a failure under a BATTLE camera (a different
-        -- lens, aspect and eye height from anything the effect meets walking) must
-        -- not switch the effect off for the whole session, across every map.
-        local H = V.Gen4WorldHost
-        local inBattle = H and H._inBattle == true
-        if not inBattle then Bridge.disabled[name] = true end
+        Bridge.disabled[name] = true      -- don't fail every frame
+      end
+    end
+  end
+  if Sun then
+    Sun.capturing = false
+    -- the receiver goes last: it darkens the engine's terrain where the map
+    -- says the sun does not reach, after everything that can stand in the way
+    if tag == "fx:" and not Bridge.disabled["shadows"] then
+      local okR, errR = pcall(Sun.receive, scene)
+      if not okR then
+        report("shadows", "the shadow receiver failed: %s", tostring(errR))
+        Bridge.disabled["shadows"] = true
       end
     end
   end
@@ -415,7 +444,9 @@ end
 -- these, so a graphics reset, a mod reload or a cache reset left the old
 -- meshes (and, on a lost GL context, dead ones) in place.
 function Bridge.invalidateAll()
-  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass", "Gen4NpcModels"}) do
+  local S = sun()
+  if S then pcall(S.invalidate) end
+  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass", "Gen4NpcModels" }) do
     local ok, mod = pcall(V.require, name)
     if ok and type(mod) == "table" and type(mod.invalidate) == "function" then
       local okI, err = pcall(mod.invalidate)
@@ -428,7 +459,9 @@ function Bridge.uninstall()
   if not Bridge.installed then return end
   pcall(function() V.require("Gen4Sky").uninstall() end)
   pcall(function() V.require("Gen4Lawn").uninstall() end)
-    Bridge.Ground.__terrariumBridgeToken = nil
+  local S = sun()
+  if S then pcall(S.suspend) end
+  Bridge.Ground.__terrariumBridgeToken = nil
 
   Bridge.Ground.endFree = Bridge.originalEndFree
   Bridge.Ground.forMap = Bridge.originalForMap
