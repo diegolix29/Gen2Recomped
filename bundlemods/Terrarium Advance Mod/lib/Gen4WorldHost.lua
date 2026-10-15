@@ -50,23 +50,6 @@ local function game()
   return engineRequire("src.core.Game")
 end
 
--- Gen4Sun: the Gen 4 shadow pass (lib/ShadowMap + lib/Shadows). Neither of
--- those was reachable from this file before, which is why Platinum maps cast
--- nothing. nil when the module will not load: no shadows, nothing else lost.
-local sunMod, sunTried
-local function sun()
-  if not sunTried then
-    sunTried = true
-    local ok, S = pcall(V.require, "Gen4Sun")
-    if ok and type(S) == "table" then sunMod = S
-    elseif V.mod and V.mod.log and V.mod.log.warn then
-      pcall(V.mod.log.warn, V.mod.log, "Gen4WorldHost: shadows unavailable: " .. tostring(S))
-    end
-  end
-  return sunMod
-end
-Host.sun = sun
-
 function Host.generation()
   local GameVersion = engineRequire("src.core.GameVersion")
   if GameVersion and type(GameVersion.generation) == "function" then
@@ -634,16 +617,41 @@ function Host.overlay3D(ground)
     local okN, Npc = pcall(V.require, "Gen4NpcModels")
     if okN and Npc and Npc.pump then pcall(Npc.pump) end
   end
-  local S = sun()
-  if S then S.capturing = true end     -- NPCs, the player and Pokemon cast
   pcall(drawFieldActors, ow, ground)
-  if S then S.capturing = false end
   Host._drawGround = nil
 end
 
 
--- Battle: draw Sinnoh from the staged BattleCam, then let Stadium /
--- Colosseum actors paint into the same framebuffer via Voxel3D "current".
+-- ---------------------------------------------------------------------------
+-- Battle plumbing shared by renderBattle / afterBattle.
+--
+-- WHY THIS IS CAREFUL. renderBattle runs EVERY FRAME of a 3D battle (the 3D-BTL
+-- ladder, all rungs) and drives the engine's own free-camera pass on the map the
+-- fight is staged on. Whatever it leaves behind stays on that map's Gen4Ground:
+--   * a camera that is not the player's (the engine then draws with the battle
+--     lens, or believes a free camera owns the frame when the player is on the
+--     cartridge camera and view3d should be nil),
+--   * a free pass left open (canvas still bound),
+--   * a canvas allocated per frame and never released -- GPU memory runs out, the
+--     engine's allocation fails, and Gen4Ground latches `liveOff` / `noDepth`
+--     "for the rest of the session": flat 2D stand-in, characters projected through
+--     a free camera that is not drawing. A NEW map builds a new ground, which is
+--     why only the map the fight was on stayed broken.
+-- So: the battle uses its OWN camera object (swapped onto the ground for the call
+-- and always swapped back), one reusable canvas, and a guaranteed cleanup.
+
+local function reusableCanvas(slot, w, h)
+  local g = love and love.graphics
+  if not g then return nil end
+  local c = Host[slot]
+  if c and Host[slot .. "W"] == w and Host[slot .. "H"] == h then return c end
+  if c and c.release then pcall(c.release, c) end
+  Host[slot], Host[slot .. "W"], Host[slot .. "H"] = nil, nil, nil
+  local ok, made = pcall(g.newCanvas, w, h)
+  if not (ok and made) then return nil end
+  Host[slot], Host[slot .. "W"], Host[slot .. "H"] = made, w, h
+  return made
+end
 
 local function releaseCanvas(slot)
   local c = Host[slot]
@@ -711,16 +719,9 @@ local function renderBattleBody(ground, view, state, arena, textures)
     curve = 0,
   }
 
-  local Gen4View = engineRequire("src.render.Gen4View")
-  if not Gen4View then return nil end
-  local view = ground.view3d
-  if not view then
-    view = Gen4View.new("third")
-    ground.view3d = view
-  end
-  local savedMode = view.mode
-  -- field3d derives fov from the cartridge camera distance, which is not
-  -- this fight's lens. Third-person uses view.fovY as-is.
+  -- `view` is the battle's OWN camera object (swapped onto ground.view3d by the
+  -- caller). field3d would derive fov from the cartridge camera distance, which
+  -- is not this fight's lens; third-person uses view.fovY as-is.
   view.mode = "third"
   view.x, view.y, view.z = worldCam.eye[1], worldCam.eye[2], worldCam.eye[3]
   local dx = worldCam.focus[1] - worldCam.eye[1]
@@ -732,14 +733,11 @@ local function renderBattleBody(ground, view, state, arena, textures)
   view.fovY = math.deg(worldCam.fov or view.fovY or 50)
   ground.cameraPlaced = true
 
-  Host._inBattle = true
   local drawFree = Host._drawFree or ground.drawFree
   local endFree = Host._endFree or ground.endFree
   local painted = drawFree(ground, pw, ph)
   if not painted then
-    view.mode = savedMode
     if endFree then pcall(endFree, ground) end
-    Host._inBattle = false
     return nil
   end
   pcall(Host.overlay3D, ground)
@@ -778,10 +776,9 @@ local function renderBattleBody(ground, view, state, arena, textures)
     -- due south. Pose cards against the map-local eye, then light them with
     -- the world eye the NSBMD pass already used.
     local mapEye = { cam.eye[1], worldCam.eye[2], cam.eye[3] }
-    Voxel3D.eye = mapEye
+    Voxel3D.eye = worldCam.eye
     local pull = V.require("BattleBillboard").PULL
     local cards = BattleScene.monCards(arena, groundY, textures) or {}
-    Voxel3D.eye = worldCam.eye
     local sh = love.graphics.getShader()
     if sh then
       pcall(sh.send, sh, "vp", "row", Voxel3D.vp)
@@ -809,6 +806,8 @@ local function renderBattleBody(ground, view, state, arena, textures)
     end)
     Voxel3D.endScene()
   end)
+  -- a throw inside the scene above must not leave a Voxel3D scene open
+  pcall(Voxel3D.endScene)
 
   -- Take the colour while the pass is still open, into ONE reusable canvas (it
   -- used to be a new canvas every frame, never released).
@@ -817,37 +816,40 @@ local function renderBattleBody(ground, view, state, arena, textures)
   local colour = nil
   if src and love and love.graphics then
     local g = love.graphics
-    local okNew, dest = pcall(g.newCanvas, pw, ph)
-    if okNew and dest then
-      local prev = { g.getCanvas() }
-      pcall(g.setCanvas, dest)
-      g.setColor(1, 1, 1, 1)
-      local sw, sh = src.getWidth and src:getWidth() or pw,
-                     src.getHeight and src:getHeight() or ph
-      if sw ~= pw or sh ~= ph then
-        pcall(g.draw, src, 0, 0, 0, pw / sw, ph / sh)
-      else
-        pcall(g.draw, src, 0, 0)
-      end
-      pcall(g.setCanvas, prev[1] or nil)
-      colour = dest
+    local dest = reusableCanvas("_battleCanvas", pw, ph)
+    if dest then
+      -- Cleared and drawn with "replace": the canvas is REUSED, so a transparent
+      -- pixel in this frame's colour must not show last frame through it.
+      local prevCanvas = g.getCanvas()
+      local blendMode, alphaMode = g.getBlendMode()
+      local depthCmp, depthWrite
+      if g.getDepthMode then depthCmp, depthWrite = g.getDepthMode() end
+      local okCopy = pcall(function()
+        g.setCanvas(dest)
+        if g.setDepthMode then g.setDepthMode() end
+        g.clear(0, 0, 0, 0)
+        g.setBlendMode("replace")
+        g.setColor(1, 1, 1, 1)
+        local sw = src.getWidth and src:getWidth() or pw
+        local sh = src.getHeight and src:getHeight() or ph
+        g.draw(src, 0, 0, 0, pw / sw, ph / sh)
+      end)
+      pcall(g.setBlendMode, blendMode, alphaMode)
+      pcall(g.setCanvas, prevCanvas)
+      if g.setDepthMode and depthCmp then pcall(g.setDepthMode, depthCmp, depthWrite) end
+      colour = okCopy and dest or src
     else
       colour = src
     end
   end
   if endFree then pcall(endFree, ground) end
-  Host._inBattle = false
-  if not colour then
-    view.mode = savedMode
-    return nil
-  end
+  if not colour then return nil end
 
   local vp = (view and view.matrix) and view:matrix(pw, ph) or Voxel3D.vp
   local pmx, pmy = BattleScene.toGB(vp, arena.player[1] + ox, groundY,
                                     arena.player[2] + oz, lx, ly, s, pw, ph)
   local emx, emy = BattleScene.toGB(vp, arena.enemy[1] + ox, groundY,
                                     arena.enemy[2] + oz, lx, ly, s, pw, ph)
-  view.mode = savedMode
   if not (pmx and emx) then
     pmx, pmy = 40, 100
     emx, emy = 120, 40
@@ -1092,7 +1094,6 @@ local function copyFreeColour(w, h)
 end
 
 function Host.renderPose(state, pocket, pose, w, h)
-  do local S = sun(); if S then pcall(S.suspend) end end
   w, h = math.floor(tonumber(w) or 0), math.floor(tonumber(h) or 0)
   if w < 2 or h < 2 then return nil, "bad size" end
   if not (pose and pose.eye and pose.focus and pose.fov) then
@@ -1230,19 +1231,6 @@ function Host.install()
       return false
     end
     Host._skippedOverworld = false
-    -- The sun pass switches canvases, so it runs BEFORE the engine opens its
-    -- colour+depth target, never inside it. Fills lib/ShadowMap from last
-    -- frame's recorded casters; the Bridge's receiver reads it at endFree.
-    local S = sun()
-    if S then
-      local okS, errS = pcall(S.cast, self, vw, vh)
-      if not okS and not Host._sunWarned then
-        Host._sunWarned = true
-        if V.mod and V.mod.log and V.mod.log.warn then
-          pcall(V.mod.log.warn, V.mod.log, "Gen4WorldHost: sun pass failed: " .. tostring(errS))
-        end
-      end
-    end
     local ok = innerDrawFree(self, vw, vh)
     if ok then pcall(Host.overlay3D, self) end
     return ok
@@ -1256,10 +1244,7 @@ function Host.install()
         return innerFreeEntity(self, mapX, mapY, camX, camY, rise, draw,
                                depthLift)
       end
-      -- `depthLift` is only ever passed by the "!" / "?" bubble over a
-      -- character (Gen4Emotes). It is drawn at the character's position, so a
-      -- position match would swallow it along with the flat sprite it is not.
-      if depthLift == nil and Host.isSkipped(mapX, mapY) then
+      if Host.isSkipped(mapX, mapY) then
         -- drawn as a 3D model instead: only the ground shadow is left to
         -- draw for a flyer
         if type(Host.flightLift) == "function" then
