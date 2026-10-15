@@ -21,17 +21,6 @@ local SpriteBillboards = V.require("SpriteBillboards")
 -- fall back to the old one-tile size instead of disappearing.
 local Scale = V.optional and V.optional("Gen4PokemonScale") or nil
 
--- The sun, for the thin cards below. A card is cast SNUGGED toward the sun
--- along its own ray (ShadowMap.snug) so its shadow keeps contact with its
--- feet, and the lit draw must hand the same transform to its shadow lookup
--- (Voxel3D.draw's `sunModel`) or it reads its own shadow as falling on
--- itself. nil when there is no map to read, which is Voxel3D.draw's default.
-local ShadowMap = V.require("ShadowMap")
-local function sunModelFor(model)
-  if ShadowMap.active() then return ShadowMap.snug(model) end
-  return nil
-end
-
 local Hd = {}
 
 local function hdModule()
@@ -133,8 +122,8 @@ function Hd.drawPose(p, ground)
   local wx = (p.px or 0) + 8
   local wz = (p.py or 0) + 8
   local gy = (p.gh or 0) + (p.lift or 0)
-  local m = cardMatrix(wx, gy, wz, worldW, ground, sizeFor(overlay, worldH))
-  Voxel3D.draw(mesh, overlay.hdImage, m, nil, sunModelFor(m))
+  Voxel3D.draw(mesh, overlay.hdImage,
+               cardMatrix(wx, gy, wz, worldW, ground, sizeFor(overlay, worldH)))
   return true
 end
 
@@ -155,68 +144,9 @@ local function drawOne(e, mapX, mapY, scene, game, skip, drawn)
     gy = scene.groundY((mapX or 0) + 8, (mapY or 0) + 8) or 0
   end
   local wx, wz = scene.toWorld(mapX or 0, mapY or 0)
-  local m = cardMatrix(wx + 8, gy, wz + 8, worldW, scene.ground,
-                       sizeFor(overlay, worldH))
-  Voxel3D.draw(mesh, overlay.hdImage, m, nil, sunModelFor(m))
-end
-
--- The sun pass's view of drawOne(): the same cards, snugged, into the OPEN
--- ShadowMap. Only the cards THIS pass draws -- Gen4WorldHost's posed actors
--- are recorded as they draw (Gen4Bridge.captureDraws), so the same entities
--- are skipped here exactly as they are in draw().
-local function castOne(SM, e, mapX, mapY, scene, game, skip, drawn, box)
-  if not Hd.wantsEntity(e) then return end
-  if drawn and drawn[e] then return end
-  if skip and skip(mapX, mapY) then return end
-  local overlay = bindOverlay(e, e.facing or "down", game)
-  if not overlay or not overlay.hdImage then return end
-  local mesh = SpriteBillboards.mesh(overlay, 0)
-  if not mesh then return end
-  local _, _, worldW, worldH = SpriteBillboards.getSpriteDimensions(overlay, 0)
-  local gy = 0
-  if scene.groundY then
-    gy = scene.groundY((mapX or 0) + 8, (mapY or 0) + 8) or 0
-  end
-  local wx, wz = scene.toWorld(mapX or 0, mapY or 0)
-  if box and box.touches and not box.touches(wx + 8, wz + 8, 16) then return end
-  local m = cardMatrix(wx + 8, gy, wz + 8, worldW, scene.ground,
-                       sizeFor(overlay, worldH))
-  SM.draw(mesh, overlay.hdImage, SM.snug(m))
-end
-
-function Hd.cast(SM, scene, box)
-  if not scene or type(scene.toWorld) ~= "function" then return end
-  local game = gameOf()
-  local ow = game and game.overworld
-  if not ow then return end
-  local Host
-  do
-    local ok, h = pcall(V.require, "Gen4WorldHost")
-    if ok then Host = h end
-  end
-  local skip
-  if Host and type(Host.isSkipped) == "function" then
-    skip = Host.isSkipped
-  elseif Host and Host._skipFeet then
-    local t = Host._skipFeet
-    skip = function(x, y) return t[spriteKey(x, y)] end
-  end
-  local drawn = Host and Host._drawnEnt
-  local seen = {}
-  for _, e in ipairs(ow.entities or {}) do
-    if not seen[e] then
-      seen[e] = true
-      pcall(castOne, SM, e, e.px, e.py, scene, game, skip, drawn, box)
-    end
-  end
-  for _, g in ipairs(ow.ghosts or {}) do
-    local npc = g and g.npc
-    if npc and not seen[npc] then
-      seen[npc] = true
-      pcall(castOne, SM, npc, (npc.px or 0) + (g.ox or 0), (npc.py or 0) + (g.oy or 0),
-            scene, game, skip, drawn, box)
-    end
-  end
+  Voxel3D.draw(mesh, overlay.hdImage,
+               cardMatrix(wx + 8, gy, wz + 8, worldW, scene.ground,
+                          sizeFor(overlay, worldH)))
 end
 
 function Hd.draw(scene)

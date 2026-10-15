@@ -834,27 +834,6 @@ function Rocks.draw(scene)
   Voxel3D.glass(true)
 end
 
--- The sun pass's view of draw() (see Gen4Trees.cast).
-function Rocks.cast(ShadowMap, scene, box)
-  if not Rocks.enabled then return end
-  local tex = rockTexture()
-  if not tex then return end
-  prepare(scene.ground)
-  if #list == 0 then return end
-  local ground = scene.ground
-  local half = (ground and (ground.half or (ground.chunkPx or 512) / 2)) or 256
-  for _, item in ipairs(list) do
-    if (not box) or box.touches(item.x, item.z, half) then
-      local model = item.castModel
-      if not model then
-        model = Mat4.translate(item.x, Rocks.Y_OFFSET or 0, item.z)
-        item.castModel = model
-      end
-      ShadowMap.draw(item.entry.mesh, tex, model)
-    end
-  end
-end
-
 function Rocks.invalidate()
   for _, e in pairs(landEntries) do
     if e.mesh and e.mesh.release then pcall(e.mesh.release, e.mesh) end

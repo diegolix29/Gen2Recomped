@@ -12,17 +12,6 @@
 
 local V = ...
 
--- THE SUN. Like Gen4Bridge, this module used to have no way to reach the
--- shadow system: it draws the 3D actors but never told ShadowMap about them,
--- so nobody on Platinum threw a shadow. ShadowMap is the sun's depth pass and
--- Shadows the player's ON / OFF row for it; the pass itself is filled by
--- Gen4Bridge.castShadows, and this module's part is to RECORD what the actors
--- draw so the pass can cast it (see Host.captureActors below).
-local okSM, ShadowMap = pcall(V.require, "ShadowMap")
-if not okSM then ShadowMap = nil end
-local okSh, Shadows = pcall(V.require, "Shadows")
-if not okSh then Shadows = nil end
-
 local Host = {
   installed = false,
     cbeNativeArena = false,
@@ -50,39 +39,6 @@ Host.stats = { draws = 0 }
 -- renderBattle, so the 3D-battle path is unchanged.
 Host._poseDraw = false
 function Host.inPose() return Host._poseDraw == true end
-
--- Should the actors be recorded as shadow casters this frame? Both rows count:
--- the ON / OFF row (Shadows) and the quality row (ShadowMap.wanted, which
--- also folds the first one in).
-function Host.shadowsOn()
-  if Shadows and type(Shadows.enabled) == "function" then
-    local ok, on = pcall(Shadows.enabled)
-    if ok and on == false then return false end
-  end
-  if ShadowMap and type(ShadowMap.wanted) == "function" then
-    local ok, wanted = pcall(ShadowMap.wanted)
-    if ok then return wanted and true or false end
-  end
-  return false
-end
-
-local function bridge()
-  local ok, B = pcall(V.require, "Gen4Bridge")
-  if ok and type(B) == "table" then return B end
-  return nil
-end
-
--- Run fn(), recording every Voxel3D.draw it makes as a shadow caster when
--- shadows are on. Always runs fn exactly once, so a failure behaves as it
--- did before; returns pcall's (ok, err).
-local function captureActors(fn)
-  local B = bridge()
-  if B and type(B.captureDraws) == "function" and Host.shadowsOn() then
-    return pcall(B.captureDraws, fn)
-  end
-  return pcall(fn)
-end
-Host.captureActors = captureActors
 
 local function engineRequire(name)
   local req = (V and V.engineRequire) or require
@@ -582,14 +538,8 @@ local function drawFieldActors(state, ground)
     local OS = V.require("OverworldStadium")
     if OS and OS.safePrepare then OS.safePrepare(posed) end
   end)
-  -- the cartridge's own night, on the actors too (see Gen4Bridge.gen4Tint)
-  local B = bridge()
-  local prevTint = B and B.pushTint and B.pushTint(ground) or nil
-  if not beginFieldVoxel(state, ground) then
-    if B and B.popTint then B.popTint(prevTint) end
-    return
-  end
-  captureActors(function()
+  if not beginFieldVoxel(state, ground) then return end
+  pcall(function()
     local OC = V.require("OverworldColosseum")
     local OS = V.require("OverworldStadium")
     local SF = V.require("StadiumFollower")
@@ -650,21 +600,6 @@ local function drawFieldActors(state, ground)
     end
   end)
   Voxel3D.endScene()
-  if B and B.popTint then B.popTint(prevTint) end
-  -- The Stadium rigs are skinned and do not go through Voxel3D.draw, so the
-  -- recording above never saw them; they cast through their own entry point,
-  -- from the matrix their draw just stored on the pose.
-  if Host.shadowsOn() then
-    local B = bridge()
-    local okS, OS = pcall(V.require, "OverworldStadium")
-    if B and B.recordCastFn and okS and OS and OS.safeCast then
-      for _, p in ipairs(posed) do
-        if p.stadiumMon and p.stadiumMatrix then
-          B.recordCastFn(function(SM) OS.safeCast(p, SM) end)
-        end
-      end
-    end
-  end
 end
 
 -- 3D grass into the still-bound gen4 target, before characters (depth test
@@ -686,6 +621,63 @@ function Host.overlay3D(ground)
   Host._drawGround = nil
 end
 
+
+-- ---------------------------------------------------------------------------
+-- Battle plumbing shared by renderBattle / afterBattle.
+--
+-- WHY THIS IS CAREFUL. renderBattle runs EVERY FRAME of a 3D battle (the 3D-BTL
+-- ladder, all rungs) and drives the engine's own free-camera pass on the map the
+-- fight is staged on. Whatever it leaves behind stays on that map's Gen4Ground:
+--   * a camera that is not the player's (the engine then draws with the battle
+--     lens, or believes a free camera owns the frame when the player is on the
+--     cartridge camera and view3d should be nil),
+--   * a free pass left open (canvas still bound),
+--   * a canvas allocated per frame and never released -- GPU memory runs out, the
+--     engine's allocation fails, and Gen4Ground latches `liveOff` / `noDepth`
+--     "for the rest of the session": flat 2D stand-in, characters projected through
+--     a free camera that is not drawing. A NEW map builds a new ground, which is
+--     why only the map the fight was on stayed broken.
+-- So: the battle uses its OWN camera object (swapped onto the ground for the call
+-- and always swapped back), one reusable canvas, and a guaranteed cleanup.
+
+local function reusableCanvas(slot, w, h)
+  local g = love and love.graphics
+  if not g then return nil end
+  local c = Host[slot]
+  if c and Host[slot .. "W"] == w and Host[slot .. "H"] == h then return c end
+  if c and c.release then pcall(c.release, c) end
+  Host[slot], Host[slot .. "W"], Host[slot .. "H"] = nil, nil, nil
+  local ok, made = pcall(g.newCanvas, w, h)
+  if not (ok and made) then return nil end
+  Host[slot], Host[slot .. "W"], Host[slot .. "H"] = made, w, h
+  return made
+end
+
+local function releaseCanvas(slot)
+  local c = Host[slot]
+  if c and c.release then pcall(c.release, c) end
+  Host[slot], Host[slot .. "W"], Host[slot .. "H"] = nil, nil, nil
+end
+
+local function hostLog(level, fmt, ...)
+  local l = V and V.mod and V.mod.log
+  if l and type(l[level]) == "function" then
+    local okF, msg = pcall(string.format, fmt, ...)
+    pcall(l[level], l, "Gen4WorldHost: " .. (okF and msg or fmt))
+  end
+end
+
+-- Close the engine's free pass if one is open (it is module-global state, so any
+-- ground can close it). Uses the bridge's untouched endFree when it has one, so a
+-- cleanup never runs the effects a second time.
+local function closeFreePass(ground)
+  local Ground = engineRequire("src.render.Gen4Ground")
+  if not (Ground and Ground.freeOpen) then return false end
+  local B = V and V.Gen4Bridge
+  local raw = (B and B.originalEndFree) or Host._endFree or (ground and ground.endFree)
+  if type(raw) == "function" then pcall(raw, ground) end
+  return true
+end
 
 -- Battle: draw Sinnoh from the staged BattleCam, then let Stadium /
 -- Colosseum actors paint into the same framebuffer via Voxel3D "current".
@@ -832,7 +824,11 @@ function Host.renderBattle(state, arena, textures, token)
     end)
     Voxel3D.endScene()
   end)
+  -- a throw inside the scene above must not leave a Voxel3D scene open
+  pcall(Voxel3D.endScene)
 
+  -- Take the colour while the pass is still open, into ONE reusable canvas (it
+  -- used to be a new canvas every frame, never released).
   local Gen4Ground = engineRequire("src.render.Gen4Ground")
   local src = Gen4Ground and Gen4Ground.freeColour
   local colour = nil
@@ -885,6 +881,172 @@ function Host.renderBattle(state, arena, textures, token)
     vp = vp,
     gen4World = true,
   }
+end
+
+function Host.renderBattle(state, arena, textures, token)
+  local ground = Host.groundOf(state) or Host.groundOf(state and { map = arena.map })
+  if arena and arena.map and arena.map.renderer and arena.map.renderer.gen4Ground then
+    ground = arena.map.renderer.gen4Ground
+  end
+  if not ground then return nil end
+  if arena and arena.discs and not arena.showTerrain then return nil end
+
+  local Gen4View = engineRequire("src.render.Gen4View")
+  if not Gen4View then return nil end
+  if not Host._fightActive then Host.onFightStart(ground) end
+
+  -- The battle gets its own camera object. The ground's real view3d (the
+  -- player's third-person / tilt-rung camera, or nil on the cartridge camera) is
+  -- never written to, so there is nothing to put back wrongly and no stray view
+  -- to leave behind.
+  local bview = Host._battleView
+  if not bview then
+    bview = Gen4View.new("third")
+    Host._battleView = bview
+  end
+  local realView, realPlaced = ground.view3d, ground.cameraPlaced
+  ground.view3d = bview
+  Host._inBattle = true
+
+  local ok, shot = pcall(renderBattleBody, ground, bview, state, arena, textures)
+
+  -- ALWAYS, whatever happened above
+  Host._inBattle = false
+  closeFreePass(ground)
+  ground.view3d, ground.cameraPlaced = realView, realPlaced
+
+  if not ok then
+    if not Host._battleWarned then
+      Host._battleWarned = true
+      hostLog("warn", "renderBattle failed (state restored): %s", tostring(shot))
+    end
+    return nil
+  end
+  return shot
+end
+
+-- ----------------------------------------------------------- GPU memory --
+-- WHY THIS EXISTS. The engine's allocation-failure latches (`liveOff`, `noDepth`)
+-- last "for the rest of the session" on the ground that hit them, and a Platinum
+-- fight allocates a lot: arena-size live targets, a chunk-bake canvas per land the
+-- battle camera sees, readable-depth twins. Released canvases are only freed when
+-- Lua's GC finalises them, and LOVE's GC cannot see GPU memory, so garbage canvases
+-- pile up (a desktop log of one fight swung 397 -> 728 -> 545 MB of GPU textures
+-- and 89 -> 196 -> 135 canvases). A desktop has the room; a phone does not, the
+-- next allocation fails, the ground latches, and that map stays on the flat 2D
+-- stand-in with its characters projected through a camera that is not drawing --
+-- while a NEW map (a new ground, and by then a collected heap) works.
+
+local function osName()
+  local sys = love and love.system
+  if sys and sys.getOS then
+    local ok, name = pcall(sys.getOS)
+    if ok then return name end
+  end
+  return nil
+end
+
+local function isMobile()
+  local n = osName()
+  return n == "Android" or n == "iOS"
+end
+
+local function gpuStats()
+  local g = love and love.graphics
+  if not (g and g.getStats) then return nil, nil end
+  local ok, st = pcall(g.getStats)
+  if not (ok and type(st) == "table") then return nil, nil end
+  local mem = st.texturememory
+  return mem and (mem / 1048576) or nil, st.canvases or st.textures
+end
+
+local function mb(v) return v and string.format("%.0f", v) or "?" end
+
+local function collect()
+  local f = Host.collect
+  if type(f) == "function" then return f("collect") end
+  return collectgarbage("collect")
+end
+
+-- First arena / battle frame of a fight. On a phone, collect BEFORE the fight's
+-- allocation burst (the transition hides it) so garbage canvases from the walk
+-- are not still holding memory when the arena asks for its own.
+function Host.onFightStart(ground)
+  Host._fightActive = true
+  local mb0, cv0 = gpuStats()
+  local mobile = isMobile()
+  if mobile then collect() end
+  local mb1, cv1 = gpuStats()
+  hostLog("info", "fight start on %s%s: GPU textures %s -> %s MB, canvases %s -> %s",
+          tostring(osName() or "?"), mobile and " (collected)" or "",
+          mb(mb0), mb(mb1), tostring(cv0 or "?"), tostring(cv1 or "?"))
+end
+
+-- Call when a fight ends (OverworldBattle.finish, ArenaOverworldSnapshot.clear).
+-- Makes the map the fight was on drawable again no matter what the fight did to
+-- it: closes a free pass left open, clears the per-fight flags, frees the fight's
+-- canvases, drops a camera the tilt ladder does not want, and -- if the engine
+-- latched the ground off -- gives it its memory back FIRST and only then lifts the
+-- latch, so the retry has something to allocate from.
+function Host.afterBattle(state)
+  Host._inBattle, Host._poseDraw, Host._skippedOverworld = false, false, false
+  Host._fightActive = false
+  local ground = Host.groundOf(state)
+  closeFreePass(ground)
+  releaseCanvas("_battleCanvas")
+  do -- the Colosseum overworld arena's backdrop canvas
+    local c = Host._poseCanvas
+    if c and c.release then pcall(c.release, c) end
+    Host._poseCanvas, Host._poseW, Host._poseH = nil, nil, nil
+  end
+  if not ground then return false end
+  ground.cameraPlaced = nil
+
+  local latched = {}
+  if ground.liveOff then latched[#latched + 1] = "liveOff" end
+  if ground.noDepth then latched[#latched + 1] = "noDepth" end
+
+  -- chunk bakes made for the battle camera go too, but ONLY on a ground that is
+  -- already broken: on a healthy one it would just force a re-bake for nothing
+  if #latched > 0 and type(ground.dropBakes) == "function" then
+    pcall(ground.dropBakes, ground)
+  end
+
+  local mb0, cv0 = gpuStats()
+  local mobile = isMobile()
+  if mobile or #latched > 0 then collect() end
+  local mb1, cv1 = gpuStats()
+
+  if #latched > 0 then
+    ground.liveOff, ground.noDepth = nil, nil
+    ground.liveW, ground.liveH = nil, nil
+  end
+  hostLog(#latched > 0 and "warn" or "info",
+          "fight over on %s: GPU textures %s -> %s MB, canvases %s -> %s%s",
+          tostring(osName() or "?"), mb(mb0), mb(mb1), tostring(cv0 or "?"),
+          tostring(cv1 or "?"),
+          #latched > 0 and (" -- " .. table.concat(latched, "+") .. " was latched off for "
+            .. tostring(ground.def and ground.def.id)
+            .. "; bakes dropped, heap collected, latch cleared so the 3D world retries")
+            or "")
+
+  -- the camera the tilt ladder asks for: nil on the cartridge rung, else the
+  -- named free mode. A view that disagrees is re-derived by the engine itself.
+  local Camera = engineRequire("src.render.Gen4Camera")
+  if Camera and type(Camera.mode) == "function" and ground.viewPitch == nil then
+    local okM, want = pcall(Camera.mode)
+    if okM then
+      local have = ground.view3d and ground.view3d.mode or nil
+      if (want == nil and ground.view3d ~= nil) or (want ~= nil and have ~= want) then
+        if type(ground.applyCamera) == "function" then
+          pcall(ground.applyCamera, ground)
+        else
+          ground.view3d = nil
+        end
+      end
+    end
+  end
+  return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -955,6 +1117,7 @@ function Host.renderPose(state, pocket, pose, w, h)
   local ground = (pocket and pocket.map and pocket.map.renderer
                   and pocket.map.renderer.gen4Ground) or Host.groundOf(state)
   if not ground then return nil, "no Gen 4 ground" end
+  if not Host._fightActive then Host.onFightStart(ground) end
   local Gen4View = engineRequire("src.render.Gen4View")
   local drawFree = Host._drawFree or ground.drawFree
   local endFree = Host._endFree or ground.endFree
@@ -1045,6 +1208,7 @@ function Host.renderPose(state, pocket, pose, w, h)
 
   Host._inBattle = false
   Host._poseDraw = false
+  if not okAll then closeFreePass(ground) end
   if state then state.entities, state.ghosts = savedEntities, savedGhosts end
   view.mode, view.x, view.y, view.z = saved.mode, saved.x, saved.y, saved.z
   view.yaw, view.pitch, view.fovY = saved.yaw, saved.pitch, saved.fovY

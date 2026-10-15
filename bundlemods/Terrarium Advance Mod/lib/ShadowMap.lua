@@ -30,11 +30,6 @@ local V = ...
 local Mat4 = V.require("Mat4")
 local Voxel = V.require("VoxelState")
 local Quality = V.require("Quality")
--- The SHADOWS on/off row. It used to be read by VoxelScene alone, and
--- lib/Shadows.lua has always said ShadowMap.wanted is "the one gate both
--- halves hang off" -- but nothing here defined it, so that row switched off
--- the flat decal fallback and left the real sun pass running.
-local Shadows = V.require("Shadows")
 
 local ShadowMap = {}
 
@@ -225,20 +220,6 @@ local function getBlank()
   return blank or nil
 end
 
--- Does the player want cast shadows at all? The one gate every consumer
--- hangs off: the quality row (SHADOWS LOW / OFF / HIGH / SOFT) AND the
--- ON / OFF row in lib/Shadows.lua. Either one saying no is a no.
---
--- Read through pcall: this is consulted from inside the render path, and a
--- setting that threw there would take the frame with it. An unreadable
--- toggle counts as ON, which is the default and what the mode is for.
-function ShadowMap.wanted()
-  if Quality.shadowsOff() then return false end
-  local ok, on = pcall(Shadows.enabled)
-  if ok and on == false then return false end
-  return true
-end
-
 -- Whether the sun pass can run at all. False headless, without shaders, or
 -- where the canvas cannot be made -- VoxelScene then keeps the flat decal
 -- shadows, which need nothing but a quad.
@@ -248,21 +229,14 @@ function ShadowMap.available()
   -- pass never begins and VoxelScene falls back to the flat decal shadows
   -- it already carries for that case. One path, already written and
   -- already tested, instead of a second way of having no shadow map.
-  if not ShadowMap.wanted() then return false end
+  if Quality.shadowsOff() then return false end
   if not (love.graphics and love.graphics.newCanvas
           and love.graphics.setDepthMode) then
     return false
   end
-  if getShader() == nil then return false end
-  -- A canvas at ANY rung answers the question. This used to ask for the
-  -- smallest rung every time, and getCanvas rebuilds on a size change -- so
-  -- whenever fit() had picked a bigger one, every call to available() threw
-  -- the map away and made a new one (and cleared `ready`, so no frame could
-  -- ever reuse its map). The smallest rung is only worth making when there is
-  -- no canvas yet; fit() picks the one a frame actually wants.
-  if canvas == false then return false end
-  if canvas then return true end
-  return getCanvas(Quality.shadowSizes()[1]) ~= nil
+  -- the smallest rung is enough to answer the question; fit() picks the
+  -- one this frame actually wants
+  return getShader() ~= nil and getCanvas(Quality.shadowSizes()[1]) ~= nil
 end
 
 -- The map to sample, or the blank stand-in. Never nil once the main pass
@@ -281,7 +255,7 @@ end
 -- the world would wear one frozen frame of shadows forever, while the
 -- decal fallback ALSO drew because castShadows had stopped running.
 function ShadowMap.active()
-  if not ShadowMap.wanted() then return false end
+  if Quality.shadowsOff() then return false end
   return ready and canvas ~= nil and canvas ~= false
 end
 
@@ -366,44 +340,21 @@ end
 -- continuously with the camera reprojects every shadow edge a fraction of a
 -- texel every frame and the whole world's shadows crawl and shimmer while
 -- you walk.
-local function fit(cx, cy, vw, vh, box)
+local function fit(cx, cy, vw, vh)
   local f = sunDir()
   local view = Mat4.lookAt({ 0, 0, 0 }, f, { 0, 0, -1 })
 
   local reach = ShadowMap.HEIGHT
                 * math.max(math.abs(ShadowMap.KX), math.abs(ShadowMap.KZ)) + 24
-  local xs, ys, zs
-  if box then
-    -- A CALLER THAT KNOWS THE GROUND IT WANTS LIT. Platinum's free camera is
-    -- not the voxel camera -- there is no Voxel.angle or FOCAL to reason the
-    -- far field from, and its heights are absolute rather than 0-based -- so
-    -- the Gen 4 bridge hands over the rectangle (world x/z) and the height
-    -- band (y) it wants shadows on, and the frustum is fitted to exactly
-    -- that plus the margin the casters stand in.
-    --
-    -- The margin goes on whichever side the SUN is on, not always south and
-    -- east: DayNight swings the shear through every bearing across the day,
-    -- and a margin on the wrong side would clip every caster whose shadow
-    -- falls into the box from outside it.
-    local y0 = box.y0 or -32
-    local y1 = box.y1 or ShadowMap.HEIGHT
-    local lean = math.max(math.abs(ShadowMap.KX), math.abs(ShadowMap.KZ))
-    local pad = math.max(0, y1 - y0) * lean + 24
-    local x0, x1, z0, z1 = box.x0, box.x1, box.z0, box.z1
-    if ShadowMap.KX <= 0 then x1 = x1 + pad else x0 = x0 - pad end
-    if ShadowMap.KZ <= 0 then z1 = z1 + pad else z0 = z0 - pad end
-    xs, ys, zs = { x0, x1 }, { y0, y1 }, { z0, z1 }
-  else
-    -- arity-ok: capMul is optional and defaults to ShadowMap.FAR_CAP
-    local north = groundReach(vh)
-    -- the view widens with distance, so the far ground spans more than the
-    -- near ground does; half the depth is a serviceable stand-in for the
-    -- frustum's true spread and costs a good deal less resolution
-    local spread = north * 0.5
-    xs = { cx - vw / 2 - spread, cx + vw / 2 + spread + reach }
-    ys = { -32, ShadowMap.HEIGHT }         -- -32 covers recessed water
-    zs = { cy - north, cy + vh / 2 + reach }
-  end
+  -- arity-ok: capMul is optional and defaults to ShadowMap.FAR_CAP
+  local north = groundReach(vh)
+  -- the view widens with distance, so the far ground spans more than the
+  -- near ground does; half the depth is a serviceable stand-in for the
+  -- frustum's true spread and costs a good deal less resolution
+  local spread = north * 0.5
+  local xs = { cx - vw / 2 - spread, cx + vw / 2 + spread + reach }
+  local ys = { -32, ShadowMap.HEIGHT }         -- -32 covers recessed water
+  local zs = { cy - north, cy + vh / 2 + reach }
 
   local l, r, b, t, zn, zf
   for _, x in ipairs(xs) do
@@ -612,20 +563,11 @@ end
 
 -- Begin the sun pass. Returns false when it could not start, in which case
 -- the caller must not draw into it or call finish.
---
--- `box` is optional: { x0, z0, x1, z1 [, y0, y1] }, the ground (world x/z,
--- and the height band above it) to fit the frustum to instead of deriving
--- it from the voxel camera. Only the Gen 4 bridge passes one.
---
--- NOTE FOR A CALLER THAT HAS A CANVAS OPEN: this binds the map's own canvas
--- and finish() unbinds it with a bare setCanvas(). Whatever was bound before
--- -- Gen4Ground's open free canvas, colour AND depth -- is NOT restored by
--- finish(); rebinding it is the caller's job (see Gen4Bridge.castShadows).
-function ShadowMap.begin(cx, cy, vw, vh, box)
+function ShadowMap.begin(cx, cy, vw, vh)
   local sh = getShader()
   if not sh then return false end
   -- fit first: it is what decides which resolution rung this view wants
-  fit(cx, cy, vw, vh, box)
+  fit(cx, cy, vw, vh)
   local c = getCanvas(ShadowMap.res)
   if not c then return false end
   local ok = pcall(love.graphics.setCanvas, { c, depth = true })
@@ -681,22 +623,6 @@ function ShadowMap.invalidate()
   canvas, canvasRes, blank = nil, 0, nil
   drawing, ready = false, false
   deferred = 0
-end
-
--- Stop reporting the map as current WITHOUT dropping the canvas. For a
--- caller that has stopped casting (an indoor map, a switched-off row) but
--- will want the canvas back in a moment: `ready` is sticky, so without this
--- the last outdoor frame's shadows would keep being sampled by everything
--- drawn afterwards.
-function ShadowMap.retire()
-  ready = false
-  deferred = 0
-end
-
--- True between begin() and finish(): the sun pass is open and owns the
--- canvas binding.
-function ShadowMap.isDrawing()
-  return drawing
 end
 
 -- Mark whether subsequent casters are sprites (so water can decline them).
