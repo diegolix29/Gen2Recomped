@@ -52,6 +52,8 @@ local Bridge = {
   enabled = true,    -- master switch
   installed = false,
   reported = {},
+  lastRunFrame = {}, -- ground -> frame id to prevent duplicate calls per frame
+  lastPreFrame = {}, -- ground -> frame id for pre-pass
 }
 
 -- The shared per-frame build budget (lib/Gen4Budget.lua). Resolved once.
@@ -315,6 +317,12 @@ function Bridge.run(ground)
   local view, vw, vh = ground.view3d, ground.freeW, ground.freeH
   if not (view and vw and vh and view.matrix and view.forward) then return end
   if not Bridge.isGen4() then return end
+
+    -- Prevent duplicate calls in the same frame to fix flickering on desktop
+  local frameId = ground.clock or (love and love.timer and love.timer.getTime() and love.timer.getTime())
+  if Bridge.lastRunFrame[ground] == frameId then return end
+  Bridge.lastRunFrame[ground] = frameId
+
   Bridge.stats.runs = Bridge.stats.runs + 1
   local ok, err = pcall(runScene, ground, view, vw, vh, Bridge.order, Bridge.effects, "fx:")
   if not ok then
@@ -338,6 +346,12 @@ function Bridge.runPre(ground)
   local view, vw, vh = ground.view3d, ground.freeW, ground.freeH
   if not (view and vw and vh and view.matrix and view.forward) then return false end
   if not Bridge.isGen4() then return false end
+
+  -- Prevent duplicate calls in the same frame to fix flickering on desktop
+  local frameId = ground.clock or (love and love.timer and love.timer.getTime() and love.timer.getTime())
+  if Bridge.lastPreFrame[ground] == frameId then return false end
+  Bridge.lastPreFrame[ground] = frameId
+
   Bridge.stats.pres = Bridge.stats.pres + 1
   local ok, err = pcall(runScene, ground, view, vw, vh, Bridge.preOrder, Bridge.pre, "pre:")
   if not ok then
