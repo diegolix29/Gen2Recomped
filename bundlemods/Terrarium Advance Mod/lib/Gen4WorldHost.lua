@@ -8,7 +8,9 @@
 -- / VFX into the engine's live colour+depth target using that camera.
 --
 -- Glass panes on Sinnoh houses are already in the NSBMD textures. The
--- tileset GlassMask scan is for 8px GB art and is not run here.
+-- tileset GlassMask scan is for 8px GB art and is not run here; the lit-window
+-- pass for Gen 4 is lib/Gen4Glass.lua, a Gen4Bridge effect that finds the glass
+-- in each building TEXTURE instead.
 
 local V = ...
 

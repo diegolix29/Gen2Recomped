@@ -229,6 +229,30 @@ local function runScene(ground, view, vw, vh, order, effects, tag)
     view = Mat4.identity(),
     proj = Mat4.mul(Mat4.scale(1, -1, 1), vp),
   }
+
+  -- Gather lamp lights for Gen 4 (from lamp textures and windows)
+  local lampLights = {}
+  if Bridge.lampCollector then
+    local scene = { ground = ground, view = view }
+    local okL, lamps = pcall(Bridge.lampCollector, scene)
+    if okL then
+      for _, l in ipairs(lamps) do lampLights[#lampLights + 1] = l end
+    end
+  end
+  -- Add window lights from Gen4Glass
+  local okG, Glass = pcall(V.require, "Gen4Glass")
+  if okG and Glass and Glass.lights then
+    local cx, cy = view.x or 0, view.z or 0
+    local okL, glassLights = pcall(Glass.lights, cx, cy)
+    if okL then
+      for _, l in ipairs(glassLights) do lampLights[#lampLights + 1] = l end
+    end
+  end
+  -- Sort by distance and limit to 8 total
+  table.sort(lampLights, function(a, b) return (a.d2 or 0) < (b.d2 or 0) end)
+  for i = #lampLights, 9, -1 do lampLights[i] = nil end
+  Voxel3D.lampLights = #lampLights > 0 and lampLights or nil
+
   local began = Voxel3D.beginScene(vw, vh, view.x, view.z, vw, vh, nil, "current")
   if not began then
     Voxel3D.camera = saved
@@ -262,6 +286,7 @@ local function runScene(ground, view, vw, vh, order, effects, tag)
   end
   Voxel3D.endScene()
   Voxel3D.camera = saved
+  Voxel3D.lampLights = nil  -- Clean up after the scene
 end
 
 function Bridge.run(ground)
@@ -398,19 +423,34 @@ function Bridge.install()
   -- Real 3D fences (posts, rails or pickets) where Platinum draws its flat fence
   -- banners (`imped`). Opaque, after the rocks. Gen4Hide drops the native banner
   -- only where every card of the shape has a fence built for it.
-  local okFe, GFe = pcall(V.require, "Gen4Fence")
-  if okFe and type(GFe) == "table" and GFe.draw then
-    Bridge.register("fence", GFe.draw)
-  else
-    report("fence", "the fence pass did not load: %s", tostring(GFe))
-  end
-  -- Small voxel flowers on Platinum's flower beds (`nhana`). Opaque, after the
-  -- rocks. Gen4Lawn repaints the bed's floor with grass.png once they exist.
-  local okF, GF = pcall(V.require, "Gen4Flowers")
+  local okF, GF = pcall(V.require, "Gen4Fence")
   if okF and type(GF) == "table" and GF.draw then
-    Bridge.register("flowers", GF.draw)
+    Bridge.register("fence", GF.draw)
   else
-    report("flowers", "the flower pass did not load: %s", tostring(GF))
+    report("fence", "the fence pass did not load: %s", tostring(GF))
+  end
+  -- Small flowers on Gen 4 flower beds (`bed` shapes). Opaque, after the fence.
+  local okF2, GFl = pcall(V.require, "Gen4Flowers")
+  if okF2 and type(GFl) == "table" and GFl.draw then
+    Bridge.register("flowers", GFl.draw)
+  else
+    report("flowers", "the flower pass did not load: %s", tostring(GFl))
+  end
+  -- Lit windows on Platinum's own buildings (the Gen 4 half of GlassMask).
+  -- Blended, after the opaque passes, before grass.
+  local okG, GG = pcall(V.require, "Gen4Glass")
+  if okG and type(GG) == "table" and GG.draw then
+    Bridge.register("glass", GG.draw)
+  else
+    report("glass", "the glass pass did not load: %s", tostring(GG))
+  end
+  -- Point lights from Platinum's lamp textures (c1_lamp01, etc).
+  -- This collects lamp positions for the shader; no draw pass needed.
+  local okL, GL = pcall(V.require, "Gen4Lamps")
+  if okL and type(GL) == "table" then
+    Bridge.lampCollector = GL.collectLights
+  else
+    report("lamps", "the lamp collector did not load: %s", tostring(GL))
   end
   -- The voxel scene's sky (bands, clouds, sun/moon, stars, painted horizon, scenery)
   -- on Gen 4, with the engine's own horizon image hidden. Pre-terrain, so it is
@@ -432,7 +472,7 @@ end
 function Bridge.invalidateAll()
   local S = sun()
   if S then pcall(S.invalidate) end
-  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass", "Gen4NpcModels" }) do
+  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass", "Gen4NpcModels", "Gen4Glass" }) do
     local ok, mod = pcall(V.require, name)
     if ok and type(mod) == "table" and type(mod.invalidate) == "function" then
       local okI, err = pcall(mod.invalidate)

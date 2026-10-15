@@ -2779,6 +2779,38 @@ function Voxel3D.glass(on)
   pcall(activeShader.send, activeShader, "glassOn", on and 1 or 0)
 end
 
+-- The window glass for ONE mesh, bound per draw (lib/Gen4Glass).
+--
+-- beginScene sends the glass uniforms once, from Voxel3D.glassMask and friends,
+-- which suits a Gen 1-3 map: one tileset, one atlas, one mask. A Gen 4 building
+-- is drawn AFTER beginScene (it is an effect of the Gen4Bridge's open scene) and
+-- every one of its textures is its own picture with its own mask, so the mask
+-- and the light on it are pushed here instead.
+--
+-- `mask` nil puts the blank mask back and the fields' own values, which is what
+-- every pass drawn afterwards expects to find.
+function Voxel3D.glassPass(mask, night, lamp, phase, glint)
+  if not (active and activeShader) then return end
+  local sh = activeShader
+  local m = mask or GlassMask.blank()
+  if m then
+    pcall(sh.send, sh, "glassMask", m)
+    local ok, mw, mh = pcall(m.getDimensions, m)
+    pcall(sh.send, sh, "glassSize", { ok and mw or 1, ok and mh or 1 })
+  end
+  if mask then
+    pcall(sh.send, sh, "glassNight", night or 0)
+    pcall(sh.send, sh, "lampColor", lamp or Voxel3D.lampColor or { 1.0, 0.84, 0.5 })
+    pcall(sh.send, sh, "glassPhase", phase or 0)
+    pcall(sh.send, sh, "glassGlint", glint or 0)
+  else
+    pcall(sh.send, sh, "glassNight", Voxel3D.glassNight or 0)
+    pcall(sh.send, sh, "lampColor", Voxel3D.lampColor or { 1.0, 0.84, 0.5 })
+    pcall(sh.send, sh, "glassPhase", Voxel3D.glassPhase or 0)
+    pcall(sh.send, sh, "glassGlint", Voxel3D.glassGlint or 0)
+  end
+end
+
 function Voxel3D.endGhost()
   if not active then return end
   pcall(love.graphics.setDepthMode, "lequal", true)
