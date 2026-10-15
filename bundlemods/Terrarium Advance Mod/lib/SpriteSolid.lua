@@ -31,23 +31,28 @@
 --
 -- THE LOOK
 --
--- Sampling the sprite straight from a triangle has two ugly failure modes:
--- a hard cut wherever the picture changes (face -> hair), and streaks on any
--- surface that no picture looks at (the top of a head is edge-on to all four).
--- So the colours are BAKED into a small atlas of the body's own:
+-- The side pictures give SHAPE ONLY. Every colour comes from the front and the
+-- back picture, which already hold all the art (the face, the clothes, the
+-- hair); a side picture has its own eye, its own nose, its own sleeve, and
+-- painting any of that onto the body puts a second face on the cheek.
 --
---   five cells: front, back, east, west (each one sprite cell) and TOP (a
---   look straight down). Each triangle is projected into whichever of the five
---   it faces most, so no triangle is ever stretched past ~55 degrees.
---   Every texel is then coloured by BLENDING the four real pictures at that
---   3D point, weighted by the way the surface faces (cos^blendPower of the
---   angle to each picture; facing between two pictures gives both). A colour
---   that is a function of the 3D point is the same on both sides of every
---   seam, so there are no seams. Facing straight up the weights go uniform,
---   which averages the four pictures' hair into the cap.
+-- Sampling the front/back straight from each triangle still has two problems,
+-- so the colours are BAKED into a small atlas of the body's own:
 --
--- Vertices are duplicated per cell, so a cell edge is never a crack. `src` must
--- be colour-padded (`padRGBA`) because the mesh is rounder than the pixels.
+--   five cells: front, back, east, west (each one sprite cell) and TOP (a look
+--   straight down). They are only a UV layout: each triangle is projected into
+--   whichever of the five it faces most, so no triangle is stretched past ~55
+--   degrees (the top of a head is edge-on to every side-looking picture).
+--   What goes IN a texel is always front/back colour: the surface's 3D point is
+--   projected into the front picture and into the back picture, and the two are
+--   mixed by which way the surface faces (front-facing -> front, back-facing ->
+--   back, a soft band of `blendBand` only where they meet at the flanks). A
+--   flank therefore shows the front/back picture's edge pixels carried round,
+--   never new art. Facing straight up the mix follows the point's depth instead.
+--
+-- A colour that is a function of the 3D point is the same on both sides of every
+-- cell edge. Vertices are duplicated per cell, so an edge is never a crack.
+-- `src` must be colour-padded (`padRGBA`): the mesh is rounder than the pixels.
 --
 -- COORDINATES (model space, one unit = one sprite pixel)
 --   y up, 0 at the soles. x east when the body faces south, z forward (south).
@@ -70,7 +75,7 @@ S.DEFAULT = {
   minDepth = 3,         -- px: the thinnest any part may be front to back
   margin = 3,           -- empty px kept around the body for the blur
   below = 3,            -- virtual rows under the soles
-  blendPower = 3,       -- colour blend sharpness: 1 = very soft, 8 = nearly hard
+  blendBand = 0.5,      -- front<->back mix width at the flanks (cos units; ~0 = hard)
   light = { 0.15, 0.85, 0.5 },   -- body-attached key light (model space)
   floor = 0.66,         -- darkest shade; the shader wants a floor well above 0
 }
@@ -542,7 +547,6 @@ function S.build(views, layout, opts, tick)
   if not src then return nil, "layout.src (the padded sheet) is required" end
   local imgW = layout.imgW
   local AN = { { 0, 0, 1 }, { 0, 0, -1 }, { -1, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 } }
-  local VN = AN                                  -- 1..4 are the four pictures
   local VIEWS = { "front", "back", "right", "left" }
   local atlasW, atlasH = W, 4 * H + W
   local origin = { 0, H, 2 * H, 3 * H, 4 * H }
@@ -609,33 +613,42 @@ function S.build(views, layout, opts, tick)
   -- ---- bake: colour every texel by blending the four pictures at its point
   local cellY = layout.cellY
   local cellX = layout.cellX or 0
-  local power = o.blendPower
-  local weights = { 0, 0, 0, 0 }
+  local band = max(o.blendBand, 1e-4)
+  local halfDepth = max(abs(zmin), abs(zmax), 1)
+  local function smooth(x)                      -- 0 below -band, 1 above +band
+    local t = (x + band) / (2 * band)
+    if t <= 0 then return 0 elseif t >= 1 then return 1 end
+    return t * t * (3 - 2 * t)
+  end
+  -- colour of the front (c = 1) or back (c = 2) picture at a model point
+  local function pick(c, x, y, z)
+    local col, row = project(c, x, y, z)
+    local ci, ri = floor(col), floor(row)
+    if ci < 0 then ci = 0 elseif ci > W - 1 then ci = W - 1 end
+    if ri < 0 then ri = 0 elseif ri > H - 1 then ri = H - 1 end
+    local at = ((cellY[VIEWS[c]] + ri) * imgW + cellX + ci) * 4
+    local r, g, bb, al = byte(src, at + 1, at + 4)
+    if al and al >= S.ALPHA then return r, g, bb end
+    return nil
+  end
   local function colourAt(x, y, z, nx_, ny_, nz_)
     local hl = sqrt(nx_ * nx_ + nz_ * nz_)
     local mix = hl / 0.35
     if mix > 1 then mix = 1 end
-    local cx_, cz_ = 0, 0
-    if hl > 1e-6 then cx_, cz_ = nx_ / hl, nz_ / hl end
-    local sr, sg, sb, sw = 0, 0, 0, 0
-    for c = 1, 4 do
-      local d = cx_ * VN[c][1] + cz_ * VN[c][3]
-      local w = (d > 0) and d ^ power or 0
-      w = (1 - mix) * 0.25 + mix * w
-      if w > 1e-4 then
-        local col, row = project(c, x, y, z)
-        local ci, ri = floor(col), floor(row)
-        if ci < 0 then ci = 0 elseif ci > W - 1 then ci = W - 1 end
-        if ri < 0 then ri = 0 elseif ri > H - 1 then ri = H - 1 end
-        local at = ((cellY[VIEWS[c]] + ri) * imgW + cellX + ci) * 4
-        local r, g, bb, al = byte(src, at + 1, at + 4)
-        if al and al >= S.ALPHA then
-          sr, sg, sb, sw = sr + r * w, sg + g * w, sb + bb * w, sw + w
-        end
-      end
+    local wn = 0.5
+    if hl > 1e-6 then wn = smooth(nz_ / hl) end            -- by the way it faces
+    local wp = smooth(z / halfDepth)                       -- by where it is (crown)
+    local wf = mix * wn + (1 - mix) * wp                   -- weight of the FRONT
+    local fr, fg, fb, br, bg, bb2
+    if wf > 1e-4 then fr, fg, fb = pick(1, x, y, z) end
+    if wf < 1 - 1e-4 then br, bg, bb2 = pick(2, x, y, z) end
+    if fr and br then
+      return floor(fr * wf + br * (1 - wf) + 0.5), floor(fg * wf + bg * (1 - wf) + 0.5),
+             floor(fb * wf + bb2 * (1 - wf) + 0.5)
     end
-    if sw <= 0 then return nil end
-    return floor(sr / sw + 0.5), floor(sg / sw + 0.5), floor(sb / sw + 0.5)
+    if fr then return fr, fg, fb end
+    if br then return br, bg, bb2 end
+    return nil
   end
 
   local R, G, B, solid, zbuf = {}, {}, {}, {}, {}
