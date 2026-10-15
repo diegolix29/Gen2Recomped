@@ -235,6 +235,8 @@ if Gen4Bridge.isGen4() and Gen4Bridge.install() then
   pcall(function() V.require("Gen4Lawn").install() end)
   -- the voxel scene's RayFX water reflection, pointed at Gen 4's water (Gen4Reflect)
   pcall(function() V.require("Gen4Reflect").install() end)
+  -- the hour's colour on Platinum's frame: DayTint's Gen 4 twin (lib/Gen4Tint.lua)
+  pcall(function() V.require("Gen4Tint").install() end)
   -- 3D battles in the engine's own world, sprites for actors (Gen4Battle3D).
   pcall(function() V.require("Gen4Battle3D").install() end)
   -- Gen 4 roamers: spawn logic for grass/water/cave on Platinum (Gen4Spawn)
@@ -3968,10 +3970,7 @@ local function initializeColosseumIntegration()
 local ArenaOverworldSnapshot = loadColosseumModule("ArenaOverworldSnapshot")
     BattleArtBridge = loadColosseumModule("BattleArtBridge")
     loadColosseumModule("ShinySupport")
-    local ModelIdentityRef = loadColosseumModule("ModelIdentity")
-    -- Observes the engine's Transform seams so a Transformed Pokemon's 3D
-    -- actor follows what it copied (see lib/ModelIdentity.lua).
-    if ModelIdentityRef and type(ModelIdentityRef.install) == "function" then pcall(ModelIdentityRef.install) end
+    loadColosseumModule("ModelIdentity")
     CurrentSpriteModels = loadColosseumModule("CurrentSpriteModels")
     -- CSM reads V.HDPokemonSheets (V here is the Colosseum namespace).
     namespace.HDPokemonSheets = mod.exports.hdPokemonSheets
