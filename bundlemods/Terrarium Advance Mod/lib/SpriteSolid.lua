@@ -31,23 +31,38 @@
 --
 -- THE LOOK
 --
--- Sampling the sprite straight from a triangle has two ugly failure modes:
--- a hard cut wherever the picture changes (face -> hair), and streaks on any
--- surface that no picture looks at (the top of a head is edge-on to all four).
--- So the colours are BAKED into a small atlas of the body's own:
+-- The side pictures give SHAPE ONLY. Every colour comes from the front and the
+-- back picture, which already hold all the art (the face, the clothes, the
+-- hair); a side picture has its own eye, its own nose, its own sleeve, and
+-- painting any of that onto the body puts a second face on the cheek.
 --
---   five cells: front, back, east, west (each one sprite cell) and TOP (a
---   look straight down). Each triangle is projected into whichever of the five
---   it faces most, so no triangle is ever stretched past ~55 degrees.
---   Every texel is then coloured by BLENDING the four real pictures at that
---   3D point, weighted by the way the surface faces (cos^blendPower of the
---   angle to each picture; facing between two pictures gives both). A colour
---   that is a function of the 3D point is the same on both sides of every
---   seam, so there are no seams. Facing straight up the weights go uniform,
---   which averages the four pictures' hair into the cap.
+-- Sampling the front/back straight from each triangle still has two problems,
+-- so the colours are BAKED into a small atlas of the body's own:
 --
--- Vertices are duplicated per cell, so a cell edge is never a crack. `src` must
--- be colour-padded (`padRGBA`) because the mesh is rounder than the pixels.
+--   five cells: front, back, east, west (each one sprite cell) and TOP (a look
+--   straight down). They are only a UV layout: each triangle is projected into
+--   whichever of the five it faces most, so no triangle is stretched past ~55
+--   degrees (the top of a head is edge-on to every side-looking picture).
+--   What goes IN a texel is always front/back colour. A surface point on the
+--   front half of its cross-section (toward +z) is coloured by the front
+--   picture, one on the back half by the back picture, with a soft `blendBand`
+--   where they meet at the flank. The picture is not simply projected: its
+--   OUTER columns are spread over the flank (`wrap`). Plain projection would
+--   carry the outermost column round the whole side, and Platinum sprites have
+--   a 1 px dark OUTLINE there, so the side would be one dark slab. Instead the
+--   middle of the picture stays exactly planar (a face is not distorted from
+--   the front) and the outer ~35% of its columns are stretched across the
+--   front half of the depth, the same for the back picture across the back
+--   half; the outline ends up a thin line where front meets back.
+--   The outline is also wrong on the crown and anywhere stretched (it is a
+--   horizontal run along a sloped top, not a rim), so those read an
+--   OUTLINE-FREE copy of the picture: its silhouette ring replaced by colour
+--   grown in from the interior. The frontal area keeps the original, outline
+--   and all, where it reads correctly.
+--
+-- A colour that is a function of the 3D point is the same on both sides of every
+-- cell edge. Vertices are duplicated per cell, so an edge is never a crack.
+-- `src` must be colour-padded (`padRGBA`): the mesh is rounder than the pixels.
 --
 -- COORDINATES (model space, one unit = one sprite pixel)
 --   y up, 0 at the soles. x east when the body faces south, z forward (south).
@@ -70,7 +85,9 @@ S.DEFAULT = {
   minDepth = 3,         -- px: the thinnest any part may be front to back
   margin = 3,           -- empty px kept around the body for the blur
   below = 3,            -- virtual rows under the soles
-  blendPower = 3,       -- colour blend sharpness: 1 = very soft, 8 = nearly hard
+  blendBand = 0.5,      -- front<->back mix width at the flanks (normalised depth; ~0 = hard)
+  wrap = 1,             -- 0 = carry the edge column round (dark outline slab), 1 = spread the outer columns
+  wrapStart = 0.7,      -- rad from the front where the picture starts to compress (~40 deg)
   light = { 0.15, 0.85, 0.5 },   -- body-attached key light (model space)
   floor = 0.66,         -- darkest shade; the shader wants a floor well above 0
 }
@@ -542,7 +559,6 @@ function S.build(views, layout, opts, tick)
   if not src then return nil, "layout.src (the padded sheet) is required" end
   local imgW = layout.imgW
   local AN = { { 0, 0, 1 }, { 0, 0, -1 }, { -1, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 } }
-  local VN = AN                                  -- 1..4 are the four pictures
   local VIEWS = { "front", "back", "right", "left" }
   local atlasW, atlasH = W, 4 * H + W
   local origin = { 0, H, 2 * H, 3 * H, 4 * H }
@@ -609,33 +625,112 @@ function S.build(views, layout, opts, tick)
   -- ---- bake: colour every texel by blending the four pictures at its point
   local cellY = layout.cellY
   local cellX = layout.cellX or 0
-  local power = o.blendPower
-  local weights = { 0, 0, 0, 0 }
-  local function colourAt(x, y, z, nx_, ny_, nz_)
-    local hl = sqrt(nx_ * nx_ + nz_ * nz_)
-    local mix = hl / 0.35
-    if mix > 1 then mix = 1 end
-    local cx_, cz_ = 0, 0
-    if hl > 1e-6 then cx_, cz_ = nx_ / hl, nz_ / hl end
-    local sr, sg, sb, sw = 0, 0, 0, 0
-    for c = 1, 4 do
-      local d = cx_ * VN[c][1] + cz_ * VN[c][3]
-      local w = (d > 0) and d ^ power or 0
-      w = (1 - mix) * 0.25 + mix * w
-      if w > 1e-4 then
-        local col, row = project(c, x, y, z)
-        local ci, ri = floor(col), floor(row)
-        if ci < 0 then ci = 0 elseif ci > W - 1 then ci = W - 1 end
-        if ri < 0 then ri = 0 elseif ri > H - 1 then ri = H - 1 end
-        local at = ((cellY[VIEWS[c]] + ri) * imgW + cellX + ci) * 4
-        local r, g, bb, al = byte(src, at + 1, at + 4)
-        if al and al >= S.ALPHA then
-          sr, sg, sb, sw = sr + r * w, sg + g * w, sb + bb * w, sw + w
+  local band = max(o.blendBand, 1e-4)
+  local PI2 = math.pi / 2
+  local wrapStart = o.wrapStart
+  local function smooth(x)                      -- 0 below -band, 1 above +band
+    local t = (x + band) / (2 * band)
+    if t <= 0 then return 0 elseif t >= 1 then return 1 end
+    return t * t * (3 - 2 * t)
+  end
+  -- Where on the picture a point at normalised width d (-1..1 across its
+  -- cross-section) is read. Plain projection reads column d. With wrap, d is the
+  -- sine of the angle t round the section, and the picture is instead laid out
+  -- by angle once t passes wrapStart, so the outer columns cover the flank.
+  local function pull(d)
+    if o.wrap <= 0 then return d, 0 end
+    local ad = abs(d)
+    if ad > 1 then ad = 1 end
+    local t = math.asin(ad)
+    local w = (t - wrapStart) / (PI2 - wrapStart)
+    if w <= 0 then return d, 0 end
+    if w > 1 then w = 1 end
+    w = w * w * (3 - 2 * w) * o.wrap
+    local g = ad * (1 - w) + (t / PI2) * w
+    return (d < 0 and -g or g), w
+  end
+  -- outline-free copies of the front and back picture (see header)
+  local rowLo, rowHi = {}, {}
+  for y = 0, H - 1 do rowLo[y], rowHi[y] = 0, H - 1 end
+  local inner = {}
+  for c = 1, 2 do
+    local m = views[VIEWS[c]]
+    local IR, IG, IB, IS = {}, {}, {}, {}
+    local any = false
+    for y = 0, H - 1 do
+      for x = 0, W - 1 do
+        local i0 = y * W + x
+        if m[i0 + 1] then
+          local ring = x == 0 or x == W - 1 or y == 0 or y == H - 1
+            or not m[i0] or not m[i0 + 2] or not m[i0 + 1 - W] or not m[i0 + 1 + W]
+          if not ring then
+            local at = ((cellY[VIEWS[c]] + y) * imgW + cellX + x) * 4
+            IR[i0], IG[i0], IB[i0] = byte(src, at + 1, at + 3)
+            IS[i0] = true
+            any = true
+          end
         end
       end
     end
-    if sw <= 0 then return nil end
-    return floor(sr / sw + 0.5), floor(sg / sw + 0.5), floor(sb / sw + 0.5)
+    if any then grow(IR, IG, IB, IS, W, H, rowLo, rowHi, 6) end
+    inner[c] = { IR, IG, IB, IS }
+  end
+
+  -- colour of picture c (1 front, 2 back) at a model point; `wi` (0..1) is how
+  -- much of the outline-free copy to use
+  local function pick(c, x, y, z, wi)
+    local col, row = project(c, x, y, z)
+    local ci, ri = floor(col), floor(row)
+    if ci < 0 then ci = 0 elseif ci > W - 1 then ci = W - 1 end
+    if ri < 0 then ri = 0 elseif ri > H - 1 then ri = H - 1 end
+    local at = ((cellY[VIEWS[c]] + ri) * imgW + cellX + ci) * 4
+    local r, g, bb, al = byte(src, at + 1, at + 4)
+    if not (al and al >= S.ALPHA) then r = nil end
+    if wi > 0 then
+      local t = inner[c]
+      local i0 = ri * W + ci
+      if t[4][i0] then
+        local ir, ig, ib = t[1][i0], t[2][i0], t[3][i0]
+        if r then
+          return r + (ir - r) * wi, g + (ig - g) * wi, bb + (ib - bb) * wi
+        end
+        return ir, ig, ib
+      end
+    end
+    return r, g, bb
+  end
+  local function colourAt(x, y, z, ny_)
+    -- the cross-section this point is on: the row's ellipse it is deepest in
+    local r = floor(base + 1 - y)
+    if r > base then r = base elseif r < top then r = top end
+    local es = rows[r]
+    local e, bq = es[1], math.huge
+    for n = 1, #es do
+      local c = es[n]
+      local dx, dz = (x - c.cx) / c.a, (z - c.cz) / c.b
+      local q = dx * dx + dz * dz
+      if q < bq then e, bq = c, q end
+    end
+    local dxn = (x - e.cx) / e.a
+    local dzn = (z - e.cz) / e.b
+    if dxn > 1 then dxn = 1 elseif dxn < -1 then dxn = -1 end
+    if dzn > 1 then dzn = 1 elseif dzn < -1 then dzn = -1 end
+    local d, w = pull(dxn)
+    local xs = e.cx + e.a * d                   -- where to read the picture
+    local topness = (ny_ - 0.35) / 0.4
+    if topness < 0 then topness = 0 elseif topness > 1 then topness = 1 end
+    local wi = (o.wrap > 0) and max(w, topness) or 0
+    local wf = smooth(dzn)                      -- weight of the FRONT picture
+    local fr, fg, fb, br, bg, bb2
+    if wf > 1e-4 then fr, fg, fb = pick(1, xs, y, z, wi) end
+    if wf < 1 - 1e-4 then br, bg, bb2 = pick(2, xs, y, z, wi) end
+    if fr and br then
+      return floor(fr * wf + br * (1 - wf) + 0.5), floor(fg * wf + bg * (1 - wf) + 0.5),
+             floor(fb * wf + bb2 * (1 - wf) + 0.5)
+    end
+    if fr then return floor(fr + 0.5), floor(fg + 0.5), floor(fb + 0.5) end
+    if br then return floor(br + 0.5), floor(bg + 0.5), floor(bb2 + 0.5) end
+    return nil
   end
 
   local R, G, B, solid, zbuf = {}, {}, {}, {}, {}
@@ -670,8 +765,8 @@ function S.build(views, layout, opts, tick)
               local ny_ = l1 * v1[5] + l2 * v2[5] + l3 * v3[5]
               local nz_ = l1 * v1[6] + l2 * v2[6] + l3 * v3[6]
               local nl = sqrt(nx_ * nx_ + ny_ * ny_ + nz_ * nz_)
-              if nl > 1e-9 then nx_, ny_, nz_ = nx_ / nl, ny_ / nl, nz_ / nl end
-              local r, g, bb = colourAt(x, y, z, nx_, ny_, nz_)
+              if nl > 1e-9 then ny_ = ny_ / nl end
+              local r, g, bb = colourAt(x, y, z, ny_)
               if r then
                 R[at], G[at], B[at], solid[at] = r, g, bb, true
                 zbuf[at] = d

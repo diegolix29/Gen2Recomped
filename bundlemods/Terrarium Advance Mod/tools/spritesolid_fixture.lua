@@ -9,6 +9,8 @@ F.COLORS = {
   front = { 200, 40, 40 }, back = { 40, 70, 200 },
   right = { 40, 170, 60 }, left = { 220, 190, 40 },
 }
+F.SIDE_EYE = { 255, 0, 255 }
+F.OUTLINE = { 12, 12, 24 }          -- Platinum sprites carry a 1px dark outline
 local SKIN, HAIR, PANTS, SHOE = { 240, 200, 160 }, { 90, 55, 30 }, { 60, 60, 80 }, { 25, 25, 25 }
 
 -- facings in the engine's shape: { stand, step1, step2 } per side
@@ -95,15 +97,100 @@ function F.makeSheet()
   return table.concat(out), F.W, F.H * F.frames
 end
 
+
+-- A chibi walker like the one in the field: a big dithered hair dome, a small
+-- body. Same sheet layout as makeSheet. The dome is what exposes a texture
+-- that streaks on upward faces, and a hard seam between front and side.
+function F.makeChibi()
+  local px = newSheet()
+  local function hair(x, y)
+    local n = (x * 7 + y * 13 + (x * y) % 5) % 5
+    if n < 2 then return { 30, 40, 110 } elseif n < 4 then return { 70, 100, 190 } end
+    return { 110, 140, 220 }
+  end
+  local function dome(f, cx, cy, rx, ry, y1)
+    for y = cy - ry, y1 do
+      for x = cx - rx, cx + rx do
+        if ((x - cx) / rx) ^ 2 + ((y - cy) / ry) ^ 2 <= 1 then put(px, f, x, y, hair(x, y)) end
+      end
+    end
+  end
+  local RED, BLK = { 200, 60, 40 }, { 20, 20, 24 }
+  for slot = 1, 3 do
+    local step = ({ 0, -1, 1 })[slot]
+    -- front / back
+    for _, isFront in ipairs({ true, false }) do
+      local f = (isFront and F.facings.down or F.facings.up)[slot]
+      dome(f, 16, 10, 11, 9, 13)
+      if isFront then
+        rect(px, f, 8, 13, 23, 18, SKIN)                   -- face under the fringe
+        rect(px, f, 8, 11, 23, 12, hair(9, 9)); rect(px, f, 8, 11, 23, 12, { 40, 60, 140 })
+        put(px, f, 12, 15, BLK); put(px, f, 13, 15, BLK); put(px, f, 18, 15, BLK); put(px, f, 19, 15, BLK)
+      else
+        rect(px, f, 8, 13, 23, 18, { 60, 90, 180 })
+      end
+      rect(px, f, 12, 19, 19, 26, isFront and RED or { 150, 50, 40 })
+      rect(px, f, 10, 20, 11, 25, RED); rect(px, f, 20, 20, 21, 25, RED)
+      rect(px, f, 13, 27, 14, 30 - ((step == -1) and 1 or 0), BLK)
+      rect(px, f, 17, 27, 18, 30 - ((step == 1) and 1 or 0), BLK)
+      rect(px, f, 12, 31, 14, 31, BLK); rect(px, f, 17, 31, 19, 31, BLK)
+    end
+    -- sides: facing = +1 means the face looks to screen-right
+    for _, facing in ipairs({ 1, -1 }) do
+      local f = (facing == 1 and F.facings.right or F.facings.left)[slot]
+      local function X(x) return facing == 1 and x or (31 - x) end
+      for y = 1, 13 do
+        for x = 6, 25 do
+          if ((x - 15.5) / 10) ^ 2 + ((y - 10) / 9) ^ 2 <= 1 and y <= 13 then put(px, f, X(x), y, hair(x, y)) end
+        end
+      end
+      for y = 13, 18 do for x = 16, 25 do put(px, f, X(x), y, SKIN) end end
+      for y = 13, 18 do for x = 6, 15 do put(px, f, X(x), y, hair(x, y)) end end
+      put(px, f, X(22), 15, F.SIDE_EYE)  -- must never reach the body texture
+      for y = 19, 26 do for x = 12, 19 do put(px, f, X(x), y, RED) end end
+      local fw, bk = 15 + step * 2, 15 - step * 2
+      for y = 27, 30 do put(px, f, X(fw), y, BLK); put(px, f, X(fw + 1), y, BLK)
+        put(px, f, X(bk), y, BLK); put(px, f, X(bk + 1), y, BLK) end
+      for x = fw - 1, fw + 2 do put(px, f, X(x), 31, BLK) end
+      for x = bk - 1, bk + 2 do put(px, f, X(x), 31, BLK) end
+    end
+  end
+  -- the outline: any body pixel touching empty space (or the cell edge)
+  local edge = {}
+  for fr = 0, F.frames - 1 do
+    for y = 0, F.H - 1 do
+      for x = 0, F.W - 1 do
+        if px[(fr * F.H + y) * F.W + x + 1] then
+          for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
+            local nx, ny = x + d[1], y + d[2]
+            if nx < 0 or nx >= F.W or ny < 0 or ny >= F.H or not px[(fr * F.H + ny) * F.W + nx + 1] then
+              edge[#edge + 1] = (fr * F.H + y) * F.W + x + 1
+              break
+            end
+          end
+        end
+      end
+    end
+  end
+  for _, i in ipairs(edge) do px[i] = F.OUTLINE end
+  local out = {}
+  for i = 1, #px do
+    local c = px[i]
+    out[i] = c and string.char(c[1], c[2], c[3], 255) or "\0\0\0\0"
+  end
+  return table.concat(out), F.W, F.H * F.frames
+end
+
 -- views + layout for one slot, in SpriteSolid's shape
-function F.viewsFor(S, rgba, imgW, imgH, slot)
+function F.viewsFor(S, rgba, imgW, imgH, slot, padded)
   local views, cellY = {}, {}
   for key, dir in pairs({ front = "down", back = "up", left = "left", right = "right" }) do
     local y0 = F.facings[dir][slot] * F.H
     views[key] = S.maskFromRGBA(rgba, imgW, imgH, 0, y0, F.W, F.H)
     cellY[key] = y0
   end
-  return views, { imgW = imgW, imgH = imgH, cellW = F.W, cellH = F.H, cellX = 0, cellY = cellY }
+  padded = padded or S.padRGBA(rgba, imgW, imgH, F.W, F.H, 4)
+  return views, { imgW = imgW, imgH = imgH, cellW = F.W, cellH = F.H, cellX = 0, cellY = cellY, src = padded }
 end
 
 return F

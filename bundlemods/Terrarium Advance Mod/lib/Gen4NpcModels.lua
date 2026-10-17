@@ -23,9 +23,10 @@
 -- WHAT IS BUILT, AND WHEN
 --
 --   One body per (sheet, pose): the stand frame and the two step frames, each
---   from that pose's south / north / west / east pictures, with its own small
---   baked texture in which those four pictures are blended (see SpriteSolid),
---   so there are no seams between face, side and back. The body is turned
+--   from that pose's south / north / west / east pictures. The side pictures
+--   give the SHAPE only; the colour comes from the south and north pictures
+--   alone, baked into the body's own small texture (see SpriteSolid), so a
+--   side picture's eye or nose never lands on the body. The body is turned
 --   by the NPC's world facing (eased, so a turn is not a snap) and the pose
 --   follows the sprite's own walk phase, so the walk is the sheet's real
 --   walk. Sheets are shared: fifty youngsters cost one set of bodies.
