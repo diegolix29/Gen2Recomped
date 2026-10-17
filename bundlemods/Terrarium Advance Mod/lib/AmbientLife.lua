@@ -60,10 +60,50 @@ local Map = require("src.world.Map")
 
 local AmbientLife = {}
 
+-- GEN 4 (Platinum). The voxel pipeline stands down there (see Gen4Bridge), and
+-- everything below was written against Gen 1-3 map answers that Platinum does
+-- not give: Map.isOutdoor says "indoors" on EVERY Gen 4 map, Map:isGrassCell is a
+-- tileset test, and the overworld can run with an empty state stack. Gen4Spawn
+-- already has the real answers; this resolves it once and every Gen 4 branch
+-- below asks it. nil on Gen 1-3, so those paths are untouched.
+local g4Mod, g4Tried
+local function gen4()
+  if not g4Tried then
+    g4Tried = true
+    local ok, S = pcall(V.require, "Gen4Spawn")
+    if ok and type(S) == "table" then g4Mod = S end
+  end
+  if g4Mod and type(g4Mod.active) == "function" and g4Mod.active() then
+    return g4Mod
+  end
+  return nil
+end
+
+-- Platinum has no voxel level to switch this on, so by default the critters run
+-- whenever the setting is ON. Set false to tie them to voxel mode again.
+AmbientLife.nativeWithoutVoxel = true
+
+-- Why the population is (not) running, logged once per change on Gen 4 so a
+-- silent "nothing spawned" has a reason in the mod log. AmbientLife.why holds it.
+local function note(why)
+  if AmbientLife.why == why then return end
+  AmbientLife.why = why
+  if V.mod and V.mod.log and V.mod.log.info then
+    pcall(V.mod.log.info, V.mod.log, "AmbientLife (Gen 4): " .. tostring(why))
+  end
+end
+
 -- Generation-agnostic outdoor check that works for Gen1, Gen2, and Gen3
 -- Map.isOutdoor only understands Gen1/Gen2 def fields, but Gen3 uses different structures
 local function isMapOutdoor(map)
   if not map or not map.def then return false end
+
+  -- Gen 4: the engine check below is wrong for every Platinum map
+  local S4 = gen4()
+  if S4 and type(S4.isOutdoor) == "function" then
+    local ok, r = pcall(S4.isOutdoor, map)
+    return ok and r and true or false
+  end
   
   -- Try the engine's check first (works for Gen1/Gen2)
   local engineSaysOutdoor = Map.isOutdoor(map.def)
@@ -157,6 +197,20 @@ end
 -- system says is inhabited.
 local function grassCellNear(ow)
   local map, p = ow.map, ow.player
+
+  -- Gen 4: tall grass where the map has any, bare walkable ground where it has none
+  local S4 = gen4()
+  if S4 then
+    local kind = S4.mapHasGrass(map) and "grass" or "street"
+    for _ = 1, CELL_TRIES do
+      local cx = p.cellX + rand(-RADIUS, RADIUS)
+      local cy = p.cellY + rand(-RADIUS, RADIUS)
+      if S4.standable(kind, map, cx, cy) then
+        return cx * 16 + rand(2, 14), cy * 16 + rand(2, 14)
+      end
+    end
+    return nil
+  end
   
   -- First check if this map has grass instances at all (generation-agnostic)
   local hasGrass = false
@@ -218,6 +272,17 @@ end
 -- An open walkable cell near the player -- where a ground bird can stand.
 local function openCellNear(ow)
   local map, p = ow.map, ow.player
+  local S4 = gen4()
+  if S4 then
+    for _ = 1, CELL_TRIES do
+      local cx = p.cellX + rand(-RADIUS, RADIUS)
+      local cy = p.cellY + rand(-RADIUS, RADIUS)
+      if S4.standable("street", map, cx, cy) then
+        return cx * 16 + rand(3, 13), cy * 16 + rand(3, 13)
+      end
+    end
+    return nil
+  end
   for _ = 1, CELL_TRIES do
     local cx = p.cellX + rand(-RADIUS, RADIUS)
     local cy = p.cellY + rand(-RADIUS, RADIUS)
@@ -231,6 +296,17 @@ end
 
 local function waterCellNear(ow)
   local map, p = ow.map, ow.player
+  local S4 = gen4()
+  if S4 then
+    for _ = 1, CELL_TRIES do
+      local cx = p.cellX + rand(-RADIUS, RADIUS)
+      local cy = p.cellY + rand(-RADIUS, RADIUS)
+      if S4.standable("water", map, cx, cy) then
+        return cx * 16 + rand(2, 14), cy * 16 + rand(2, 14)
+      end
+    end
+    return nil
+  end
   for _ = 1, CELL_TRIES do
     local cx = p.cellX + rand(-RADIUS, RADIUS)
     local cy = p.cellY + rand(-RADIUS, RADIUS)
@@ -379,14 +455,28 @@ function AmbientLife.update(dt, voxelOn)
     pcall(glance, ow)
   end
 
-  local ok = voxelOn and AmbientLife.enabled()
-             and ow and ow.map and ow.player
-             and Game.stack and Game.stack:top() == ow
-             and not ow.transitioning
-             and isMapOutdoor(ow.map)
+  -- Gen 4 can run with an EMPTY state stack (see Gen4Bridge.worldCovered):
+  -- top() is then nil rather than the overworld, which used to read as "a menu
+  -- is on top" and froze the population for the whole game.
+  local S4 = gen4()
+  local top = Game.stack and Game.stack:top()
+  local onTop = Game.stack and (top == ow or (S4 and top == nil)) and true or false
+  local nativeOn = S4 and AmbientLife.nativeWithoutVoxel
+
+  local why
+  if not AmbientLife.enabled() then why = "AMBIENT setting is OFF"
+  elseif not (voxelOn or nativeOn) then why = "voxel mode is off"
+  elseif not (ow and ow.map and ow.player) then why = "no map or player yet"
+  elseif not onTop then why = "overworld is not the top state"
+  elseif ow.transitioning then why = "warp transition running"
+  elseif not isMapOutdoor(ow.map) then why = "map counts as indoors"
+  end
+  local ok = (why == nil)
+  if S4 then note(why or "running") end
+
   if not ok then
-    if #critters > 0 and not (ow and Game.stack
-                              and Game.stack:top() ~= ow) then
+    local paused = ow and Game.stack and top ~= ow and not (S4 and top == nil)
+    if #critters > 0 and not paused then
       -- gone for a real reason (indoors, mode off): drop the population.
       -- Under a battle or menu it is merely paused, and comes back intact.
       critters = {}
@@ -576,6 +666,12 @@ function AmbientLife.draw(project, scale)
           g.rectangle("fill", sx - s * 1.5, sy - s * 1.5, s * 3, s * 3)
           g.setColor(1.0, 0.95, 0.55, 0.9 * blink * fade)
           g.rectangle("fill", sx - s * 0.5, sy - s * 0.5, s, s)
+          -- Gen 4 multiplies the WHOLE frame by the night colour afterwards
+          -- (Gen4Tint), which would leave this a dim speck. The host sets a
+          -- sink that repaints the glow after that multiply.
+          if AmbientLife.glowSink then
+            AmbientLife.glowSink(sx, sy, math.max(4, s * 5), 0.5 * blink * fade)
+          end
         end
       elseif c.kind == "leaf" then
         g.setBlendMode("alpha")

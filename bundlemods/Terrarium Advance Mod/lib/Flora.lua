@@ -2418,7 +2418,7 @@ end
 -- Particles were the last big block left inside Flora.draw; lifting it
 -- out keeps that function under LuaJIT's 60-upvalue ceiling as features
 -- accumulate.
-local function drawParticles(state, map, cfg, px, pz, yaw, t, dt, outdoor)
+local function drawParticles(state, map, cfg, px, pz, yaw, t, dt, outdoor, g4)
   local live = 0
   if cfg.particles ~= false then
     tex = tex or makeTex()
@@ -2428,9 +2428,14 @@ local function drawParticles(state, map, cfg, px, pz, yaw, t, dt, outdoor)
       local moved = movedThisFrame or 0
       local onGrass = false
       if outdoor then
-        local cx, cy = math.floor(px / 16), math.floor(pz / 16)
-        local okG, g = pcall(function() return map:isGrassCell(cx, cy) end)
-        onGrass = okG and g or false
+        if g4 and g4.isGrass then
+          -- Gen 4: Platinum's own grass test, in world coordinates
+          onGrass = g4.isGrass(px, pz)
+        else
+          local cx, cy = math.floor(px / 16), math.floor(pz / 16)
+          local okG, g = pcall(function() return map:isGrassCell(cx, cy) end)
+          onGrass = okG and g or false
+        end
       end
       if onGrass and moved > 0.2 and tex.seed then
         local n = SEED_RATE * dt
@@ -2461,8 +2466,14 @@ local function drawParticles(state, map, cfg, px, pz, yaw, t, dt, outdoor)
         if flies < FLY_TARGET and math.random() < 4 * dt then
           local a = math.random() * math.pi * 2
           local r = 40 + math.random() * 110
-          spawn("fly", px + math.cos(a) * r, 6 + math.random() * 14,
-                pz + math.sin(a) * r, 0, 0, 0, 4 + math.random() * 4, 1.8)
+          local fx, fz = px + math.cos(a) * r, pz + math.sin(a) * r
+          if g4 and g4.pickGrass then
+            -- Gen 4: over real tall grass when the map has some
+            local gx, gz = g4.pickGrass(px, pz, 24, 150)
+            if gx then fx, fz = gx, gz end
+          end
+          spawn("fly", fx, 6 + math.random() * 14, fz, 0, 0, 0,
+                4 + math.random() * 4, 1.8)
         end
       end
 
@@ -2679,10 +2690,17 @@ local function drawParticles(state, map, cfg, px, pz, yaw, t, dt, outdoor)
               end
               local img = tex[q.kind] or (q.kind == "gnat" and tex.fly)
                        or tex.seed
+              -- heights above are relative to the floor; on Gen 4 the floor is
+              -- the terrain under THIS particle, not y = 0
+              local gy = g4 and g4.ground(q.x, q.z) or 0
               Voxel3D.draw(partMesh, img,
-                           Mat4.mul(Mat4.mul(Mat4.translate(q.x, q.y, q.z),
+                           Mat4.mul(Mat4.mul(Mat4.translate(q.x, q.y + gy, q.z),
                                              Mat4.rotateY(-yaw)),
                                     Mat4.scale(s, s, 1)))
+              if g4 and g4.glow and q.kind == "fly" then
+                local pulse = math.max(0, math.min(1, (s / q.size - 0.7) / 0.5))
+                g4.glow(q.x, q.y + gy, q.z, s, (0.2 + 0.35 * pulse) * fade)
+              end
             end
           end
         end
@@ -2692,6 +2710,8 @@ local function drawParticles(state, map, cfg, px, pz, yaw, t, dt, outdoor)
   end
 
   -- ---------- the weather clock: dry spells broken by showers
+  -- (Gen 4 runs this once a frame in Flora.rainClock instead)
+  if not g4 then
   local rainMode = cfg.rain or "SOMETIMES"
   local wantRain = false
   if rainMode == "ALWAYS" then
@@ -2727,6 +2747,7 @@ local function drawParticles(state, map, cfg, px, pz, yaw, t, dt, outdoor)
     wetness = wetness,
     stoppedAt = (was.raining and not raining) and t or was.stoppedAt,
   }
+  end
   local rainNote = ""
 
   return live
@@ -2826,6 +2847,121 @@ function Flora.drawGen4(state, ground, yaw, outdoor)
   }
   drawRain(state, cfg, px, pz, yaw, t, dt, raining, g4)
   drawStorm(cfg, px, pz, yaw, t, dt, partMesh or makeQuad())
+end
+
+-- Gen 4: every cell of the map that is tall grass, as WORLD cell coordinates
+-- (map cell + the ground's matrix offset / 16), so the gnat swarms and the
+-- firefly spawner can use them unchanged. Capped by reservoir sampling.
+function Flora._g4Features(map, ox, oz, Spawn)
+  local f = { chimneys = {}, shores = {}, grass = {} }
+  local def = map and map.def
+  local w, h = tonumber(def and def.width) or 0, tonumber(def and def.height) or 0
+  if not (Spawn and Spawn.isGrass and w > 0 and h > 0) then return f end
+  local CAP, n = 900, 0
+  for cy = 0, h - 1 do
+    for cx = 0, w - 1 do
+      if Spawn.isGrass(map, cx, cy) then
+        n = n + 1
+        local cell = { cx + ox / 16, cy + oz / 16 }
+        if n <= CAP then
+          f.grass[n] = cell
+        else
+          local j = math.random(n)
+          if j <= CAP then f.grass[j] = cell end
+        end
+      end
+    end
+  end
+  return f
+end
+
+-- Gen 4: the PARTICLE half of Flora (seeds, fireflies, gnat swarms, leaves),
+-- which drawGen4 above never ran: it only does rain. Called by
+-- Gen4WorldHost.drawFpWeather with a Voxel3D scene already open on the Gen 4
+-- camera, like drawGen4. `project(mapX, y, mapZ)` and `sink(sx, sy, rad, a)` come
+-- from the host and let fireflies repaint a glow after Gen4Tint's night multiply.
+function Flora.drawGen4Life(state, ground, yaw, outdoor, project, sink)
+  if abandoned() then return end
+  local cfg = config()
+  local map = state and state.map
+  local p = state and state.player
+  if not (map and p and ground) then return end
+  if cfg.particles == false then return end
+  local okS, Spawn = pcall(V.require, "Gen4Spawn")
+  if not (okS and type(Spawn) == "table") then Spawn = nil end
+
+  local t = now()
+  local dt = Flora._g4LifeLast and math.min(0.1, t - Flora._g4LifeLast) or 0
+  Flora._g4LifeLast = t
+  local ox, oz = ground.offsetX or 0, ground.offsetY or 0
+
+  -- a new map: forget the old map's motes, swarms and grass list
+  if Flora._g4LifeMap ~= map then
+    Flora._g4LifeMap = map
+    parts, swarms, featureCache = nil, nil, nil
+    wasX, wasZ = nil, nil
+  end
+  if not featureCache or featureCache.map ~= map then
+    local okF, f = pcall(Flora._g4Features, map, ox, oz, Spawn)
+    featureCache = okF and f or { chimneys = {}, shores = {}, grass = {} }
+    featureCache.map = map
+  end
+
+  local g4 = Flora._g4Life
+  if not g4 then
+    g4 = {}
+    Flora._g4Life = g4
+    -- terrain height under a world x,z, memoised per 8-unit cell for the frame
+    g4.ground = function(wx, wz)
+      local key = math.floor(wx / 8) * 100003 + math.floor(wz / 8)
+      local v = g4.memo[key]
+      if v == nil then
+        v = 0
+        local gr = g4.gr
+        if gr and type(gr.groundY) == "function" then
+          local ok, y = pcall(gr.groundY, gr, wx - g4.ox, wz - g4.oz)
+          if ok and tonumber(y) then v = y end
+        end
+        g4.memo[key] = v
+      end
+      return v
+    end
+    g4.isGrass = function(wx, wz)
+      local S = g4.spawn
+      if not S then return false end
+      return S.isGrass(g4.map, math.floor((wx - g4.ox) / 16),
+                       math.floor((wz - g4.oz) / 16)) and true or false
+    end
+    -- a random tall-grass spot between rmin and rmax of (px, pz), or nil
+    g4.pickGrass = function(px, pz, rmin, rmax)
+      local list = featureCache and featureCache.grass
+      if not list or #list == 0 then return nil end
+      for _ = 1, 10 do
+        local c = list[math.random(#list)]
+        local gx = c[1] * 16 + 8 + (math.random() - 0.5) * 10
+        local gz = c[2] * 16 + 8 + (math.random() - 0.5) * 10
+        local d = math.max(math.abs(gx - px), math.abs(gz - pz))
+        if d >= rmin and d <= rmax then return gx, gz end
+      end
+      return nil
+    end
+    g4.glow = function(wx, wy, wz, size, a)
+      if not (g4.project and g4.sink) then return end
+      local sx, sy, ps = g4.project(wx - g4.ox, wy, wz - g4.oz)
+      if sx then
+        g4.sink(sx, sy, math.min(40, math.max(5, size * (tonumber(ps) or 1) * 2.5)), a)
+      end
+    end
+  end
+  g4.gr, g4.map, g4.spawn, g4.ox, g4.oz = ground, map, Spawn, ox, oz
+  g4.project, g4.sink = project, sink
+  g4.memo = {}
+
+  local px, pz = (p.px or 0) + 8 + ox, (p.py or 0) + 8 + oz
+  movedThisFrame = wasX and (math.abs(px - wasX) + math.abs(pz - wasZ)) or 0
+  wasX, wasZ = px, pz
+
+  return drawParticles(state, map, cfg, px, pz, yaw, t, dt, outdoor, g4)
 end
 
 function Flora.draw(state, atlasFor)

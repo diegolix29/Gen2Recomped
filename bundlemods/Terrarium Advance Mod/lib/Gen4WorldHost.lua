@@ -35,6 +35,16 @@ local grassCache = { mapId = nil, mesh = nil, at = -1 }
 -- underneath a Colosseum overworld arena.
 Host.stats = { draws = 0 }
 
+-- Platinum has no voxel level: the voxel pipeline stands down there, and the
+-- "voxel mode" rung is whatever the options row happens to hold. The living-world
+-- passes (AmbientLife's butterflies / fireflies / dragonflies, Flora's seeds /
+-- fireflies / gnats) are native-Gen4 features, so by default they run whenever
+-- their own settings are ON. Set false to tie them to Voxel.active() again.
+Host.nativeLifeWithoutVoxel = true
+-- Multiplier on the size of AmbientLife's critters. view:project's third return
+-- is whatever Gen4View calls scale; if they look too small or too big, tune this.
+Host.ambientScale = 1
+
 -- True only while renderPose is drawing the arena's backdrop world. Heavy
 -- effects that the arena does not want (the RayFX water pass, HD roamers) read
 -- it through Host.inPose() and stand down. Unlike _inBattle it is NOT set by
@@ -315,10 +325,59 @@ local function drawGrassBillboards(state, ground, project)
   end
 end
 
+-- AmbientLife's critters at their own height ABOVE THE FLOOR. They are simulated
+-- at y = 4 for "a firefly four units up", which on the voxel diorama is four
+-- above y = 0; Gen 4's ground is not flat, so the terrain under each one is
+-- added on the way into the projection. Drawn with depth off (a 2D rectangle at
+-- z = 0 would be rejected by the live depth buffer) and no shader, then the
+-- state is put back. Fireflies hand their glow to Gen4Tint (sink), which paints
+-- it after the night multiply.
+local function drawAmbient(ground, project, scale, sw, sh)
+  local okA, AL = pcall(V.require, "AmbientLife")
+  if not (okA and AL and AL.draw) then return end
+  local g = love.graphics
+  local function lifted(wx, wy, wz)
+    local gy = 0
+    if type(ground.groundY) == "function" then
+      local ok, y = pcall(ground.groundY, ground, wx, wz)
+      if ok and tonumber(y) then gy = y end
+    end
+    return project(wx, (wy or 0) + gy, wz)
+  end
+  local okD, cmp, wr = pcall(g.getDepthMode)
+  local shader = g.getShader and g.getShader() or nil
+  pcall(g.setDepthMode, "always", false)
+  g.setShader()
+  AL.glowSink = Host._glowSink(sw, sh)
+  local ok, err = pcall(AL.draw, lifted, (scale or 1) * (Host.ambientScale or 1))
+  AL.glowSink = nil
+  g.setShader(shader)
+  if okD and cmp then pcall(g.setDepthMode, cmp, wr) end
+  if not ok and not Host._ambientWarned then
+    Host._ambientWarned = true
+    print("Gen4WorldHost: ambient draw failed: " .. tostring(err))
+  end
+end
+
+-- sink(sx, sy, radiusPx, alpha) -> Gen4Tint glow, normalised to the canvas the
+-- projection above lands in. nil when Gen4Tint has no glow support.
+function Host._glowSink(vw, vh)
+  local ok, Tint = pcall(V.require, "Gen4Tint")
+  if not (ok and type(Tint) == "table" and Tint.addGlow) then return nil end
+  vw, vh = tonumber(vw) or 0, tonumber(vh) or 0
+  if vw < 1 or vh < 1 then return nil end
+  return function(sx, sy, rad, a)
+    Tint.addGlow(sx / vw, sy / vh, rad / vw, 1.0, 0.9, 0.45, a)
+  end
+end
+
 -- 2D field FX through Host.project. Called while the gen4 colour target is
 -- still bound (free pass) or after sprites on the world canvas (field).
 function Host.overlayFx(state, ground, sw, sh, scale)
-  if not Host.effectsOn() then return end
+  local fxOn = Host.effectsOn() and true or false   -- strict boolean: nil would read as "on" below
+  -- the living-world passes below do not need the voxel level (see the flag)
+  local lifeOn = fxOn or Host.nativeLifeWithoutVoxel
+  if not lifeOn then return end
   Host._drawGround = ground
   Host._vw, Host._vh = sw, sh
   local Voxel3D = V.require("Voxel3D")
@@ -328,21 +387,30 @@ function Host.overlayFx(state, ground, sw, sh, scale)
   local project = Host.project
   local view = ground.view3d
   local free = view and view.isFree and view:isFree()
-  if not free then
+  do
+    local okT, Tint = pcall(V.require, "Gen4Tint")
+    if okT and type(Tint) == "table" and Tint.beginGlows then pcall(Tint.beginGlows) end
+  end
+  if fxOn and not free then
     pcall(drawGrassBillboards, state, ground, project)
   end
-  pcall(function() V.require("AmbientLife").draw(project, scale or 1) end)
-  pcall(function() V.require("Vfx").draw(project, scale or 1) end)
-  pcall(function() V.require("WindFX").draw(project, scale or 1) end)
-  -- the fp-ceiling weather (RAIN / LIGHTNING / NPC UMBRELLAS rows): 3D drops and
-  -- umbrellas through the live Gen 4 camera. Defined further down (it needs
-  -- beginFieldVoxel), so it is looked up on Host at call time.
-  if Host.drawFpWeather then pcall(Host.drawFpWeather, state, ground) end
-  pcall(function() V.require("Interiors").draw(project, scale or 1) end)
-  pcall(function() V.require("HiddenItems").draw(project, scale or 1) end)
-  pcall(function()
-    V.require("Weather").draw(project, scale or 1, sw, sh)
-  end)
+  pcall(drawAmbient, ground, project, scale or 1, sw, sh)
+  if fxOn then
+    pcall(function() V.require("Vfx").draw(project, scale or 1) end)
+    pcall(function() V.require("WindFX").draw(project, scale or 1) end)
+  end
+  -- Flora on Platinum: rain / umbrellas / storm (voxel level on) and the
+  -- particles -- seeds, fireflies, gnat swarms, leaves (always, per the flag).
+  -- Defined further down (it needs beginFieldVoxel), so it is looked up on Host
+  -- at call time.
+  if Host.drawFpWeather then pcall(Host.drawFpWeather, state, ground, fxOn, true, sw, sh) end
+  if fxOn then
+    pcall(function() V.require("Interiors").draw(project, scale or 1) end)
+    pcall(function() V.require("HiddenItems").draw(project, scale or 1) end)
+    pcall(function()
+      V.require("Weather").draw(project, scale or 1, sw, sh)
+    end)
+  end
   Voxel3D.vp = prevVp
   Host._drawGround = nil
 end
@@ -448,7 +516,7 @@ end
 -- Gen 4 never reaches. Needs the free camera (the cartridge's fixed field camera
 -- has no matrix to put 3D billboards through); the 2D Weather streaks and the
 -- sky's own rain still cover that camera.
-function Host.drawFpWeather(state, ground)
+function Host.drawFpWeather(state, ground, rain, life, sw, sh)
   if not (state and state.map and ground) then return end
   local view = ground.view3d
   if not (view and view.isFree and view:isFree()) then return end
@@ -467,7 +535,15 @@ function Host.drawFpWeather(state, ground)
   if type(view.forward) == "function" then fx, _, fz = view:forward() end
   local yaw = math.atan2(fx, fz)
   if not beginFieldVoxel(state, ground) then return end
-  local ok, err = pcall(Flora.drawGen4, state, ground, yaw, outdoor)
+  -- rain / umbrellas / storm only with the voxel level on, as before; the
+  -- particle pass (nil = both, for old callers) can run without it
+  local ok, err = pcall(function()
+    if rain ~= false then Flora.drawGen4(state, ground, yaw, outdoor) end
+    if life ~= false and Flora.drawGen4Life then
+      Flora.drawGen4Life(state, ground, yaw, outdoor, Host.project,
+                         Host._glowSink(sw or ground.freeW, sh or ground.freeH))
+    end
+  end)
   pcall(Voxel3D.endScene)
   if not ok and not Host._fpWeatherWarned then
     Host._fpWeatherWarned = true

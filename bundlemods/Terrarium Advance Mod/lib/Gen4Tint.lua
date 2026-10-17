@@ -200,6 +200,24 @@ function Tint.feed(lights, vw, vh)
   end
 end
 
+-- Point glows painted ADDITIVE after the multiply, like the lamp pools above but
+-- coloured per glow and without the receiver check: fireflies (AmbientLife and
+-- Flora's flies) are drawn into the frame before this multiply and would come out
+-- at deep-night brightness (about 0.14/0.17/0.31). Coordinates are normalised to
+-- the world canvas. The owner calls beginGlows once per frame; a list older than a
+-- quarter second is ignored, so a frame that never refreshed it paints nothing.
+Tint.glows = {}
+Tint.glowAt = 0
+function Tint.beginGlows()
+  Tint.glows = {}
+  Tint.glowAt = (love.timer and love.timer.getTime()) or 0
+end
+function Tint.addGlow(nx, ny, nr, r, g, b, a)
+  local list = Tint.glows
+  if #list >= 96 then return end
+  list[#list + 1] = { nx = nx, ny = ny, nr = nr, r = r or 1, g = g or 1, b = b or 1, a = a or 1 }
+end
+
 -- The colour this frame should be multiplied by, or nil to leave it alone.
 function Tint.forFrame(renderer)
   if not (Tint.enabled and renderer) then return nil end
@@ -259,6 +277,18 @@ function Tint.paint(r, g, b)
       else
         gfx.circle("fill", cx, cy, rad)
       end
+    end
+  end
+
+  local glows = Tint.glows
+  local nowT = (love.timer and love.timer.getTime()) or 0
+  if glow and glows and #glows > 0 and (nowT - (Tint.glowAt or 0)) < 0.25 then
+    gfx.setBlendMode("add", "alphamultiply")
+    for _, b2 in ipairs(glows) do
+      local rad = math.max(3, (b2.nr or 0.02) * w)
+      gfx.setColor(b2.r, b2.g, b2.b, math.min(1, b2.a))
+      gfx.draw(glow, b2.nx * w, b2.ny * h, 0, (rad * 2) / glow:getWidth(),
+               (rad * 2) / glow:getHeight(), glow:getWidth() * 0.5, glow:getHeight() * 0.5)
     end
   end
 
