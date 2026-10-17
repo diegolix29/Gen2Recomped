@@ -51,7 +51,7 @@ local Npc = {
   TURN_RATE = 14,       -- rad/s a body turns toward its facing
   STEP_SECONDS = 0.004, -- slice of one build step
   FILTER = "nearest",   -- "nearest" keeps the pixel art crisp, "linear" softens it
-  includePlayer = false,
+  includePlayer = true,
   solid = {},           -- SpriteSolid option overrides, e.g. { ss = 2 }
   stats = { builds = 0, failed = 0, drawn = 0, sheets = 0 },
 }
@@ -318,7 +318,6 @@ function Npc.wants(e, state)
      or e.roamer or e.overworldWildSpawn or e.species then
     return false
   end
-  if state and e == state.player and not Npc.includePlayer then return false end
   local rec = recOf(e.sprite)
   return rec ~= nil and rec.ok == true and rec.state ~= "failed"
 end
@@ -352,7 +351,6 @@ end
 -- was actually drawn; false leaves the flat sprite to draw as before.
 function Npc.drawPose(p, ground)
   local e = p and p.entity
-  if p and p.isPlayer and not Npc.includePlayer then return false end
   if not Npc.wants(e, nil) then return false end
   local rec = recOf(e.sprite)
   if not (rec and rec.ok) then return false end
