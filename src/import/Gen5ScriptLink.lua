@@ -40,6 +40,10 @@ L.ALIASES = {
   [0x74] = { "faceplayer", "" },
   [0x32] = { "waitabpress", "" }, [0x3E] = { "closemessage", "" }, [0x3F] = { "closemessage", "" },
   [0x3D] = { "message", "bbwww", { 3 } }, [0x3C] = { "message", "bbwwww", { 3 } },
+  -- 0x0CC <dest>: the running script's text bank into a var (ov10
+  -- 0x0215AADC: *var = ctx+0x18, the bank 0x0215A760 loaded) -- what an
+  -- NPC hands the shared item-gift script (2800) so it speaks their lines
+  [0x0CC] = { "bwstorecurrentbank", "w" },
   [0xA6] = { "playse", "w" },
   [0x23] = { "setflag", "w" }, [0x24] = { "clearflag", "w" },
   -- 0x25 <flag, dest>: the flag's state into a var (the handler reads the
@@ -362,6 +366,11 @@ L.ALIASES = {
   -- B3F's pit it picks between the two landing tiles, in the player's room
   -- between the Wii's two lines
   [0x0C1] = { "warp", "www", { 1, 1, 2, 3 } },
+  -- THE EVENT POKEMON CHECKS: 0x220 <species, 0, slotVar, resultVar> asks
+  -- whether a distributed (fateful-encounter) Pokemon of that species is in
+  -- the party -- Castelia's Zorua scene asks for Celebi (member 94), Lostlorn
+  -- Forest's Zoroark for Entei, Raikou and Suicune (member 770)
+  [0x220] = { "bwpartyhaseventmon", "wwww" },
   -- OPELUCID GYM (overlay 46, Gen5DragonGym): 0x196 lists the dragons'
   -- lines as the save says, 0x19A <statue, side> flips a switch, 0x199
   -- <statue> settles the head and its lines; 0x197 <statue, side> and 0x198
@@ -574,6 +583,20 @@ function L.rewriteStack(decoded)
     if node and emit(node, j.target, false, true, chain, j.at + 2 + j.width) then
       for _, ins in ipairs(chain) do out[#out + 1] = ins end
       i = k + 1
+    elseif node then
+      -- AN EXPRESSION THE JUMPING CODE CANNOT SPELL (an OR of ANDs jumping on
+      -- false, a nested sum of conditions): kept as the cartridge's own stack
+      -- program, postfix, as (kind, value) pairs -- 1 const, 2 var, 3 flag,
+      -- 4 operator -- and evaluated when it runs (g4_bw_eval)
+      local program = {}
+      local function post(n)
+        if n.kind == "op" then post(n.a); post(n.b); program[#program + 1] = 4; program[#program + 1] = n.op
+        else program[#program + 1] = (n.kind == "const" and 1) or (n.kind == "var" and 2) or 3
+             program[#program + 1] = n.value end
+      end
+      post(node)
+      out[#out + 1] = { at = a.at, op = 0x1F, name = "bwevalgoto", args = program, target = j.target }
+      i = k + 1
     else
       out[#out + 1] = L.name(a)
       i = i + 1
@@ -754,6 +777,21 @@ function L.name(ins)
   local name = alias[1]
   if name == "setvar" then name = L.setvarName(args[2]) end
   if name == "message" and (args[1] or 0) >= 0x4000 then name = "messagevar" end
+  -- 0x3D / 0x3C OPEN WITH A BANK SELECTOR, a u16 the two leading "bytes" make
+  -- up: 0x0400 is the script's own bank; anything else names one -- a var
+  -- when >= 0x4000 (the shared item-gift script prints from 0x8006, which its
+  -- caller filled with its own bank through 0x0CC), else the bank itself
+  if (ins.op == 0x3D or ins.op == 0x3C) and name:sub(1, 7) == "message" then
+    local bank = (ins.operands:byte(1) or 0) + (ins.operands:byte(2) or 0) * 256
+    if os.getenv and os.getenv("BWBANKSTAT") then
+      L.bankStat = L.bankStat or {}
+      if not L.bankStat[bank] then print(("[bwbank] selector 0x%04X first at op 0x%X"):format(bank, ins.op)) end
+      L.bankStat[bank] = (L.bankStat[bank] or 0) + 1
+    end
+    if bank ~= 0x0400 then
+      return { at = ins.at, op = ins.op, name = "messagefrombank", args = { bank, args[1] }, target = ins.target }
+    end
+  end
   return { at = ins.at, op = ins.op, name = name, args = args, target = ins.target }
 end
 

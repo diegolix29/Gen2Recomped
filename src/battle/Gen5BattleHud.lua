@@ -31,10 +31,7 @@ H.ACTION_RECTS = {
   [3] = { x = 176, y = 132, w = 80, h = 60 },    -- POKeMON
   [4] = { x = 88, y = 148, w = 80, h = 44 },     -- RUN
 }
-H.MOVE_RECTS = {
-  { x = 2, y = 30, w = 124, h = 50 }, { x = 130, y = 30, w = 124, h = 50 },
-  { x = 2, y = 82, w = 124, h = 50 }, { x = 130, y = 82, w = 124, h = 50 },
-}
+H.MOVE_RECTS = require("src.import.Gen5BattleUi").MOVE_RECTS
 H.BACK_RECT = { x = 176, y = 140, w = 80, h = 52 }
 
 local images = {}
@@ -103,7 +100,7 @@ local function drawBox(battle, battler, side)
   local x, y = c.x + (e.originX or -64), c.y + (e.originY or -16)
   g.setColor(1, 1, 1, 1)
   g.draw(box, x, y)
-  local hp, max = tonumber(mon.hp) or 0, math.max(1, tonumber(mon.maxHp) or 1)
+  local hp, max = tonumber(mon.hp) or 0, math.max(1, tonumber(mon.stats and mon.stats.hp) or tonumber(mon.maxHp) or 1)
   local frac = hp / max
   local base = (frac > 0.5 and 0) or (frac > 0.2 and 9) or 18
   gauge(battle, x + H.HP_BAR.x, y + H.HP_BAR.y, H.HP_BAR.w, frac, base)
@@ -113,7 +110,10 @@ local function drawBox(battle, battler, side)
     local Font = require("src.render.Font")
     digits(battle, hp, x + 88, y + H.HP_TEXT.y, true)
     g.setColor(1, 1, 1, 1)
-    Font.draw("/", x + 89, y + H.HP_TEXT.y - 1)
+    -- the slash as a line: the font's glyph carries its own background
+    g.setColor(0.85, 0.85, 0.85, 1)
+    g.line(x + 90.5, y + H.HP_TEXT.y + 7, x + 94.5, y + H.HP_TEXT.y)
+    g.setColor(1, 1, 1, 1)
     digits(battle, max, x + 97, y + H.HP_TEXT.y)
     local okE, frac2 = pcall(function()
       local Exp = require("src.pokemon.Experience")
@@ -124,6 +124,8 @@ local function drawBox(battle, battler, side)
   -- the name, in the system face, above the bar
   local Font = require("src.render.Font")
   local faced = Font.pushFace and Font.pushFace("system")
+  -- white letters, dark grey shadow, as the cartridge prints a battler's name
+  Font.pushStyle({ text = { 0.97, 0.97, 0.97, 1 }, shadow = { 0.25, 0.25, 0.3, 1 } })
   g.setColor(1, 1, 1, 1)
   local nick = (battler.name or mon.nickname or mon.name or "")
   Font.draw(nick, x + H.NAME.x, y + H.NAME.y)
@@ -133,6 +135,7 @@ local function drawBox(battle, battler, side)
     g.setColor(1, 1, 1, 1)
     partTile(battle, gender == "male" and 29 or 31, x + H.NAME.x + Font.width(nick) + 2, y + H.NAME.y + 2)
   end
+  Font.popStyle()
   if faced then Font.popFace() end
   g.setColor(1, 1, 1, 1)
   return true
@@ -155,7 +158,7 @@ local function moveName(battle, i)
   if not mv then return nil end
   local def = battle.data.moves and battle.data.moves[mv.id]
   local maxPP = def and (def.pp + (mv.ppUps or 0) * math.floor(def.pp / 5)) or 0
-  return def and def.name or tostring(mv.id), mv.pp, maxPP
+  return def and def.name or tostring(mv.id), mv.pp, maxPP,def and def.type
 end
 
 local function highlight(rect, alpha)
@@ -182,8 +185,10 @@ function H.drawScreen(battle, over)
     if moves then g.draw(moves, 0, 0) end
     if back then g.draw(back, 0, 0) end
     for i, r in ipairs(H.MOVE_RECTS) do
-      local name, pp, maxPP = moveName(battle, i)
+      local name, pp, maxPP,moveType = moveName(battle, i)
       if name then
+        local button=moveType and picture(battle,"move_"..moveType.."_"..i)
+        if button then g.draw(button,r.x,r.y)end
         g.setColor(1, 1, 1, 1)
         Font.draw(name, math.floor(r.x + (r.w - Font.width(name)) / 2), r.y + 12)
         local s = ("PP %d/%d"):format(pp or 0, maxPP or 0)
@@ -267,13 +272,17 @@ function H.drawCompactMoves(battle)
   for i = 1, 4 do
     local x, y, w, h = Gen4Battle.compactMoveRect(i)
     g.setColor(1, 1, 1, 1)
-    local name, pp, maxPP = moveName(battle, i)
+    local name, pp, maxPP,moveType = moveName(battle, i)
     if name then
       -- the button stretched to the slot: the strip's rows are wider than
       -- the hexagon's proportions, and the words need the width
       local r = H.MOVE_RECTS[i]
-      local q = love.graphics.newQuad(r.x, r.y, r.w, r.h, moves:getDimensions())
-      g.draw(moves, q, x, y, 0, w / r.w, h / r.h)
+      local button=moveType and picture(battle,"move_"..moveType.."_"..i)
+      if button then g.draw(button,x,y,0,w/r.w,h/r.h)
+      else
+        local q = love.graphics.newQuad(r.x, r.y, r.w, r.h, moves:getDimensions())
+        g.draw(moves, q, x, y, 0, w / r.w, h / r.h)
+      end
       Font.draw(name, x + 8, y + 3)
       local s = ("%d/%d"):format(pp or 0, maxPP or 0)
       Font.draw(s, x + w - 8 - Font.width(s), y + 14)

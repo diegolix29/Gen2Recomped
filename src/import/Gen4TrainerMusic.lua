@@ -43,6 +43,8 @@ function Gen4TrainerMusic.forClass(data, class)
   local rec = data and data.gen4_trainer_music
   local seq = rec and rec.byClass and rec.byClass[tonumber(class)]
   if seq then return seq end
+  -- HGSS / BW records name their own default (Gen4BattleMusic.eyes)
+  if rec and rec.default then return rec.default end
   local songs = data and data.audio and data.audio.songs
   local kid = songs and songs.SEQ_EYE_KID
   return kid and kid.nds or nil

@@ -605,7 +605,7 @@ function Gen4SummaryMenu:bottomPoint(px,py)
   local okS,SS=pcall(require,'src.ui.SecondScreen')
   if not okS then return nil end
   local mode=SS.mode(self.game)
-  if not ((mode=='display' or mode=='inset') and not SS.stowed(self.game)) then return nil end
+  if not (require('src.ui.SecondScreen').separateMode(mode) and not SS.stowed(self.game)) then return nil end
   return SS.toLocal(self.game,px,py)
 end
 
@@ -1704,7 +1704,7 @@ function Gen4SummaryMenu:drawSubscreen()
   local okS, SS = pcall(require, "src.ui.SecondScreen")
   if not okS then return end
   local mode = SS.mode(self.game)
-  if not ((mode == "display" or mode == "inset") and not SS.stowed(self.game)) then return end
+  if not (require("src.ui.SecondScreen").separateMode(mode) and not SS.stowed(self.game)) then return end
   SS.draw(self.game, function() self:drawSubscreenBody() end)
 end
 

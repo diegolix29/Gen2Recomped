@@ -490,10 +490,12 @@ function Commands.fr_bf_battle(ctx)
   local team = B.mons(game, f, f.playerEntries or {})
   local BattleState = require("src.battle.BattleState")
   local real = ctx.save.party
+  require("src.pokemon.PartyAside").hold(ctx.save, real)  -- in the save too (PartyAside)
   ctx.save.party = team
   local ok, battle = pcall(BattleState.newTrainer, game, key, 1)
   if not ok or not battle then
     ctx.save.party = real
+    require("src.pokemon.PartyAside").release(ctx.save)
     Logger.warn("gen4 battle factory: could not build the battle: %s", tostring(battle))
     return
   end
@@ -505,6 +507,7 @@ function Commands.fr_bf_battle(ctx)
   local runner = ctx.runner
   battle.onFinish = function(result)
     ctx.save.party = real
+    require("src.pokemon.PartyAside").release(ctx.save)
     game.gen4BattleFactoryWon = (result == "win") and 1 or 0
     if runner then runner:resume() end
   end

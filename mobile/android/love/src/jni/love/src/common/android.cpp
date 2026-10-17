@@ -376,6 +376,59 @@ bool pathIsAppOwned(const char *path)
 	return callStaticBool("pathIsAppOwned", "(Ljava/lang/String;)Z", path);
 }
 
+std::string httpRequest(const char *json)
+{
+	std::string result;
+	if (json == nullptr)
+		return result;
+	JNIEnv *env = (JNIEnv*) SDL_AndroidGetJNIEnv();
+	if (env == nullptr)
+		return result;
+	jobject activityObj = (jobject) SDL_AndroidGetActivity();
+	if (env->ExceptionCheck() || activityObj == nullptr)
+	{
+		env->ExceptionClear();
+		if (activityObj != nullptr) env->DeleteLocalRef(activityObj);
+		return result;
+	}
+	jclass activity = env->GetObjectClass(activityObj);
+	env->DeleteLocalRef(activityObj);
+	jmethodID method = env->GetStaticMethodID(activity, "httpRequest", "(Ljava/lang/String;)Ljava/lang/String;");
+	if (env->ExceptionCheck() || method == nullptr)
+	{
+		env->ExceptionClear();
+		env->DeleteLocalRef(activity);
+		return result;
+	}
+	jstring jarg = env->NewStringUTF(json);
+	jstring jresult = (jstring) env->CallStaticObjectMethod(activity, method, jarg);
+	if (env->ExceptionCheck())
+	{
+		env->ExceptionClear();
+		jresult = nullptr;
+	}
+	if (jresult != nullptr)
+	{
+		const char *chars = env->GetStringUTFChars(jresult, nullptr);
+		if (chars != nullptr)
+		{
+			result = chars;
+			env->ReleaseStringUTFChars(jresult, chars);
+		}
+		env->DeleteLocalRef(jresult);
+	}
+	env->DeleteLocalRef(jarg);
+	env->DeleteLocalRef(activity);
+	return result;
+}
+
+bool walkerNotify(const char *json)
+{
+	if (json == nullptr)
+		return false;
+	return callStaticBool("walkerNotify", "(Ljava/lang/String;)Z", json);
+}
+
 bool mkdirsReal(const char *path)
 {
 	if (path == nullptr || path[0] == '\0')

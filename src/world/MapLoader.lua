@@ -124,6 +124,8 @@ local function build(data, mapId)
   -- on every build, as the cartridge does on every map change.
   if def.generation == 4 then
     MapLoader.applyHiddenPaths(data, def)
+    -- ...and HGSS's Safari Zone arrangement (HgssSafariZone)
+    require("src.world.HgssSafariZone").applyToDef(data, def, MapLoader.currentSave())
   end
   local tilesetDef = MapLoader.tilesetFor(data, def)
   assert(tilesetDef, ("map %s wants unknown tileset: %s (not in the " ..
@@ -149,6 +151,8 @@ local function currentSave()
   return ok and type(Game) == "table" and Game.save or nil
 end
 
+MapLoader.currentSave = currentSave
+
 function MapLoader.applyHiddenPaths(data, def)
   local Gen4HiddenPaths = require("src.world.Gen4HiddenPaths")
   return Gen4HiddenPaths.applyToDef(data, def, currentSave())
@@ -169,6 +173,12 @@ function MapLoader.load(data, mapId)
     -- locked) is rebuilt, so the collision matches the save -- the cartridge
     -- re-applies the patches on every map change.
     local def = m.def
+    -- the Safari Zone rebuilt when its arrangement has changed
+    if def and def.hgssSafariKey
+       and def.hgssSafariKey ~= require("src.world.HgssSafariZone").key(currentSave()) then
+      MapLoader.evict(mapId)
+      return build(data, mapId)
+    end
     if def and def.generation == 4 and def.gen4HiddenKey then
       local Gen4HiddenPaths = require("src.world.Gen4HiddenPaths")
       if def.gen4HiddenKey ~= Gen4HiddenPaths.key(currentSave()) then

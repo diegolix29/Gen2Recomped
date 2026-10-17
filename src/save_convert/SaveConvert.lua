@@ -31,6 +31,10 @@
 local GenSave = require("src.save_convert.GenSave")
 local Gen2Save = require("src.save_convert.Gen2Save")
 local Gen3Save = require("src.save_convert.Gen3Save")
+-- Platinum / HeartGold / SoulSilver and Black / White: 512 KiB DS flash
+local Gen4Save = require("src.save_convert.Gen4Save")
+local Gen5Save = require("src.save_convert.Gen5Save")
+local NdsSave = require("src.save_convert.NdsSave")
 
 local SaveConvert = {}
 
@@ -152,6 +156,8 @@ local function codecFor(gameVersion)
   if not ok or type(GameVersion) ~= "table" then return GenSave end
   local id = gameVersion or GameVersion.get()
   local gen = GameVersion.generation(id)
+  if gen == 5 then return Gen5Save end
+  if gen == 4 then return Gen4Save end
   if gen == 3 then return Gen3Save end
   if gen == 2 then return Gen2Save end
   return GenSave
@@ -174,6 +180,24 @@ local function ensureData(gameVersion)
       end
     end
     crosswalks[key] = data
+  end
+  -- THE DS CODECS read their text through the ROM font's charmap and need
+  -- the badges, natures, trainers and map headers the cache carries; none of
+  -- it is Gen 1's crosswalk, so it is loaded here per game.
+  local ndsCodec = codecFor(gameVersion)
+  if ndsCodec == Gen4Save or ndsCodec == Gen5Save then
+    local set = crosswalks[key]
+    for _, name in ipairs({ "constants", "font", "trainers", "field" }) do
+      if set[name] == nil then
+        local path = "data/generated/" .. name .. ".lua"
+        set[name] = loadCacheTable(gameVersion, path)
+          or loadTable("data.generated." .. name, path) or false
+      end
+    end
+    for _, name in ipairs({ "constants", "font", "trainers", "field" }) do
+      if set[name] == false then set[name] = nil end
+    end
+    return set
   end
   if codecFor(gameVersion) == Gen3Save then
     -- Same reason as Gen 2's charmap below: the codec keeps one module-level
@@ -268,6 +292,10 @@ local FALLBACK_SPAWN = {
   -- cartridge carries no names for individual maps, so they are identified by
   -- group and number and nothing else.
   [3] = { map = "MAP_G00_N00", x = 5, y = 5 },
+  -- the DS games resolve the saved map header through the cache's maps;
+  -- these are the bedrooms they begin in, for a header the cache lacks
+  [4] = { map = "T01R0202", x = 4, y = 6 },
+  [5] = { map = "Z391", x = 6, y = 6 },
 }
 
 -- Merge a GenSave.decode() result over the new-game defaults, exactly the
@@ -309,6 +337,15 @@ function SaveConvert.importSav(bytes, version, gameVersion)
   if type(bytes) ~= "string" then
     return nil, "expected raw save bytes as a string"
   end
+  local codec = codecFor(gameVersion)
+  -- A DS save arrives in whatever wrapper its emulator writes (DeSmuME's
+  -- .dsv footer, no$gba's header, a 1 MiB padded image); the codec reads the
+  -- raw 512 KiB inside it.
+  if codec == Gen4Save or codec == Gen5Save then
+    local raw, why = NdsSave.unwrap(bytes)
+    if not raw then return nil, why end
+    bytes = raw
+  end
   local want = SaveConvert.saveSizeFor(gameVersion)
   if #bytes ~= want then
     return nil, ("save must be %d bytes, got %d"):format(want, #bytes)
@@ -316,8 +353,7 @@ function SaveConvert.importSav(bytes, version, gameVersion)
   local data, derr = ensureData(gameVersion)
   if not data then return nil, derr end
 
-  local codec = codecFor(gameVersion)
-  local ok, decoded = pcall(codec.decode, bytes, data)
+  local ok, decoded = pcall(codec.decode, bytes, data, gameVersion)
   if not ok then return nil, "decode failed: " .. tostring(decoded) end
 
   -- checksum validation: decode records a warning rather than throwing (so it
@@ -342,7 +378,8 @@ function SaveConvert.importSav(bytes, version, gameVersion)
   end
 
   local generation = 1
-  if codec == Gen2Save then generation = 2 elseif codec == Gen3Save then generation = 3 end
+  if codec == Gen2Save then generation = 2 elseif codec == Gen3Save then generation = 3
+  elseif codec == Gen4Save then generation = 4 elseif codec == Gen5Save then generation = 5 end
   return mergeDefaults(decoded, version, generation)
 end
 
@@ -366,7 +403,8 @@ function SaveConvert.exportSav(saveTable, gameVersion)
   end
   local data, derr = ensureData(gameVersion)
   if not data then return nil, derr end
-  local ok, bytes = pcall(codecFor(gameVersion).encode, saveTable, data, nil)
+  local ok, bytes = pcall(codecFor(gameVersion).encode, saveTable, data, nil,
+    gameVersion or saveTable.version)
   if not ok then return nil, "encode failed: " .. tostring(bytes) end
   return bytes
 end

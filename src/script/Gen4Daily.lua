@@ -95,7 +95,24 @@ function Gen4Daily.onDays(save, daysPassed)
   -- `FieldSystem_HandleDailyEvents` order: the record-mixed RNG (and with it
   -- the day's swarm) before the News Press deadline.
   pcall(function() require("src.world.Gen4Swarms").onDays(save, daysPassed) end)
-  return Gen4Daily.countdown(save, daysPassed)
+  local left = Gen4Daily.countdown(save, daysPassed)
+  -- ...then Jubilife's lottery number (the record-mixed RNG times the LCRNG
+  -- multiplier plus 12345, SystemVars_SynchronizeJubilifeLotteryTrainerID)
+  -- and the day's random level -- Platinum's vars, so Platinum only
+  local okG, GV = pcall(require, "src.core.GameVersion")
+  local family = okG and GV.info and (GV.info() or {}).family or nil
+  local C = varStore()
+  if C and GV and GV.isGen4 and GV.isGen4() and family ~= "hgss" then
+    local rand = tonumber(save.gen4Swarm and save.gen4Swarm.rand) or 0
+    local lo = (rand * 0x4E6D) % 4294967296
+    local hi = ((rand * 0x41C6) % 65536) * 65536
+    -- the handlers live on the shared Commands table (Gen4Commands fills it)
+    local Cmd = require("src.script.Commands")
+    if Cmd.g4_lottery_set then Cmd.g4_lottery_set(save, (lo + hi + 12345) % 4294967296) end
+    local r = love and love.math and love.math.random(0, 97) or math.random(0, 97)
+    C.setVar(save, Cmd.VAR_DAILY_RANDOM_LEVEL or 0x4041, r + 2)
+  end
+  return left
 end
 
 function Gen4Daily.poll(save)

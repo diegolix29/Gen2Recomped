@@ -59,6 +59,19 @@ function SecondScreen.combined(game)
   return mode=='vertical' or mode=='horizontal'
 end
 
+-- WHETHER THE BOTTOM SCREEN HAS A PANEL OF ITS OWN THAT IS SHOWING -- the
+-- device's second display, the corner inset, or either half of the window
+-- (vertical / horizontal). One answer for every screen: they were asking it
+-- four different ways (display-or-inset, combined-or-display, ...), so the
+-- party menu drew its own lower screen in the corner and left the Pokétch in
+-- the bottom half of top/bottom mode.
+function SecondScreen.separateMode(mode)
+  return mode == "display" or mode == "inset" or mode == "vertical" or mode == "horizontal"
+end
+function SecondScreen.separate(game)
+  return SecondScreen.separateMode(SecondScreen.mode(game))
+end
+
 function SecondScreen.mainSize(game,w,h)
   local mode=SecondScreen.mode(game)
   if mode=='vertical' then return w,h/2 end

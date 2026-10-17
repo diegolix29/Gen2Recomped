@@ -24,7 +24,7 @@ package.loaded['src.render.Assets'] = { image = function() return nil end, regis
 package.loaded['src.ui.Theme'] = { cursor = 0 }
 package.loaded['src.core.Sound'] = { play = function() end, playCry = function() end }
 package.loaded['src.ui.SecondScreen'] = { mode = function() return "display" end, stowed = function() return false end,
-  combined = function() return false end, draw = function() end, toLocal = function(_, x, y) return x, y end }
+  combined = function() return false end, separate = function() return true end, separateMode = function() return true end, draw = function() end, toLocal = function(_, x, y) return x, y end }
 
 local PASS, FAIL = 0, 0
 local function check(cond, what)

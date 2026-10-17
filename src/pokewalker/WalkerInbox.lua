@@ -1,0 +1,135 @@
+-- Copyright (c) 2026 Cedric. All rights reserved.
+-- Source-available under the Gen2Recomped License (see LICENSE.md): you may
+-- read, build and privately modify this file; you may not redistribute it or
+-- use it commercially. Cartridge-derived data is excluded and is not the
+-- copyright holder's to license.
+
+-- WHAT THE POKEWALKER SENT HOME, unpacked by the game when it loads the save
+-- (Game:restoreSave), where the game's own data is loaded:
+--   * the walked Pokemon: its steps as EXP, but never more than one level
+--     (the original's rule), its friendship, then back into the PC;
+--   * each catch: built by Pokemon.new in this generation's shape at its
+--     course level, met "on the Pokewalker", into the PC;
+--   * each item: into the bag by name (the PC when the bag is full); an item
+--     this game does not have becomes a Poke Ball / Potion of its kind.
+-- Nothing is dropped: whatever cannot be placed (the PC full) stays in the
+-- inbox for the next load.
+
+local I = {}
+
+local function norm(s) return (tostring(s or ""):upper():gsub("[^%w]", "")) end
+
+local function speciesKey(data, dex)
+  for key, def in pairs(data.pokemon or {}) do
+    if type(def) == "table" and tonumber(def.dex) == dex then return key, def end
+  end
+  return nil
+end
+
+local function itemId(data, name)
+  local want = norm(name)
+  local fallback
+  for id, def in pairs(data.items or {}) do
+    if type(def) == "table" then
+      local n = norm(def.name)
+      if n == want then return id end
+      if n == "POTION" and not fallback then fallback = id end
+    end
+  end
+  -- not in this game: a ball becomes a Poke Ball, anything else a Potion
+  if want:find("BALL") then
+    for id, def in pairs(data.items or {}) do
+      if type(def) == "table" and norm(def.name) == "POKEBALL" then return id end
+    end
+  end
+  return fallback
+end
+
+local function levelUp(data, mon, steps)
+  local Growth = require("src.pokemon.Growth")
+  local Stats = require("src.pokemon.Stats")
+  local okF, Forms = pcall(require, "src.pokemon.Gen4Forms")
+  local def = (okF and Forms.definition and Forms.definition(data, mon)) or (data.pokemon or {})[mon.species]
+  if not def then return end
+  local rates = data.growth_rates
+  local level = tonumber(mon.level) or 1
+  if level >= 100 then return end
+  local exp = tonumber(mon.exp) or Growth.expForLevel(def.growthRate, level, rates)
+  local cap = Growth.expForLevel(def.growthRate, level + 1, rates)
+  mon.exp = math.min(exp + (tonumber(steps) or 0), cap)
+  if mon.exp >= cap then
+    mon.level = level + 1
+    local old = mon.stats or {}
+    if Stats.isGen3 and Stats.isGen3(def) then
+      mon.stats = Stats.calcGen3(def, mon.level, mon.ivs, mon.evs, mon.nature)
+    else
+      mon.stats = Stats.calc(def, mon.level, mon.dvs, mon.statExp)
+    end
+    if mon.hp and old.hp then mon.hp = math.min(mon.stats.hp, mon.hp + (mon.stats.hp - old.hp)) end
+  end
+end
+
+-- returns a short report, or nil when there was nothing
+function I.apply(save, data)
+  local box = save and save.walkerInbox
+  if type(box) ~= "table" then return nil end
+  data = data or require("src.core.Data")
+  local Boxes = require("src.pokemon.Boxes")
+  local report = { mons = 0, caught = 0, items = 0 }
+  -- the walked Pokemon
+  for i = #(box.returning or {}), 1, -1 do
+    local r = box.returning[i]
+    local mon = r.raw
+    if type(mon) == "table" then
+      pcall(levelUp, data, mon, r.steps)
+      if r.friendship then
+        if mon.happiness ~= nil then mon.happiness = r.friendship
+        else mon.friendship = r.friendship end
+      end
+      if Boxes.deposit(save, mon) then table.remove(box.returning, i); report.mons = report.mons + 1 end
+    else
+      table.remove(box.returning, i)
+    end
+  end
+  -- the catches
+  local Pokemon = require("src.pokemon.Pokemon")
+  for i = #(box.mons or {}), 1, -1 do
+    local c = box.mons[i]
+    local key = speciesKey(data, tonumber(c.species) or 0)
+    if key then
+      local ok, mon = pcall(Pokemon.new, data, key, tonumber(c.level) or 5)
+      if ok and type(mon) == "table" then
+        mon.metLocation = "POKEWALKER"
+        mon.ot = mon.ot or (save.player and save.player.name)
+        mon.otId = mon.otId or (save.player and save.player.id)
+        if Boxes.deposit(save, mon) then table.remove(box.mons, i); report.caught = report.caught + 1 end
+      end
+    else
+      table.remove(box.mons, i)
+    end
+  end
+  -- the items
+  local Bag = require("src.inventory.Bag")
+  for i = #(box.items or {}), 1, -1 do
+    local id = itemId(data, box.items[i].name)
+    if id then
+      if not Bag.add(save, id, 1, data) then
+        save.pcItems = save.pcItems or {}
+        save.pcItems[id] = (save.pcItems[id] or 0) + 1
+      end
+      report.items = report.items + 1
+    end
+    table.remove(box.items, i)
+  end
+  if #(box.returning or {}) == 0 and #(box.mons or {}) == 0 and #(box.items or {}) == 0 then
+    save.walkerInbox = nil
+  end
+  if report.mons + report.caught + report.items == 0 then return nil end
+  pcall(function()
+    require("src.core.Logger").info("pokewalker: home -- %d walked, %d caught, %d items",
+      report.mons, report.caught, report.items)
+  end)
+  return report
+end
+
+return I

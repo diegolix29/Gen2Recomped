@@ -1512,9 +1512,17 @@ do
     function OverworldState:handleInput(...)
       local Game = require("src.core.Game")
       local input = Game.input
-      if input and input.wasPressed and input:wasPressed("select") then
+      -- ON A DS CARTRIDGE "select" IS ALSO Y (Input alsoHeld: Y uses the
+      -- registered key item), and the shifts are SELECT too. A bare press of
+      -- either stepped OFF -> VOXEL 15 out of the first/third-person camera
+      -- with no R press ("randomly"). So on a DS game only B + a real SELECT
+      -- (Tab/Shift/the pad's Select) steps the ladder; Y stays the item's.
+      local GV = require("src.core.GameVersion")
+      local nds = GV.isNds and GV.isNds() or false
+      if input and input.wasPressed and input:wasPressed("select")
+         and not (nds and input:wasPressed("y")) then
         local held = input.isDown and input:isDown("b")
-        if held or not registeredItemOwnsSelect(Game) then
+        if held or (not nds and not registeredItemOwnsSelect(Game)) then
           if cycleVoxel(Game) then return end
         end
       end

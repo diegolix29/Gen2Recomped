@@ -24,6 +24,25 @@
 local U = {}
 
 U.PATH = "/a/0/1/1"
+U.MOVE_RECTS={{x=2,y=30,w=124,h=50},{x=130,y=30,w=124,h=50},
+ {x=2,y=82,w=124,h=50},{x=130,y=82,w=124,h=50}}
+-- Overlay 94's u32 table (Black file offset 0x14090). Its order is the
+-- personal/move type enum, not the palette archive order or colour guesses.
+function U.typeMembers(rom)
+ local expected={194,200,203,201,202,206,205,207,209,195,196,198,197,199,208,204,210}
+ local parts={};for _,n in ipairs(expected)do parts[#parts+1]=string.char(n,0,0,0)end
+ local signature=table.concat(parts)
+ for overlay=94,94 do
+  local data=rom:overlay(overlay)
+  local at=data and data:find(signature,1,true)
+  if at then
+   local out={}
+   for id,key in pairs(require("src.import.Gen5Data").TYPES)do out[key]=data:byte(at+id*4)end
+   return out,{overlay=overlay,offset=at-1}
+  end
+ end
+ return nil,"BW move palette table not found"
+end
 
 -- the touch screen's pieces: { name, map, x, y } -- the 256 x 192 window of
 -- the 512 x 512 map the screen scrolls to (moves: the right half, 192 down)
@@ -132,6 +151,27 @@ function U.build(x)
       end
     end
     out.typePalettes = types
+    local members,location=U.typeMembers(x.rom)
+    out.typeMembers=members;out.typePaletteTable=location
+    local map=maps[104]
+    if members and map and sheet and pal then
+      for key,member in pairs(members)do
+        local typePalette=G.palette(m(member))
+        if typePalette then
+          local recoloured={};for i,c in pairs(pal)do recoloured[i]=c end
+          for slot=9,12 do for i=1,16 do recoloured[slot*16+i]=typePalette[i]end end
+          local full=G.compose(map,sheet,recoloured)
+          for i,rect in ipairs(U.MOVE_RECTS)do
+            local rgba={}
+            for y=0,rect.h-1 do
+              local at=((192+rect.y+y)*full.width+256+rect.x)*4
+              rgba[#rgba+1]=full.rgba:sub(at+1,at+rect.w*4)
+            end
+            save("move_"..key.."_"..i,{width=rect.w,height=rect.h,rgba=table.concat(rgba)})
+          end
+        end
+      end
+    end
   end
   out.source = "ROM:/a/0/1/1 (healthboxes 165-176, parts 164 / palette 163, balls 189-192, touch screen 91 / 92 / 93-111)"
   return out

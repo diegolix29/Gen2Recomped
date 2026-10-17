@@ -207,6 +207,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Cloud-save sign-in credentials from repository secrets
+      # (Settings -> Secrets and variables -> Actions); an empty one just leaves
+      # that service "not set up" in the build.
+      - name: Write cloud-save credentials
+        env:
+          GOOGLE_DESKTOP_CLIENT_ID: ${{ secrets.GOOGLE_DESKTOP_CLIENT_ID }}
+          GOOGLE_DESKTOP_CLIENT_SECRET: ${{ secrets.GOOGLE_DESKTOP_CLIENT_SECRET }}
+          GOOGLE_DEVICE_CLIENT_ID: ${{ secrets.GOOGLE_DEVICE_CLIENT_ID }}
+          GOOGLE_DEVICE_CLIENT_SECRET: ${{ secrets.GOOGLE_DEVICE_CLIENT_SECRET }}
+          MICROSOFT_CLIENT_ID: ${{ secrets.MICROSOFT_CLIENT_ID }}
+        run: bash scripts/write_cloud_clients.sh cloud_clients.lua
+
       - name: Pack payload
         run: |
           set -euo pipefail

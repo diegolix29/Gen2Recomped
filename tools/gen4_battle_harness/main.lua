@@ -81,6 +81,25 @@ function love.load()
 
     local Data = require("src.core.Data")
     Data:load()
+    if os.getenv("PARITY_ROM")then
+      local rom=assert(require("src.import.NdsRom").open(os.getenv("PARITY_ROM")))
+      local Assets=require("src.render.Assets");local originalImage=Assets.image;local pictures={}
+      Data.gen5_battle_ui=require("src.import.Gen5BattleUi").build({rom=rom,saveImage=function(_,name,pic)
+        local path="@bw-ui/"..name
+        pictures[path]=love.graphics.newImage(require("src.import.ImageWriter").fromRGBA8(pic.width,pic.height,pic.rgba))
+        return {path=path,width=pic.width,height=pic.height}
+      end})
+      Assets.image=function(path,...)return pictures[path] or originalImage(path,...)end
+      local Decoder=require("src.import.Gen5MonAnim")
+      local arc=assert(require("src.import.NarcArchive").parse(rom:read(Decoder.PATH)))
+      local originalRead=love.filesystem.read;local bundles={}
+      for _,species in ipairs({tonumber(os.getenv("PARTY")) or 495,tonumber(os.getenv("SPECIES")) or 25})do
+        local path="@bw-animation/"..species
+        bundles[path]=Decoder.pack(arc,species)
+        Data.pokemon[species].gen5Animation={path=path,species=species}
+      end
+      love.filesystem.read=function(path,...)return bundles[path] or originalRead(path,...)end
+    end
     if not Data.isGen4Cache then
       print("WARNING: POKEPORT_DATA_DIR is not a Gen 4 cache -- "
             .. "this harness is for Sinnoh")
@@ -301,6 +320,7 @@ function love.load()
     end
     local ticks = tonumber(os.getenv("TICKS") or "30")
     for i = 1, ticks do
+      if os.getenv("PARITY_ROM") and battle.phase=="menu" then break end
       pressed = press > 0 and (i % press == 0)
       local okU, errU = pcall(battle.update, battle, 1 / 60)
       if not okU then
@@ -357,17 +377,26 @@ function love.load()
         end
       end
     end
+    if os.getenv("PARITY_ROM")then
+      for _,b in ipairs({battle.player,battle.enemy})do
+        if b.picAnim and b.picAnim.liveMultiCell then b.picAnim:start();b.picAnim:update(20/60)end
+      end
+    end
     local canvas = love.graphics.newCanvas(W, H)
     love.graphics.setCanvas(canvas)
     love.graphics.clear(0, 0, 0, 1)
     local okD, errD = pcall(battle.draw, battle)
     love.graphics.setCanvas()
     if not okD then print("draw raised: " .. tostring(errD)) end
-    canvas:newImageData():encode("png", ("battle_%s.png"):format(TAG))
+    local out=os.getenv("POKEPORT_OUT")
+    if out then
+      local file=assert(io.open(out..("/battle_%s.png"):format(TAG),"wb"))
+      file:write(canvas:newImageData():encode("png"):getString());file:close()
+    else canvas:newImageData():encode("png", ("battle_%s.png"):format(TAG))end
     print("wrote battle_" .. TAG .. ".png")
   end, debug.traceback)
   if not ok then print("FAILED:\n" .. tostring(err)) end
-  love.event.quit()
+  love.event.quit(ok and 0 or 1)
 end
 
 function love.draw() end

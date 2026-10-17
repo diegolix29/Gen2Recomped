@@ -601,7 +601,7 @@ function V:boardPoint(px, py)
   local okS, SS = pcall(require, "src.ui.SecondScreen")
   if okS then
     local mode = SS.mode(self.game)
-    if (mode == "display" or mode == "inset") and not SS.stowed(self.game) then
+    if require("src.ui.SecondScreen").separateMode(mode) and not SS.stowed(self.game) then
       return SS.toLocal(self.game, px, py)
     end
   end
@@ -627,7 +627,7 @@ function V:dualScreen()
   local okS, SS = pcall(require, "src.ui.SecondScreen")
   if not okS then return false end
   local mode = SS.mode(self.game)
-  return (mode == "display" or mode == "inset") and not SS.stowed(self.game), SS
+  return require("src.ui.SecondScreen").separateMode(mode) and not SS.stowed(self.game), SS
 end
 
 function V:drawBoard()

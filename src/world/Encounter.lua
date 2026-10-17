@@ -294,6 +294,34 @@ function Encounter.forMap(data, mapDef, mapId, hour, save)
     def=require("src.world.Gen2Swarms").forMap(data,save,mapDef,mapId,def)
   end
   if not isGen4Shaped(def) then return def end
+  -- HEARTGOLD / SOULSILVER'S SAFARI ZONE: the area under the player, by time
+  -- of day (src/world/HgssSafariZone.lua)
+  do
+    local Safari = require("src.world.HgssSafariZone")
+    local area, tod = Safari.view(data, save, mapDef, def, hour)
+    if area then
+      local key = ("safari|%d|%d|%s"):format(area, tod, Safari.key(save))
+      local cachedSafari = gen4Views[mapDef]
+      if cachedSafari and cachedSafari.safariKey == key then return cachedSafari end
+      local view = {}
+      for k, v in pairs(def) do view[k] = v end
+      view.safariKey = key
+      view.safariGrass = Safari.slots(data, save, area, 0, tod)
+      view.grass = Encounter.gen4Table(view.safariGrass, def.grassRate)
+      local function water(kind, base)
+        if not base then return nil end
+        local slots = Safari.slots(data, save, area, kind, tod)
+        view["safariSlots" .. kind] = slots
+        return Encounter.gen4Table(slots, base.rate)
+      end
+      view.water = water(1, def.surf)
+      view.oldRod = water(2, def.oldRod)
+      view.goodRod = water(3, def.goodRod)
+      view.superRod = water(4, def.superRod)
+      gen4Views[mapDef] = view
+      return view
+    end
+  end
 
   -- REQUIRED LAZILY, INSIDE THE GEN 4 BRANCH.  `Gen4Encounters` has no requires
   -- of its own so this cannot fail, but Gen 1, 2 and 3 return above and must not

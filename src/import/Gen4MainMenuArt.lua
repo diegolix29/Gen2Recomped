@@ -65,14 +65,15 @@ end
 
 local function five(c) return { math.floor(c[1] * 255 / 31 + 0.5), math.floor(c[2] * 255 / 31 + 0.5), math.floor(c[3] * 255 / 31 + 0.5) } end
 
-function Gen4MainMenuArt.images(rom)
+function Gen4MainMenuArt.images(rom, config)
+  config = config or Gen4MainMenuArt
   local G = require("src.import.Gen4Graphics")
   local Cells = require("src.import.Gen4Cells")
   local Anim = require("src.import.Gen4CellAnim")
-  local win = opener(rom, Gen4MainMenuArt.WINFRAME)
+  local win = opener(rom, config.WINFRAME)
   if not win then return nil, "pl_winframe missing" end
-  local system, field = G.tiles(win("standard_system.NCGR")), G.tiles(win("standard_field.NCGR"))
-  local pal = G.palette(win("standard_system.NCLR"))
+  local system, field = G.tiles(win(config.system or "standard_system.NCGR")), G.tiles(win(config.field or "standard_field.NCGR"))
+  local pal = G.palette(win(config.palette or "standard_system.NCLR"))
   if not (system and field and pal) then return nil, "pl_winframe frames unreadable" end
   local base = {}
   for i = 1, 16 do base[i] = pal[i] or { 0, 0, 0 } end
@@ -94,12 +95,12 @@ function Gen4MainMenuArt.images(rom)
   out.frame_focused = nine(field, without)
   out.frame_focused_glow = nine(field, { [7] = { 255, 255, 255 } })
 
-  local mys = opener(rom, Gen4MainMenuArt.MYSTERY)
+  local mys = opener(rom, config.MYSTERY)
   if mys then
-    local s = G.tiles(mys("main_menu_scroll_arrows.NCGR.lz"))
-    local bank = Cells.parse(mys("main_menu_scroll_arrows_cell.NCER.lz"), G)
-    local anim = Anim.parse(mys("main_menu_scroll_arrows_anim.NANR.lz"), G)
-    local colours = G.palette(mys("main_menu_scroll_arrows.NCLR"))
+    local s = G.tiles(mys(config.arrowTiles or "main_menu_scroll_arrows.NCGR.lz"))
+    local bank = Cells.parse(mys(config.arrowCells or "main_menu_scroll_arrows_cell.NCER.lz"), G)
+    local anim = Anim.parse(mys(config.arrowAnim or "main_menu_scroll_arrows_anim.NANR.lz"), G)
+    local colours = G.palette(mys(config.arrowPalette or "main_menu_scroll_arrows.NCLR"))
     if s and bank and anim and colours then
       for seq, key in pairs({ [0] = "scroll_up", [1] = "scroll_down" }) do
         local frames = Anim.frames(anim, seq)
@@ -114,16 +115,17 @@ function Gen4MainMenuArt.images(rom)
 end
 
 -- The colours, as 0..255 triples.
-function Gen4MainMenuArt.data(rom)
+function Gen4MainMenuArt.data(rom, config)
+  config = config or Gen4MainMenuArt
   local G = require("src.import.Gen4Graphics")
-  local font = opener(rom, Gen4MainMenuArt.FONT)
-  local pal = font and G.palette(font(Gen4MainMenuArt.FONT_PALETTE))
+  local font = opener(rom, config.FONT)
+  local pal = font and G.palette(font(config.FONT_PALETTE))
   local function at(i, fallback)
     local c = pal and pal[i + 1]
     return c and { c[1], c[2], c[3] } or fallback
   end
   local cycle = {}
-  for i, c in ipairs(Gen4MainMenuArt.BORDER_CYCLE) do cycle[i] = five(c) end
+  for i, c in ipairs(config.BORDER_CYCLE or Gen4MainMenuArt.BORDER_CYCLE) do cycle[i] = five(c) end
   return {
     -- MainMenuUtil_InitWindow: TEXT_COLOR(1, 2, 15)
     text = { at(1, { 90, 90, 82 }), at(2, { 173, 189, 189 }) },

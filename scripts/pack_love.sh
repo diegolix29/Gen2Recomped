@@ -147,6 +147,10 @@ say "staged $manifests ROM manifest(s)"
 
 # LICENSE ships with the payload; the loader does not read it, but a
 # redistributable archive that carries no licence is not redistributable.
+# The cloud-save sign-in credentials, when this build has them (git-ignored;
+# release builds write it with scripts/write_cloud_clients.sh).
+[ -f "$ROOT/cloud_clients.lua" ] && cp "$ROOT/cloud_clients.lua" "$STAGE/"
+
 for licence in LICENSE LICENSE.MD LICENSE.md; do
   [ -f "$ROOT/$licence" ] && cp "$ROOT/$licence" "$STAGE/" && break
 done

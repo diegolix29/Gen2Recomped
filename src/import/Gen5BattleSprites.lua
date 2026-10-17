@@ -55,7 +55,8 @@ function B.build(x)
   end
   local map = cellsFor()
   local mons = x._pokemon or {}
-  local index = { species = {}, counts = { images = 0, missing = 0, female = 0 } }
+  local index = { species = {}, counts = { images = 0, missing = 0, female = 0, animations=0, animationErrors=0 } }
+  local Anim=require("src.import.Gen5MonAnim")
   local function slug(id)
     local def = mons[id]
     local name = def and def.name or ("species_%03d"):format(id)
@@ -67,19 +68,33 @@ function B.build(x)
     local image = G.compose(map, sheet, palette)
     local entry = image and x:saveImage("battle/" .. rel, image)
     if entry then index.counts.images = index.counts.images + 1 end
-    return entry and entry.path
+    -- the lowest row with a pixel in it: where the Pokemon's feet are, which
+    -- is the point the battle stands on its platform in the 3D field
+    local feet
+    if image then
+      for y = B.SIZE - 1, 0, -1 do
+        local row = image.rgba:sub(y * B.SIZE * 4 + 1, (y + 1) * B.SIZE * 4)
+        for px = 4, #row, 4 do
+          if row:byte(px) > 0 then feet = y + 1 break end
+        end
+        if feet then break end
+      end
+    end
+    return entry and entry.path, feet
   end
   for id = 1, B.SPECIES do
     local base = id * B.STRIDE
     local normal = G.palette(member(base + 18))
     local shiny = G.palette(member(base + 19))
     local name = slug(id)
-    local rec = {
-      front = save("front/" .. name, member(base + 0), normal),
-      back = save("back/" .. name, member(base + 9), normal),
+    local rec = { feet = {} }
+    rec.front, rec.feet.front = save("front/" .. name, member(base + 0), normal)
+    rec.back, rec.feet.back = save("back/" .. name, member(base + 9), normal)
+    local more = {
       shiny_front = save("shiny_front/" .. name, member(base + 0), shiny),
       shiny_back = save("shiny_back/" .. name, member(base + 9), shiny),
     }
+    for k, v in pairs(more) do rec[k] = v end
     local femaleFront = member(base + 1)
     if femaleFront then
       rec.female_front = save("female_front/" .. name, femaleFront, normal)
@@ -96,6 +111,17 @@ function B.build(x)
       def.spriteShiny, def.spriteShinyBack = rec.shiny_front, rec.shiny_back
       def.spriteFemaleFront, def.spriteFemaleBack = rec.female_front, rec.female_back
       def.battleSpriteSize = B.SIZE
+      local front,frontError=Anim.load(arc,id,"front")
+      local back,backError=Anim.load(arc,id,"back")
+      if front and back then
+        local path=x:saveBinary(("battle/mcss/%03d.bin"):format(id),Anim.pack(arc,id))
+        def.gen5Animation={path=path,species=id}
+        rec.animation=def.gen5Animation
+        index.counts.animations=index.counts.animations+2
+      else
+        index.counts.animationErrors=index.counts.animationErrors+1
+        rec.animationError=frontError or backError
+      end
     end
     if x.tick then x:tick("battle_sprites", id, B.SPECIES) end
   end

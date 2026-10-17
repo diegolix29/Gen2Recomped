@@ -70,6 +70,90 @@ function love.load()
     local SaveData = require("src.core.SaveData")
     local Game = require("src.core.Game")
     Game.data = Data
+    -- Decode BW boot art in memory so screenshots exercise the importer
+    -- without changing the user's installed cartridge cache.
+    if os.getenv('BW_UI_ROM') then
+      local X=assert(require('src.import.RomExtractorGen5').new(os.getenv('BW_UI_ROM'),os.getenv('VERSION') or 'black'))
+      local pictures={}
+      X.saveImage=function(_,rel,pic,extra)
+        local path='__bw_ui/'..rel..'.png'
+        local pixels=require('src.import.ImageWriter').fromRGBA8(pic.width,pic.height,pic.rgba)
+        if os.getenv('DUMP_BOOT_ART') then pixels:encode('png',rel:gsub('/','_')..'.png') end
+        pictures[path]=love.graphics.newImage(pixels)
+        local rec={path=path,width=pic.width,height=pic.height}
+        for k,v in pairs(extra or {}) do rec[k]=v end
+        return rec
+      end
+      Data.gen5_boot_art=require('src.import.Gen5BootArt').build(X)
+      Data.gen5_main_menu_art=require('src.import.Gen5MainMenuArt').build(X)
+      Data.gen5_juniper_art=require('src.import.Gen5JuniperArt').build(X);X:close()
+      local Assets=require('src.render.Assets');local original=Assets.image
+      Assets.image=function(path,...) return pictures[path] or original(path,...) end
+    end
+    -- Exercise freshly decoded HGSS UI assets without overwriting an install.
+    if os.getenv('HGSS_UI_ROM') then
+      local rom=assert(require('src.import.NdsRom').open(os.getenv('HGSS_UI_ROM')))
+      local aliases=require('src.import.Gen4HgssScriptAliases')
+      for _,block in pairs((Data.map_scripts or {}).scripts or {}) do
+        for _,ins in ipairs(block.instructions or {}) do aliases.apply(ins) end
+      end
+      local Mart=require('src.import.Gen4Mart')
+      local arm9=rom:arm9();local at=Mart.find(arm9)
+      Data.constants.martCommon=assert(Mart.parse(arm9,at))
+      local pictures={}
+      for _,entry in ipairs({{'src.import.Gen4HgssStarterArt','gen4_hgss_starter_art'},
+        {'src.import.Gen4HgssOakArt','gen4_hgss_oak_art'},
+        {'src.import.Gen4HgssTitleArt','gen4_hgss_title_art'},
+        {'src.import.Gen4HgssBootArt','gen4_hgss_boot_art'},
+        {'src.import.Gen4HgssMainMenu','gen4_main_menu_art'},
+        {'src.import.Gen4HgssPokegearArt','gen4_hgss_pokegear_art'},
+        {'src.import.Gen4HgssMenuArt','gen4_hgss_menu_art'}}) do
+        local index={}
+        local images,sequences,metadata=require(entry[1]).images(rom)
+        for key,value in pairs(metadata or {}) do index[key]=value end
+        for key,pic in pairs(images) do
+          local path='__hgss_ui/'..entry[2]..'/'..key..'.png'
+          pictures[path]=love.graphics.newImage(require('src.import.ImageWriter').fromRGBA8(pic.width,pic.height,pic.rgba))
+          index[key]={path=path,width=pic.width,height=pic.height,originX=pic.originX,originY=pic.originY}
+        end
+        if sequences then
+          index.sequences=sequences
+          if entry[2]=='gen4_hgss_oak_art' then
+            index.text={}
+            local X=assert(require('src.import.RomExtractorGen4').new(os.getenv('HGSS_UI_ROM'),os.getenv('VERSION') or 'heartgold'))
+            for i=1,48 do index.text[i]=X:string(219,i) end
+            X:close()
+          end
+        end
+        Data[entry[2]]=index
+      end
+      do
+        local X=assert(require('src.import.RomExtractorGen4').new(os.getenv('HGSS_UI_ROM'),os.getenv('VERSION') or 'heartgold'))
+        local M=require('src.import.Gen4HgssMainMenu')
+        Data.gen4_main_menu_ink=M.ink(rom)
+        Data.gen4_menus=M.words(function(bank,i) return X:string(bank,i) end)
+        X:close()
+      end
+      if os.getenv('SCREEN')=='HgssTitle' or os.getenv('SCREEN')=='HgssIntro' then
+        local X=assert(require('src.import.RomExtractorGen4').new(os.getenv('HGSS_UI_ROM'),os.getenv('VERSION') or 'heartgold'))
+        Data.gen4_hgss_title_art.prompt=X:string(719,0)
+        X.saveImage=function(_,rel,pic)
+          local path='__hgss_ui/models/'..rel..'.png'
+          pictures[path]=love.graphics.newImage(require('src.import.ImageWriter').fromRGBA8(pic.width,pic.height,pic.rgba))
+          return {path=path,width=pic.width,height=pic.height}
+        end
+        X.write=function(_,name,value)
+          if name=='gen4_models' then
+            Data.gen4_models.sets.hgssTitle=value.sets.hgssTitle
+            Data.gen4_models.sets.hgssOpening=value.sets.hgssOpening
+          end
+        end
+        X:extractModels();X:close()
+      end
+      local Assets=require('src.render.Assets');local original=Assets.image
+      Assets.image=function(path,...) if pictures[path] then return pictures[path] end return original(path,...) end
+      rom:close()
+    end
 
     -- THE SERVICES THE ENGINE BRINGS UP, IN THE ENGINE'S OWN ORDER.
     --
@@ -101,6 +185,34 @@ function love.load()
     Game.stack = StateStack
     Game.save = SaveData.newGame(Game.bootConfig and Game:bootConfig() or {})
     if Game.adoptSave then pcall(Game.adoptSave, Game, Game.save, true) end
+    -- IMPORT_SAV=<file>: a cartridge / emulator save (.sav, .dsv) through
+    -- SaveConvert, exactly as the launcher's Import save does, then spawn
+    -- where that save stands (MAP/X/Y still override)
+    local importedAt
+    if os.getenv("IMPORT_SAV") then
+      local f = assert(io.open(os.getenv("IMPORT_SAV"), "rb"))
+      local bytes = f:read("*a"); f:close()
+      local version = os.getenv("VERSION") or "platinum"
+      local imported, why = require("src.save_convert.SaveConvert").importSav(bytes, version, version)
+      assert(imported, "IMPORT_SAV: " .. tostring(why))
+      local options = Game.save.options
+      for k in pairs(Game.save) do Game.save[k] = nil end
+      for k, v in pairs(imported) do Game.save[k] = v end
+      Game.save.options = options
+      Game.save.version = version
+      local p = Game.save.player
+      importedAt = p
+      print(("IMPORT_SAV: %s id %s at %s (%s,%s) party %d money %d badges %d"):format(
+        tostring(p.name), tostring(p.id), tostring(p.map), tostring(p.x), tostring(p.y),
+        #(Game.save.party or {}), Game.save.money or 0,
+        require("src.inventory.Badges").count(Data, Game.save, version)))
+    end
+
+    -- HGSS_SAFARI=1: a Safari game already started (SafariZoneAction 0 0)
+    if os.getenv("HGSS_SAFARI") then
+      require("src.world.HgssSafariZone").action(Game.save, 0, 0)
+      print("HGSS_SAFARI: arrangement " .. require("src.world.HgssSafariZone").key(Game.save))
+    end
 
     -- INPUT IS A REAL OBJECT FROM THE FIRST FRAME.  The battle harness
     -- reported a stall as an engine fault because its press loop sat behind
@@ -112,16 +224,17 @@ function love.load()
     -- menu, nothing is pressed or held, so the picture at TICKS is that menu
     local frozen = false
     Game.input = {
-      wasPressed  = function(_, k) return not frozen and pressA and k == "a" end,
+      -- PRESS_KEY=right: the scheduled press is that button rather than A
+      wasPressed  = function(_, k) return not frozen and ((pressA and k == (os.getenv("PRESS_KEY") or "a")) or (keyNow ~= nil and k == keyNow)) end,
       isDown      = function(_, k) return not frozen and held ~= nil and k == held end,
       wasReleased = function() return false end,
     }
 
     local OW = require("src.world.OverworldController")
-    Game.stack:push(OW, os.getenv("MAP") or "T01",
-                    tonumber(os.getenv("X") or "15"),
-                    tonumber(os.getenv("Y") or "25"),
-                    os.getenv("FACING") or "down")
+    Game.stack:push(OW, os.getenv("MAP") or (importedAt and importedAt.map) or "T01",
+                    tonumber(os.getenv("X") or "") or (importedAt and importedAt.x) or 15,
+                    tonumber(os.getenv("Y") or "") or (importedAt and importedAt.y) or 25,
+                    os.getenv("FACING") or (importedAt and importedAt.facing) or "down")
 
     -- OPTIONALLY MAKE SOMEONE A FOLLOWER, which is what `setmovementtype
     -- <id>, 48` does in the cartridge.  Done through the module's own `adopt`
@@ -348,6 +461,12 @@ function love.load()
       end
       return table.concat(out, " ")
     end
+    -- FATEFUL=1: the party lead carries the fateful-encounter mark (a
+    -- Mystery Gift Pokemon), SHINY=1 makes it shiny
+    if os.getenv("FATEFUL") and Game.save.party and Game.save.party[1] then
+      Game.save.party[1].fatefulEncounter = true
+      if os.getenv("SHINY") then Game.save.party[1].shiny = true end
+    end
     print("party before: " .. partyHp())
     -- MARK SPECIES SEEN/OWNED, so the dex has something to list and an entry
     -- page to open.  A dex screen on an empty dex draws an empty dex
@@ -375,6 +494,24 @@ function love.load()
       for i = 1, rosters do Game.save.hallOfFame[i] = {} end
       print(("[hof] %d roster(s)"):format(#Game.save.hallOfFame))
     end
+    -- SECOND_SCREEN=vertical (or any SecondScreen mode): both screens in shot
+    if os.getenv("SECOND_SCREEN") and Game.save then
+      Game.save.options = Game.save.options or {}
+      Game.save.options.secondScreenMode = os.getenv("SECOND_SCREEN")
+    end
+    -- BADGES=n: the first n of the dataset's badges won (a card / board test)
+    if os.getenv("BADGES") and Game.save then
+      Game.save.badges = Game.save.badges or {}
+      for i, entry in ipairs(require("src.inventory.Badges").list(Data) or {}) do
+        if i <= (tonumber(os.getenv("BADGES")) or 0) then Game.save.badges[entry.id] = true end
+      end
+    end
+    -- LEARN_MOVE=<move id>: the lead is offered a move (MoveLearnMenu)
+    if os.getenv("LEARN_MOVE") and Game.save and Game.save.party and Game.save.party[1] then
+      local okL, errL = pcall(require("src.ui.Screens").push, Game, "MoveLearnMenu",
+        Game.save.party[1], tonumber(os.getenv("LEARN_MOVE")), function() print("[learn] done") end)
+      print(("[learn] push -> %s"):format(okL and "ok" or tostring(errL)))
+    end
     if screenName then
       local Screens = require("src.ui.Screens")
       -- OPEN IT AT A NAMED PAGE.  A screen that only ever renders its first
@@ -383,6 +520,14 @@ function love.load()
       -- highlighted one MOVES.
       local opts = {}
       if os.getenv("POCKET") then opts.pocket = os.getenv("POCKET") end
+      -- the summary opens on the lead (PARTY=...)
+      if screenName == "SummaryMenu" and Game.save and Game.save.party then opts.mon = Game.save.party[1] end if screenName == "SummaryMenu" and os.getenv("LEARN_CHOOSE") then opts.choose = { move = tonumber(os.getenv("LEARN_CHOOSE")), onChoose = function(i) print("[learn] chose " .. tostring(i)) end } end
+      -- CERT=<id>: which HGSS certificate (0 Johto, 1 National, 2 Shiny Leaf)
+      if screenName == 'HgssCertificate' then opts = tonumber(os.getenv('CERT') or '0') end
+      if screenName == 'HgssIntro' then opts=function()
+        print('[intro] completed; entering HGSS title')
+        Screens.push(Game,'HgssTitle',{})
+      end end
       -- ANY SCREEN, NOT ONLY A REGISTERED ONE.  The starter selection,
       -- the intro and the title are pushed by script rather than named
       -- in `Screens`, so a harness that can only reach the registry
@@ -399,6 +544,36 @@ function love.load()
       end
       print(("[screen] push %s -> %s"):format(screenName,
              okS and "ok" or tostring(errS)))
+      if okS and screenName=='Gen5MainMenu' and os.getenv('MENU_SUMMARY') then
+        local menu=Game.stack:top()
+        Game.save.playTime=2*3600+5*60
+        menu.save=Game.save
+        if menu.items[1].key~='continue' then
+          table.insert(menu.items,1,{key='continue',label=menu.art.text[0]})
+        end
+      end
+      if okS and screenName=='Gen5JuniperIntro' and os.getenv('JUNIPER_PHASE') then
+        local intro=Game.stack:top()
+        intro:say(tonumber(os.getenv('JUNIPER_MESSAGE') or '11'),os.getenv('JUNIPER_PHASE'))
+        intro.gender=os.getenv('GENDER') or 'boy'
+        intro.choice=tonumber(os.getenv('CHOICE') or '1')
+      end
+    end
+    -- BOOT=1: the engine's own boot chain instead of the field -- the
+    -- dataset's splash, then the title Game:makeTitleState builds (NEW GAME
+    -- runs the professor), exactly as Game:load pushes them
+    if os.getenv("BOOT") then
+      while Game.stack:top() do Game.stack:pop() end
+      Game.overworld = Game.overworld or OW
+      local Screens = require("src.ui.Screens")
+      local title = Game:makeTitleState()
+      local screens = ((Data.field or {}).boot or {}).screens or {}
+      if screens.splash then
+        Screens.push(Game, screens.splash, function() Game.stack:push(title) end)
+      else
+        Game.stack:push(title)
+      end
+      print("[boot] splash " .. tostring(screens.splash) .. ", title " .. tostring(screens.title))
     end
     held = os.getenv("WALK")
     local ticks = tonumber(os.getenv("TICKS") or "180")
@@ -477,7 +652,23 @@ function love.load()
       end
       return nil
     end
+    -- PLAYTHROUGH=<game>: the story as beats (tools/gen4_playthrough/), the
+    -- runner choosing each tick's input; START_AT=<beat> skips ahead
+    local PT
+    if os.getenv("PLAYTHROUGH") then
+      local Runner = dofile("tools/gen4_playthrough/runner.lua")
+      local beats = dofile(("tools/gen4_playthrough/%s.lua"):format(os.getenv("PLAYTHROUGH")))
+      PT = Runner.new(Game, beats, { startAt = os.getenv("START_AT"), game = os.getenv("PLAYTHROUGH"),
+        snapshotDir = os.getenv("PT_SNAPSHOTS") or "G:/Gen2Recomped/scratch_claude/playthrough",
+        resume = tonumber(os.getenv("RESUME") or "") })
+      _G.__pt = PT
+    end
     for i = 1, ticks do
+      if PT then
+        local h, k = PT:tick(i, Game, OW, planStep)
+        held, keyNow, pressA = h, k, false
+        if PT.done then print(("[pt] finished at tick %d: %s"):format(i, PT.failed and ("FAILED " .. PT.failed) or "ok")) break end
+      end
       -- the music's own tick (Game:update runs it on its real-time clock,
       -- which this loop never reaches): without it a script's `fadeoutbgm`
       -- waits for a DS fade that never ends
@@ -492,7 +683,12 @@ function love.load()
           print(("[battle menu shot] frozen at the command menu, tick %d"):format(i))
         end
       end
+      -- PRESS_KEYS="5:right,9:a": one button on each named tick
+      if not PT then
+      keyNow = nil
+      for t, k in (os.getenv("PRESS_KEYS") or ""):gmatch("(%d+):(%a+)") do if tonumber(t) == i then keyNow = k end end
       pressA = pressEvery > 0 and (i % pressEvery == 0) and i <= (tonumber(os.getenv("PRESS_UNTIL") or "") or math.huge)
+      end
       -- STRENGTH=1: Strength active (as the boulder's field-move script leaves it)
       if os.getenv("STRENGTH") and OW and i == 1 then OW.strengthActive = true end
       -- USE_ITEM=<id> USE_ITEM_AT=<tick>: use an item from the bag (as the
@@ -624,6 +820,54 @@ function love.load()
       end
       local okU, errU = pcall(Game.stack.update, Game.stack, 1 / 60)
       if not okU then print(("update raised on tick %d: %s"):format(i, tostring(errU))) break end
+      -- MENU_PICK=new: the first main menu that comes up has its cursor put
+      -- on NEW GAME (a save on disk adds CONTINUE above it)
+      if os.getenv("MENU_PICK") and not _G.__menuPicked then
+        local top = Game.stack.states[#Game.stack.states]
+        if type(top) == "table" and type(top.items) == "table" and top.index then
+          for n, item in ipairs(top.items) do
+            local key = tostring(item.key or ""):lower():gsub("[^%a]", "")
+            if key == "newgame" then top.index = n; _G.__menuPicked = true; print("[menu] cursor on NEW GAME at tick " .. i) break end
+          end
+        end
+      end
+      -- TOPIC_PICK=3: a professor's topic menu (HgssOakIntro `topics`) answered
+      -- with that row
+      if os.getenv("TOPIC_PICK") then
+        local top = Game.stack.states[#Game.stack.states]
+        if type(top) == "table" and top.phase == "topics" then top.choice = tonumber(os.getenv("TOPIC_PICK")) end
+      end
+      -- SHOTS="60,120,...": a picture at each of those ticks too (ow_<TAG>_<tick>.png),
+      -- drawn the way love.draw does into an offscreen canvas
+      if os.getenv("SHOTS") then
+        _G.__shotSet = _G.__shotSet or {}
+        if not next(_G.__shotSet) then for t in os.getenv("SHOTS"):gmatch("%d+") do _G.__shotSet[tonumber(t)] = true end end
+        if _G.__shotSet[i] then
+          local w, h = love.graphics.getDimensions()
+          local canvas = love.graphics.newCanvas(w, h)
+          love.graphics.push("all")
+          -- the renderer presents by setting the canvas back to the screen;
+          -- here "the screen" is this canvas
+          local setCanvas = love.graphics.setCanvas
+          local target = { canvas, depth = true }
+          love.graphics.setCanvas = function(c, ...)
+            if c == nil then return setCanvas(target) end
+            return setCanvas(c, ...)
+          end
+          setCanvas(target)
+          love.graphics.clear(0, 0, 0, 1)
+          local okD, errD = pcall(Game.draw, Game)
+          love.graphics.setCanvas = setCanvas
+          setCanvas()
+          love.graphics.pop()
+          if okD then
+            canvas:newImageData():encode("png", ("ow_%s_%05d.png"):format(TAG, i))
+            local top = Game.stack.states[#Game.stack.states]
+            local mt = top and getmetatable(top)
+            print(("[shot] %d top=%s"):format(i, tostring(top and (top.name or top.kind or (mt and mt.__name)) or "?")))
+          else print("[shot] draw raised: " .. tostring(errD)) end
+        end
+      end
       -- WATCH ONE ACTOR BY SPRITE NAME.  The absence of a warning is not
       -- evidence that a movement ran; seeing the facing change is.
       local watch = os.getenv("WATCH")
@@ -688,7 +932,7 @@ function love.load()
         print(("t=%d top=%s page=%s index=%s species=%s"):format(i,
           tostring(top and top.name or (top == OW and "overworld" or "screen")),
           tostring(top and top.page), tostring(top and top.index),
-          tostring(top and top.species and top:species())))
+          tostring(top and type(top.species)=='function' and top:species())))
       end
       if os.getenv("TRACE") then
         local f = Follower.current(OW)
@@ -737,16 +981,23 @@ function love.load()
     end
     _G.__owHarness = { game = Game, ow = OW, tag = TAG }
   end, debug.traceback)
-  if not ok then print("FAILED:\n" .. tostring(err)) end
+  if not ok then
+    _G.__owHarnessFailed=true
+    print("FAILED:\n" .. tostring(err))
+  end
 end
 
 -- One real frame, captured after it is presented.
 local shot = false
 function love.draw()
   local h = _G.__owHarness
-  if not h then love.event.quit() return end
+  if not h then love.event.quit(_G.__owHarnessFailed and 1 or 0) return end
   local okD, errD = pcall(h.game.draw, h.game)
-  if not okD then print("draw raised: " .. tostring(errD)) end
+  if not okD then print("draw raised: " .. tostring(errD));love.event.quit(1);return end
+  if os.getenv('DUMP_SECOND_SCREEN') and h.game.secondScreenCanvas then
+    h.game.secondScreenCanvas:newImageData():encode('png','ow_'..h.tag..'_lower.png')
+    print('[screen] lower canvas '..tostring(h.game.secondScreenDrawnThisFrame))
+  end
   if not shot then
     shot = true
     love.graphics.captureScreenshot(function(imageData)

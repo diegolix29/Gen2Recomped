@@ -461,6 +461,11 @@ end
 -- battle themes; kind = "wild"|"trainer"|"gym"|"final"
 function Music.playBattle(data, kind, trainerId)
   local b = data.audio and data.audio.battle
+  -- a DS battle passes the sequence number itself (Gen4BattleMusic)
+  if type(kind) == "number" and songDef(data, kind) then
+    Music.play(data, kind, nil, { reason = "battle", kind = kind, trainerId = trainerId })
+    return
+  end
   if b then
     Music.play(data, b[kind] or b.wild, nil,
       { reason = "battle", kind = kind, trainerId = trainerId })
@@ -474,7 +479,7 @@ end
 -- PlayDefaultMusicFadeOutCurrent.  Returns true if the theme started.
 function Music.playVictory(data, kind, trainerId)
   local b = data.audio and data.audio.battle
-  local jingle = b and b[kind .. "Win"]
+  local jingle = (type(kind) == "number" and kind) or (b and b[kind .. "Win"])
   if jingle and songDef(data, jingle) then
     Music.play(data, jingle, nil,
       { reason = "victory", kind = kind, trainerId = trainerId })

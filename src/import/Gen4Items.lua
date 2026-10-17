@@ -116,8 +116,15 @@ Gen4Items.GAP_FIRST = 113
 Gen4Items.GAP_SIZE = 22
 
 -- itemId(member) -> the id this data record belongs to.
-function Gen4Items.itemId(member)
+-- HEARTGOLD / SOULSILVER drop one more: Explorer Kit (428, Platinum's) has
+-- no data there (pokeheartgold src/item.c maps it to member 0), so from
+-- member 406 (Loot Sack, 429) on every id is the member plus 23 -- the last,
+-- Enigma Stone (536), is member 513. Read as Platinum's, every HGSS item from
+-- 429 up came out one id low and 536 not at all.
+Gen4Items.HGSS_SECOND_GAP = 406
+function Gen4Items.itemId(member, hgss)
   if member < Gen4Items.GAP_FIRST then return member end
+  if hgss and member >= Gen4Items.HGSS_SECOND_GAP then return member + Gen4Items.GAP_SIZE + 1 end
   return member + Gen4Items.GAP_SIZE
 end
 
@@ -165,12 +172,12 @@ function Gen4Items.checkPockets(items)
   return ok, total, failures
 end
 
-function Gen4Items.all(archive, nameBank, Gen4Text)
+function Gen4Items.all(archive, nameBank, Gen4Text, hgss)
   local out = {}
   for member = 0, archive.count - 1 do
     local it = Gen4Items.parse(archive:get(member))
     if it then
-      local id = Gen4Items.itemId(member)
+      local id = Gen4Items.itemId(member, hgss)
       it.id = id
       it.pocket = Gen4Items.POCKETS[it.fieldPocket]
       if nameBank and Gen4Text and id < nameBank.count then

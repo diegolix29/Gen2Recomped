@@ -39,6 +39,12 @@ end
 -- a save directory and a slot registry to ask it through
 SaveFileIO.saveSize = saveSize
 
+-- a Nintendo DS game (Platinum, HeartGold/SoulSilver, Black/White)
+local function isNds(version)
+  local ok, yes = pcall(GameVersion.isNds, version)
+  return ok and yes or false
+end
+
 -- Resolve raw save bytes from whatever the launcher hands us:
 --   * a LOVE DroppedFile (a table/userdata with :open/:read/:getSize), read the
 --     way RomImporter reads a dropped ROM;
@@ -64,6 +70,11 @@ local function readSource(source, version)
     return nil, "no save file was provided"
   end
   if #source == saveSize(version) then
+    return source
+  end
+  -- ...and an emulator's wrapped image (a .dsv is the save plus a footer) is
+  -- bytes too: no picker path runs to tens of kilobytes
+  if #source > 4096 then
     return source
   end
   local f, openErr = io.open(source, "rb")
@@ -93,6 +104,14 @@ function SaveFileIO.importToSlot(source, version)
   local want = saveSize(version)
   local bytes, readErr = readSource(source, version)
   if not bytes then return false, readErr end
+  -- DS SAVES COME IN EMULATOR WRAPPERS: DeSmuME's .dsv carries a footer,
+  -- no$gba a header, some tools pad to 1 MiB. Unwrapped here so the size
+  -- check below measures the 512 KiB cartridge image itself.
+  if isNds(version) then
+    local raw, why = require("src.save_convert.NdsSave").unwrap(bytes)
+    if not raw then return false, why end
+    bytes = raw
+  end
   if #bytes ~= want then
     local info = GameVersion.info(version)
     return false, ("A %s save file must be %d bytes (%d KB); this one is %d.")
@@ -139,6 +158,11 @@ function SaveFileIO.exportActiveSlot(version)
   local rel = ("exports/gen1recomp-%s-%s.sav"):format(version, slotId)
   local ok, writeErr = fs.write(rel, bytes)
   if not ok then return false, "could not write the export: " .. tostring(writeErr) end
+  -- ...and DeSmuME's own form beside it: melonDS, DraStic and no$gba read
+  -- the raw .sav, DeSmuME reads .dsv (it can also import the raw file)
+  if isNds(version) then
+    fs.write(rel:gsub("%.sav$", ".dsv"), require("src.save_convert.NdsSave").wrapDesmume(bytes))
+  end
   local base = fs.getSaveDirectory and fs.getSaveDirectory() or ""
   if base ~= "" then return true, base .. "/" .. rel end
   return true, rel

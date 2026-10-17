@@ -87,6 +87,14 @@ for name in extractor:gmatch('self:write%("([A-Za-z0-9_]+)"') do
     writeOrder[#writeOrder + 1] = name
   end
 end
+-- HGSS's build(x) importers are dispatched through {module, output} rows;
+-- their write is self:write(entry[2], built), not a string literal.
+for module,name in extractor:gmatch('{%s*"(src%.import%.[^"]+)"%s*,%s*"(gen4_[%w_]+)"%s*}') do
+  local source=slurp(root..'../'..module:gsub('%.','/')..'.lua')
+  if source and source:match('function%s+[%w_]+%.build%s*%(') and not written[name] then
+    written[name]=true;writeOrder[#writeOrder+1]=name
+  end
+end
 table.sort(writeOrder)
 -- A CANARY. A scan that matched nothing would find no unloaded tables either,
 -- and report a clean run -- the same shape of empty measurement that made a
@@ -402,8 +410,8 @@ ok(framesRun > 1000, "...over this many frames of simulation", framesRun,
 -- mentions a module is exactly what must not satisfy this.
 do
   local readers, missing = {}, {}
-  local p = io.popen('grep -rho "data\\.gen4_[a-z_]*" "'
-                     .. (root ~= "" and root or "./") .. '../src" 2>/dev/null')
+  local p = io.popen('rg -o --no-filename "data\\.gen4_[a-z_]+" "'
+                     .. (root ~= "" and root or "./") .. '../src" -g "*.lua"')
   for line in (p and p:lines() or function() return nil end) do
     local name = line:match("data%.(gen4_[a-z_]+)")
     if name then readers[name] = (readers[name] or 0) + 1 end

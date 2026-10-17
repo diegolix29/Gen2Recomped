@@ -1869,6 +1869,7 @@ function Gen4Model.new(record)
   local self = setmetatable({}, Gen4Model)
   self.name = record.name
   self.posScale = record.posScale or 1
+  self.scalingRule = record.scalingRule
   self.bounds = record.bounds
   self.shapes = {}
   -- The model's own node transforms and the bytecode that arranges them.  A
@@ -1876,6 +1877,7 @@ function Gen4Model.new(record)
   -- and costs nothing; the briefcase's do the work.
   self.nodes = record.nodes or {}
   self.ops = record.ops or {}
+  self.inverseBind = record.inverseBind
 
   for _, shape in ipairs(record.shapes) do
     local image
@@ -2427,7 +2429,7 @@ function Gen4Model:restPose()
     self.rest = Gen4Nsbmd.pose(self.ops, function(index)
       local node = nodes[index + 1]
       return node and node.matrix
-    end)
+    end,self.inverseBind,self.scalingRule)
   end
   return self.rest
 end
@@ -2439,12 +2441,14 @@ end
 -- to the model's own.  That fallback is not a nicety -- an animation with
 -- fewer joints than the model has nodes would otherwise collapse the rest to
 -- the origin, which reads as geometry gone missing rather than as a mismatch.
-function Gen4Model:posed(matrixOf)
+-- Optional billboardOf(worldMatrix, yOnly) supplies the active camera's
+-- orientation; callers without a camera keep the ordinary node transform.
+function Gen4Model:posed(matrixOf, billboardOf)
   if not matrixOf then return self:restPose() end
   local nodes = self.nodes
   return Gen4Nsbmd.pose(self.ops, function(index)
     return matrixOf(index) or (nodes[index + 1] and nodes[index + 1].matrix)
-  end)
+  end,self.inverseBind,self.scalingRule,billboardOf)
 end
 
 -- draw(viewProjection, pose) -- into whatever canvas is set.
@@ -2618,12 +2622,13 @@ function Gen4Model:draw(viewProjection, pose, materials, yCut, spread, depthComp
     if tint then g.setColor(tint[1], tint[2], tint[3], shapeAlpha(shape) * (tint[4] or 1))
     else g.setColor(1, 1, 1, shapeAlpha(shape)) end
     local place = pose[shape.index]
-    if shape.matrixSlots and pose.stack then
+    local palette=(pose.stacks and pose.stacks[shape.index]) or pose.stack
+    if shape.matrixSlots and palette then
       -- A display list can restore a different joint for every vertex.
       -- Giratina's tentacles share shapes but use separate matrix slots.
       for i,v in ipairs(shape.bindVertices) do
         local slot=shape.matrixSlots:byte(i)
-        local m=pose.stack[slot] or place
+        local m=palette[slot] or place
         local x,y,z=v[1],v[2],v[3]
         if m then
           x,y,z=m[1]*x+m[2]*y+m[3]*z+m[4],
@@ -2637,6 +2642,11 @@ function Gen4Model:draw(viewProjection, pose, materials, yCut, spread, depthComp
     shader:send("mvp", place and multiply(viewProjection, place) or viewProjection)
 
     local state = materials and shape.material and materials[shape.material]
+    -- a material-colour animation's alpha (Gen4TexAnim, BMA0)
+    if state and state.alpha then
+      local r, gg, b, a0 = g.getColor()
+      g.setColor(r, gg, b, a0 * state.alpha)
+    end
     local uv = state and state.uv
     if uv then
       shader:send("uvRotScale", { uv[1], uv[2], uv[3], uv[4] })

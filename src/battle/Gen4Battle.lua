@@ -84,6 +84,17 @@ end
 -- stay attached to the right. At 256px this returns the cartridge coordinates
 -- byte-for-byte.
 function Gen4Battle.battlerPos(battle, slot)
+  -- BLACK AND WHITE stand each Pokemon at its platform's centre IN THE 3D
+  -- FIELD (src/render/Gen5BattleSceneView.lua): the projected point is where
+  -- the feet go, so the picture's centre is half its height above it and
+  -- spriteYOffset lowers it by however far its feet sit above its last row
+  if slot == 0 or slot == 1 then
+    local okV, V = pcall(require, "src.render.Gen5BattleSceneView")
+    if okV and V.available(battle) then
+      local sx, sy = V.standPoint(slot == 0 and "player" or "enemy")
+      if sx then return { x = math.floor(sx + 0.5), y = math.floor(sy + 0.5) - 48 } end
+    end
+  end
   local p = Gen4Battle.BATTLER_POS[slot]
   if not p then return nil end
   local shift = (slot == 1 or slot == 3 or slot == 5) and Gen4Battle.extra(battle) or 0
@@ -548,6 +559,17 @@ end
 -- offset pushes the picture DOWN, which is what a mon with more empty space
 -- beneath it needs.
 function Gen4Battle.spriteYOffset(battle, battler)
+  -- BLACK AND WHITE'S 96-pixel pictures stand their feet lower in the frame
+  -- than Platinum's 80; the foe is lowered onto its platform by the
+  -- difference (measured on the 3D field, src/render/Gen5BattleSceneView.lua)
+  do local okG5, G5 = pcall(require, "src.battle.Gen5BattleHud")
+    if okG5 and G5.active(battle) then
+      local mon = battler and battler.mon
+      local data = battle.data or (battle.game and battle.game.data) or {}
+      local rec = mon and ((data.gen4_species_sprites or {}).species or {})[tonumber(mon.species)]
+      local feet = rec and rec.feet and rec.feet[battler == battle.player and "back" or "front"]
+      return feet and (96 - feet) or 0
+    end end
   local mon = battler and battler.mon
   local id = mon and tonumber(mon.species)
   if not id then return 0 end
@@ -567,6 +589,8 @@ end
 -- port does not do yet.
 function Gen4Battle.drawField(battle)
   local g = love.graphics
+  -- BLACK AND WHITE'S FIELD IS 3D (src/render/Gen5BattleSceneView.lua)
+  do local okV, V = pcall(require, "src.render.Gen5BattleSceneView") if okV and V.available(battle) and V.draw(battle) then return end end
   g.setColor(1, 1, 1, 1)
   local ground = Gen4Battle.backdrop(battle)
   if ground then
@@ -834,7 +858,19 @@ function Gen4Battle.drawBattlers(battle)
               cx - pic:getWidth() * scale / 2,
               cy - pic:getHeight() * scale / 2, scale)
           else
-            battle:drawBattlerPic(battler, x, y, 1)
+            -- BLACK AND WHITE: a billboard in the 3D field, its feet on the
+            -- platform's projected centre and sized by its depth
+            local okV, V = pcall(require, "src.render.Gen5BattleSceneView")
+            local sx, sy
+            if okV and V.available(battle) then sx, sy = V.standPoint(row.side) end
+            if sx and (row.slot == 0 or row.slot == 1) then
+              local k = V.depthScale(row.side)
+              local feet = 96 - Gen4Battle.spriteYOffset(battle, battler)
+              battle:drawBattlerPic(battler, math.floor(sx - pic:getWidth() * k / 2 + 0.5),
+                                    math.floor(sy - feet * k + 0.5), k)
+            else
+              battle:drawBattlerPic(battler, x, y, 1)
+            end
           end
         end
       end
@@ -2048,6 +2084,27 @@ end
 -- reason that method's own comment gives: a mod wrapping that name has to see
 -- a Sinnoh battle too.
 function Gen4Battle.drawTextArea(battle)
+  -- BLACK AND WHITE'S BOX: the dark message frame (the font record's
+  -- battleFrame) and white letters with a dark shadow, for everything this
+  -- draws; the field keeps its own light frame
+  if not battle._gen5Text then
+    local okG5, G5 = pcall(require, "src.battle.Gen5BattleHud")
+    if okG5 and G5.active(battle) then
+      local Font = require("src.render.Font")
+      local frame = Font.battleFrame and Font.battleFrame()
+      battle._gen5Text = true
+      Font.frameOverride = frame
+      -- a STYLE, so only the letters are recoloured (a shader round the whole
+      -- area also inverted the frame)
+      Font.pushStyle({ text = { 0.97, 0.97, 0.97, 1 }, shadow = { 0.32, 0.32, 0.38, 1 } })
+      local ok, err = pcall(Gen4Battle.drawTextArea, battle)
+      Font.popStyle()
+      Font.frameOverride = nil
+      battle._gen5Text = nil
+      if not ok then error(err) end
+      return
+    end
+  end
   local g = love.graphics
   local Font = require("src.render.Font")
   local Theme = require("src.ui.Theme")

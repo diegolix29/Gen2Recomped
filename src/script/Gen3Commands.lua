@@ -3876,7 +3876,14 @@ Gen3Commands.SPECIALS[41] = function(ctx)
   local party = {}
   for i, mon in ipairs(stash) do party[i] = mon end
   save.party = party
-  save.gen3PartyStash = nil
+  -- THE STASH STAYS, as the cartridge's copy does: LoadPlayerParty only
+  -- copies saveblock + 0x238 back, it never clears it. The Battle Dome
+  -- leans on that -- every round runs LoadPlayerParty and then
+  -- ReduceDomePlayerPartyToSelectedMons, restoring the whole team before
+  -- cutting it to that round's two. Clearing it here made round 2's restore
+  -- a no-op, so round 2 cut from round 1's two and the third member -- and
+  -- everyone not entered -- was gone for good (reported from play). The next
+  -- SavePlayerParty overwrites it, exactly as on the cartridge.
 end
 
 -- ---------------------------------------------------------------------------

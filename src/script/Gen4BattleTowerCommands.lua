@@ -90,9 +90,11 @@ function Commands.g4_bt_battle(ctx)
     end
   end
   local real = ctx.save.party
+  require("src.pokemon.PartyAside").hold(ctx.save, real)  -- in the save too (PartyAside)
   ctx.save.party = team
   local ok, battle = pcall(BattleState.newTrainer, game, key, 1)
   ctx.save.party = real
+  require("src.pokemon.PartyAside").release(ctx.save)
   if not ok or not battle then
     Logger.warn("gen4 battle tower: could not build the battle: %s", tostring(battle))
     ctx.lastBattleResult = "lose"
@@ -110,9 +112,11 @@ function Commands.g4_bt_battle(ctx)
   local runner = ctx.runner
   -- the battle reads the party it was given; for its length the save's party
   -- IS the copies, so experience, PP and fainting land on them alone
+  require("src.pokemon.PartyAside").hold(ctx.save, real)  -- in the save too (PartyAside)
   ctx.save.party = team
   battle.onFinish = function(result)
     ctx.save.party = real
+    require("src.pokemon.PartyAside").release(ctx.save)
     ctx.lastBattleResult = result
     ctx.lastBattleCanLose = true
     runner:resume()

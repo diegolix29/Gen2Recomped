@@ -95,6 +95,11 @@ function C.build(x)
   end
 
   local arm9 = x.rom:arm9()
+  -- scrcmd_mart.c uses the same 19-row badge-tier stock as Platinum.
+  local Mart = require("src.import.Gen4Mart")
+  local martAt, martHits = Mart.find(arm9)
+  assert(martHits == 1, "HGSS common mart table is not unique")
+  local martCommon = assert(Mart.parse(arm9, martAt))
   local tms, tmAt = tmhm(arm9)
   report.tmhmAt = tmAt
 
@@ -174,6 +179,7 @@ function C.build(x)
     dexHeights, dexWeights = table32(0), table32(1)
   end
   local constants = {
+    martCommon = martCommon,
     dexHeights = dexHeights, dexWeights = dexWeights,
     gen4Trades = trades,
     gen = 4, generation = 4, family = "hgss",

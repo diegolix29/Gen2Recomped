@@ -160,6 +160,18 @@ public:
 	virtual bool syncHealthSteps() const;
 
 	/**
+	 * Pokéwalker notifications: one JSON command (see android.h
+	 * walkerNotify). Android-only; false elsewhere.
+	 */
+	virtual bool walkerNotify(const char *json) const;
+
+	/**
+	 * Cloud saves: one HTTP request (see android.h httpRequest). Android-only;
+	 * empty elsewhere.
+	 */
+	virtual std::string httpRequest(const char *json) const;
+
+	/**
 	 * Relaunches the whole app with a fresh process (Android only; false
 	 * elsewhere). The in-process love.event.quit("restart") double-inits
 	 * physfs on Android and crashes, so src/core/HostShell.lua calls this

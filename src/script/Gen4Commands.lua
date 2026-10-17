@@ -132,6 +132,36 @@ end
 
 Gen4Commands.compare, Gen4Commands.holds = compare, holds
 
+-- BLACK / WHITE'S STACK EXPRESSIONS, run as the cartridge runs them (overlay
+-- 10's 0x08 / 0x09 / 0x10 pushes and 0x11's operators: 0 < 1 == 2 > 3 <=
+-- 4 >= 5 != 6 OR 7 AND). The program is (kind, value) pairs, postfix. The
+-- answer lands in the compare register as "equal" for true and "less" for
+-- false, so `g4_jump_if 0` jumps when it fails, like 0x1F 0xFF.
+local BW_OPS = {
+  [0] = function(a, b) return a < b end, function(a, b) return a == b end,
+  function(a, b) return a > b end, function(a, b) return a <= b end,
+  function(a, b) return a >= b end, function(a, b) return a ~= b end,
+  function(a, b) return a == 1 or b == 1 end, function(a, b) return a == 1 and b == 1 end,
+}
+function Commands.g4_bw_eval(ctx, ...)
+  local program, stack = { ... }, {}
+  for i = 1, #program - 1, 2 do
+    local kind, value = program[i], program[i + 1]
+    if kind == 1 then stack[#stack + 1] = value
+    elseif kind == 2 then stack[#stack + 1] = tonumber(valueOf(ctx, value)) or 0
+    elseif kind == 3 then
+      -- through the shared flag check, which knows the special flags
+      Commands.check_flag(ctx, ("FLAG_G4_%04X"):format(value))
+      stack[#stack + 1] = ctx.lastCheck and 1 or 0
+    elseif kind == 4 then
+      local b, a = table.remove(stack) or 0, table.remove(stack) or 0
+      local f = BW_OPS[value]
+      stack[#stack + 1] = (f and f(a, b)) and 1 or 0
+    end
+  end
+  setResult(ctx, (stack[#stack] == 1) and 1 or 0)
+end
+
 -- ---------------------------------------------------------------------------
 -- control flow
 -- ---------------------------------------------------------------------------
@@ -269,7 +299,13 @@ end
 -- the one that records the state the later rows read rather than an empty
 -- function that pretends there is nothing to say.
 function Commands.g4_lock_all(ctx) ctx.g4Locked = true end
-function Commands.g4_release_all(ctx) ctx.g4Locked = false end
+function Commands.g4_release_all(ctx)
+  ctx.g4Locked = false
+  -- ReleaseAll unpauses every map object, including the walking partner.
+  -- Elm's starter scene pauses it before switching back to normal following.
+  local st = ctx.save and ctx.save.hgssFollowMon
+  if st then st.paused = nil end
+end
 function Commands.g4_lock(ctx, _) ctx.g4Locked = true end
 function Commands.g4_release(ctx, _) ctx.g4Locked = false end
 
@@ -305,7 +341,18 @@ end
 -- already blocks on the same acknowledgement, so the wait is satisfied by the
 -- time this row is reached; skipping it silently was harmless and saying so
 -- once is better than warning on every line in Sinnoh.
-function Commands.g4_wait_button() end
+function Commands.g4_wait_button(ctx)
+  -- ...EXCEPT UNDER A PICTURE (DrawPokemonPreview's framed Pokemon), where
+  -- no message waited first: there the press is the whole point
+  local ow = ctx and ctx.overworld
+  local runner = ctx and ctx.runner
+  if not (ow and ow.pokepicBox and runner) then return end
+  local input = ctx.game and ctx.game.input
+  runner.waitingCheck = function()
+    return input and input.wasPressed and (input:wasPressed("a") or input:wasPressed("b")) and true or false
+  end
+  runner:yield()
+end
 
 -- ---------------------------------------------------------------------------
 -- string buffers
@@ -1022,6 +1069,41 @@ function Commands.g4_choose_message_word(ctx, _unused, resultVar, destVar)
 end
 Commands.meta.g4_choose_message_word = { foreground = true, blocking = true }
 
+-- ...and the two-word form: two picks in a row; backing out of either answers
+-- 0, the way the interview's "That's too bad" branch expects
+function Commands.g4_choose_two_message_words(ctx, resultVar, dest1, dest2)
+  if dest1 then setVar(ctx.save, dest1, 0xFFFF) end
+  if dest2 then setVar(ctx.save, dest2, 0xFFFF) end
+  if resultVar then setVar(ctx.save, resultVar, 0) end
+  if not (ctx.game and ctx.game.stack) then return end
+  local runner = ctx.runner
+  local EasyChat = require("src.pokemon.Gen4EasyChat")
+  EasyChat.pick(ctx.game, function(first)
+    if not first then if runner then runner:resume() end return end
+    EasyChat.pick(ctx.game, function(second)
+      if second then
+        if dest1 then setVar(ctx.save, dest1, first) end
+        if dest2 then setVar(ctx.save, dest2, second) end
+        if resultVar then setVar(ctx.save, resultVar, 1) end
+      end
+      if runner then runner:resume() end
+    end)
+  end)
+  if runner then runner:yield() end
+end
+Commands.meta.g4_choose_two_message_words = { foreground = true, blocking = true }
+
+-- `getpartymonconteststat <slot> <type> <dest>`: cool, beauty, cute, smart,
+-- tough, then sheen -- MON_DATA_COOL onward
+local CONTEST_STATS = { [0] = "cool", "beauty", "cute", "smart", "tough", "sheen" }
+function Commands.g4_party_contest_stat(ctx, slot, contestType, destVar)
+  local party = (ctx.save and ctx.save.party) or {}
+  local mon = party[(math.floor(valueOf(ctx, slot) or 0)) + 1]
+  local key = CONTEST_STATS[math.floor(valueOf(ctx, contestType) or 0)]
+  local value = mon and key and mon.contest and tonumber(mon.contest[key]) or 0
+  setVar(ctx.save, destVar, value)
+end
+
 -- `messagevar` takes its entry out of a var rather than out of the row.
 -- GetStdMsgNaix (HeartGold / SoulSilver): which shared bank a script prints
 -- from next with MsgBoxExtern -- scrcmd_message.c's ov01_022067C8, the
@@ -1109,7 +1191,22 @@ function Commands.g4_bw_game_clear(ctx, kind)
     Commands.warp(ctx, (boot and boot.startMap) or home.map, (boot and boot.startX) or home.x,
                   (boot and boot.startY) or home.y, "down")
   end
+  -- this port's addition: a Mystery Gift picked from a list for each clear
+  -- (src/pokemon/Gen5MysteryGift.lua); the script waits for the picker
+  local MG = require("src.pokemon.Gen5MysteryGift")
+  if ctx.save then MG.recordClear(ctx.save) end
+  local game, runner = ctx.game, ctx.runner
+  if game and game.stack and ctx.save and MG.owed(ctx.save) >= 1 and #MG.available(ctx.save) > 0 then
+    local resumed = false
+    MG.offer(game, function()
+      resumed = true
+      if runner and runner.resume then runner:resume() end
+    end)
+    if runner and not resumed then runner:yield() end
+  end
 end
+Commands.meta = Commands.meta or {}
+Commands.meta.g4_bw_game_clear = { foreground = true, blocking = true }
 
 -- BLACK / WHITE 0x17B <var>: 1 unless the last battle was lost
 function Commands.g4_bw_battle_ok(ctx, var)
@@ -4084,6 +4181,32 @@ function Commands.g4_give_pokemon(ctx, species, level, heldItem, destVar)
   if destVar then setVar(ctx.save, destVar, ctx.lastCheck and 1 or 0) end
 end
 
+-- `GiveSpikyEarPichu` (pokeheartgold scrcmd_pokemon_misc.c 1099), the Ilex
+-- Forest shrine's reward for walking a shiny event Pichu there: a level 30
+-- Pichu in form 1 (Spiky-eared), Naughty and female, knowing Helping Hand,
+-- Volt Tackle, Swagger and Pain Split, holding a Zap Plate -- into the party
+-- only, and nothing when it is full.
+Commands.SPIKY_EAR_PICHU = { species = 172, level = 30, form = 1, nature = "NAUGHTY",
+  moves = { 270, 344, 207, 220 }, item = 300 }
+function Commands.g4_give_spiky_ear_pichu(ctx)
+  local save, data = ctx.save, ctx.game and ctx.game.data
+  if not (save and data) or #(save.party or {}) >= 6 then return end
+  local P = Commands.SPIKY_EAR_PICHU
+  local key = itemKey(data, P.item)
+  Commands.give_pokemon(ctx, P.species, P.level, true,
+    (data.items and data.items[key]) and { heldItem = key } or nil)
+  local mon = save.party[#save.party]
+  if not (mon and tonumber(mon.species) == P.species) then return end
+  mon.form, mon.formIndex = P.form, P.form
+  mon.nature, mon.gender = P.nature, "female"
+  mon.moves = {}
+  local moves = data.moves or {}
+  for i, id in ipairs(P.moves) do
+    local def = moves[id]
+    mon.moves[i] = { id = id, pp = def and def.pp or 0, ppUps = 0 }
+  end
+end
+
 -- ---------------------------------------------------------------------------
 -- small state the opening reads
 -- ---------------------------------------------------------------------------
@@ -6318,8 +6441,10 @@ local function gen4Climb(ctx, isClimb)
   local ow = ctx.overworld
   local p = ow and ow.player
   local map = ow and ow.map
-  if not (p and map and map.cellBehaviour and map.def and map.def.generation == 4
-          and map.def.cameraFamily ~= "hgss") then return false end
+  -- HEARTGOLD / SOULSILVER TOO: their TILE_BEHAVIOR_WATERFALL (0x13) and
+  -- ROCK_CLIMB_NORTH_SOUTH / _EAST_WEST (0x4B / 0x4C) are Platinum's numbers
+  -- (pokeheartgold constants/metatile_behavior.h)
+  if not (p and map and map.cellBehaviour and map.def and map.def.generation == 4) then return false end
   local Collision = require("src.world.Collision")
   local dir = p.facing
   local x, y = p.cellX, p.cellY
@@ -6548,6 +6673,36 @@ end
 
 function Commands.g4_fateful_slot(ctx,destVar,species)
   setVar(ctx.save,destVar,fatefulSlot(ctx,math.floor(valueOf(ctx,species) or 0)))
+end
+
+-- FollowerPokeIsEventTrigger <event, slot, dest> (pokeheartgold scrcmd_c.c
+-- 4379 + trainer_memo.c MonMetadataMatchesEvent): 1 when the party Pokemon at
+-- `slot` is no egg, carries the fateful-encounter mark, and is the event's
+-- species -- 0 Spiky-eared Pichu (Pichu / Pikachu / Raichu, shiny), 1 / 2
+-- Arceus, 3 Celebi
+local EVENT_SPECIES = { [0] = { [172] = true, [25] = true, [26] = true },
+  [1] = { [493] = true }, [2] = { [493] = true }, [3] = { [251] = true } }
+function Commands.g4_follower_event_trigger(ctx, event, slot, destVar)
+  local e = math.floor(tonumber(event) or -1)
+  local i = math.floor(valueOf(ctx, slot) or 0) + 1
+  local mon = ((ctx.save and ctx.save.party) or {})[i]
+  local yes = 0
+  local Party = require('src.pokemon.Party')
+  if mon and not Party.isEgg(mon) and EVENT_SPECIES[e] and EVENT_SPECIES[e][speciesNumber(mon)] then
+    local marked = mon.fatefulEncounter
+    if marked == nil then marked = mon.fateful end
+    if marked == true or marked == 1 then
+      if e ~= 0 or require('src.pokemon.Pokemon').isShiny(mon) then yes = 1 end
+    end
+  end
+  setVar(ctx.save, destVar, yes)
+end
+
+-- BW 0x220: the first party Pokemon of `species` carrying the fateful mark
+function Commands.g4_bw_event_mon(ctx, species, slotVar, destVar)
+  local slot = fatefulSlot(ctx, math.floor(valueOf(ctx, species) or 0))
+  if slotVar then setVar(ctx.save, slotVar, slot == 255 and 0 or slot) end
+  setVar(ctx.save, destVar, slot == 255 and 0 or 1)
 end
 
 function Commands.g4_fateful_regigigas(ctx,destVar)
@@ -7383,6 +7538,69 @@ function Commands.g4_tutor_menu(ctx, slot, location, destVar)
 end
 Commands.meta.g4_tutor_menu = { foreground = true, blocking = true }
 
+-- HGSS's Frontier tutors (scrcmd_move_tutor.c ScrCmd_652 /
+-- MoveTutorChooseMove / TutorMoveGetPrice)
+Commands.HGSS_TUTOR_NEXT, Commands.HGSS_TUTOR_CANCEL = 0xFFFD, 0xFFFE
+function Commands.g4_hgss_tutor_pages(ctx, slot, tutor, destVar)
+  local T = require("src.import.Gen4MoveTutor")
+  local mon = partyMon(ctx, slot)
+  local n = mon and #T.learnable(tutorRec(ctx), mon, math.floor(valueOf(ctx, tutor) or 0)) or 0
+  setVar(ctx.save, destVar, n == 0 and 0 or (n <= 7 and 1 or math.floor(n / 6) + 1))
+end
+
+function Commands.g4_hgss_tutor_price(ctx, move, destVar)
+  local T = require("src.import.Gen4MoveTutor")
+  local row = T.row(tutorRec(ctx), math.floor(valueOf(ctx, move) or 0))
+  setVar(ctx.save, destVar, row and row.cost or 0)
+end
+
+function Commands.g4_hgss_tutor_menu(ctx, slot, tutor, page, destVar)
+  local T = require("src.import.Gen4MoveTutor")
+  local data = ctx.game and ctx.game.data or {}
+  local rec = tutorRec(ctx)
+  local mon = partyMon(ctx, slot)
+  local moves = T.learnable(rec, mon, math.floor(valueOf(ctx, tutor) or 0))
+  local p = math.floor(valueOf(ctx, page) or 0)
+  local list, next = moves, false
+  if #moves > 7 then
+    list, next = {}, true
+    for i = p * 6 + 1, math.min(#moves, p * 6 + 6) do list[#list + 1] = moves[i] end
+  end
+  -- the cartridge's own words (msg_0748): #0 "<move>  <n> BP", #2 NEXT, #3 QUIT
+  local text = data.text or {}
+  local function word(n, fallback)
+    local t = text[("TEXT_B0748_%05d"):format(n)]
+    return type(t) == "string" and t ~= "" and t or fallback
+  end
+  local items = {}
+  for _, id in ipairs(list) do
+    local def = data.moves and data.moves[id]
+    local row = T.row(rec, id)
+    items[#items + 1] = { value = id,
+      label = ("%s  %2d BP"):format((def and def.name) or ("MOVE " .. id), row and row.cost or 0) }
+  end
+  if next then items[#items + 1] = { value = Commands.HGSS_TUTOR_NEXT, label = word(2, "NEXT") } end
+  items[#items + 1] = { value = Commands.HGSS_TUTOR_CANCEL, label = word(3, "QUIT") }
+  local runner = ctx.runner
+  setVar(ctx.save, destVar, Commands.HGSS_TUTOR_CANCEL)
+  local rows = {}
+  for i, item in ipairs(items) do
+    rows[i] = { label = item.label, onSelect = function()
+      setVar(ctx.save, destVar, item.value)
+      if runner then runner:resume() end
+    end }
+  end
+  ctx.game.stack:push(require("src.ui.Menu").new(ctx.game, rows, {
+    cancelable = true,
+    onCancel = function()
+      setVar(ctx.save, destVar, Commands.HGSS_TUTOR_CANCEL)
+      if runner then runner:resume() end
+    end,
+  }))
+  if runner then runner:yield() end
+end
+Commands.meta.g4_hgss_tutor_menu = { foreground = true, blocking = true }
+
 -- ScrCmd_CheckCanAffordMove: every non-zero cost must be in the bag.
 function Commands.g4_tutor_can_afford(ctx, move, destVar)
   local T = require("src.import.Gen4MoveTutor")
@@ -7718,6 +7936,20 @@ function Commands.g4_buffer_nickname_species(ctx, slot, destVar)
   setVar(ctx.save, destVar, mon and require("src.pokemon.Gen4DayCare").speciesOf(mon) or 0)
 end
 
+-- HGSS GetTailDaycareMonSpeciesAndNick <var>: the second Pokemon when there
+-- are two, else the first -- its species to `var`, its name to buffer 0
+function Commands.g4_daycare_tail(ctx, destVar)
+  local DC = require("src.pokemon.Gen4DayCare")
+  local a, b = DC.slot(ctx.save, 0), DC.slot(ctx.save, 1)
+  local s = (b and b.mon) and b or a
+  if s and s.mon then
+    setBuffer(ctx, 0, dcMonName(ctx, s.mon))
+    setVar(ctx.save, destVar, DC.speciesOf(s.mon) or 0)
+  else
+    setVar(ctx.save, destVar, 0)
+  end
+end
+
 function Commands.g4_daycare_store(ctx, slot)
   require("src.pokemon.Gen4DayCare").deposit(ctx.game.data, ctx.save, math.floor(valueOf(ctx, slot)))
 end
@@ -7987,6 +8219,418 @@ function Commands.g4_follow(ctx, op, a)
   else
     F.command(game, ow, op, a and valueOf(ctx, a))
   end
+end
+
+-- HEARTGOLD / SOULSILVER `AlphPuzzle <n>` (ScrCmd_AlphPuzzle): the sliding
+-- puzzle, which sets FLAG_SYS_ALPH_PUZZLE_* itself when solved
+function Commands.g4_alph_puzzle(ctx, which)
+  local game = ctx.game
+  local AP = require("src.ui.HgssAlphPuzzle")
+  if not (game and game.stack and AP.available(game)) then
+    Logger.warn("hgss alph puzzle: the art is not in this cache (re-import HeartGold / "
+                .. "SoulSilver: hgss_screens) -- the slab does nothing")
+    return
+  end
+  game.stack:push(AP.new(game, math.floor(valueOf(ctx, which) or 0), function()
+    if ctx.runner then ctx.runner:resume() end
+  end))
+  if ctx.runner then ctx.runner:yield() end
+end
+Commands.meta.g4_alph_puzzle = { foreground = true, blocking = true }
+
+-- ---------------------------------------------------------------------------
+-- HEARTGOLD / SOULSILVER'S CERTIFICATES AND THE POKEATHLON'S NUMBERS
+-- ---------------------------------------------------------------------------
+
+-- ShowCertificate <id> (certificates_app.c): blocks until the sheet closes
+function Commands.g4_hgss_certificate(ctx, which)
+  local game = ctx.game
+  local Cert = require("src.ui.HgssCertificate")
+  local id = math.floor(valueOf(ctx, which) or 0)
+  if not (game and game.stack and Cert.available(game, id)) then
+    Logger.warn("hgss certificate: the art is not in this cache (re-import HeartGold / "
+                .. "SoulSilver: hgss_screens) -- nothing is shown")
+    return
+  end
+  game.stack:push(Cert.new(game, id, function()
+    if ctx.runner then ctx.runner:resume() end
+  end))
+  if ctx.runner then ctx.runner:yield() end
+end
+Commands.meta.g4_hgss_certificate = { foreground = true, blocking = true }
+
+-- PokeathlonSave_Add/SubAthletePoints clamp to 0..99999; CheckAthletePoints
+-- answers TRUE when the points reach `amount`
+Commands.ATHLETE_POINTS_MAX = 99999
+function Commands.g4_athlete_points(ctx, op, amount, destVar)
+  local save = ctx.save
+  if not save then return end
+  local have = tonumber(save.hgssAthletePoints) or 0
+  local n = math.floor(valueOf(ctx, amount) or 0)
+  if op == "give" then
+    save.hgssAthletePoints = math.min(Commands.ATHLETE_POINTS_MAX, have + n)
+  elseif op == "take" then
+    save.hgssAthletePoints = math.max(0, have - n)
+  else
+    setVar(save, destVar, have >= n and 1 or 0)
+  end
+end
+
+-- ScrCmd_724 / 725 (field/scrcmd_pokemon_misc.c): the Pokeathlon save's
+-- records -- 0..9 the per-event tallies (unk44[]), 10..17 the totals
+-- (unk8, unk70, unk4, unk14, unk1C, unk24, unk2C, unk30); a read is capped at
+-- 0xFFFF and an unknown index reads 0. 725 adds to / takes from record 11
+-- (unk70), clamped to 0..0xFFFF.
+function Commands.g4_athlon_record(ctx, op, a, b)
+  local save = ctx.save
+  if not save then return end
+  save.hgssPokeathlonRecords = save.hgssPokeathlonRecords or {}
+  local rec = save.hgssPokeathlonRecords
+  if op == "get" then
+    local which = math.floor(valueOf(ctx, a) or 0) % 256
+    local v = (which <= 17) and (tonumber(rec[which]) or 0) or 0
+    setVar(save, b, math.min(0xFFFF, v))
+  else
+    local n = math.floor(valueOf(ctx, b) or 0)
+    local cur = tonumber(rec[11]) or 0
+    if math.floor(tonumber(a) or 0) == 0 then cur = math.min(0xFFFF, cur + n)
+    else cur = math.max(0, cur - n) end
+    rec[11] = cur
+  end
+end
+
+-- ScrCmd_405: TRUE when at least `n` of Accessory `id` are in the case
+function Commands.g4_has_accessories(ctx, id, n, destVar)
+  local have = Gen4Commands.accessoryCount(ctx.save, math.floor(valueOf(ctx, id) or 0))
+  setVar(ctx.save, destVar, math.floor(valueOf(ctx, n) or 0) <= have and 1 or 0)
+end
+
+-- ScrCmd_553: TRUE when LCRandom() % 101 <= limit (limit capped at 100)
+function Commands.g4_percent_roll(ctx, limit, destVar)
+  local lim = math.min(100, math.floor(valueOf(ctx, limit) or 0))
+  local roll = love and love.math and love.math.random(0, 100) or math.random(0, 100)
+  setVar(ctx.save, destVar, roll <= lim and 1 or 0)
+end
+
+-- ScrCmd_622: an object's facing as DIR_*, DIR_NORTH when it is not there
+function Commands.g4_object_facing(ctx, id, destVar)
+  local e = objectById(ctx, id)
+  setVar(ctx.save, destVar, e and (FACING[e.facing] or 0) or 0)
+end
+
+-- THE GOLDENROD UNDERGROUND'S ACCESSORY LOTTERY (overlay_02_02251E74.c):
+-- ov02_02253D54's 39 Accessories and the 14 backdrops
+Commands.HGSS_LOTTERY_ACCESSORIES = { 47, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69,
+  70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 95, 96 }
+Commands.HGSS_BACKDROPS = 14
+function Commands.g4_hgss_accessory_lottery(ctx, op, destVar)
+  local save = ctx.save
+  if not save then return end
+  local list = Commands.HGSS_LOTTERY_ACCESSORIES
+  local owned = save.gen4Backdrops or {}
+  local function rnd(n) return love and love.math and love.math.random(0, n - 1) or math.random(0, n - 1) end
+  local v = 0
+  if op == "soldOut" then
+    v = 1
+    for _, id in ipairs(list) do
+      if Gen4Commands.canFitAccessory(save, id, 1) then v = 0 break end
+    end
+  elseif op == "draw" then
+    v = list[rnd(#list) + 1]
+  elseif op == "allBackdrops" then
+    v = 1
+    for i = 0, Commands.HGSS_BACKDROPS - 1 do if not owned[i] then v = 0 break end end
+  else
+    local missing = {}
+    for i = 0, Commands.HGSS_BACKDROPS - 1 do if not owned[i] then missing[#missing + 1] = i end end
+    v = #missing > 0 and missing[rnd(#missing) + 1] or 0
+  end
+  setVar(save, destVar, v)
+end
+
+-- ---------------------------------------------------------------------------
+-- HEARTGOLD / SOULSILVER'S FIELD MOVES (scr_seq_0146's tail)
+-- ---------------------------------------------------------------------------
+-- (the file's own `speciesOf` / `lcrng` are declared further down)
+local function speciesOf(mon) return require("src.pokemon.Gen4DayCare").speciesOf(mon) end
+local function lcrng(n) return love and love.math and love.math.random(0, n - 1) or math.random(0, n - 1) end
+
+-- Capitalize <slot>: MessageFormat_UpperFirstChar
+function Commands.g4_capitalize(ctx, slot)
+  local bufs = ctx.game and ctx.game.stringBuffers
+  local i = math.floor(valueOf(ctx, slot) or 0) + 1
+  local s = bufs and bufs[i]
+  if type(s) ~= "string" or s == "" then return end
+  -- past any leading markup ({COLOR 255}a Potion -> {COLOR 255}A Potion)
+  local at = 1
+  while s:sub(at, at) == "{" do
+    local close = s:find("}", at, true)
+    if not close then break end
+    at = close + 1
+  end
+  if at <= #s then bufs[i] = s:sub(1, at - 1) .. s:sub(at, at):upper() .. s:sub(at + 1) end
+end
+
+-- the lead Pokemon's ability, by name
+local function leadAbility(ctx)
+  local data = ctx.game and ctx.game.data
+  local mon = ((ctx.save and ctx.save.party) or {})[1]
+  if not (mon and data and data.pokemon) or mon.isEgg then return nil end
+  local def = data.pokemon[speciesOf(mon)]
+  local list = def and def.abilities or {}
+  local a = list[tonumber(mon.abilitySlot) or 1]
+  if a == nil or a == 0 or a == "NONE" then a = list[1] end
+  return a
+end
+
+-- EncounterSlot_WildMonLevelRoll: a level in the slot's range
+local function rollLevel(slot)
+  local lo, hi = tonumber(slot.minLevel) or 1, tonumber(slot.maxLevel) or 1
+  if hi < lo then lo, hi = hi, lo end
+  return lo + lcrng(hi - lo + 1)
+end
+
+-- EncounterGen_DoesRepelSuppressEncounter: a Repel in effect turns away
+-- anything below the lead's level
+local function repelled(ctx, level)
+  local save = ctx.save
+  if not (save and (tonumber(save.repelSteps) or 0) > 0) then return false end
+  for _, mon in ipairs(save.party or {}) do
+    if not mon.isEgg then return level < (tonumber(mon.level) or 0) end
+  end
+  return false
+end
+
+local function fieldMoveData(ctx)
+  return ctx.game and ctx.game.data and ctx.game.data.gen4_hgss_field_moves
+end
+
+local function headerOf(ctx)
+  local def = ctx.overworld and ctx.overworld.map and ctx.overworld.map.def
+  return def and tonumber(def.header), def
+end
+
+-- Whirlpool <slot>: carried across the whirlpool's run, as Waterfall climbs
+-- its own (TILE_BEHAVIOR_WHIRLPOOL, 0x11)
+function Commands.g4_use_whirlpool(ctx)
+  local ow = ctx.overworld
+  local p = ow and ow.player
+  local map = ow and ow.map
+  if not (p and map and map.cellBehaviour) then return end
+  local Collision = require("src.world.Collision")
+  local x, y, n = p.cellX, p.cellY, 0
+  while n < 8 do
+    local nx, ny = Collision.target(x, y, p.facing)
+    if not map:inBounds(nx, ny) or map:cellBehaviour(nx, ny) ~= 0x11 then break end
+    x, y, n = nx, ny, n + 1
+  end
+  if n > 0 and ow.scriptMove then ow:scriptMove(p, p.facing, n + 1) end
+end
+
+-- TryHeadbuttEncounter <var> (field/headbutt.c): the tree in front -- one
+-- further when the walking Pokemon stands there -- picks the table by the
+-- tree's index and the trainer id's last digit (sRareTreeLUT_*): common, rare,
+-- secret or none; then a 50/15/15/10/5/5 slot and a level in its range
+local TREE_LUT = {
+  [1] = { [0] = { 0 }, { 1 }, { 0 }, { 1 }, { 0 }, { 1 }, { 0 }, { 1 }, { 0 }, { 1 } },
+  [2] = { [0] = { 0, 1 }, { 1, 0 }, { 0, 1 }, { 1, 0 }, { 0, 1 }, { 1, 0 }, { 0, 1 }, { 1, 0 }, { 0, 1 }, { 1, 0 } },
+  [3] = { [0] = { 0, 1, -1 }, { 0, -1, 1 }, { 1, 0, -1 }, { 1, -1, 0 }, { -1, 0, 1 },
+          { -1, 1, 0 }, { 0, 1, -1 }, { 0, -1, 1 }, { 1, 0, -1 }, { 1, -1, 0 } },
+  [4] = { [0] = { -1, 0, 0, 1 }, { 1, -1, 0, 0 }, { 1, 1, -1, 0 }, { 0, 1, 1, -1 }, { 0, 0, 1, 1 },
+          { -1, 0, 1, 0 }, { 1, -1, 0, 1 }, { 0, 1, -1, 0 }, { 1, 0, 1, -1 }, { 0, 1, 0, 1 } },
+  [5] = { [0] = { -1, 0, 0, 1, 1 }, { 1, -1, 0, 0, 1 }, { 1, 1, -1, 0, 0 }, { 0, 1, 1, -1, 0 },
+          { 0, 0, 1, 1, -1 }, { -1, 0, 1, 0, 1 }, { 1, -1, 0, 1, 0 }, { 0, 1, -1, 0, 1 },
+          { 1, 0, 1, -1, 0 }, { 0, 1, 0, 1, -1 } },
+}
+Gen4Commands.HEADBUTT_TREE_LUT = TREE_LUT
+
+function Gen4Commands.headbuttTreeType(rec, trainerId, x, y)
+  local reg = (rec.regular or 0) * 6
+  for i = 1, reg do
+    local c = rec.trees[i]
+    if c and c[1] == x and c[2] == y then
+      local which = math.floor((i - 1) / 6)
+      local digit = (tonumber(trainerId) or 0) % 10
+      local n = rec.regular
+      if n >= 5 then return TREE_LUT[5][digit][which % 5 + 1] end
+      return TREE_LUT[n][digit][which + 1]
+    end
+  end
+  for i = reg + 1, reg + (rec.secret or 0) * 6 do
+    local c = rec.trees[i]
+    if c and c[1] == x and c[2] == y then return 2 end
+  end
+  return -1
+end
+
+local function headbuttSlot()
+  local r = lcrng(100)
+  if r < 50 then return 1 elseif r < 65 then return 2 elseif r < 80 then return 3
+  elseif r < 90 then return 4 elseif r < 95 then return 5 end
+  return 6
+end
+
+function Commands.g4_hgss_headbutt(ctx, destVar)
+  setVar(ctx.save, destVar, 0)
+  local all = fieldMoveData(ctx)
+  local header = headerOf(ctx)
+  local rec = all and all.headbutt and header and all.headbutt[header]
+  local ow = ctx.overworld
+  local p = ow and ow.player
+  if not (rec and p) then return end
+  local fx, fy = p:facingCell()
+  -- GetCoordsOfFacingTree: past the walking Pokemon when it is the one ahead
+  local okF, F = pcall(require, "src.world.HgssFollowMon")
+  local npc = okF and F.current and F.current(ow)
+  if npc and not npc.hidden and npc.cellX == fx and npc.cellY == fy then
+    fx, fy = require("src.world.Collision").target(fx, fy, npc.facing or p.facing)
+  end
+  local gx, gy = toMatrix(ctx, fx, fy)
+  local pl = ctx.save.player or {}
+  local tid = ((tonumber(pl.id) or 0) % 65536) + ((tonumber(pl.secretId) or 0) % 65536) * 65536
+  local kind = Gen4Commands.headbuttTreeType(rec, tid, gx, gy)
+  if kind < 0 then return end
+  local slots = (kind == 0 and rec.common) or (kind == 1 and rec.rare) or rec.secretSlots
+  local slot = slots and slots[headbuttSlot()]
+  if not (slot and (slot.species or 0) > 0) then return end
+  local level = rollLevel(slot)
+  if repelled(ctx, level) then return end
+  setVar(ctx.save, destVar, 1)
+  Commands.start_battle(ctx, "wild", slot.species, level)
+end
+Commands.meta.g4_hgss_headbutt = { foreground = true, blocking = true }
+
+-- RockSmashItemCheck <followUsed, foundVar, itemVar> (field/rock_smash_item.c):
+-- the map's rock smash encounter first (its rate, slots 80 / 20), else an item
+-- -- the map's odds (+5 each for Suction Cups, Magnet Pull, Keen Eye and the
+-- walking Pokemon doing it, at most 100), then a 25/20/10/10/10/10/10/5 draw
+-- from the map's table, one further for Serene Grace or Super Luck
+local ROCK_SMASH_ITEMS = {
+  heartgold = {
+    [0] = { 39, 28, 93, 72, 73, 75, 74, 91 },      -- Max Ether .. Star Piece
+    { 72, 74, 101, 39, 73, 75, 103, 29 },          -- Ruins of Alph (Helix Fossil)
+    { 39, 88, 89, 72, 74, 100, 100, 106 },         -- Cliff Cave (Claw Fossil)
+  },
+  soulsilver = {
+    [0] = { 39, 28, 93, 72, 73, 75, 74, 91 },
+    { 73, 75, 102, 39, 72, 74, 103, 29 },          -- Ruins of Alph (Dome Fossil)
+    { 39, 88, 89, 73, 75, 99, 99, 106 },           -- Cliff Cave (Root Fossil)
+  },
+}
+Gen4Commands.ROCK_SMASH_ITEMS = ROCK_SMASH_ITEMS
+
+local function rockSmashIndex()
+  local r = lcrng(100)
+  if r < 25 then return 0 elseif r < 45 then return 1 elseif r < 55 then return 2
+  elseif r < 65 then return 3 elseif r < 75 then return 4 elseif r < 85 then return 5
+  elseif r < 95 then return 6 end
+  return 7
+end
+
+function Commands.g4_hgss_rock_smash(ctx, followUsed, foundVar, itemVar)
+  setVar(ctx.save, foundVar, 0)
+  setVar(ctx.save, itemVar, 0)
+  local data = ctx.game and ctx.game.data
+  local header, def = headerOf(ctx)
+  -- the encounter (FieldSystem_PerformRockSmashEncounterCheck)
+  local enc = data and data.encounters and def and data.encounters[def.encounters]
+  local rs = enc and enc.rockSmash
+  local rate = rs and tonumber(rs.rate) or 0
+  if rate > 0 and lcrng(100) < rate then
+    local slot = rs.slots and rs.slots[(lcrng(100) >= 80) and 2 or 1]
+    if slot and (slot.species or 0) > 0 then
+      local level = rollLevel(slot)
+      if not repelled(ctx, level) then
+        Commands.start_battle(ctx, "wild", slot.species, level)
+        return
+      end
+    end
+  end
+  -- the item (CheckRockSmashItemDrop / Task_GetRockSmashItem)
+  local all = fieldMoveData(ctx)
+  local odds = all and all.rockSmash and header and all.rockSmash[header]
+  if not odds or (odds.odds or 0) == 0 then return end
+  local chance = odds.odds
+  local ability = leadAbility(ctx)
+  if ability == "SUCTION_CUPS" or ability == "MAGNET_PULL" or ability == "KEEN_EYE" then chance = chance + 5 end
+  if math.floor(valueOf(ctx, followUsed) or 0) ~= 0 then chance = chance + 5 end
+  if chance > 100 then chance = 100 end
+  if lcrng(100) >= chance then return end
+  local idx = rockSmashIndex()
+  if (ability == "SERENE_GRACE" or ability == "SUPER_LUCK") and idx < 7 then idx = idx + 1 end
+  local version = require("src.core.GameVersion").get and require("src.core.GameVersion").get() or "heartgold"
+  local tables = ROCK_SMASH_ITEMS[version] or ROCK_SMASH_ITEMS.heartgold
+  local list = tables[odds.type]
+  local item = list and list[idx + 1]
+  if not item then return end
+  setVar(ctx.save, foundVar, 1)
+  setVar(ctx.save, itemVar, item)
+end
+Commands.meta.g4_hgss_rock_smash = { foreground = true, blocking = true }
+
+-- GetPlayerState <var>: PlayerAvatar_GetState -- 0 walking, 1 cycling,
+-- 2 surfing (constants/global_fieldmap.h)
+function Commands.g4_get_player_state(ctx, destVar)
+  local p = ctx.overworld and ctx.overworld.player
+  local state = 0
+  if p and p.surfing then state = 2
+  elseif ctx.save and ctx.save.onBike then state = 1 end
+  setVar(ctx.save, destVar, state)
+end
+
+-- CountAliveMonsAndPC <var>: party Pokemon with HP that are not eggs, plus
+-- every Pokemon in the boxes (PCStorage_CountMonsInAllBoxes)
+function Commands.g4_count_alive_and_pc(ctx, destVar)
+  local n = 0
+  for _, mon in ipairs(ctx.save and ctx.save.party or {}) do
+    local hp = tonumber(mon.hp or mon.currentHp) or 1
+    if not mon.isEgg and hp ~= 0 then n = n + 1 end
+  end
+  if ctx.save then
+    local Boxes = require("src.pokemon.Boxes")
+    Boxes.ensure(ctx.save)
+    for _, box in pairs(ctx.save.boxes or {}) do
+      n = n + (tonumber(Boxes.used(box)) or 0)
+    end
+  end
+  setVar(ctx.save, destVar, n)
+end
+
+-- PartyCountEgg <var>
+function Commands.g4_party_egg_count(ctx, destVar)
+  local n = 0
+  for _, mon in ipairs(ctx.save and ctx.save.party or {}) do
+    if mon.isEgg then n = n + 1 end
+  end
+  setVar(ctx.save, destVar, n)
+end
+
+-- CountTranformedRotomsInParty <count, firstSlot>: Rotom in a form other
+-- than the base one, not eggs; the first such slot or 255
+function Commands.g4_count_rotom_forms(ctx, countVar, firstVar)
+  local n, first = 0, 255
+  for i, mon in ipairs(ctx.save and ctx.save.party or {}) do
+    local species = require("src.pokemon.Gen4DayCare").speciesOf(mon)
+    if species == 479 and (tonumber(mon.form) or 0) ~= 0 and not mon.isEgg then
+      if first == 255 then first = i - 1 end
+      n = n + 1
+    end
+  end
+  setVar(ctx.save, countVar, n)
+  setVar(ctx.save, firstVar, first)
+end
+
+-- MonAddContestValue <slot, attribute, amount>: Cool..Tough, Sheen (0..5),
+-- capped at 255 and left alone once Sheen is maxed
+function Commands.g4_add_contest_value(ctx, slot, attribute, amount)
+  local keys = { [0] = "cool", "beauty", "cute", "smart", "tough", "sheen" }
+  local key = keys[math.floor(valueOf(ctx, attribute) or 99)]
+  local mon = ((ctx.save and ctx.save.party) or {})[math.floor(valueOf(ctx, slot) or 0) + 1]
+  if not (key and mon) then return end
+  mon.contest = mon.contest or {}
+  if (tonumber(mon.contest.sheen) or 0) == 255 then return end
+  local v = (tonumber(mon.contest[key]) or 0) + math.floor(valueOf(ctx, amount) or 0)
+  mon.contest[key] = math.min(255, v)
 end
 
 function Commands.g4_add_coins(ctx, amount)
@@ -8753,14 +9397,20 @@ function Commands.g4_mystery_gift(ctx, stage, a, b)
     local player = (save.player and save.player.name) or save.playerName or ""
     game.stringBuffers = game.stringBuffers or {}
     local id
+    -- a Pokemon gift's line names the species where an item's names the item
+    if g.species then
+      local def = game.data and game.data.pokemon and game.data.pokemon[g.species]
+      itemName = def and def.name or itemName
+    end
+    local T = MG.text()
     if stage == 5 then
       id = g.text
       game.stringBuffers[1], game.stringBuffers[2] = player, itemName
     else
-      id = g.item and MG.TEXT.CANNOT_TOO_MANY or MG.TEXT.CANNOT_PARTY_FULL
+      id = g.item and T.CANNOT_TOO_MANY or T.CANNOT_PARTY_FULL
       game.stringBuffers[1] = itemName
     end
-    setVar(save, a, MG.BANK)
+    setVar(save, a, MG.bank())
     setVar(save, b, id)
   end
   -- 0 LOAD, 7 / 8 the UNLOADs: the save's gift block, which needs no loading here
@@ -8871,9 +9521,9 @@ function Commands.g4_clear_game(ctx, vsTrainerRed)
           game.stack:push(TextBox.new(game, line(16), credits))
         end))
       end
-      -- the deliveryman is Platinum's (and this port's addition); HGSS goes
-      -- straight to the save
-      if hgss then afterGift() else require("src.pokemon.Gen4MysteryGift").offer(game, afterGift) end
+      -- this port's addition, the gift offer (Platinum's list or HGSS's,
+      -- src/pokemon/Gen4MysteryGift.lua); the marts' deliveryman delivers
+      require("src.pokemon.Gen4MysteryGift").offer(game, afterGift)
     end,
   }))
   if runner then runner:yield() end
@@ -8882,8 +9532,926 @@ Commands.meta = Commands.meta or {}
 Commands.meta.g4_clear_game = { foreground = true, blocking = true }
 
 -- the Battle Tower and Battle Points (src/script/Gen4BattleTowerCommands.lua)
+-- THE FLAGS AND VARS THAT LAST ONE VISIT (ClearTempFieldEventData).
+--
+-- `field_warp_tasks.c` calls it on every warp and every connection, and it
+-- zeroes the 64 map-local flags (the bytes from MAPTEMP_FLAG_BASE, so flags
+-- 0x00..0x3F) and the 32 temp vars 0x4000..0x401F (script_manager.c:399).
+--
+-- Reported from play: Dawn on Route 202 kept saying "did you tell your
+-- family?", and Mom never gave anything.  Mom's talk script (Twinleaf house
+-- 1F) asks `checkflag 2` FIRST and takes her rest-and-heal branch while it is
+-- set -- and that branch ends with `setflag 2`.  The cartridge wipes it on
+-- the next map load; nothing here did, so after one heal she healed forever,
+-- never reached the Journal branch, and its `setflag 143` (the flag Dawn's
+-- trigger checks) never happened.
+function Gen4Commands.clearTempFieldEventData(save)
+  if not save then return end
+  if save.flags then
+    for id = 0x00, 0x3F do save.flags[("FLAG_G4_%04X"):format(id)] = nil end
+  end
+  local vars = save.gen4Vars
+  if vars then
+    for id = 0x4000, 0x401F do vars[id] = nil end
+  end
+end
+
 package.loaded["src.script.Gen4Commands"] = Gen4Commands
 require("src.script.Gen4BattleTowerCommands")
 require("src.script.Gen4BattleHallLobby")
+
+-- `legendcutscene*` -- the Kimono Girls' dance (src/world/HgssLegendCutscene.lua).
+-- The four ScrCmds that return TRUE after TaskManager_Call (the eye glimmer,
+-- the camera-pan wait, the bird's approach, Lugia's camera pan) hold the
+-- script until their task is done; the shimmer yields one frame.
+function Commands.g4_legend(ctx, op, arg)
+  local LC = require("src.world.HgssLegendCutscene")
+  local runner = ctx.runner
+  local function holdUntil(done)
+    if not (runner and runner.yield) or done() then return end
+    runner.waitingCheck = function() return done() end
+    runner:yield()
+  end
+  if op == "begin" then LC.begin()
+  elseif op == "finish" then LC.finish()
+  elseif op == "rise" then LC.riseFromBag()
+  elseif op == "shimmer" then
+    LC.shimmer(valueOf(ctx, arg))
+    if runner and runner.yield then runner.waitingFrames = 1; runner:yield() end
+  elseif op == "glimmer" then LC.eyeGlimmer(); holdUntil(LC.glimmerDone)
+  elseif op == "move" then LC.moveCamera(valueOf(ctx, arg))
+  elseif op == "pan" then LC.panCamera(valueOf(ctx, arg))
+  elseif op == "waitpan" then holdUntil(LC.panDone)
+  elseif op == "bird" then LC.birdFinalApproach(); holdUntil(LC.birdDone)
+  elseif op == "fxbegin" then LC.wavesOrLeavesBegin()
+  elseif op == "fxend" then LC.wavesOrLeavesEnd()
+  elseif op == "lugiabegin" then LC.lugiaArrivesBegin()
+  elseif op == "lugiaend" then LC.lugiaArrivesEnd()
+  elseif op == "lugiapan" then LC.lugiaArrivesPan(); holdUntil(LC.panDone)
+  elseif op == "fieldrebuild" then LC.fieldRebuilt()
+  end
+end
+
+-- `submoneyvar <amount var>` (scrcmd_money.c): PlayerProfile_SubMoney, floored at 0
+function Commands.g4_sub_money_var(ctx, amount)
+  Commands.g4_remove_money(ctx, valueOf(ctx, amount))
+end
+
+-- `checknationaldexcomplete <dest>` (HGSS pokedex.c): every species owned but
+-- the nine mythicals -- Mew, Celebi, Jirachi, Deoxys, Phione, Manaphy,
+-- Darkrai, Shaymin, Arceus. Lugia and Ho-Oh count here, unlike Platinum.
+local HGSS_MYTHICALS = { [151] = true, [251] = true, [385] = true, [386] = true, [489] = true,
+  [490] = true, [491] = true, [492] = true, [493] = true }
+function Commands.g4_hgss_national_complete(ctx, destVar)
+  local owned = (ctx.save and ctx.save.pokedex and ctx.save.pokedex.owned) or {}
+  local n = 0
+  for sp = 1, 493 do
+    if owned[sp] and not HGSS_MYTHICALS[sp] then n = n + 1 end
+  end
+  setVar(ctx.save, destVar, n >= 493 - 9 and 1 or 0)
+end
+
+-- HGSS's dex counts: national ids the save marks `field`, the Johto ones
+-- filtered by the Johto Dex order (gen4_hgss_dex_art.orders.johto)
+local function hgssDexIds(ctx, region, field)
+  local list = {}
+  local johto
+  if region == "johto" then
+    local art = ctx.game and ctx.game.data and ctx.game.data.gen4_hgss_dex_art
+    local order = art and art.orders and art.orders.johto
+    johto = {}
+    if order then for _, id in ipairs(order) do johto[tonumber(id)] = true end
+    else for id = 1, 251 do johto[id] = true end end
+  end
+  for _, id in ipairs(dexIDs(ctx, field, false)) do
+    if not johto or johto[id] then list[#list + 1] = id end
+  end
+  return list
+end
+function Commands.g4_hgss_dex_count(ctx, region, field, destVar)
+  setVar(ctx.save, destVar, #hgssDexIds(ctx, region, field))
+end
+
+local HGSS_JOHTO_MYTHICALS = { [151] = true, [251] = true }
+local function ownedExcludingMythicals(ctx, region)
+  local skip = region == "johto" and HGSS_JOHTO_MYTHICALS or HGSS_MYTHICALS
+  local n = 0
+  for _, id in ipairs(hgssDexIds(ctx, region, "owned")) do if not skip[id] then n = n + 1 end end
+  return n
+end
+function Commands.g4_hgss_johto_complete(ctx, destVar)
+  setVar(ctx.save, destVar, ownedExcludingMythicals(ctx, "johto") >= 256 - 2 and 1 or 0)
+end
+
+-- GetOakJohtoDexRating / GetOakNationalDexRating (unk_0205BB1C.s): the band
+-- each count falls in names a line of msg_0666; past the last band the dex is
+-- complete -- the line by the player's gender and SEQ_ME_HYOUKA6 for HYOUKA1
+Commands.HGSS_OAK_JOHTO = { 9, 19, 34, 49, 64, 79, 94, 109, 124, 139, 154, 169, 184, 199, 214, 229, 244, 253 }
+Commands.HGSS_OAK_NATIONAL = { 100, 150, 200, 250, 300, 350, 400, 435, 465, 475, 483 }
+Commands.SEQ_ME_HYOUKA1, Commands.SEQ_ME_HYOUKA6 = 1194, 1199
+function Gen4Commands.hgssOakRating(national, count, female)
+  local bands = national and Commands.HGSS_OAK_NATIONAL or Commands.HGSS_OAK_JOHTO
+  local first = national and 46 or 28
+  for i, top in ipairs(bands) do
+    if count <= top then return first + i - 1, Commands.SEQ_ME_HYOUKA1 end
+  end
+  local done = national and 24 or 22
+  return done + (female and 1 or 0), Commands.SEQ_ME_HYOUKA6
+end
+function Commands.g4_hgss_dex_eval(ctx, kind, msgVar, fanfareVar)
+  local national = math.floor(tonumber(kind) or 0) ~= 0
+  local count = ownedExcludingMythicals(ctx, national and "national" or "johto")
+  local female = ctx.save and ctx.save.player and ctx.save.player.gender == "girl"
+  local msg, fanfare = Gen4Commands.hgssOakRating(national, count, female)
+  setVar(ctx.save, msgVar, msg)
+  setVar(ctx.save, fanfareVar, fanfare)
+end
+
+-- FlashEffect: LocalFieldData's weather to WEATHER_FLASH_2, live
+function Commands.g4_hgss_flash_effect(ctx)
+  if ctx.save then ctx.save.gen4WeatherActive = 12 end
+end
+
+-- `checkseenallletterunown <dest>` (scrcmd_pokemon_misc.c): all twenty-six
+-- letters seen; forms 26 and 27 (! and ?) are not letters
+function Commands.g4_seen_all_letter_unown(ctx, destVar)
+  local forms = require("src.pokemon.Gen4Forms").seen(ctx.save and ctx.save.pokedex, 201) or {}
+  local letters = {}
+  for _, f in ipairs(forms) do
+    local form = tonumber(f)
+    if form and form >= 0 and form < 26 then letters[form] = true end
+  end
+  local n = 0
+  for _ in pairs(letters) do n = n + 1 end
+  setVar(ctx.save, destVar, n >= 26 and 1 or 0)
+end
+
+-- THE HGSS SAFARI ZONE (src/world/HgssSafariZone.lua)
+function Commands.g4_hgss_safari(ctx, action, set)
+  if not ctx.save then return end
+  require("src.world.HgssSafariZone").action(ctx.save, math.floor(valueOf(ctx, action) or 0),
+    math.floor(valueOf(ctx, set) or 0))
+end
+function Commands.g4_hgss_safari_igt(ctx)
+  local st = require("src.world.HgssSafariZone").state(ctx.save)
+  if st then st.igtMark = math.floor((tonumber(ctx.save.playTime) or 0) / 60) end
+end
+function Commands.g4_hgss_safari_challenge(ctx, n, destVar)
+  local done = require("src.world.HgssSafariZone").challengeDone(ctx.game and ctx.game.data, ctx.save,
+    math.floor(valueOf(ctx, n) or 0))
+  setVar(ctx.save, destVar, done and 1 or 0)
+end
+-- NatDexFlagAction <action> <dest>: 1 sets the National Dex (the dex's flag
+-- and the trainer's), 2 reads it; dest is 0 otherwise
+function Commands.g4_natdex_flag(ctx, action, destVar)
+  local a = math.floor(valueOf(ctx, action) or 0)
+  local dex = ctx.save and ctx.save.pokedex
+  setVar(ctx.save, destVar, 0)
+  if a == 1 then
+    if dex then dex.national = true end
+  elseif a == 2 then
+    setVar(ctx.save, destVar, (dex and dex.national) and 1 or 0)
+  end
+end
+
+-- ---------------------------------------------------------------------------
+-- PLATINUM'S SMALL QUERIES (pokeplatinum, function by function)
+-- ---------------------------------------------------------------------------
+local function speciesOf(mon) return require("src.pokemon.Gen4DayCare").speciesOf(mon) end
+local function lcrng(n) return love and love.math and love.math.random(0, n - 1) or math.random(0, n - 1) end
+
+-- GetPartyMonLevel <dest, slot>: 0 for an egg
+function Commands.g4_party_mon_level(ctx, destVar, slot)
+  local mon = partyMon(ctx, slot)
+  setVar(ctx.save, destVar, (mon and not mon.isEgg) and (tonumber(mon.level) or 0) or 0)
+end
+-- GetPartyMonNature <dest, slot>: Hardy (0) past the party or for an egg
+function Commands.g4_party_mon_nature(ctx, destVar, slot)
+  local mon = partyMon(ctx, slot)
+  local nature = 0
+  if mon and not mon.isEgg and mon.personality then nature = math.floor(mon.personality) % 25 end
+  setVar(ctx.save, destVar, nature)
+end
+-- BufferNatureName <slot, nature>: TEXT_BANK_NATURE_NAMES (202)
+function Commands.g4_buffer_nature_name(ctx, slot, nature)
+  Commands.g4_buffer_bank_line(ctx, slot, 202, nature)
+end
+-- BufferMonNicknameFromPC <slot, boxSlotIndex>: box = index / 30, slot = % 30
+function Commands.g4_buffer_pc_nickname(ctx, slot, index)
+  local n = math.floor(valueOf(ctx, index) or 0)
+  local box = ((ctx.save and ctx.save.boxes) or {})[math.floor(n / 30) + 1] or {}
+  local mon = box[n % 30 + 1]
+  local name = ""
+  if mon then
+    local def = ctx.game and ctx.game.data and ctx.game.data.pokemon and ctx.game.data.pokemon[speciesOf(mon)]
+    name = mon.nickname or (def and def.name) or ""
+  end
+  setBuf(ctx, slot, name)
+end
+-- CheckHasSeenSpecies <species, dest>
+function Commands.g4_has_seen_species(ctx, species, destVar)
+  local sp = math.floor(valueOf(ctx, species) or 0)
+  local seen = ctx.save and ctx.save.pokedex and ctx.save.pokedex.seen or {}
+  setVar(ctx.save, destVar, seen[sp] and 1 or 0)
+end
+-- CountRepeatedSpeciesInParty <dest, species>: species 0 asks "any two alike?"
+function Commands.g4_count_repeated_species(ctx, destVar, species)
+  local want = math.floor(valueOf(ctx, species) or 0)
+  local count, seen = 0, {}
+  for _, mon in ipairs((ctx.save and ctx.save.party) or {}) do
+    if not mon.isEgg then
+      local sp = speciesOf(mon)
+      if want == 0 then
+        if seen[sp] then setVar(ctx.save, destVar, 1) return end
+        seen[sp] = true
+      elseif sp == want then
+        count = count + 1
+      end
+    end
+  end
+  setVar(ctx.save, destVar, count)
+end
+-- CheckHasAllLegendaryTitansInParty <dest>: Regirock, Regice, Registeel
+function Commands.g4_has_all_titans(ctx, destVar)
+  local have = {}
+  for _, mon in ipairs((ctx.save and ctx.save.party) or {}) do have[speciesOf(mon)] = true end
+  setVar(ctx.save, destVar, (have[377] and have[378] and have[379]) and 1 or 0)
+end
+-- GetRotomFormsInSave <heat, wash, frost, fan, mow>: party, day care, boxes
+function Commands.g4_rotom_forms_in_save(ctx, heat, wash, frost, fan, mow)
+  local forms = {}
+  local function look(mon)
+    if mon and not mon.isEgg and speciesOf(mon) == 479 then forms[tonumber(mon.form) or 0] = true end
+  end
+  local save = ctx.save or {}
+  for _, mon in ipairs(save.party or {}) do look(mon) end
+  for _, slot in ipairs(((save.gen4DayCare or {}).mons) or {}) do look(slot.mon or slot) end
+  for _, box in ipairs(save.boxes or {}) do for _, mon in ipairs(box) do look(mon) end end
+  for i, dest in ipairs({ heat, wash, frost, fan, mow }) do setVar(save, dest, forms[i] and 1 or 0) end
+end
+-- SetRotomForm <partySlot, moveSlot, unused, form> (Pokemon_SetRotomForm):
+-- the form's move takes the old form move's slot, else an empty one, else
+-- the chosen slot; with no form move the old ones go; an empty first slot
+-- gets Thunder Shock
+local ROTOM_MOVES = { [0] = 0, 315, 56, 59, 403, 437 }
+function Commands.g4_set_rotom_form(ctx, partySlot, moveSlot, _unused, form)
+  local mon = partyMon(ctx, partySlot)
+  if not (mon and speciesOf(mon) == 479) then return end
+  local f = math.floor(valueOf(ctx, form) or 0)
+  local data = ctx.game and ctx.game.data or {}
+  local function reset(i, id)
+    local m = data.moves and data.moves[id]
+    mon.moves[i] = { id = id, pp = m and m.pp or 5, ppUps = 0 }
+  end
+  mon.moves = mon.moves or {}
+  local newMove = ROTOM_MOVES[f] or 0
+  local isForm = {}
+  for k = 1, 5 do isForm[ROTOM_MOVES[k]] = true end
+  local i = 1
+  while i <= 4 do
+    local m = mon.moves[i]
+    if m and isForm[tonumber(m.id) or -1] then
+      if newMove ~= 0 then reset(i, newMove); newMove = 0
+      else table.remove(mon.moves, i); i = i - 1 end
+    end
+    i = i + 1
+  end
+  if newMove ~= 0 then
+    if #mon.moves < 4 then reset(#mon.moves + 1, newMove)
+    else reset(math.floor(valueOf(ctx, moveSlot) or 0) + 1, newMove) end
+  end
+  if #mon.moves == 0 then reset(1, 84) end
+  require("src.pokemon.Gen4Forms").setForm(data, mon, f)
+  local dex = ctx.save and ctx.save.pokedex
+  if dex then dex.seen[479], dex.owned[479] = true, true end
+end
+-- CountPartyRibbons <dest>: how many different ribbons the party holds
+function Commands.g4_count_party_ribbons(ctx, destVar)
+  local kinds = {}
+  for _, mon in ipairs((ctx.save and ctx.save.party) or {}) do
+    if not mon.isEgg and type(mon.ribbons) == "table" then
+      for id, on in pairs(mon.ribbons) do if on then kinds[id] = true end end
+    end
+  end
+  local n = 0
+  for _ in pairs(kinds) do n = n + 1 end
+  setVar(ctx.save, destVar, n)
+end
+-- CheckPartyCombeeGenderCount <dest>: 2 both, 1 one, 0 none
+function Commands.g4_combee_genders(ctx, destVar)
+  local male, female = false, false
+  local Pokemon = require("src.pokemon.Pokemon")
+  for _, mon in ipairs((ctx.save and ctx.save.party) or {}) do
+    if speciesOf(mon) == 415 and not mon.isEgg then
+      local g = Pokemon.genderOf(ctx.game and ctx.game.data, mon)
+      if g == "male" then male = true elseif g == "female" then female = true end
+    end
+  end
+  setVar(ctx.save, destVar, (male and female) and 2 or ((male or female) and 1 or 0))
+end
+-- CheckShouldShowGhost <percent, dest>: LCRNG % 101 <= percent
+function Commands.g4_should_show_ghost(ctx, percent, destVar)
+  local p = math.min(100, math.floor(valueOf(ctx, percent) or 0))
+  setVar(ctx.save, destVar, lcrng(101) <= p and 1 or 0)
+end
+-- the daily level (VAR_DAILY_RANDOM_LEVEL 0x4041): 2..99, rolled each day
+Commands.VAR_DAILY_RANDOM_LEVEL = 0x4041
+function Commands.g4_daily_level_init(ctx)
+  setVar(ctx.save, Commands.VAR_DAILY_RANDOM_LEVEL, lcrng(98) + 2)
+end
+function Commands.g4_daily_level(ctx, destVar)
+  setVar(ctx.save, destVar, getVar(ctx.save, Commands.VAR_DAILY_RANDOM_LEVEL) or 0)
+end
+-- CheckIsPartyMonOutsider <slot var, dest>: OT id against the trainer's
+function Commands.g4_party_mon_outsider(ctx, slotVar, destVar)
+  local mon = partyMon(ctx, slotVar)
+  local tid = tonumber(ctx.save and ctx.save.player and ctx.save.player.id) or 0
+  local ot = mon and (tonumber(mon.otId) or tid) or tid
+  setVar(ctx.save, destVar, (ot % 65536) == (tid % 65536) and 0 or 1)
+end
+-- TurnOnPokedexLanguageDetection
+function Commands.g4_dex_language_detection(ctx)
+  local dex = ctx.save and ctx.save.pokedex
+  if dex then dex.canDetectLanguages = true end
+end
+-- JudgeStats <slot, total, best message, best value>: the IV judge; ties
+-- broken by a coin flip, the message one of BattleTower_Text_BestPotential*
+local JUDGE_KEYS = { "hp", "attack", "defense", "speed", "spatk", "spdef" }
+local JUDGE_MESSAGES = { 122, 123, 124, 127, 125, 126 }
+function Commands.g4_judge_stats(ctx, slot, totalVar, indexVar, valueVar)
+  local mon = partyMon(ctx, slot)
+  local ivs = (mon and mon.ivs) or {}
+  local values, total = {}, 0
+  for i, k in ipairs(JUDGE_KEYS) do values[i] = tonumber(ivs[k]) or 0; total = total + values[i] end
+  local best = 1
+  for i = 2, 6 do
+    if values[best] < values[i] then best = i
+    elseif values[best] == values[i] and lcrng(2) == 0 then best = i end
+  end
+  setVar(ctx.save, totalVar, total)
+  setVar(ctx.save, indexVar, JUDGE_MESSAGES[best])
+  setVar(ctx.save, valueVar, values[best])
+end
+-- GetCurrentBGM <dest>: the sequence playing
+function Commands.g4_current_bgm(ctx, destVar)
+  local cur = require("src.core.Music").current()
+  setVar(ctx.save, destVar, tonumber(cur) or 0)
+end
+-- CheckABPress <dest>: A or B held
+function Commands.g4_ab_held(ctx, destVar)
+  local input = ctx.game and ctx.game.input
+  local held = input and input.isDown and (input:isDown("a") or input:isDown("b"))
+  setVar(ctx.save, destVar, held and 1 or 0)
+end
+-- GetGBACartridgeVersion <dest>: no Game Boy Advance slot here
+function Commands.g4_gba_cartridge(ctx, destVar) setVar(ctx.save, destVar, 0) end
+-- SetFavoriteMon: the lead's species, form and egg-ness
+function Commands.g4_set_favorite_mon(ctx)
+  local mon = partyMon(ctx, 0)
+  if mon and ctx.save then
+    ctx.save.gen4FavoriteMon = { species = speciesOf(mon), form = tonumber(mon.form) or 0, isEgg = mon.isEgg and true or false }
+  end
+end
+-- BufferTrainerName <slot, trainer>
+function Commands.g4_buffer_trainer_name(ctx, slot, trainer)
+  local id = math.floor(valueOf(ctx, trainer) or 0)
+  local rec = ctx.game and ctx.game.data and ctx.game.data.trainers and ctx.game.data.trainers[id]
+  setBuf(ctx, slot, rec and rec.name or "")
+end
+-- JUBILIFE'S LOTTERY (scrcmd_jubilife_lottery.c / system_vars.c). The
+-- cartridge's own setter writes the HIGH half into the LOW var and never
+-- touches the high one; this keeps that, since the scripts read the low var.
+Commands.VAR_LOTTERY_LOW = 0x403C
+function Commands.g4_lottery_set(save, id)
+  setVar(save, Commands.VAR_LOTTERY_LOW, math.floor((tonumber(id) or 0) / 65536) % 65536)
+end
+function Commands.g4_lottery_randomize(ctx)
+  Commands.g4_lottery_set(ctx.save, lcrng(65536) * 65536 + lcrng(65536))
+end
+function Commands.g4_lottery_id(ctx, destVar)
+  setVar(ctx.save, destVar, getVar(ctx.save, Commands.VAR_LOTTERY_LOW) or 0)
+end
+local function lotteryDigits(win, ot)
+  local n = 0
+  for _ = 1, 5 do
+    if win % 10 ~= ot % 10 then break end
+    win, ot, n = math.floor(win / 10), math.floor(ot / 10), n + 1
+  end
+  return n
+end
+function Commands.g4_lottery_winner(ctx, indexVar, digitsVar, inBoxVar, lotteryId)
+  local win = math.floor(valueOf(ctx, lotteryId) or 0)
+  local save = ctx.save or {}
+  local pBest, pIdx, bBest, bIdx = 0, 0, 0, 0
+  for i, mon in ipairs(save.party or {}) do
+    if not mon.isEgg then
+      local d = lotteryDigits(win, (tonumber(mon.otId) or 0) % 65536)
+      if d > 0 and pBest < d then pBest, pIdx = d, i - 1 end
+    end
+  end
+  for b, box in ipairs(save.boxes or {}) do
+    for k, mon in ipairs(box) do
+      if mon and not mon.isEgg then
+        local d = lotteryDigits(win, (tonumber(mon.otId) or 0) % 65536)
+        if d > 0 and bBest < d then bBest, bIdx = d, (b - 1) * 30 + (k - 1) end
+      end
+    end
+  end
+  if pBest == 0 and bBest == 0 then
+    setVar(save, indexVar, 0); setVar(save, digitsVar, 0); setVar(save, inBoxVar, 0)
+  elseif pBest >= bBest then
+    setVar(save, indexVar, pIdx); setVar(save, digitsVar, pBest); setVar(save, inBoxVar, 0)
+  else
+    setVar(save, indexVar, bIdx); setVar(save, digitsVar, bBest); setVar(save, inBoxVar, 1)
+  end
+end
+-- TOUGH WORDS (easy_chat_words.c): unlocked one at random from those locked
+local function toughCount(ctx)
+  local c = require("src.pokemon.Gen4EasyChat").counts(ctx.game and ctx.game.data)
+  return c[10] or 0
+end
+function Commands.g4_all_tough_words(ctx, destVar)
+  local unlocked = (ctx.save and ctx.save.gen4ToughWords) or {}
+  local all = toughCount(ctx) > 0
+  for e = 0, toughCount(ctx) - 1 do if not unlocked[e] then all = false break end end
+  setVar(ctx.save, destVar, all and 1 or 0)
+end
+function Commands.g4_unlock_tough_word(ctx, destVar, slot)
+  if not ctx.save then return end
+  ctx.save.gen4ToughWords = ctx.save.gen4ToughWords or {}
+  local locked = {}
+  for e = 0, toughCount(ctx) - 1 do if not ctx.save.gen4ToughWords[e] then locked[#locked + 1] = e end end
+  if #locked == 0 then setVar(ctx.save, destVar, 0xFFFF) return end
+  local entry = locked[lcrng(#locked) + 1]
+  ctx.save.gen4ToughWords[entry] = true
+  setVar(ctx.save, destVar, entry)
+  local EasyChat = require("src.pokemon.Gen4EasyChat")
+  local word = EasyChat.word(ctx.game and ctx.game.data, 10, entry)
+  Commands.g4_buffer_message_word(ctx, slot, word)
+end
+
+-- ROUTE 222'S SIZE CONTEST (pokeplatinum overlay005/size_contest.c). The
+-- size factor, the uniform-to-normal table and the inch rounding are
+-- HeartGold's Magikarp record's too, so the arithmetic is HgssSizeRecord's;
+-- the record is a var here (VAR_SIZE_CONTEST_RECORD 0x4035), seeded 33280.
+Commands.VAR_SIZE_CONTEST_RECORD = 0x4035
+local function sizeRecord(ctx)
+  local v = getVar(ctx.save, Commands.VAR_SIZE_CONTEST_RECORD)
+  return tonumber(v) or 0
+end
+local function sizeTenths(ctx, species, factor)
+  local S = require("src.pokemon.HgssSizeRecord")
+  local h = S.heightOf(ctx.game and ctx.game.data, species)
+  return S.imperial(S.size(h, factor))
+end
+function Commands.g4_size_contest_init(ctx)
+  setVar(ctx.save, Commands.VAR_SIZE_CONTEST_RECORD, 33280)
+end
+function Commands.g4_size_contest_buffer(ctx, intSlot, fracSlot, which, kind)
+  local S = require("src.pokemon.HgssSizeRecord")
+  local species, factor
+  if kind == "record" then
+    species, factor = math.floor(valueOf(ctx, which) or 0), sizeRecord(ctx)
+  else
+    local mon = partyMon(ctx, which)
+    species, factor = mon and speciesOf(mon) or 0, mon and S.hash(mon) or 0
+  end
+  local tenths = sizeTenths(ctx, species, factor)
+  setBuf(ctx, valueOf(ctx, intSlot), tostring(math.floor(tenths / 10)))
+  setBuf(ctx, valueOf(ctx, fracSlot), tostring(tenths % 10))
+end
+-- 0 smaller, 1 the same, 2 larger (SIZE_CONTEST_SMALLER / SAME_SIZE / LARGER)
+function Commands.g4_size_contest_result(ctx, destVar, slot)
+  local S = require("src.pokemon.HgssSizeRecord")
+  local mon = partyMon(ctx, slot)
+  if not mon then setVar(ctx.save, destVar, 0) return end
+  local sp = speciesOf(mon)
+  local mine, best = sizeTenths(ctx, sp, S.hash(mon)), sizeTenths(ctx, sp, sizeRecord(ctx))
+  setVar(ctx.save, destVar, mine == best and 1 or (mine > best and 2 or 0))
+end
+function Commands.g4_size_contest_update(ctx, slot)
+  local mon = partyMon(ctx, slot)
+  if mon then setVar(ctx.save, Commands.VAR_SIZE_CONTEST_RECORD, require("src.pokemon.HgssSizeRecord").hash(mon)) end
+end
+
+-- StartFatefulEncounter <species, level>
+function Commands.g4_fateful_encounter(ctx, species, level)
+  local id = math.floor(valueOf(ctx, species) or 0)
+  local lv = math.max(1, math.floor(valueOf(ctx, level) or 1))
+  local mons = ctx.game and ctx.game.data and ctx.game.data.pokemon
+  if id == 0 or not (mons and mons[id]) then return end
+  Commands.start_battle(ctx, "wild", id, lv, { legendary = true, fateful = true })
+end
+-- DrawPokemonPreview <species, gender>: the framed picture (tile 10, 5),
+-- the species seen; RemovePokemonPreview takes it down
+function Commands.g4_pokemon_preview(ctx, species, gender)
+  local id = math.floor(valueOf(ctx, species) or 0)
+  local dex = ctx.save and ctx.save.pokedex
+  if dex and id > 0 then dex.seen[id] = true end
+  local ow, game = ctx.overworld, ctx.game
+  if not (ow and game and game.stack and (game.data.pokemon or {})[id]) then return end
+  local path, trueColor = require("src.pokemon.Sprites").path(game.data, id, "front", { kind = "pokepic" })
+  if not path then return end
+  if ow.pokepicBox then ow.pokepicBox:remove() end
+  local box = require("src.ui.PicBox").new(game, {
+    path = path, trueColor = trueColor and true or false, passive = true, overworld = ow,
+    box = { x = 10, y = 5, w = 12, h = 12 }, picTiles = 10,
+  })
+  ow.pokepicBox = box
+  game.stack:push(box)
+end
+function Commands.g4_pokemon_preview_remove(ctx)
+  local ow = ctx.overworld
+  local box = ow and ow.pokepicBox
+  if not box then return end
+  ow.pokepicBox = nil
+  box:remove()
+end
+-- the frames a MapObject_Shake / _Flicker task runs, held
+function Commands.g4_object_effect_wait(ctx, times, speed)
+  local n = math.max(1, math.floor(valueOf(ctx, times) or 1) * math.max(1, math.floor(valueOf(ctx, speed) or 1)))
+  Commands.wait(ctx, math.min(n, 600))
+end
+
+-- ---------------------------------------------------------------------------
+-- JUBILIFE TV 3F'S PASSWORDS, THE BATTLEGROUND, THE MASSAGE GIRL
+-- ---------------------------------------------------------------------------
+local function band8(a, b) -- a & b on bytes, arithmetic so any Lua runs it
+  local r, bit = 0, 1
+  for _ = 1, 8 do
+    if a % 2 == 1 and b % 2 == 1 then r = r + bit end
+    a, b, bit = math.floor(a / 2), math.floor(b / 2), bit * 2
+  end
+  return r
+end
+local function bxor8(a, b)
+  local r, bit = 0, 1
+  for _ = 1, 8 do
+    if a % 2 ~= b % 2 then r = r + bit end
+    a, b, bit = math.floor(a / 2), math.floor(b / 2), bit * 2
+  end
+  return r
+end
+-- wallpaper_passwords.c RotateBits: the array as one big-endian number,
+-- rotated right a bit at a time
+local function rotateBits(arr, length, iterations)
+  for _ = 1, iterations do
+    local carry = arr[length] % 2
+    for i = length, 2, -1 do
+      arr[i] = math.floor(arr[i] / 2) + (arr[i - 1] % 2) * 128
+    end
+    arr[1] = math.floor(arr[1] / 2) + carry * 128
+  end
+end
+
+Gen4Commands.MAX_UNLOCKABLE_WALLPAPERS = 8
+
+-- WallpaperPasswords_CheckPassword: the wallpaper (0..7) the four words
+-- unlock for this trainer id, or -1
+function Gen4Commands.wallpaperPassword(bank, trainerId, w1, w2, w3, w4)
+  if type(bank) ~= "table" or #bank == 0 then return -1 end
+  local function find(w)
+    for i, v in ipairs(bank) do if v == w then return i - 1 end end
+    return -1
+  end
+  local idx = { find(w1), find(w2), find(w3), find(w4) }
+  local bits = {}
+  for i = 1, 4 do
+    if idx[i] < 0 then return -1 end
+    local d
+    if i > 1 then
+      if idx[i] >= idx[i - 1] then d = idx[i] - idx[i - 1]
+      else d = #bank - (idx[i - 1] - idx[i]) end
+    else
+      d = idx[1]
+    end
+    if d > 255 then return -1 end
+    bits[i] = d
+  end
+  rotateBits(bits, 4, 5)
+  local key = math.floor(bits[4] / 16) + band8(bits[4], 0xF0)
+  for i = 1, 3 do bits[i] = bxor8(bits[i], key % 256) end
+  rotateBits(bits, 3, bits[4] % 16)
+  if bits[1] % 16 >= Gen4Commands.MAX_UNLOCKABLE_WALLPAPERS then return -1 end
+  bits[2] = bxor8(bits[2], bits[1])
+  bits[3] = bxor8(bits[3], bits[1])
+  if bits[2] * 256 + bits[3] == (tonumber(trainerId) or 0) % 65536
+     and math.floor(bits[1] / 16) == 6
+     and bits[4] == ((bits[1] + bits[2]) * bits[3]) % 256 then
+    return bits[1] % 16
+  end
+  return -1
+end
+
+-- GetWallpaperFromCustomMessageWords <dest, w1..w4>: 0xFF wrong password, 0
+-- already unlocked, else wallpaper + 1 (PCBoxes.unlockedWallpapers, a mask)
+function Commands.g4_wallpaper_password(ctx, destVar, w1, w2, w3, w4)
+  local save = ctx.save
+  if not save then return end
+  local consts = ctx.game and ctx.game.data and ctx.game.data.constants or {}
+  local function v(x) return math.floor(valueOf(ctx, x) or 0xFFFF) end
+  local wp = Gen4Commands.wallpaperPassword(consts.passwordWords, save.player and save.player.id,
+    v(w1), v(w2), v(w3), v(w4))
+  if wp < 0 or wp > Gen4Commands.MAX_UNLOCKABLE_WALLPAPERS - 1 then
+    setVar(save, destVar, 0xFF)
+    return
+  end
+  local mask = tonumber(save.gen4UnlockedWallpapers) or 0
+  local bit = 2 ^ wp
+  if math.floor(mask / bit) % 2 == 1 then
+    setVar(save, destVar, 0)
+  else
+    save.gen4UnlockedWallpapers = mask + bit
+    setVar(save, destVar, wp + 1)
+  end
+end
+
+-- CheckIsMysteryGiftPhrase <dest, w1..w4>: the four words, laid out as the
+-- bank's CustomMessageWords entry lays them, against "EVERYONE HAPPY /
+-- WI-FI CONNECTION" (TEXT_BANK_MYSTERY_GIFT_PHRASE, 372)
+Commands.MYSTERY_GIFT_PHRASE_BANK = 372
+function Commands.g4_mystery_gift_phrase(ctx, destVar, w1, w2, w3, w4)
+  local data = ctx.game and ctx.game.data
+  local EasyChat = require("src.pokemon.Gen4EasyChat")
+  local T = require("src.import.Gen4Text")
+  local want = data and data.text and data.text[T.label(Commands.MYSTERY_GIFT_PHRASE_BANK, 0)]
+  local ok = false
+  if want then
+    local w = {}
+    for i, x in ipairs({ w1, w2, w3, w4 }) do w[i] = EasyChat.toString(data, valueOf(ctx, x)) end
+    ok = (w[1] .. " " .. w[2] .. "\n" .. w[3] .. " " .. w[4]) == want
+  end
+  setVar(ctx.save, destVar, ok and 1 or 0)
+end
+
+-- GetRandomBattlegroundTrainers <d1..d4>: three different gym leaders and
+-- one of the five stat trainers, as OBJ_EVENT_GFX ids; the second and
+-- third leader, and the stat trainer, may be absent (0xFFF)
+Commands.BATTLEGROUND_LEADERS = { 126, 127, 128, 129, 130, 131, 132, 133 }
+Commands.BATTLEGROUND_STAT_TRAINERS = { 141, 142, 143, 144, 145 }
+Commands.BATTLEGROUND_NONE = 0xFFF
+local function battlegroundPick(n, a, b, c, d)
+  local tries = 0
+  while true do
+    local r = lcrng(n + 1)
+    if r == n then return r end
+    tries = tries + 1
+    if tries >= 8 then return n end
+    if r ~= a and r ~= b and r ~= c and r ~= d then return r end
+  end
+end
+function Commands.g4_battleground_trainers(ctx, d1, d2, d3, d4)
+  local L, S, NONE = Commands.BATTLEGROUND_LEADERS, Commands.BATTLEGROUND_STAT_TRAINERS, Commands.BATTLEGROUND_NONE
+  for _, d in ipairs({ d1, d2, d3, d4 }) do setVar(ctx.save, d, NONE) end
+  local t1 = lcrng(#L)
+  setVar(ctx.save, d1, L[t1 + 1])
+  local t2 = battlegroundPick(#L, t1, NONE, NONE, NONE)
+  if t2 ~= #L then setVar(ctx.save, d2, L[t2 + 1]) end
+  local t3 = battlegroundPick(#L, t1, t2, NONE, NONE)
+  if t3 ~= #L then setVar(ctx.save, d3, L[t3 + 1]) end
+  local t4 = battlegroundPick(#S, NONE, NONE, NONE, NONE)
+  if t4 ~= #S then setVar(ctx.save, d4, S[t4 + 1]) end
+end
+
+-- TryGetRandomMassageGirlAccessory <dest>: one of Pretty Dewdrop (34) ..
+-- Glitter Powder (49) the Fashion Case still has room for, or 0xFFFF
+Commands.MASSAGE_FIRST, Commands.MASSAGE_COUNT = 34, 16
+function Commands.g4_massage_accessory(ctx, destVar)
+  local open = {}
+  for i = 0, Commands.MASSAGE_COUNT - 1 do
+    if Gen4Commands.canFitAccessory(ctx.save, Commands.MASSAGE_FIRST + i, 1) then
+      open[#open + 1] = Commands.MASSAGE_FIRST + i
+    end
+  end
+  if #open == 0 then
+    setVar(ctx.save, destVar, 0xFFFF)
+    return
+  end
+  setVar(ctx.save, destVar, open[lcrng(#open) + 1])
+end
+
+-- CountPartyMonsBelowLevelThreshold <dest, threshold>: non-eggs at or
+-- below the level (the Union Room's level-30 rooms)
+function Commands.g4_party_below_level(ctx, destVar, threshold)
+  local limit = math.floor(valueOf(ctx, threshold) or 0)
+  local n = 0
+  for _, mon in ipairs(ctx.save and ctx.save.party or {}) do
+    if not mon.isEgg and (tonumber(mon.level) or 0) <= limit then n = n + 1 end
+  end
+  setVar(ctx.save, destVar, n)
+end
+
+-- GetPlayer3DPos <x, y, z>: MapObject x, y / 2 and z -- in the Distortion
+-- World the tracked world tile (Gen4DistSurface.position, y the altitude in
+-- tiles), elsewhere the matrix cell at height 0
+function Commands.g4_player_3d_pos(ctx, xVar, yVar, zVar)
+  local ow = ctx.overworld
+  local p = ow and ow.player
+  local x, y, z
+  local okS, S = pcall(require, "src.world.Gen4DistSurface")
+  local m = okS and ow and ow.map and S.floorFor(ow.map.def)
+  if m then
+    local ok, px, py, pz = pcall(S.position, ow, m)
+    if ok then x, y, z = px, py, pz end
+  end
+  if not x then
+    x, z = toMatrix(ctx, p and p.cellX, p and p.cellY)
+    y = 0
+  end
+  setVar(ctx.save, xVar, math.floor(tonumber(x) or 0) % 65536)
+  setVar(ctx.save, yVar, math.floor(tonumber(y) or 0) % 65536)
+  setVar(ctx.save, zVar, math.floor(tonumber(z) or 0) % 65536)
+end
+
+-- the Fashion Case's backdrops (FashionCase_HasBackdrop / _AddBackdrop)
+function Commands.g4_add_backdrop(ctx, id)
+  if not ctx.save then return end
+  ctx.save.gen4Backdrops = ctx.save.gen4Backdrops or {}
+  ctx.save.gen4Backdrops[math.floor(valueOf(ctx, id) or 0)] = true
+end
+function Commands.g4_check_backdrop(ctx, id, destVar)
+  local set = ctx.save and ctx.save.gen4Backdrops
+  setVar(ctx.save, destVar, (set and set[math.floor(valueOf(ctx, id) or 0)]) and 1 or 0)
+end
+
+-- GetCapturedFlagCount <dest>: secret-base flags taken (a link feature, so
+-- whatever the save says, else 0) -- Eterna's Underground Man reads it
+function Commands.g4_captured_flag_count(ctx, destVar)
+  local ug = ctx.save and ctx.save.underground
+  setVar(ctx.save, destVar, tonumber(ug and ug.capturedFlags) or 0)
+end
+
+-- CheckIsTodayPlayerBirthday <dest>: the DS profile's birthday against the
+-- RTC; save.player.birthday = { month, day } stands in for the profile
+function Commands.g4_is_birthday(ctx, destVar)
+  local b = ctx.save and ctx.save.player and ctx.save.player.birthday
+  local today = os.date("*t")
+  local yes = type(b) == "table" and tonumber(b.month or b[1]) == today.month
+    and tonumber(b.day or b[2]) == today.day
+  setVar(ctx.save, destVar, yes and 1 or 0)
+end
+
+-- GetPartyMonFootprintType <hasPrint, type, slot> (footprint_type.c): the
+-- overlay table in constants.footprintTypes (type + 8 * hasPrint); Origin
+-- Forme Giratina leaves no print
+function Commands.g4_footprint_type(ctx, hasVar, typeVar, slot)
+  local mon = partyMon(ctx, slot)
+  local species = mon and speciesOf(mon) or 0
+  local consts = ctx.game and ctx.game.data and ctx.game.data.constants or {}
+  local rec = tonumber((consts.footprintTypes or {})[species]) or 0
+  local has = math.floor(rec / 8) % 2
+  if species == 487 and (tonumber(mon.form) or 0) == 1 then has = 0 end
+  setVar(ctx.save, hasVar, has)
+  setVar(ctx.save, typeVar, rec % 8)
+end
+
+-- DrawPokemonPreviewFromPartySlot <slot>: Chatot's recording booth shows the
+-- party Pokemon itself
+function Commands.g4_pokemon_preview_party(ctx, slot)
+  local mon = partyMon(ctx, slot)
+  if not mon then return end
+  Commands.g4_pokemon_preview(ctx, speciesOf(mon), 0)
+end
+
+-- PokeMartDecor <martID> (MART_TYPE_DECOR): Veilstone 4F's goods counters.
+-- Stock constants.martDecor, prices constants.goodPrices (Good_GetMoneyPrice),
+-- names / descriptions TEXT_BANK_UNDERGROUND_GOODS (626: name at the good id,
+-- description at 139 + id - 1); one at a time, sent to the PC's 200 slots
+Commands.GOODS_BANK, Commands.GOODS_DESCRIPTIONS = 626, 139
+function Commands.g4_decor_mart(ctx, martId)
+  local data = ctx.game and ctx.game.data
+  local consts = data and data.constants or {}
+  local stock = (consts.martDecor or {})[math.floor(valueOf(ctx, martId) or 0)]
+  if not (stock and stock[1]) then
+    Logger.warn("gen4 shop: no decor stock for this counter; re-import the ROM")
+    return
+  end
+  local T = require("src.import.Gen4Text")
+  local UG = require("src.world.Gen4Underground")
+  local function text(entry) return data.text and data.text[T.label(Commands.GOODS_BANK, entry)] end
+  local function name(id) return ((text(id) or ""):gsub("\n", " ")) end
+  local goods = {
+    single = true,
+    def = function(id)
+      return { name = name(id), price = tonumber((consts.goodPrices or {})[id]) or 0,
+               description = text(Commands.GOODS_DESCRIPTIONS + id - 1) or "" }
+    end,
+    owned = function(id)
+      local n = 0
+      for _, g in ipairs(UG.goodsPC(ctx.save)) do if g == id then n = n + 1 end end
+      return n
+    end,
+    canAdd = function() return UG.roomInGoodsPC(ctx.save) end,
+    add = function(id) UG.addGoodToPC(ctx.save, id) end,
+    fullMessage = data.text and data.text[T.label(543, 12)],
+    thanks = function(id)
+      local line = data.text and data.text[T.label(543, 11)]
+      return line and (line:gsub("{STRVAR_1 10 0 0}", name(id))) or "Thank you!"
+    end,
+  }
+  local runner = ctx.runner
+  require("src.ui.Screens").push(ctx.game, "ShopMenu", stock, function()
+    if runner then runner:resume() end
+  end, goods)
+  if runner then runner:yield() end
+end
+Commands.meta.g4_decor_mart = { foreground = true, blocking = true }
+
+-- HEARTGOLD / SOULSILVER GROUPS (scrcmd_8.c ScrCmd_465, friend_group.h): six
+-- slots, 0 the group the player made, 1 the group they are in, 2..5 groups
+-- met through record mixing (never filled here: no wireless). A slot is
+-- { name, leader, gender, id } in save.hgssGroups[slot + 1].
+--   0 <slot, dest>   slot is filled            1 <slot, dest>  slot == the joined one
+--   2 <slot, buf>    group name to buffer      3 <slot, buf>   leader to buffer
+--   4 <dest>         name the group (msg_0249 #5): 0 named, 1 blank, 2 name in use
+--   5 <slot>         join that group           6               lead slot 0, join it
+--   7 <dest>         four or more other groups known
+local function hgssGroups(save)
+  save.hgssGroups = save.hgssGroups or {}
+  return save.hgssGroups
+end
+
+local function sameGroup(a, b)
+  return a and b and a.name == b.name and a.leader == b.leader and a.id == b.id or false
+end
+
+function Commands.g4_hgss_group(ctx, mode, a, b)
+  local save = ctx.save
+  if not save then return end
+  local groups = hgssGroups(save)
+  mode = math.floor(tonumber(mode) or 0)
+  if mode == 0 or mode == 1 then
+    local slot = math.floor(valueOf(ctx, a))
+    local g = groups[slot + 1]
+    local r = mode == 0 and (g and 1 or 0) or (sameGroup(g, groups[2]) and 1 or 0)
+    setVar(save, b, r)
+  elseif mode == 2 or mode == 3 then
+    local g = groups[math.floor(valueOf(ctx, a)) + 1]
+    setBuffer(ctx, math.floor(valueOf(ctx, b)), g and (mode == 2 and g.name or g.leader) or "")
+  elseif mode == 4 then
+    setVar(save, a, 1)
+    if not (ctx.game and ctx.game.stack) then return end
+    local T = require("src.import.Gen4Text")
+    local title = ctx.game.data and ctx.game.data.text and ctx.game.data.text[T.label(249, 5)]
+    title = type(title) == "string" and title:gsub("%s*{YESNO %d+}", "") or "Group name?"
+    local runner = ctx.runner
+    require("src.ui.Screens").push(ctx.game, "NamingScreen", {
+      kind = "group", maxLen = 7, title = title,
+      onDone = function(typed)
+        local name = tostring(typed or "")
+        local r = 1
+        if name ~= "" then
+          r = 0
+          for i = 2, 6 do if groups[i] and groups[i].name == name then r = 2 end end
+          if r == 0 then
+            groups[1] = groups[1] or {}
+            groups[1].name = name
+          end
+        end
+        setVar(save, a, r)
+        if runner then runner:resume() end
+      end,
+    })
+    if runner then runner:yield() end
+  elseif mode == 5 then
+    local g = groups[math.floor(valueOf(ctx, a)) + 1]
+    if g then
+      local c = {}
+      for k, v in pairs(g) do c[k] = v end
+      groups[2] = c
+    end
+  elseif mode == 6 then
+    local p = save.player or {}
+    local g = groups[1] or {}
+    g.leader = p.name or ""
+    g.gender = p.gender == "girl" and 1 or 0
+    g.id = math.random(0, 0x7FFFFFFF)
+    groups[1] = g
+    local c = {}
+    for k, v in pairs(g) do c[k] = v end
+    groups[2] = c
+  elseif mode == 7 then
+    local n = 0
+    for i = 1, 6 do
+      if groups[i] and not sameGroup(groups[i], groups[2]) then n = n + 1 end
+    end
+    setVar(save, a, n >= 4 and 1 or 0)
+  end
+end
+Commands.meta.g4_hgss_group = { foreground = true, blocking = true }
+
+-- HGSS ScrCmd_706 / ScrCmd_642 <dest>: 1 when a Hall of Fame record exists
+function Commands.g4_hof_exists(ctx, destVar)
+  local hof = ctx.save and ctx.save.hallOfFame
+  local n = type(hof) == "table" and #hof or math.floor(tonumber(hof) or 0)
+  setVar(ctx.save, destVar, n > 0 and 1 or 0)
+end
+
+-- HGSS ScrCmd_289 <choice>: the trainer's Union Room avatar
+function Commands.g4_hgss_set_avatar(ctx, choice)
+  if not ctx.save then return end
+  ctx.save.player = ctx.save.player or {}
+  ctx.save.player.avatar = math.floor(valueOf(ctx, choice))
+end
 
 return Gen4Commands

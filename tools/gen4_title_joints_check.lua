@@ -23,8 +23,11 @@ local slots={};local count=0
 for _,shape in ipairs(packed.shapes) do
  for i=1,#(shape.matrixSlots or '') do
   local slot=shape.matrixSlots:byte(i)
-  assert(pose.stack[slot],'missing Giratina joint slot '..slot)
-  if not slots[slot] then slots[slot]=true;count=count+1 end
+  if slot==255 then assert(pose[shape.index],'missing inherited shape matrix')
+  else
+   assert((pose.stacks[shape.index] or {})[slot],'missing Giratina joint slot '..slot)
+   if not slots[slot] then slots[slot]=true;count=count+1 end
+  end
  end
 end
 assert(count>4,'Giratina must retain separate tentacle joints')

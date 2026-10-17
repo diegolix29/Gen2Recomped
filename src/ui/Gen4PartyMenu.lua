@@ -1214,7 +1214,7 @@ function Gen4PartyMenu:drawSubscreen()
   local okS, SS = pcall(require, "src.ui.SecondScreen")
   if not okS then return end
   local mode = SS.mode(self.game)
-  if not ((mode == "display" or mode == "inset") and not SS.stowed(self.game)) then return end
+  if not (require("src.ui.SecondScreen").separateMode(mode) and not SS.stowed(self.game)) then return end
   local back = self:img("party/subscreen")
   if not back then return end
   local party = self:party()

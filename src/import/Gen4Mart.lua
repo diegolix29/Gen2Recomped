@@ -159,4 +159,42 @@ function Gen4Mart.specialties(bytes, ramBase)
   return nil, 'specialty table matches: ' .. hits
 end
 
+-- VEILSTONE DEPT. STORE 4F'S DECOR COUNTERS (mart_items.h
+-- VeilstoneDeptStoreDecorationStocks): two pointers to Underground goods
+-- lists (ids 1..138, 0xFFFF-terminated) of five and six goods, the first
+-- starting with a cushion and the second all dolls (goods 115..124)
+function Gen4Mart.decor(bytes, ramBase)
+  if type(bytes) ~= 'string' then return nil end
+  ramBase = ramBase or 0x02000000
+  local function u32(at)
+    local a,b = u16(bytes,at),u16(bytes,at+2)
+    return a and b and a+b*65536
+  end
+  local function goods(p)
+    local at = p and p-ramBase+1
+    if not at or at < 1 or at > #bytes or at%2 ~= 1 then return nil end
+    local out = {}
+    for i=0,15 do
+      local g = u16(bytes,at+i*2)
+      if g == 65535 then return out end
+      if not g or g < 1 or g > 138 then return nil end
+      out[#out+1] = g
+    end
+  end
+  local found, hits = nil, 0
+  for at=1,#bytes-7,4 do
+    local a = goods(u32(at))
+    if a and #a == 5 then
+      local b = goods(u32(at+4))
+      if b and #b == 6 then
+        local dolls = true
+        for _, g in ipairs(b) do if g < 115 or g > 124 then dolls = false end end
+        if dolls then found, hits = { [0] = a, b }, hits+1 end
+      end
+    end
+  end
+  if hits == 1 then return found end
+  return nil, 'decor table matches: ' .. hits
+end
+
 return Gen4Mart

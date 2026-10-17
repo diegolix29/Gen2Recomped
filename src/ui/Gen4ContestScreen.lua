@@ -298,7 +298,7 @@ end
 function Screen:drawAudience()
   local ok, SS = pcall(require, "src.ui.SecondScreen")
   local mode = ok and SS.mode(self.game) or "off"
-  if (mode == "display" or mode == "inset") and not SS.stowed(self.game) then
+  if require("src.ui.SecondScreen").separateMode(mode) and not SS.stowed(self.game) then
     SS.draw(self.game, function() Art.draw(self.game, "audience", 0, 0) end)
   end
 end

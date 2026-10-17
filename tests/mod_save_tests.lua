@@ -305,6 +305,28 @@ local function fixtureData()
 end
 
 do
+  local GameVersion = require("src.core.GameVersion")
+  local previous = GameVersion.get()
+  for _, version in ipairs({ "emerald", "firered" }) do
+    GameVersion.set(version)
+    for _, count in ipairs({ 0, 1, 12 }) do
+      -- The persisted Gen3 format uses a scalar, even before the first win.
+      local save = assert(SaveSerializer.decode(SaveSerializer.encode({
+        player = { map = "TOWN", x = 3, y = 4 }, party = {}, boxes = {},
+        inventory = { POTION = 2 }, flags = { champion = true },
+        hallOfFame = count,
+      })))
+      local report = SaveData.validate(save, fixtureData())
+      check(type(report) == "table", version .. " numeric HoF validates after save roundtrip")
+      check(save.hallOfFame == count, version .. " HoF count preserved: " .. count)
+      check(save.inventory.POTION == 2 and save.player.x == 3 and save.flags.champion,
+        version .. " continuing preserves inventory, location and story flags")
+    end
+  end
+  GameVersion.set(previous)
+end
+
+do
   local data = fixtureData()
   local save = {
     player = { map = "GONE_MAP", x = 9, y = 9, facing = "down", id = 7 },

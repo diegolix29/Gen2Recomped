@@ -117,6 +117,13 @@ local A = {
   -- the nickname prompt: (party slot var, result var), Platinum's operands
   nicknameinput = "openpokemonnamingscreen",
 
+  -- scrcmd_mart.c and scrcmd_party.c: identical operands to Platinum.
+  martbuy = "pokemartcommon", specialmartbuy = "pokemartspecialties",
+  partyhaspokerus = "checkpartypokerus",
+  pokecenanim = "playpokecenterhealinganimation",
+  gettrcardstars = "gettrainercardlevel",
+  scrcmd_158 = "openpokemonstorage",
+
   -- ScrCmd_796 (field/headbutt.c) closes the money box ScrCmd_795 opened
   scrcmd_796 = "hidemoney",
   -- A, B or a direction ends it; the message box already waits for the

@@ -581,10 +581,12 @@ function Commands.fr_ba_battle(ctx)
   for i, slot in ipairs(rec.parties[1]) do slot.level = theirs[i].level end
   local BattleState = require("src.battle.BattleState")
   local real = ctx.save.party
+  require("src.pokemon.PartyAside").hold(ctx.save, real)  -- in the save too (PartyAside)
   ctx.save.party = mine
   local ok, battle = pcall(BattleState.newTrainer, game, key, 1)
   if not ok or not battle then
     ctx.save.party = real
+    require("src.pokemon.PartyAside").release(ctx.save)
     Logger.warn("gen4 battle arcade: could not build the battle: %s", tostring(battle))
     return
   end
@@ -602,6 +604,7 @@ function Commands.fr_ba_battle(ctx)
   local runner = ctx.runner
   battle.onFinish = function(result)
     ctx.save.party = real
+    require("src.pokemon.PartyAside").release(ctx.save)
     game.gen4BattleArcadeWon = (result == "win") and 1 or 0
     f.performance = A.performance(mine, battle.turnCount or 0)
     -- the team as the board found it, healed, holding what the battle left

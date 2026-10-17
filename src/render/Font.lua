@@ -1002,7 +1002,9 @@ local function gen4DialogueBox(rec, tx, ty, tw, th)
   do
     local ok, Game = pcall(require, "src.core.Game")
     local options = ok and Game and Game.save and Game.save.options
-    frame = math.floor(tonumber(options and options.gen3Frame) or 1)
+    -- a screen with a frame of its own (Black and White's battle box) asks
+    -- for it by number for as long as it is drawing
+    frame = math.floor(tonumber(Font.frameOverride) or tonumber(options and options.gen3Frame) or 1)
     if frame < 1 then frame = 1 end
     if frame > count then frame = count end
   end
@@ -1052,6 +1054,13 @@ local function gen4DialogueBox(rec, tx, ty, tw, th)
       love.graphics.draw(img, q[row0 + base + k], (left + col) * 8, y)
     end
   end
+end
+
+-- the dialogue frame a cartridge's BATTLE box uses, when its record names one
+-- (Black and White: the dark message frame)
+function Font.battleFrame()
+  local def = state and state.def
+  return def and def.dialogueFrame and def.dialogueFrame.battleFrame or nil
 end
 
 function Font.hasDialogueFrame()

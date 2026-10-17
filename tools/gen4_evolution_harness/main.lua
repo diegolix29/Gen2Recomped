@@ -14,7 +14,8 @@
 
 function love.load()
   local ok, err = xpcall(function()
-    require("src.core.GameVersion").set("platinum")
+    local version=os.getenv("VERSION") or "platinum"
+    require("src.core.GameVersion").set(version)
     local assetRoot = os.getenv("POKEPORT_ASSET_ROOT")
     if assetRoot then
       local Assets = require("src.render.Assets")
@@ -40,12 +41,26 @@ function love.load()
       playOnce = function() end, restoreMap = function() end }
     local Data = require("src.core.Data")
     Data:load()
+    local hgss=require("src.import.Gen4Versions").isHgss(version)
+    if hgss and os.getenv("ROM")then
+      local rom=assert(require("src.import.NdsRom").open(os.getenv("ROM")))
+      local E=require("src.import.Gen4EvolutionArt")
+      local pictures=assert(E.images(rom,E.HGSS))
+      local Assets=require("src.render.Assets");local original=Assets.image;local images={}
+      Data.gen4_evolution_art={};Data.gen4_evolution_ink=E.data(rom,E.HGSS)
+      for key,pic in pairs(pictures)do
+        local path="@hgss-evolution/"..key
+        images[path]=love.graphics.newImage(require("src.import.ImageWriter").fromRGBA8(pic.width,pic.height,pic.rgba))
+        Data.gen4_evolution_art[key]={path=path,width=pic.width,height=pic.height}
+      end
+      Assets.image=function(path,...)return images[path] or original(path,...)end
+    end
     require("src.render.Font").load(Data)
     pcall(function() require("src.ui.Theme").load(Data) end)
 
     local pressB = false
     local function makeGame()
-      local mon = { species = 393, level = 16, hp = 40, stats = { hp = 40 }, nickname = "PIPLUP", moves = {} }
+      local mon = { species = hgss and 152 or 393, level = 16, hp = 40, stats = { hp = 40 }, nickname = hgss and "CHIKORITA" or "PIPLUP", moves = {} }
       return { data = Data, save = { party = { mon }, options = {} },
         input = { wasPressed = function(_, k) return k == "b" and pressB end, isDown = function() return false end },
         stack = { push = function() end, pop = function() end } }, mon
@@ -63,7 +78,7 @@ function love.load()
     end
     -- the full run
     local game, mon = makeGame()
-    local scene = E.new(game, mon, 394, function() end, "LEVEL", nil)
+    local scene = E.new(game, mon, hgss and 153 or 394, function() end, "LEVEL", nil)
     scene:enter()
     local shots = { 4, 40, 140, 175, 210, 260, 300 }
     local want, frame, phase = 1, 0, nil
@@ -85,7 +100,7 @@ function love.load()
     end
     -- a cancelled run
     game, mon = makeGame()
-    scene = E.new(game, mon, 394, function() end, "LEVEL", nil)
+    scene = E.new(game, mon, hgss and 153 or 394, function() end, "LEVEL", nil)
     scene:enter()
     for f = 1, 700 do
       pressB = scene.phase == "alternate" and scene.t == 30
@@ -116,5 +131,5 @@ function love.load()
     end
   end, debug.traceback)
   if not ok then print(err) end
-  love.event.quit()
+  love.event.quit(ok and 0 or 1)
 end

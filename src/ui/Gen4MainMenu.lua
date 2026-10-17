@@ -97,6 +97,7 @@ function Gen4MainMenu.new(game, opts)
   self.index = 1
 
   local rec = (game.data and game.data.gen4_menus) or {}
+  self.hgss = rec.hgss
   self.layout = rec.layout or FALLBACK.layout
   self.colors = rec.colors or FALLBACK.colors
   self.continueRows = rec.continueRows or FALLBACK.continueRows
@@ -117,7 +118,7 @@ function Gen4MainMenu.new(game, opts)
   end
   -- The launcher's own row, as on every other title: without it Platinum would
   -- be the one game with no way back to the game list.
-  items[#items + 1] = { key = "exit", label = Strings("EXIT GAME"), lines = 1 }
+  items[#items + 1] = { key = "exit", label = Strings("EXIT GAME"), lines = self.hgss and 2 or 1 }
 
   local hooked = Runtime.call("ui.title_menu.items", sameItems, game, items)
   if type(hooked) == "table" then
@@ -217,9 +218,9 @@ function Gen4MainMenu:value(key)
     if not ok then return "0" end
     local got, count = pcall(Badges.count, self.game.data, save)
     return tostring((got and tonumber(count)) or 0)
-  elseif key == "seenCount" then
+  elseif key == "seenCount" or key == "ownedCount" then
     local n = 0
-    for _ in pairs((save.pokedex or {}).seen or {}) do n = n + 1 end
+    for _ in pairs((save.pokedex or {})[key == "ownedCount" and "owned" or "seen"] or {}) do n = n + 1 end
     if n == 0 then
       for _ in pairs((save.pokedex or {}).owned or {}) do n = n + 1 end
     end
@@ -377,7 +378,7 @@ function Gen4MainMenu:drawContinue(tx, ty, tw, oy)
   if pair then Font.popStyle() end
 end
 
-function Gen4MainMenu:draw()
+function Gen4MainMenu:drawMenu()
   local g = love.graphics
   local ink = self:ink()
   local bg = ink and rgb(ink.background) or self.colors.background or FALLBACK.colors.background
@@ -453,8 +454,44 @@ function Gen4MainMenu:draw()
     local img, rec = art(self, key)
     if img then g.draw(img, x + (rec.originX or -img:getWidth() / 2), yy + (rec.originY or -img:getHeight() / 2)) end
   end
-  if up then arrow("scroll_up", W / 2, 8) end
-  if down then arrow("scroll_down", W / 2, H - 8) end
+  if up then arrow("scroll_up", L.arrowX or W / 2, L.arrowUp or 8) end
+  if down then arrow("scroll_down", L.arrowX or W / 2, L.arrowDown or H - 8) end
+end
+
+function Gen4MainMenu:draw()
+  local SecondScreen = require("src.ui.SecondScreen")
+  local dual = self.hgss and (SecondScreen.separate(self.game))
+  if dual then
+    love.graphics.setColor(0,0,0,1)
+    love.graphics.rectangle("fill",0,0,W,H)
+    SecondScreen.draw(self.game,function() self:drawMenu() end)
+    self.game.secondScreenPointerOwner = self
+  else
+    self:drawMenu()
+  end
+end
+
+function Gen4MainMenu:touchpressed(id,x,y)
+  local S = require("src.ui.SecondScreen")
+  local dual = self.hgss and (S.separate(self.game))
+  local px,py
+  if dual then
+    px,py = S.toLocal(self.game,x,y)
+    if not px then return false end
+  else
+    local r = require("src.render.Renderer").uiPresentation
+    if r then px,py=(x-r.x)/r.scaleX,(y-r.y)/r.scaleY else px,py=x,y end
+  end
+  if px<0 or py<0 or px>=W or py>=H then return false end
+  local L,tops = self.layout,self:tops()
+  for i,item in ipairs(self.items) do
+    local top=(tops[i]-1)*8-(self.scrollPos or 0)
+    local bottom=top+((item.lines or 1)*L.lineTiles+2)*8
+    if px>=(L.optionX-1)*8 and px<(L.optionX+L.optionWidth+1)*8 and py>=top and py<bottom then
+      self.index=i; self:targetScroll(); beep(self); self:choose(); return true
+    end
+  end
+  return false
 end
 
 return Gen4MainMenu

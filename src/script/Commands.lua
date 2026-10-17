@@ -169,7 +169,10 @@ local function gen4Markup(text, game)
   if type(text) ~= "string" or not text:find("{", 1, true) then return text end
   local slots = game and game.stringBuffers
   return (text:gsub("{(%u[%u_0-9]*)([^}]*)}", function(name, rest)
-    if name == "STRVAR_1" or name == "STRVAR_6" then
+    -- HGSS also fills 0x0300, 0x0400 and 0x3400 (MsgArray_ControlCodeIsStrVar,
+    -- string_control_code.c): 208 lines, the Groups' names among them
+    if name == "STRVAR_1" or name == "STRVAR_6" or name == "STRVAR_3" or name == "STRVAR_4"
+       or name == "STRVAR_34" then
       -- `<low> <param0> <param1>`: the middle one.
       local param0 = rest:match("^%s*%d+%s+(%d+)")
       local value = param0 and slots and slots[tonumber(param0) + 1]
@@ -631,6 +634,11 @@ function Commands.start_battle(ctx, kind, a, b, opts)
     -- BATTLE_TYPE_LEGENDARY, which only the three legendary specials set.
     -- The transition reads it (see OverworldState:pushBattleTransition).
     if opts and opts.legendary then battle.legendary = true end
+    -- Platinum's Encounter_NewFatefulVsSpeciesAtLevel: the wild Pokemon
+    -- carries the fateful-encounter mark (Shaymin, Darkrai)
+    if opts and opts.fateful and battle.enemy and battle.enemy.mon then
+      battle.enemy.mon.fatefulEncounter = true
+    end
   else
     battle = BattleState.newTrainer(ctx.game, a, b)
     -- the beaten trainer's own line, printed on the battle screen before

@@ -181,7 +181,7 @@ if os.getenv("PARTY_DETAIL") then
       for i, mon in ipairs((G and G.save and G.save.party) or {}) do
         local moves = {}
         for _, mv in ipairs(mon.moves or {}) do moves[#moves + 1] = tostring(mv.id) end
-        print0(("  party %d: species %s friendship %s egg %s moves %s"):format(i, tostring(mon.species),
+        print0(("  party %d: species %s level %s shiny %s fateful %s friendship %s egg %s moves %s"):format(i, tostring(mon.species), tostring(mon.level), tostring(require("src.pokemon.Pokemon").isShiny(mon)), tostring(mon.fatefulEncounter),
           tostring(mon.happiness or mon.friendship), tostring(mon.isEgg or mon.egg or false),
           table.concat(moves, ",")))
       end

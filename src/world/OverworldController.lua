@@ -1734,6 +1734,14 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
       require("src.script.Gen3Commands").clearTempFieldEventData(Game.save)
     end)
   end
+  -- ...and Sinnoh / Johto's, from the same call (field_warp_tasks.c, on every
+  -- warp and every connection).  See Gen4Commands.clearTempFieldEventData for
+  -- the Twinleaf report it fixes.
+  if GameVersion.isGen4() and Game and Game.save then
+    pcall(function()
+      require("src.script.Gen4Commands").clearTempFieldEventData(Game.save)
+    end)
+  end
 
   -- fires before the onEnter chain so a listener sees the map in the same
   -- state the map script does
@@ -3297,6 +3305,17 @@ function OverworldState:update(dt)
   -- ...and Platinum's surf mount, which bobs and carries the player sprite
   if self.map and self.map.def and self.map.def.header then
     require("src.world.Gen4SurfMount").tick(self)
+  end
+  -- ...and the Kimono Girls' dance (HgssLegendCutscene), once a frame
+  do
+    local LC = package.loaded["src.world.HgssLegendCutscene"]
+    if LC and LC.state then
+      local okL, errL = pcall(LC.tick, self)
+      if not okL then
+        Logger.warn("hgss legend cutscene: %s", tostring(errL))
+        LC.reset()
+      end
+    end
   end
   -- ...and HeartGold / SoulSilver's Bug-Catching Contest clock and endings
   if Game.save and Game.save.g2BugContest and Game.save.g2BugContest.hgss then
@@ -4925,12 +4944,16 @@ function OverworldState:handleInput()
   end
   if input:wasPressed("l") then
     local SecondScreen = require("src.ui.SecondScreen")
-    if SecondScreen.available(Game) then
+    local family = (GameVersion.info() or {}).family
+    local poketchOn = require("src.pokemon.Gen4PoketchState").owned(Game.save)
+    -- the watch only once it is given (see Game:draw); BW's C-Gear is not built
+    if SecondScreen.available(Game) and (family == "hgss" or (family ~= "bw" and poketchOn)) then
       Game.secondScreenUp = true
       -- By its own id, not through an alias: there is no Game Boy Poketch for
       -- `GEN4_ALIASES` to stand in front of, so an alias would be a redirect
       -- from a screen that does not exist.
-      Screens.push(Game, "Gen4Poketch", {
+      local version = GameVersion.info()
+      Screens.push(Game, version and version.family == "hgss" and "StartMenu" or "Gen4Poketch", {
         onCancel = function() Game.secondScreenUp = false end,
       })
       return
@@ -8762,6 +8785,17 @@ local function screenWeather(self)
 end
 
 function OverworldState:drawFieldWeather()
+  -- HEARTGOLD'S FALLING LEAVES over the Bell Tower dance (HgssLegendCutscene)
+  do
+    local LC = package.loaded["src.world.HgssLegendCutscene"]
+    if LC and LC.leavesActive() then
+      local r = Game.renderer
+      self.legendLeavesDraw = self.legendLeavesDraw or function(w, h) return LC.drawLeaves(w, h) end
+      if r then r.screenWeather = self.legendLeavesDraw return true end
+      local w, h = self:uiSize()
+      return LC.drawLeaves(w, h)
+    end
+  end
   -- PLATINUM'S SNOW is its own (Gen4SnowView), not Hoenn's
   if GameVersion.isGen4() then
     local SV = require("src.render.Gen4SnowView")
@@ -8776,6 +8810,17 @@ function OverworldState:drawFieldWeather()
       return SV.draw(w, h)
     elseif require("src.world.Gen4Snow").wanted() then
       return false
+    end
+    -- THE DARK CAVES: black but a circle at the player (Gen4FlashDark), not
+    -- Hoenn's veil; it opens out when Flash lights the cave
+    local W = require("src.import.Gen4Weather")
+    local FD = require("src.render.Gen4FlashDark")
+    local dark = W.nameFor(Game.save and Game.save.gen4WeatherActive) == "DARK_FLASH"
+    if FD.update(self.map and self.map.id, dark, self.weatherFrame) then
+      local r = Game.renderer
+      if r then r.screenWeather = FD.draw return true end
+      local w, h = self:uiSize()
+      return FD.draw(w, h)
     end
   end
   local name = self:fieldWeather()
@@ -11609,7 +11654,9 @@ function OverworldState:startTrainerApproach(npc, dist, partner)
   -- which the common encounter script asks for again -- the same song, so
   -- Music.play's dedupe keeps it running rather than restarting it.
   local g4 = type(npc.def and npc.def.trainer) == "table" and npc.def.trainer
-  if not sting and g4 and GameVersion.isGen4() then
+  -- (HGSS and Black / White too: Gen4BattleMusic.eyes writes theirs in the
+  -- same shape)
+  if not sting and g4 and GameVersion.isNds() then
     sting = require("src.import.Gen4TrainerMusic").forClass(Game.data, g4.class)
   end
   if sting then
@@ -13625,6 +13672,14 @@ end
 function OverworldState:gen4SafariStep()
   local st = Game.save.safari
   if not st then return false end
+  -- HGSS COUNTS NO STEPS (FieldSystem_UpdateSafari checks the balls only);
+  -- out of balls runs the `safari` band's std_safari_balls_out (8803)
+  if st.hgss then
+    if (st.balls or 0) > 0 then return false end
+    local rows = require("src.world.Gen4TileScripts").compile(Game.data, "safari", 3)
+    if rows then self:queueScript(rows, { mapId = self.map.id }) end
+    return rows ~= nil
+  end
   local entry
   if (st.balls or 0) <= 0 then
     entry = 2
@@ -13648,6 +13703,20 @@ function OverworldState:gen4SafariAfterBattle(result, battle)
   if not st then return end
   local Tile = require("src.world.Gen4TileScripts")
   local caught = result == "caught"
+  -- HGSS (encounter.c Task_SafariEncounter): no balls and it got away ->
+  -- back to the gate's warp; no balls on the catch -> balls out (8803)
+  if st.hgss then
+    if (st.balls or 0) <= 0 then
+      if caught then
+        local rows = Tile.compile(Game.data, "safari", 3)
+        if rows then self:queueScript(rows, { mapId = self.map.id }) end
+      else
+        local loc = Game.save.gen4SpecialLocation
+        if loc and loc.map then self:startWarpTo(loc.map, loc.x, loc.y, loc.facing or "down") end
+      end
+    end
+    return
+  end
   if (st.balls or 0) <= 0 then
     if caught then
       local rows = Tile.compile(Game.data, "safari_game", 2)
@@ -17124,6 +17193,8 @@ function OverworldState:drawWorld()
     -- is planted, grows and is picked without the map reloading, so its
     -- emptiness is asked at draw time rather than remembered at spawn.
     local plotEmpty = plotIsEmpty
+    -- the ground whose depth the entity pass is drawing into, while it is
+    local spriteDepthGround = nil
     -- SINNOH'S CHARACTERS STAND ON SOMETHING.  Built once per frame rather
     -- than per entity, and nil on every other generation -- see
     -- `src/render/Gen4Shadows`, and `src/import/Gen4Shadow` for where the
@@ -17180,12 +17251,28 @@ function OverworldState:drawWorld()
           -- does not have, and a shadow in the wrong place is worse than none.
           return
         end
+        -- IN THE WORLD'S DEPTH on Sinnoh's cartridge camera
+        -- (Gen4Ground:beginSprites): the billboard origin's depth, so a prop in
+        -- front of a character hides them; nil leaves the draw as it was
+        local depth = spriteDepthGround and spriteDepthGround:billboardDepth(
+          (e.px or 0) + (e.shiftPx or 0), e.py or 0,
+          e.spriteOffset and e.spriteOffset.lift, e.spriteOffset and e.spriteOffset.oz)
         -- UNDER the sprite, and lifted by the same terrain rise it is, so a
         -- character on a slope keeps their feet on it.
         if shadows then
-          shadows:draw(self.map, e, cam.x, cam.y, e == self.player, riseOf(e))
+          if depth then
+            spriteDepthGround:withSpriteDepth(depth, function()
+              shadows:draw(self.map, e, cam.x, cam.y, e == self.player, riseOf(e))
+            end, false)
+          else
+            shadows:draw(self.map, e, cam.x, cam.y, e == self.player, riseOf(e))
+          end
         end
-        e:draw(cam.x, cam.y + riseOf(e))
+        if depth then
+          spriteDepthGround:withSpriteDepth(depth, function() e:draw(cam.x, cam.y + riseOf(e)) end)
+        else
+          e:draw(cam.x, cam.y + riseOf(e))
+        end
         -- tall grass overdraws the sprite's feet (GB sprite priority);
         -- the overdraw is BG tiles, so it rides the shake offset too
         love.graphics.setColor(1, 1, 1, 1)
@@ -17391,13 +17478,27 @@ function OverworldState:drawWorld()
     -- same priority on hardware.  Draw it immediately before the entity pass.
     fxSSAnneWake()
     local onTop = nil
+    -- SINNOH'S CARTRIDGE CAMERA: the characters go into the world's own depth
+    -- buffer (Gen4Ground:beginSprites) so props in front of them hide them
+    if groundForRise and not freeGround and groundForRise.beginSprites
+       and groundForRise:beginSprites() then
+      spriteDepthGround = groundForRise
+    end
     for _, e in ipairs(self.entities) do
       if self:gen3AboveTopLayer(e) then
         onTop = onTop or {}
         onTop[#onTop + 1] = e
       else
-        drawEntity(e)
+        local okE, errE = pcall(drawEntity, e)
+        if not okE then
+          if spriteDepthGround then spriteDepthGround:endSprites(); spriteDepthGround = nil end
+          error(errE, 0)
+        end
       end
+    end
+    if spriteDepthGround then
+      spriteDepthGround:endSprites()
+      spriteDepthGround = nil
     end
     -- The Gen 3 top layer goes on AFTER the entity pass and before the
     -- field effects: it is the half of every metatile the player walks

@@ -112,6 +112,22 @@ function Gen4TexAnim.materials(records, frame, images)
       end
     end
   end
+  -- BMA0: a material's colour over time. Only its ALPHA is played (0..31,
+  -- a byte a frame) -- the fades of the legendary cutscenes' glimmers and
+  -- rings; the four colours would need the model's own base material to be
+  -- relative to, which the packed shapes do not carry.
+  for _, record in ipairs(records) do
+    if record.kind == "BMA0" and record.colour then
+      for _, target in ipairs(record.colour) do
+        if target.name and type(target.alpha) == "table" and target.alpha[1] then
+          local state = out[target.name] or {}
+          state.alpha = (tonumber(at(target.alpha, frame, 31)) or 31) / 31
+          out[target.name] = state
+          any = true
+        end
+      end
+    end
+  end
   if not any then return nil end
   return out
 end
@@ -124,6 +140,7 @@ function Gen4TexAnim.animates(records, images)
   if type(records) ~= "table" then return false end
   for _, record in ipairs(records) do
     if record.kind == "BTA0" and record.srt then return true end
+    if record.kind == "BMA0" and record.colour then return true end
     if record.kind == "BTP0" and record.pattern and images then
       for _, name in ipairs(record.pattern.textures or {}) do
         if images[name] then return true end

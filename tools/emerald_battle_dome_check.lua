@@ -104,5 +104,34 @@ if pret then
   check(j == 16 and ok, 'sTourneyTreeTrainerOpponentIds matches the source')
 end
 
+-- THE TEAM COMES BACK EVERY ROUND (reported: two after round 1, the rest gone
+-- after the challenge). The lobby stashes the party (special 40); each round
+-- runs LoadPlayerParty (41) and then ReduceDomePlayerPartyToSelectedMons, so
+-- 41 must leave the stash in place, as the cartridge's copy stays.
+do
+  local function mon(n, pid) return { species = n, personality = pid, otId = 1, level = 50 } end
+  local save = { party = { mon('A', 1), mon('B', 2), mon('C', 3), mon('D', 4), mon('E', 5), mon('F', 6) }, vars = {} }
+  local ctx = { save = save, game = { data = {} } }
+  local function names() local t = {} for _, m in ipairs(save.party) do t[#t + 1] = m.species end return table.concat(t) end
+  G3.SPECIALS[40](ctx)
+  local rounds = {}
+  for _, picks in ipairs({ { 1, 2 }, { 1, 3 }, { 2, 3 } }) do
+    G3.SPECIALS[41](ctx)
+    save.gen3SelectedOrder = picks
+    G3.reduceToChosen(ctx, true)
+    rounds[#rounds + 1] = names()
+  end
+  G3.SPECIALS[41](ctx)
+  check(table.concat(rounds, ' ') == 'AB AC BC' and names() == 'ABCDEF',
+    ('Dome rounds cut from the whole team and it comes back (%s, then %s)'):format(table.concat(rounds, ' '), names()))
+  -- ...and a save the old bug left gets its stranded member back, once
+  local F = require('src.script.Gen3BattleFrontier')
+  local broken = { party = { mon('A', 1), mon('B', 2) }, boxes = {},
+                   gen3Frontier = { dome = { playerMons = { mon('A', 1), mon('B', 2), mon('C', 3) } } } }
+  local first, second = F.recoverStranded(broken), F.recoverStranded(broken)
+  check(first == 1 and second == 0 and #broken.party == 3 and broken.party[3].species == 'C',
+    'a stranded Dome entrant is returned once')
+end
+
 print(('%d checks, %d failed'):format(PASS + FAIL, FAIL))
 if FAIL > 0 then os.exit(1) end

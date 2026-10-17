@@ -46,6 +46,16 @@ end
 local function shiftFont(p) return p >= 4 and p + 1 or p end
 
 M.ALIAS = {
+  -- Matched to Platinum member by member: all 37 chars/cells/animations
+  -- and all 39 palettes are byte-identical. HGSS owns its programs (501)
+  -- and particle records (486 moves, 133 balls).
+  ["/wazaeffect/we.arc"] = { path = "/a/0/1/0" },
+  ["/wazaeffect/effectdata/waza_particle.narc"] = { path = "/a/0/2/9" },
+  ["/wazaeffect/effectdata/ball_particle.narc"] = { path = "/a/0/9/5" },
+  ["/wazaeffect/effectclact/wechar.narc"] = { path = "/a/0/2/2" },
+  ["/wazaeffect/effectclact/wepltt.narc"] = { path = "/a/0/2/3" },
+  ["/wazaeffect/effectclact/wecell.narc"] = { path = "/a/0/2/4" },
+  ["/wazaeffect/effectclact/wecellanm.narc"] = { path = "/a/0/2/5" },
   ["/battle/graphic/pl_batt_obj.narc"] = { path = "/a/0/0/8" },
   ["/battle/graphic/pl_batt_bg.narc"] = { path = "/a/0/0/7", member = shiftBg },
   ["/battle/graphic/pl_b_plist_gra.narc"] = { path = "/a/0/7/1" },
@@ -57,7 +67,19 @@ M.ALIAS = {
   -- the item icons (NARC_itemtool_itemdata_item_icon, 797 members); the
   -- ARM9 item -> icon table is found and verified exactly as on Platinum
   ["/itemtool/itemdata/item_icon.narc"] = { path = "/a/0/1/8" },
+  -- THE SCREENS THAT MAP (scratch_claude/hgss_ui_screens_map.md, member by
+  -- member against both ROMs): the naming screen's namein (/a/0/3/1, the same
+  -- 19 members, four of them HGSS's own art), the mart's top screen
+  -- (/a/0/6/0, members 0-10), and the bag archive's tap ripple (34-37 -> 27-30)
+  ["/data/namein.narc"] = { path = "/a/0/3/1" },
+  ["/graphic/shop_gra.narc"] = { path = "/a/0/6/0" },
+  ["/graphic/pl_bag_gra.narc"] = { path = "/a/0/1/5",
+    member = function(p) return (p >= 34 and p <= 37) and p - 7 or p end },
 }
+
+-- the party menu's blanked HP bar on an egg: FillBgTilemapRect(..., 0x4B, ...)
+-- (party_menu.c 1129-1131) where Platinum fills 0x17
+M.EGG_TILE = 0x4B
 
 M.MOVE_BUTTON_OVERLAY = 6
 
@@ -172,11 +194,32 @@ function M.extract(x)
   end
   x.extractWindowFrames = function(self) return self._winFrames end
 
+  local Party = require("src.import.Gen4PartyArt")
+  local eggTile = Party.EGG_TILE
+  Party.EGG_TILE = M.EGG_TILE
   local ok, err = pcall(function()
     x:extractGraphics()
     x:moveButtons()
     x:battleArt()
+    x:extractMoveAnims()
+    if x._moveAnims and x._moveAnims.skipped>0 then
+      print(('HGSS move animations: %d programs use unsupported HGSS-only opcodes; generic effects remain for these moves'):format(x._moveAnims.skipped))
+    end
+    x:extractParticles()
+    x:extractCellActors()
+    -- the screens that are Platinum's under other numbers
+    x:extractNaming()
+    x:partyArt()
+    local shop = require("src.import.Gen4ShopArt").images(x.rom)
+    if shop then
+      local index = {}
+      for key, image in pairs(shop) do
+        index[key] = x:saveImage("shop_art/" .. key, image, { originX = image.originX, originY = image.originY })
+      end
+      x:write("gen4_shop_art", index)
+    end
   end)
+  Party.EGG_TILE = eggTile
 
   x.rom, x._archives = saved.rom, saved.archives
   Screens.planAll, UiRes.images = saved.plan, saved.ui

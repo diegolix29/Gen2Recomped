@@ -192,6 +192,20 @@ int w_mkdirs(lua_State *L)
 	return 1;
 }
 
+int w_httpRequest(lua_State *L)
+{
+	const char *json = luaL_checkstring(L, 1);
+	luax_pushstring(L, instance()->httpRequest(json));
+	return 1;
+}
+
+int w_walkerNotify(lua_State *L)
+{
+	const char *json = luaL_checkstring(L, 1);
+	luax_pushboolean(L, instance()->walkerNotify(json));
+	return 1;
+}
+
 int w_syncHealthSteps(lua_State *L)
 {
 	luax_pushboolean(L, instance()->syncHealthSteps());
@@ -247,6 +261,8 @@ static const luaL_Reg functions[] =
 	{ "requestStorageAccess", w_requestStorageAccess },
 	{ "pathIsAppOwned", w_pathIsAppOwned },
 	{ "mkdirs", w_mkdirs },
+	{ "walkerNotify", w_walkerNotify },
+	{ "httpRequest", w_httpRequest },
 	{ "syncHealthSteps", w_syncHealthSteps },
 	{ "restartApp", w_restartApp },
 	{ "httpDownload", w_httpDownload },

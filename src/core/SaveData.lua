@@ -1668,7 +1668,10 @@ function SaveData.validate(save, data)
   -- hall of fame rosters keep their shape: an unknown species blanks in
   -- place so the team stays the size it won at, with the rest of the mon
   -- (level etc.) intact for display
-  for _, entry in ipairs(save.hallOfFame or {}) do
+  -- Gen3 stores the induction COUNT here (including zero), not rosters.
+  -- Keep it numeric: Champion/Mystery Gift code reads and increments it.
+  local rosters = type(save.hallOfFame) == "table" and save.hallOfFame or {}
+  for _, entry in ipairs(rosters) do
     if type(entry) == "table" then
       for i = 1, #entry do
         local mon = entry[i]

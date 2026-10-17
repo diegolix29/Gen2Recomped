@@ -1230,10 +1230,12 @@ local MARKER_PATH = "rom-cache.complete"
 -- The marker a finished import writes for a version: the generation tag plus
 -- that version's ROM hash, so both a format bump and a swapped ROM invalidate.
 local function markerFor(version)
-  local revision = version == "platinum" and "platinum-audio-ui-v16:" or ""
+  local revision = version == "platinum" and "platinum-geometry-v17:" or ""
+  if version == "black" or version == "white" then revision = "gen5-juniper-v4:" end
   if version == "emerald" then revision = "emerald-map-popup-v2:" end
   if version == "polishedcrystal" then revision = "polished-stored-unown-forms-v7:" end
   if version == "prism" then revision = "prism-events-art-v2:" end
+  if version == "heartgold" or version == "soulsilver" then revision = "hgss-opening-montage-v6:" end
   -- Include version-specific field encounters, sleep, swarm and rate tables.
   -- Only these three caches need rebuilding; other markers remain stable.
   if version == "gold" or version == "silver" or version == "crystal" then
@@ -2726,14 +2728,15 @@ local function chooseSav()
   local platform = love.system.getOS()
   if platform == "OS X" then
     return commandOutput(
-      ([[osascript -e 'POSIX path of (choose file with prompt "%s" of type {"sav"})' 2>/dev/null]])
+      ([[osascript -e 'POSIX path of (choose file with prompt "%s" of type {"sav", "dsv"})' 2>/dev/null]])
         :format(prompt))
   elseif platform == "Windows" then
     local script = table.concat({
       "Add-Type -AssemblyName System.Windows.Forms;",
       "$d=New-Object System.Windows.Forms.OpenFileDialog;",
       "$d.Title='" .. prompt .. "';",
-      "$d.Filter='Game Boy save (*.sav)|*.sav|All files (*.*)|*.*';",
+      -- .dsv: DeSmuME's DS save (SaveFileIO unwraps it)
+      "$d.Filter='Save file (*.sav;*.dsv)|*.sav;*.dsv|All files (*.*)|*.*';",
       -- UTF-8, like the ROM and mod pickers (#325)
       "if($d.ShowDialog() -eq 'OK'){[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write($d.FileName)}",
     })
@@ -2741,11 +2744,11 @@ local function chooseSav()
       'powershell -NoProfile -STA -Command "' .. script .. '"')
   elseif platform == "Linux" then
     local path = commandOutput(
-      ([[zenity --file-selection --title="%s" --file-filter="Game Boy save | *.sav" 2>/dev/null]])
+      ([[zenity --file-selection --title="%s" --file-filter="Save file | *.sav *.dsv" 2>/dev/null]])
         :format(prompt))
     if path then return path end
     return commandOutput(
-      [[kdialog --getopenfilename "$HOME" "*.sav|Game Boy save" 2>/dev/null]])
+      [[kdialog --getopenfilename "$HOME" "*.sav *.dsv|Save file" 2>/dev/null]])
   end
   return nil
 end
@@ -5528,6 +5531,9 @@ function RomImporter:draw()
   love.graphics.rectangle("fill", 0, 0, fullW, fullH)
   love.graphics.setColor(1, 1, 1, 1)
   love.graphics.draw(self.bgMesh)
+  -- the sidebar launcher's live background: a game's own main menu (or a
+  -- chosen video) behind everything, under a scrim (LauncherBackdrop)
+  if self.sidebarMode and self._sbDrawBackdrop then self:_sbDrawBackdrop(fullW, fullH) end
 
   -- Centered content container (max ~1440 scaled units on very wide windows)
   -- with a responsive side gutter; every column below derives from these.
@@ -5536,15 +5542,32 @@ function RomImporter:draw()
   local appX = ox + (width - appW) / 2
   local padH = clamp(appW * 0.03, 12 * s, 26 * s)
   local third = appW / 3
+  -- THE SIDEBAR (src/import/LauncherSidebar.lua): the rail down the left and
+  -- everything below laid out in what is left of the window beside it
+  local sbTopH = 0
+  if self.sidebarMode then
+    -- the top bar (strip + the Gen 2 logo, centred across the window) first,
+    -- then the rail under it
+    sbTopH = self:_sbDrawTopBar(ox, oy, width, s, height)
+    local sbW, sbCompact = self:_sbWidth(width, s)
+    self:_sbDrawRail(ox, oy + sbTopH, sbW, height - sbTopH, s, sbCompact)
+    appW = math.min(width - sbW, 1440 * s)
+    appX = ox + sbW + (width - sbW - appW) / 2
+    padH = clamp(appW * 0.03, 12 * s, 26 * s)
+    third = appW / 3
+  end
 
   -- tricolor strip (Red | Blue | Yellow), 6px tall, with a soft downward bloom
   local stripH = math.max(4, 6 * s)
   local stripY = oy
+  -- under the sidebar's top bar, which draws the strip across the window
+  if self.sidebarMode then stripY = oy + sbTopH - stripH end
   local segs = {
     { PAL.red,  appX,             third },
     { PAL.blue, appX + third,     third },
     { PAL.gold, appX + 2 * third, appW - 2 * third },
   }
+  if not self.sidebarMode then
   love.graphics.setBlendMode("add")
   for _, seg in ipairs(segs) do
     fillGrad(seg[2], stripY + stripH, seg[3], stripH * 3.6, seg[1], seg[1], 0.30, 0.0)
@@ -5552,6 +5575,7 @@ function RomImporter:draw()
   love.graphics.setBlendMode("alpha")
   for _, seg in ipairs(segs) do
     col(seg[1]); love.graphics.rectangle("fill", seg[2], stripY, seg[3], stripH)
+  end
   end
 
   -- Footer (Boi's Club Games logo + trust warning), measured first so the
@@ -5621,6 +5645,10 @@ function RomImporter:draw()
   local chip = 44 * s
   local tabBarY = math.max(logoY + math.max(logoDH,tiltBlockH),paypalLink and (paypalY+paypalH) or 0) + 6 * s
   local tabBarH = chip + 22 * s
+  if self.sidebarMode then
+    tabBarY = stripY + stripH + 12 * s
+    tabBarH = math.max(chip, self.gameNameFont:getHeight() + 14 * s)
+  end
 
   -- Self-updater banner state: computed up front so its band can be reserved
   -- above the footer, then drawn after the content below.
@@ -5710,13 +5738,17 @@ function RomImporter:draw()
   -- measurement below is what it always was.
   local viewportH = math.max(0, oy + height - contentTop)
   self._panelNaturalH = self._panelNaturalH or {}
-  local naturalH = (self._panelNaturalH[self.tab] or 0) + bannerBand + footerH
+  local panelKey = self.sidebarMode and self:_sbKey() or self.tab
+  local naturalH = (self._panelNaturalH[panelKey] or 0) + bannerBand + footerH
   local paged, pageScroll, maxPage =
     RomImporter.pageScrollFor(naturalH, viewportH, self.pageScroll)
   self.pageScroll, self._pageMax = pageScroll, maxPage
   -- read by the hit tests; a scrolled control is live only inside the viewport
   pageBand = paged and { contentTop, oy + height } or nil
 
+  if self.sidebarMode then
+    self:_sbDrawHeader(cX, tabBarY, barW, tabBarH)
+  else
   -- THE GEAR, top right, on every tab.
   --
   -- Pinned beside the tab bar rather than made a chip in it: the bar scrolls
@@ -5806,6 +5838,7 @@ function RomImporter:draw()
   -- tab bar (rebuilds self.tabRects).  Pinned: it is the launcher's navigation,
   -- and it sits above the scrolling viewport.
   self:_drawTabBar(cX, tabBarY, barW, tabBarH, chip)
+  end
 
   if batchText then
     local by = tabBarY + tabBarH + 10 * s
@@ -5833,7 +5866,13 @@ function RomImporter:draw()
 
   -- content: game panel for a version tab, mods panel for the mods tab
   local panelH
-  if self.tab == "mods" then
+  if self.sidebarMode and self:_sbOwns() then
+    panelH = self:_sbDrawContent(cX, panelY, cW, cH, paged)
+  elseif self.tab == "mods" and self.sidebarMode then
+    -- the sidebar's search / tags / sort row sits over the installed list
+    local barH = self:_sbModToolbar(cX, panelY, cW)
+    panelH = barH + (self:_drawModsPanel(cX, panelY + barH, cW, math.max(0, cH - barH), paged) or 0)
+  elseif self.tab == "mods" then
     panelH = self:_drawModsPanel(cX, panelY, cW, cH, paged)
   elseif self.tab == "find" then
     panelH = self:_drawFindPanel(cX, panelY, cW, cH, paged)
@@ -5841,7 +5880,7 @@ function RomImporter:draw()
     panelH = self:_drawGamePanel(self.tab, cX, panelY, cW, cH, paged)
   end
   panelH = panelH or 0
-  self._panelNaturalH[self.tab] = panelH
+  self._panelNaturalH[panelKey] = panelH
 
   -- THE SETTINGS DRAWER, over the panel it belongs to.
   --
@@ -5855,10 +5894,13 @@ function RomImporter:draw()
   -- viewport (it scrolls independently, so a row scrolled out of ITS view has
   -- to be dead even though the page has not scrolled at all).
   self.settingsDrawerRect = nil
-  if self.settingsOpen then
+  -- (the sidebar's Settings page draws its own, full height, over everything:
+  -- LauncherSidebar's draw wrapper)
+  if self.settingsOpen and not (self.sidebarMode and self.section == "settings") then
     local pad = 16 * s
     local dw = math.max(300 * s, math.min(560 * s, appW * 0.52))
     local dx = appX + appW - dw
+    if self.sidebarMode and self.section == "settings" then dx, dw = appX, appW end
     local dy = contentTop
     local dh = math.max(60 * s, contentBottom - contentTop)
     self.settingsDrawerRect = { x = dx, y = dy, width = dw, height = dh,
@@ -6123,6 +6165,9 @@ function RomImporter:draw()
   -- draw outside it.
   if paged then love.graphics.setScissor() end
 
+  if self.sidebarMode then
+    self:_sbDrawRailFoot(paypalLink)
+  else
   if paypalLink then
     local rect=self:_chipButton(appX+padH,paypalY,paypalLink.label,
       {font=paypalFont,w=paypalW,h=paypalH,r=16*s,kind="accent",pinned=true})
@@ -6164,6 +6209,7 @@ function RomImporter:draw()
   col(PAL.ink)
   printfB("Use code\nGEN2RECOMP",0,0,tiltTargetW / tiltCodeScale,"center")
   love.graphics.pop()
+  end
 
   -- page scrollbar: the same thin thumb the lists use, against the app edge
   if paged then
@@ -6755,6 +6801,7 @@ function RomImporter:mousepressed(x, y, button)
     if inside(self.genDropdownRect, x, y) then return end
     return
   end
+  if self.sidebarMode and self:_sbMousepressed(x, y) then return end
   if inside(self.genDropdownRect, x, y) then
     self._genMenuOpen = true
     return
@@ -6973,6 +7020,12 @@ function RomImporter:mousepressed(x, y, button)
   for _, r in ipairs(self.slotEditRects or {}) do
     if inside(r, x, y) then
       if self.onEditSave then self.onEditSave(self.panelVersion, r.id) end
+      return
+    end
+  end
+  for _, r in ipairs(self.slotSyncRects or {}) do
+    if inside(r, x, y) then
+      if self._sbSyncSlot then self:_sbSyncSlot(self.panelVersion, r.id) end
       return
     end
   end
@@ -8014,6 +8067,18 @@ function RomImporter:_drawGamePanel(version, x, y, w, h, paged)
   local detailH = math.max(1, #dtl) * self.hintFont:getHeight()
   local btnH = math.max(40 * s, self.saveBtnFont:getHeight() + 22 * s)
   local romCardH = pad + labelH + 10 * s + stateH + 5 * s + detailH + 14 * s + btnH + pad
+  -- in the sidebar layout the import button lives on the About card above
+  -- (LauncherSidebar); the progress bar still shows here while importing
+  local romBtnElsewhere = self.sidebarMode and self.section == "games" and romProgress == nil
+  self._sbRomBtn = romBtnElsewhere and { label = romBtnLabel, enabled = romBtnEnabled } or nil
+  if romBtnElsewhere then romCardH = romCardH - 14 * s - btnH + 4 * s end
+  -- ...and once the ROM is in and there is nothing to report, the card goes:
+  -- the About card's buttons are all it was for. It comes back for an import
+  -- in progress, a failure, or a ROM this build needs re-imported.
+  local romCardHidden = romBtnElsewhere and ready and not locked
+    and not (self.workState == "error" and self.errorVersion == version)
+    and not self.returning[version]
+  if romCardHidden then romCardH = -12 * s end
 
   -- SAVE FILES card: Import save is live once the ROM is imported (playable);
   -- Export save is live only when the active slot actually holds a save.  The
@@ -8098,6 +8163,7 @@ function RomImporter:_drawGamePanel(version, x, y, w, h, paged)
   end
 
   -- ROM card
+  if not romCardHidden then
   roundedCard(leftX, romY, colW, romCardH, 16 * s)
   local ix, iy = leftX + pad, romY + pad
   love.graphics.setFont(self.labelFont)
@@ -8123,9 +8189,10 @@ function RomImporter:_drawGamePanel(version, x, y, w, h, paged)
       col(accent)
       love.graphics.rectangle("fill", ix, track, pw2, barH, barH / 2, barH / 2)
     end
-  else
+  elseif not romBtnElsewhere then
     self.romButtonRect =
       self:_glassyButton(ix, iy, innerW, btnH, romBtnLabel, self.saveBtnFont, romBtnEnabled)
+  end
   end
 
   -- SAVE FILES card: Import save (new slot) + Export save (active slot), with an
@@ -9521,6 +9588,7 @@ function RomImporter:_drawSaveSlotPanel(version, x, y, w, h, paged)
     self.slotRects = {}
     self.slotDeleteRects = {}
     self.slotEditRects = {}
+    self.slotSyncRects = {}
   elseif listH > 0 then
     -- clamp scroll against the current content extent, and stash the max so the
     -- wheel handler (which has no geometry) can clamp against the same value.
@@ -9535,6 +9603,7 @@ function RomImporter:_drawSaveSlotPanel(version, x, y, w, h, paged)
     self.slotRects = {}
     self.slotDeleteRects = {}
     self.slotEditRects = {}
+    self.slotSyncRects = {}
     -- Paged, the page viewport's scissor is already set and nothing here
     -- overflows the card, so leave it alone rather than replace and clear it.
     if not paged then
@@ -9577,6 +9646,17 @@ function RomImporter:_drawSaveSlotPanel(version, x, y, w, h, paged)
             w = edW, h = chipBtnH, id = slot.id, kind = "accent",
           })
           rightReserve = rightReserve + edW + btnGap + 6 * s
+        end
+
+        -- Sync (cloud saves, src/import/CloudSync.lua), left of Edit
+        if slot.exists and self._sbSyncSlot then
+          local syW = self.hintFont:getWidth("Sync") + 24 * s
+          local syX = (erect and erect.x or delX) - btnGap - syW
+          local syrect = self:_chipButton(syX, delY, "Sync", {
+            w = syW, h = chipBtnH, id = slot.id, kind = "neutral",
+          })
+          if syrect then self.slotSyncRects[#self.slotSyncRects + 1] = syrect end
+          rightReserve = rightReserve + syW + btnGap
         end
 
         -- LOADED pill top-right (above the button row, never over Delete)
@@ -10079,6 +10159,9 @@ function RomImporter:_drawModsPanel(x, y, w, h, paged)
   local s = self._s
   self:_ensureMods()
   local mods = self.mods or {}
+  if self.sidebarMode then
+    mods = require("src.import.LauncherSidebar").filterMods(mods, self.modSearch, self.modTag, self.modSort)
+  end
 
   -- header: "Mods" + "N of M enabled" (left) and "Import mod .zip" (right)
   love.graphics.setFont(self.gameNameFont)
@@ -11455,5 +11538,20 @@ function RomImporter:_drawFindPanel(x, y, w, h, paged)
   end
   return (top - y) + totalH
 end
+
+-- THE SIDEBAR LAUNCHER (src/import/LauncherSidebar.lua): News / Games / Mods /
+-- Tools / Settings down the left. It draws with this file's own helpers, which
+-- are locals, so they are handed over here in one table.
+RomImporter._ui = {
+  col = col, roundedCard = roundedCard, fillGrad = fillGrad,
+  fillGradRounded = fillGradRounded, neonGlow = neonGlow, buttonShine = buttonShine,
+  ellipsize = ellipsize, printSpaced = printSpaced, printB = printB, clamp = clamp,
+  inside = inside, unlockedByEnv = unlockedByEnv, chooseFileByExt = chooseFileByExt,
+  -- the page band the hover / button helpers clip against (nil = none);
+  -- returns the one it replaced
+  setPageBand = function(b) local was = pageBand; pageBand = b; return was end,
+  chooseFolder = chooseFolder,
+}
+require("src.import.LauncherSidebar").install(RomImporter)
 
 return RomImporter

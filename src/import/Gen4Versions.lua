@@ -83,6 +83,8 @@ local hgssPaths = {
   trainerBack = "/a/0/0/6",
   -- the party icons: NARC_poketool_icongra_poke_icon, pl_poke_icon's shape
   monIcons = Files.byName.poketool_icongra_poke_icon,
+  -- each species' battle-sprite frame script (NARC_ReadPokepicAnimScript)
+  pokeAnim = "/a/1/8/0",
 }
 
 -- /a/0/3/8 IS PLATINUM'S pl_winframe.narc WITH ONE MEMBER INSERTED: the same
@@ -139,7 +141,7 @@ V.MEMBER_NAMES = {
 
 -- the stages each family runs today (nil: every stage, the Platinum list)
 V.STAGES = {
-  hgss = { "text", "species", "moves", "items", "trainers", "gen4_trainer_messages", "encounters", "maps", "events", "regions", "tilesets", "constants", "overworld", "species_sprites", "trainer_sprites", "heights", "field", "scripts", "link", "terrain", "models", "frames", "fonts", "battle_graphics", "follow_mon" },
+  hgss = { "text", "species", "moves", "items", "trainers", "gen4_trainer_messages", "encounters", "maps", "events", "regions", "tilesets", "constants", "overworld", "species_sprites", "trainer_sprites", "heights", "field", "scripts", "link", "terrain", "models", "frames", "fonts", "battle_graphics", "follow_mon", "hgss_screens", "battle_music" },
 }
 
 function V.family(version) return V.FAMILY[version] or "platinum" end

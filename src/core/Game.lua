@@ -930,7 +930,24 @@ function Game:draw()
     local okSS, SS = pcall(require, "src.ui.SecondScreen")
     if okSS and SS.mode and (SS.mode(self) == "display" or SS.combined(self))
        and not self.secondScreenDrawnThisFrame then
-      local okP, Poketch = pcall(require, "src.ui.Gen4Poketch")
+      local version = require("src.core.GameVersion").info()
+      local family = version and version.family
+      -- THE WATCH ONLY ONCE IT IS ON THE WRIST: Platinum's lower screen shows
+      -- the Pokétch after `enablepoketch` (Jubilife) and nothing before; Black
+      -- and White's is the C-Gear, not Platinum's watch (not built yet), so
+      -- theirs stays blank too
+      local poketchOn = require("src.pokemon.Gen4PoketchState").owned(self.save)
+      local panelModule = family == "hgss" and "src.ui.HgssFieldPanel"
+        or (family ~= "bw" and poketchOn and "src.ui.Gen4Poketch") or nil
+      local okP, Poketch = false, nil
+      if panelModule then okP, Poketch = pcall(require, panelModule) end
+      if not panelModule then
+        pcall(SS.draw, self, function()
+          love.graphics.setColor(0, 0, 0, 1)
+          love.graphics.rectangle("fill", 0, 0, 256, 192)
+          love.graphics.setColor(1, 1, 1, 1)
+        end)
+      end
       if okP and Poketch and Poketch.new then
         if not self.secondScreenOverworldPoketch then
           local okNew, p = pcall(Poketch.new, self, {})
@@ -1868,6 +1885,12 @@ function Game:restoreSave(loaded, recovered)
   -- SaveData.load and skip on the format guard
   local activeMods = self.modStatus and self.modStatus.loaded
   SaveData.runMigrations(loaded, self.mods and self.mods.migrations, activeMods)
+  -- a party set aside for a borrowed-team battle (src/pokemon/PartyAside.lua)
+  -- when the save was written: the battle is over, so it is the party again --
+  -- first, so validation and the OT stamp below see the real team
+  pcall(require("src.pokemon.PartyAside").onLoad, loaded)
+  -- what the Pokewalker sent home (src/pokewalker/WalkerInbox.lua)
+  pcall(require("src.pokewalker.WalkerInbox").apply, loaded, self.data)
   -- PR #60 taught future FireRed League wins to keep the cartridge-native
   -- FLAG_DEFEATED_* bits and the older port EVENT_BEAT_* names in sync.  Saves
   -- already partway through the Elite Four predate that bridge and may have
@@ -1931,6 +1954,10 @@ function Game:restoreSave(loaded, recovered)
   end
   -- ...and Emerald's: a SaveGameFrontier save continues in the lobby
   if require("src.core.GameVersion").get() == "emerald" then
+    -- Pokemon a Frontier challenge stranded before LoadPlayerParty kept its
+    -- stash (Gen3BattleFrontier.recoverStranded): once per save, before the
+    -- continue point is consumed so a mid-challenge save is recognised
+    pcall(require("src.script.Gen3BattleFrontier").recoverStranded, loaded)
     require("src.script.Gen3BattleFrontier").applyContinue(loaded)
   end
   -- rebuild the state stack from the save (and drop a fade the overworld

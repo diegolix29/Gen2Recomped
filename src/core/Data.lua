@@ -165,8 +165,8 @@ local GEN4_MODULES = {
 local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
                         "gen4_naming", "gen4_dex", "gen4_models",
                         "gen4_terrain", "gen4_distortion_world",
-                        "gen4_weather_sys", "gen4_mail_gra", "gen4_voltorb_flip", "gen4_follow_mon", "gen5_battle_ui",
-                        "gen4_species_sprites",
+                        "gen4_weather_sys", "gen4_mail_gra", "gen4_voltorb_flip", "gen4_follow_mon", "gen5_battle_ui", "gen5_battle_scene", "gen5_evolution", "gen4_hgss_menu_art", "gen4_hgss_bag_art", "gen4_hgss_summary_art", "gen5_menu_art", "gen5_bag_art", "gen5_summary_art", "gen4_hgss_dex_art", "gen4_hgss_box_art", "gen5_dex_art", "gen5_box_art", "gen4_hgss_pokegear_art", "gen4_legend_art", "gen4_hgss_safari", "gen4_alph_puzzle", "gen4_hgss_field_moves", "gen4_hgss_certificates",
+                        "gen4_species_sprites", "gen4_hgss_starter_art", "gen4_hgss_oak_art", "gen4_hgss_boot_art", "gen4_hgss_title_art", "gen5_boot_art", "gen5_main_menu_art", "gen5_juniper_art", "gen5_opening",
                         "gen4_move_anims", "gen4_particles",
                         "gen4_cellactors",
                         -- the name -> archive member hop for `var_0`..`var_f`;
@@ -231,6 +231,7 @@ local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
                         "gen4_berry_flavors",
                         -- each trainer class's eyes-meet theme (Gen4TrainerMusic).
                         "gen4_trainer_music",
+                        "gen4_battle_music",
                         -- contest_data.narc: contestants, judges, dress-ups, themes.
                         "gen4_contest", "gen4_contest_art", "gen4_dressup", "gen4_journal_art",
                         -- the Battle Tower's trainers and Pokemon sets (Gen4BattleTowerData).
