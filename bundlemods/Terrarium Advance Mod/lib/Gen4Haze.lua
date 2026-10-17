@@ -16,6 +16,16 @@
 -- translucent shells instead; their rims showed as horizontal edges across the
 -- buildings, which is why this replaced it.)
 --
+-- WHERE IT STARTS (measured PAST THE PLAYER, like Aerial.NEAR / FAR)
+--
+-- The haze starts NEAR_CHUNKS beyond the player, not beyond the camera. A
+-- third-person camera already sits ~100 units behind the player, so measuring from
+-- the eye put the start AT the player and the buildings next to you were
+-- stippled with haze. The eye-to-player distance is added to both ends of
+-- the ramp. Everything inside the start is untouched (alpha 0, not "dithered
+-- to nothing"), and the dither is half a rung wide so a surface only starts to
+-- stipple once it is well into the haze.
+--
 -- WHAT IT NEEDS
 --
 -- A READABLE depth buffer. The engine makes its depth write-only; Gen4Reflect
@@ -46,8 +56,8 @@ local Aerial = V.require("Aerial")
 
 local Haze = {
   enabled = true,
-  NEAR_CHUNKS = 0.2,     -- where the haze begins, in chunks from the eye (~100 units)
-  FAR_CHUNKS = 0.9,      -- where it tops out (~460 units)
+  NEAR_CHUNKS = 0.2,     -- where the haze begins, in chunks PAST THE PLAYER (~100 units)
+  FAR_CHUNKS = 0.9,      -- where it tops out, past the player (~460 units)
   -- Top-rung strength per V-HAZE option (OFF, 1, 2, 3). Heavier than Aerial.AMOUNTS
   -- (0.34 / 0.56 / 0.78), which were tuned for the voxel diorama. Keep the last
   -- one under 1, or the far edge becomes a hole the colour of the sky.
@@ -55,6 +65,10 @@ local Haze = {
   -- Size, in world units, of the cells the rung edges are dithered in (the
   -- shader's per-world-pixel grain). 0 = hard bands with no stipple.
   DITHER_CELL = 2,
+  -- How wide the stipple between two rungs is, in rungs. 1 = the voxel shader's
+  -- full rung (stipple begins the moment the ramp leaves zero); 0.5 keeps the
+  -- near edge of the haze clean. Ignored when DITHER_CELL is 0.
+  DITHER_WIDTH = 0.5,
   status = "idle",       -- what the last frame did, for probes and the log
 }
 
@@ -79,6 +93,7 @@ local SHADER = [[
   uniform highp vec4 fog;         // x = near, y = 1/span, z = top strength, w = rungs
   uniform highp vec3 fogColor;    // the sky's palest band
   uniform highp float cell;       // dither cell, world units (0 = none)
+  uniform highp float ditherW;    // stipple width, in rungs
 
   // the cleared depth: nothing was drawn there, so it is sky
 #define SKY_DEPTH 0.9999
@@ -95,6 +110,8 @@ local SHADER = [[
     // Voxel3D's own ramp: squared, so the near ground stays legible and the
     // cost piles up over the far half of the range
     float t = clamp((length(P - eye) - fog.x) * fog.y, 0.0, 1.0);
+    // inside the start of the haze nothing is touched, whatever the dither says
+    if (t <= 0.0) return vec4(0.0);
     t *= t;
 
     // hard rungs, dithered one rung wide in world space so the boundary is a
@@ -103,7 +120,7 @@ local SHADER = [[
       vec3 g = floor(P / cell);
       float n = fract(52.9829189 * fract(dot(g.xz + g.y * vec2(17.0, 31.0),
                                              vec2(0.06711056, 0.00583715))));
-      t = clamp(t + (n - 0.5) / fog.w, 0.0, 1.0);
+      t = clamp(t + (n - 0.5) * ditherW / fog.w, 0.0, 1.0);
     }
     t = floor(t * fog.w + 0.5) / fog.w;
 
@@ -168,6 +185,26 @@ local function inArenaPass()
   return Host ~= nil and type(Host.inPose) == "function" and Host.inPose() or false
 end
 
+-- Straight-line distance from the camera to the player (ground point under them):
+-- the extra path length the haze is measured PAST. 0 when the player is not known.
+local function eyeToPlayer(scene)
+  local eye = scene and scene.eye
+  if not eye then return 0 end
+  local okG, Game = pcall(require, "src.core.Game")
+  local p = okG and type(Game) == "table" and Game.overworld and Game.overworld.player or nil
+  if not (p and tonumber(p.px) and tonumber(p.py)) then return 0 end
+  local mx, mz = p.px + 8, p.py + 8
+  local gy = eye[2]
+  if scene.groundY then
+    local ok, y = pcall(scene.groundY, mx, mz)
+    if ok and tonumber(y) then gy = y end
+  end
+  local dx = mx + (scene.offsetX or 0) - eye[1]
+  local dy = gy - eye[2]
+  local dz = mz + (scene.offsetZ or 0) - eye[3]
+  return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
 -- Called by Gen4Bridge every frame from inside its scene. Draws nothing: it
 -- hangs the screen pass on first use and says whether THIS frame gets haze.
 function Haze.draw(scene)
@@ -186,7 +223,7 @@ function Haze.draw(scene)
   local col = hazeColor()
   if not col then Haze.status = "no sky"; return end
   local chunk = tonumber(scene and scene.ground and scene.ground.chunkPx) or 512
-  local near = Haze.NEAR_CHUNKS * chunk
+  local near = eyeToPlayer(scene) + Haze.NEAR_CHUNKS * chunk
   local span = (Haze.FAR_CHUNKS - Haze.NEAR_CHUNKS) * chunk
   if span <= 0 then Haze.status = "bad range"; return end
   Haze.live = { col = col, near = near, span = span, amount = amount }
@@ -235,6 +272,7 @@ function Haze.run(ground, view, vw, vh)
                                 math.max(1, Aerial.RUNGS or 4) })
     pcall(sh.send, sh, "fogColor", { st.col[1], st.col[2], st.col[3] })
     pcall(sh.send, sh, "cell", Haze.DITHER_CELL or 0)
+    pcall(sh.send, sh, "ditherW", Haze.DITHER_WIDTH or 1)
 
     -- colour only (no depth attached), the shader's own alpha does the mix:
     -- dst = haze * a + dst * (1 - a)
