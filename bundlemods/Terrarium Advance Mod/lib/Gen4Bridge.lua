@@ -95,6 +95,23 @@ local function sun()
 end
 Bridge.sun = sun
 
+-- Gen4Haze: V-HAZE (lib/Aerial) on Platinum's own world, as depth-tested shells
+-- drawn after the shadow receiver. Resolved once; nil if it will not load (no
+-- haze, everything else keeps working).
+local hazeMod, hazeTried
+local function haze()
+  if not hazeTried then
+    hazeTried = true
+    local ok, H = pcall(V.require, "Gen4Haze")
+    if ok and type(H) == "table" and type(H.draw) == "function" then hazeMod = H
+    elseif V.mod and V.mod.log then
+      V.mod.log:warn("Gen4Bridge: haze unavailable: " .. tostring(H))
+    end
+  end
+  return hazeMod
+end
+Bridge.haze = haze
+
 local function frameEnd()
   local B = budget()
   if not B then return end
@@ -286,6 +303,18 @@ local function runScene(ground, view, vw, vh, order, effects, tag)
       if not okR then
         report("shadows", "the shadow receiver failed: %s", tostring(errR))
         Bridge.disabled["shadows"] = true
+      end
+    end
+  end
+  -- The distance haze goes over the finished scene -- terrain, props, characters and
+  -- the shadows the receiver just laid down -- so it is the very last thing drawn.
+  if tag == "fx:" and not Bridge.disabled["haze"] then
+    local H = haze()
+    if H then
+      local okH, errH = pcall(H.draw, scene)
+      if not okH then
+        report("haze", "the haze pass failed: %s", tostring(errH))
+        Bridge.disabled["haze"] = true      -- don't fail every frame
       end
     end
   end
@@ -517,7 +546,7 @@ end
 function Bridge.invalidateAll()
   local S = sun()
   if S then pcall(S.invalidate) end
-  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass", "Gen4NpcModels", "Gen4Glass", "Gen4Lamps", "Gen4Light" }) do
+  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass", "Gen4NpcModels", "Gen4Glass", "Gen4Lamps", "Gen4Light", "Gen4Haze" }) do
     local ok, mod = pcall(V.require, name)
     if ok and type(mod) == "table" and type(mod.invalidate) == "function" then
       local okI, err = pcall(mod.invalidate)
