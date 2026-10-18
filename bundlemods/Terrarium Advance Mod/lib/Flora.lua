@@ -2949,7 +2949,8 @@ function Flora.drawGen4Life(state, ground, yaw, outdoor, project, sink)
       if not (g4.project and g4.sink) then return end
       local sx, sy, ps = g4.project(wx - g4.ox, wy, wz - g4.oz)
       if sx then
-        g4.sink(sx, sy, math.min(40, math.max(5, size * (tonumber(ps) or 1) * 2.5)), a)
+        g4.sink(sx, sy, math.min(40, math.max(5, size * (tonumber(ps) or 1) * 2.5)), a,
+                wx, wy, wz)     -- world point: Gen4Glow hides it behind scenery
       end
     end
   end

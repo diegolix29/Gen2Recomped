@@ -661,16 +661,20 @@ function AmbientLife.draw(project, scale)
         local blink = math.sin(c.t * 2.2 + c.seed)
         blink = math.max(0, blink - 0.35) / 0.65
         if blink > 0.01 then
-          g.setBlendMode("add")
-          g.setColor(0.95, 0.85, 0.35, 0.22 * blink * fade)
-          g.rectangle("fill", sx - s * 1.5, sy - s * 1.5, s * 3, s * 3)
-          g.setColor(1.0, 0.95, 0.55, 0.9 * blink * fade)
-          g.rectangle("fill", sx - s * 0.5, sy - s * 0.5, s, s)
-          -- Gen 4 multiplies the WHOLE frame by the night colour afterwards
-          -- (Gen4Tint), which would leave this a dim speck. The host sets a
-          -- sink that repaints the glow after that multiply.
           if AmbientLife.glowSink then
-            AmbientLife.glowSink(sx, sy, math.max(4, s * 5), 0.5 * blink * fade)
+            -- Gen 4: a flat rectangle here ignores the scene (it was painted over
+            -- trees and buildings), and Gen4Tint multiplies the whole frame by the
+            -- night colour afterwards. The host's sink takes the firefly's WORLD
+            -- point, hides it behind whatever is in front (Gen4Glow reads the
+            -- scene depth) and paints it after that multiply.
+            AmbientLife.glowSink(sx, sy, math.max(4, s * 5), 0.55 * blink * fade,
+                                 c.x, c.y, c.z)
+          else
+            g.setBlendMode("add")
+            g.setColor(0.95, 0.85, 0.35, 0.22 * blink * fade)
+            g.rectangle("fill", sx - s * 1.5, sy - s * 1.5, s * 3, s * 3)
+            g.setColor(1.0, 0.95, 0.55, 0.9 * blink * fade)
+            g.rectangle("fill", sx - s * 0.5, sy - s * 0.5, s, s)
           end
         end
       elseif c.kind == "leaf" then

@@ -208,6 +208,8 @@ end
 -- quarter second is ignored, so a frame that never refreshed it paints nothing.
 Tint.glows = {}
 Tint.glowAt = 0
+Tint.glowLayer = nil     -- Gen4Glow's depth-occluded version of the same glows
+Tint.glowLayerAt = 0
 function Tint.beginGlows()
   Tint.glows = {}
   Tint.glowAt = (love.timer and love.timer.getTime()) or 0
@@ -282,7 +284,14 @@ function Tint.paint(r, g, b)
 
   local glows = Tint.glows
   local nowT = (love.timer and love.timer.getTime()) or 0
-  if glow and glows and #glows > 0 and (nowT - (Tint.glowAt or 0)) < 0.25 then
+  local gLayer = Tint.glowLayer
+  if gLayer and (nowT - (Tint.glowLayerAt or 0)) < 0.25 then
+    -- Gen4Glow's layer: the same glows, already hidden behind whatever the scene
+    -- has in front of them. Its colour is accumulated pre-multiplied.
+    gfx.setBlendMode("add", "premultiplied")
+    gfx.setColor(1, 1, 1, 1)
+    gfx.draw(gLayer, 0, 0, 0, w / gLayer:getWidth(), h / gLayer:getHeight())
+  elseif glow and glows and #glows > 0 and (nowT - (Tint.glowAt or 0)) < 0.25 then
     gfx.setBlendMode("add", "alphamultiply")
     for _, b2 in ipairs(glows) do
       local rad = math.max(3, (b2.nr or 0.02) * w)

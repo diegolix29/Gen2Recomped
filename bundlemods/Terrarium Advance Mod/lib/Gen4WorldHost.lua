@@ -348,7 +348,23 @@ local function drawAmbient(ground, project, scale, sw, sh)
   local shader = g.getShader and g.getShader() or nil
   pcall(g.setDepthMode, "always", false)
   g.setShader()
-  AL.glowSink = Host._glowSink(sw, sh)
+  -- AmbientLife hands the sink its MAP-pixel position and height above the floor;
+  -- the sink wants a world point (map + the ground's matrix origin, floor added)
+  local base = Host._glowSink(sw, sh)
+  if base then
+    local ox, oz = ground.offsetX or 0, ground.offsetY or 0
+    AL.glowSink = function(sx, sy, rad, a, mx, my, mz)
+      if mx and mz then
+        local gy = 0
+        if type(ground.groundY) == "function" then
+          local ok, y = pcall(ground.groundY, ground, mx, mz)
+          if ok and tonumber(y) then gy = y end
+        end
+        return base(sx, sy, rad, a, mx + ox, (my or 0) + gy, mz + oz)
+      end
+      return base(sx, sy, rad, a)
+    end
+  end
   local ok, err = pcall(AL.draw, lifted, (scale or 1) * (Host.ambientScale or 1))
   AL.glowSink = nil
   g.setShader(shader)
@@ -359,15 +375,25 @@ local function drawAmbient(ground, project, scale, sw, sh)
   end
 end
 
--- sink(sx, sy, radiusPx, alpha) -> Gen4Tint glow, normalised to the canvas the
--- projection above lands in. nil when Gen4Tint has no glow support.
+-- sink(sx, sy, radiusPx, alpha, wx, wy, wz) -> a glow painted after Gen4Tint's night
+-- multiply, at canvas pixel (sx, sy) and WORLD point (wx, wy, wz). Two routes:
+-- Gen4Glow, which hides it behind scenery by reading the scene depth, and
+-- Gen4Tint's own normalised list, the unoccluded fallback when there is no readable
+-- depth (or the cartridge camera, which has none). nil when Gen4Tint has no glows.
 function Host._glowSink(vw, vh)
   local ok, Tint = pcall(V.require, "Gen4Tint")
   if not (ok and type(Tint) == "table" and Tint.addGlow) then return nil end
   vw, vh = tonumber(vw) or 0, tonumber(vh) or 0
   if vw < 1 or vh < 1 then return nil end
-  return function(sx, sy, rad, a)
+  local okG, Glow = pcall(V.require, "Gen4Glow")
+  if okG and type(Glow) == "table" and Glow.add then
+    pcall(Glow.hook)
+  else
+    Glow = nil
+  end
+  return function(sx, sy, rad, a, wx, wy, wz)
     Tint.addGlow(sx / vw, sy / vh, rad / vw, 1.0, 0.9, 0.45, a)
+    if Glow then Glow.add(sx, sy, rad, a, wx, wy, wz) end
   end
 end
 
@@ -390,6 +416,8 @@ function Host.overlayFx(state, ground, sw, sh, scale)
   do
     local okT, Tint = pcall(V.require, "Gen4Tint")
     if okT and type(Tint) == "table" and Tint.beginGlows then pcall(Tint.beginGlows) end
+    local okG, Glow = pcall(V.require, "Gen4Glow")
+    if okG and type(Glow) == "table" and Glow.begin then pcall(Glow.begin) end
   end
   if fxOn and not free then
     pcall(drawGrassBillboards, state, ground, project)
