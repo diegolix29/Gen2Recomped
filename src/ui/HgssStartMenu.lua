@@ -96,11 +96,22 @@ function HgssStartMenu.new(game, opts)
   for _, def in pairs(ENTRY) do
     if def[3] and flags[("FLAG_G4_%04X"):format(def[3])] then anyFlag = true end
   end
+  -- EVERY FLAGGED ENTRY ANSWERS TO ITS OWN FLAG, POKeDEX AND POKeMON TOO
+  -- (FieldSystem_ShouldDrawStartMenuIcon: CheckGotPokedex, CheckGotStarter).
+  -- They had been left to Platinum's stand-ins -- "a species has been seen"
+  -- and "the party is not empty" -- which opened the POKeDEX as soon as the
+  -- starter was in the party, a route before Oak gives it at Mr. Pokemon's
+  -- house (R30R0201: GivePokedex, SetFlag FLAG_GOT_POKEDEX). A new game has
+  -- none of these flags and an empty panel, as the cartridge's bedroom does
+  -- until Mom hands over the BAG, card, SAVE and OPTIONS (T20R0201).
+  -- Only a save with a party and none of the flags (one made before the port
+  -- kept them) falls back to the old answer, so it is not left with nothing.
+  local legacy = not anyFlag and #((game.save or {}).party or {}) > 0
   local rows = {}
   for _, id in ipairs(ORDER) do
     local def = ENTRY[id]
     local shown = keep[id]
-    if shown and anyFlag and def[3] and id ~= "pokedex" and id ~= "pokemon" then
+    if shown and not legacy and def[3] then
       shown = flags[("FLAG_G4_%04X"):format(def[3])] == true
     end
     if shown then
@@ -185,7 +196,18 @@ end
 function HgssStartMenu:update()
   local input = self.game.input
   local count = #self.rows
-  if count == 0 then return self:close() end
+  -- an empty panel (a new game before Mom's gifts) still opens and closes
+  -- like the cartridge's: the header, B, X or START
+  if count == 0 then
+    local tap0 = self.tapAt
+    self.tapAt = nil
+    local i0 = self.game.input
+    if (tap0 and self:inRect(tap0, CLOSE_RECT))
+        or (i0 and (i0:wasPressed("b") or i0:wasPressed("start") or i0:wasPressed("x"))) then
+      return self:close()
+    end
+    return
+  end
   self.frame = (self.frame or 0) + 1
   local tap = self.tapAt
   self.tapAt = nil

@@ -48,7 +48,8 @@ end
 function MysteryGift.owed(save)
   local s = state(save)
   local taken = 0
-  for _ in pairs(s.taken) do taken = taken + 1 end
+  -- "walker": bought on the Monster Walker, not one of the per-clear picks
+  for _, how in pairs(s.taken) do if how ~= "walker" then taken = taken + 1 end end
   return math.max(0, s.clears - taken)
 end
 

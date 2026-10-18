@@ -43,7 +43,11 @@ function Player:frame()return self.paused and 0 or 1 end
 function Player:image()
  if self.paused then return nil end
  if not self.dirty then return self.canvas end
- local g=love.graphics;local previous={g.getCanvas()}
+ local g=love.graphics
+ -- push("all") saves the canvas and pop() puts it back: no manual restore.
+ -- Handing getCanvas()'s list back to setCanvas crashed under the
+ -- DramaticShapes mod, whose setCanvas wrapper takes a Canvas, not a list
+ -- ("bad argument to setCanvas: Canvas expected", first BW battle).
  g.push("all");g.setCanvas(self.canvas);g.clear(0,0,0,0);g.origin();g.setShader()
  g.setScissor();g.setStencilTest();g.setDepthMode();g.setColor(1,1,1,1);g.setBlendMode("alpha")
  g.translate(self.ox,self.oy)
@@ -56,7 +60,7 @@ function Player:image()
    g.draw(cell.image,cell.x,cell.y);g.pop()
   end
  end
- g.setCanvas(previous[1] and previous or nil);g.pop();self.dirty=false
+ g.pop();self.dirty=false
  return self.canvas
 end
 return Player

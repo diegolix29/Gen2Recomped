@@ -478,10 +478,12 @@ if b then
   check(#cam == 1 and cam[1].name == 'addfreecamera' and cam[1].args[1] == 644 and cam[1].args[2] == 583
     and Link2.name(mk(0x147, '1e00')).name == 'restorecamera',
     ('0x143 looks at absolute tile (%s, %s); 0x147 hands the camera back'):format(tostring(cam[1] and cam[1].args[1]), tostring(cam[1] and cam[1].args[2])))
-  -- tile heights: the gym's dais is 14 world units, its floor 0
+  -- tile heights: the gym's dais tiles carry value 14, which NAMES 16 world
+  -- units (src/import/Gen5Heights.lua: 119 people stand on it at 16); its
+  -- floor 0 (written only beside a raised tile)
   local gym = b.maps and b.maps.Z007
   local he = gym and gym.gen4HeightEdits or {}
-  check(he['12,3'] == 14 and he['12,9'] == nil and he['9,1'] == 14,
+  check(he['12,3'] == 16 and (he['12,9'] == nil or he['12,9'] == 0) and he['9,1'] == 16,
     ('Z007 heights: dais %s, floor %s'):format(tostring(he['12,3']), tostring(he['12,9'])))
   local r1 = b.encounters and b.encounters[77]
   check(r1 and r1.grass[1].species == 504 and r1.grass[2].species == 506 and r1.grass[1].minLevel == 2,

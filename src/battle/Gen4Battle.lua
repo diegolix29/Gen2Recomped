@@ -1060,6 +1060,11 @@ end
 function Gen4Battle.drawEffectBackground(battle)
   if hideNativeScene(battle) then return false end
   local player = battle and battle.gen4AnimPlaying and battle.gen4Anim
+  -- BLACK AND WHITE'S BG3 (src/battle/Gen5MoveAnimPlayer.lua)
+  if player and player.drawEffectLayer then
+    local okL, drew = pcall(player.drawEffectLayer, player, battle)
+    return okL and drew or false
+  end
   if not (player and player.bgLayerState) then return false end
   local got, st = pcall(player.bgLayerState, player)
   if not (got and st and st.id) then return false end
@@ -1246,6 +1251,11 @@ function Gen4Battle.drawParticles(battle)
   if hideNativeScene(battle) then return 0 end
   local player = battle and battle.gen4AnimPlaying and battle.gen4Anim
   if not player then return 0 end
+  -- BLACK AND WHITE'S particles are 3D, projected by their own player
+  if player.drawParticles then
+    local okP, n = pcall(player.drawParticles, player, battle)
+    return okP and n or 0
+  end
   local got, list = pcall(player.particles, player)
   if not (got and type(list) == "table") then return 0 end
   local g = love.graphics
@@ -3918,10 +3928,29 @@ function Gen4Battle.drawWhatWill(battle)
   love.graphics.setColor(1, 1, 1, 1)
 end
 
+-- pushMoveCamera(battle) -> true when a transform was pushed: a move
+-- animation's camera (Black and White's, `screenTransform`) drawn as a zoom
+-- of the field, the battlers and their effects -- not of the boxes or text
+function Gen4Battle.pushMoveCamera(battle)
+  local player = battle and battle.gen4AnimPlaying and battle.gen4Anim
+  if not (player and player.screenTransform) then return false end
+  local okT, k, tx, ty = pcall(player.screenTransform, player, battle)
+  if not (okT and k) then return false end
+  local g = love.graphics
+  g.push()
+  g.translate(tx, ty)
+  g.scale(k)
+  return true
+end
+
 function Gen4Battle.draw(battle)
   local g = love.graphics
+  local camPushed = Gen4Battle.pushMoveCamera(battle)
   battle:drawBattleField()
-  if battle.blankForAskName then return end
+  if battle.blankForAskName then
+    if camPushed then g.pop() end
+    return
+  end
 
   -- THE BACKGROUND'S OWN PALETTE FADE, BETWEEN THE FIELD AND THE BATTLERS.
   -- `fadebg` blends the BACKGROUND's palettes and nothing else, so it has to land
@@ -3933,7 +3962,10 @@ function Gen4Battle.draw(battle)
   -- under the Pokemon, which is where BG3 sits.
   Gen4Battle.drawEffectBackground(battle)
 
-  Gen4Battle.drawBattlers(battle)
+  -- a raise inside must not leave the camera's transform on the stack
+  local okBattlers, errBattlers = pcall(Gen4Battle.drawBattlers, battle)
+  if camPushed then g.pop() end
+  if not okBattlers then error(errBattlers, 0) end
   pcall(Gen4Battle.drawEnemyTrainer, battle)
 
   -- The trainer, while the first Pokemon is still in its ball.  Before the

@@ -78,7 +78,10 @@ function V.render(battle)
   local bg, stage = model(s, bgName), model(s, stageName)
   if not bg then return nil end
   local g = love.graphics
-  local previous = { g.getCanvas() }
+  -- push("all") / pop() saves and restores the whole render target (and
+  -- its depth): handing getCanvas()'s answer back to setCanvas raised
+  -- "Canvas expected" when a mod's renderer had bound its own target.
+  g.push("all")
   g.setCanvas({ target.colour, depthstencil = target.depth })
   g.clear(0, 0, 0, 1, true, true)
   local c = V.CAMERA
@@ -90,7 +93,7 @@ function V.render(battle)
       stage:draw(M.multiply(vp, { 1, 0, 0, at[1], 0, 1, 0, at[2], 0, 0, 1, at[3], 0, 0, 0, 1 }))
     end
   end
-  g.setCanvas(previous[1] and previous or nil)
+  g.pop()
   return target.colour
 end
 

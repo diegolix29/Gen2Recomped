@@ -214,6 +214,36 @@ through `src/import/SaveFileIO.lua`, which sits on top of
 `SaveFileIO` is love-free enough to unit-test through the same in-memory
 filesystem stub the slot backend uses (`tests/engine/save_file_io_tests.lua`).
 
+### Old and wrapped saves (2026-10-17)
+
+Reported: "importing a save from an old version fails with size doesn't
+match". Every file was measured against one size per generation, so anything
+in a wrapper was refused. `src/save_convert/SaveVariants.lua` now runs before
+the size check (`SaveFileIO.importToSlot`, and `SaveConvert.importSav` for the
+CLI):
+
+| File | What happens |
+| --- | --- |
+| This port's own `.lua` save from an older build (`saves/<game>/slotN.lua`, a `.bak`, `save_online.lua`, the old `save.lua`) | Recognised by its `return {` text, decoded with `SaveSerializer`, brought forward with `SaveData.runMigrations`, written as a new slot. Inline `options` are dropped (they live in `options.lua` now). A save that names another game is refused with "this is a Pokemon Red save; import it on the Pokemon Red page". |
+| Gen 1 / 2, 32 KiB + 44 or 48 bytes | The MBC3 clock footer (VBA, VBA-M, BGB, mGBA, My OldBoy) is dropped. |
+| Gen 1 / 2, 64 KiB | Padding (0x00 / 0xFF) or the image written twice: the first 32 KiB is used. |
+| Gen 3, 128 KiB + 16 bytes | mGBA's RTC block is dropped (any footer up to 64 bytes is). |
+| Gen 3, 64 KiB | An emulator left on 512 Kbit flash: padded back to 128 KiB with 0xFF. Slot A is whole in the first 64 KiB; Gen3Save's sector checks decide. |
+| Gen 3, 256 KiB of padding | The first 128 KiB is used. |
+| Gen 4 / 5 | Unchanged: `NdsSave.unwrap` (DeSmuME `.dsv`, no$gba, 1 MiB, trailing bytes). |
+
+Anything else is still refused, and the notice now says why ("the 8000 bytes
+after the save are not padding or an emulator footer"). The desktop pickers
+list `*.lua` beside `*.sav` / `*.dsv`; Android's picker is `*/*` already and the
+pick is sniffed by content, so a `.lua` copied to `picked_save.sav` works.
+
+Checks: `python tools/run_lua_check.py tests/save_variants_test.lua` (29,
+synthetic images and an old format-1 save) and `lovec tools/save_variants_check`
+(33: every variant through the real codecs against the imported caches in
+`DATA`, default `G:/Gen2Recomped`, plus copies of real old slot files from
+`OLD`). Older port exports were never the wrong size, so there is nothing
+else to convert: before b017ee1 a Gen 3 export raised instead of writing.
+
 ## Responsiveness
 
 Every measurement derives from `love.graphics.getDimensions()` each frame

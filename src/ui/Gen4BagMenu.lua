@@ -517,7 +517,10 @@ end
 function Gen4BagMenu:text(index, fallback, ...)
   local Gen4Text = require("src.import.Gen4Text")
   if select("#", ...) > 0 then Gen4Text.buffer(self.game, ...) end
-  local s = Gen4Text.resolve(self.game.data, TEXT_BANK, index, self.game)
+  -- HGSS: bank 10, renumbered (bank 7 is its save-delete screen)
+  local bank, n = require("src.ui.Gen4PartyText").bagIndex(self.game.data, index)
+  if not bank then return fallback or "" end
+  local s = Gen4Text.resolve(self.game.data, bank, n, self.game)
   if type(s) ~= "string" or s == "" then return fallback or "" end
   return (s:gsub("[\v\f]", "\n"))
 end

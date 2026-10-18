@@ -334,6 +334,9 @@ function Gen4Ground.forMap(map, data)
     grid = self.grid
   end
   self.set = set
+  -- HGSS's water is TERRAIN, moved by the area's own texture animation
+  -- (Gen4TerrainAnim / Gen4HgssTexAnim); nil on Platinum and in rooms
+  self.terrainAnim = require("src.render.Gen4TerrainAnim").forMap(terrain, record)
   -- BLACK / WHITE'S RAIL MAPS (Gen5Field's gen5NoGrid): their NG chunks are
   -- models that reach two or three chunks past their own cell, and the rails
   -- run well outside the matrix's few cells, so the camera's cell can be off
@@ -1418,7 +1421,8 @@ function Gen4Ground:store()
   local path = self.terrain.chunkFile
   local fs = love and love.filesystem
   if not (path and fs and fs.newFile) then self.file = false return nil end
-  local file, why = fs.newFile(Assets.resolve(path), "r")
+  -- Gen4RangeFile: newFile, else one whole read (docs/switch.md)
+  local file, why = require("src.render.Gen4RangeFile").open(Assets.resolve(path))
   if not file then
     Logger.warn("gen4 ground: %s would not open (%s)", tostring(path), tostring(why))
     self.file = false
@@ -1983,10 +1987,12 @@ function Gen4Ground:livePass(camX, camY, vw, vh, yCut)
             local chunkZ = cy * px + self.half
             Gen4Model.zKeep = { playerZ - KEEP_BEHIND - chunkZ,
                                 playerZ + KEEP_FEET - chunkZ }
-            model:draw(mvp, nil, nil, yCut, spread, "lequal")
+            model:draw(mvp, nil, self.terrainAnim and self.terrainAnim:materials(land, self.clock),
+                       yCut, spread, "lequal")
             Gen4Model.zKeep = nil
           else
-            model:draw(mvp, nil, nil, nil, spread)
+            model:draw(mvp, nil, self.terrainAnim and self.terrainAnim:materials(land, self.clock),
+                       nil, spread)
           end
           drawn = drawn + 1
           local record = self.terrain.chunks[land]
@@ -2455,7 +2461,8 @@ function Gen4Ground:drawFree(vw, vh)
           local mvp = Gen4Model.multiply(vp,
             translation(cx * px + self.half, self:chunkLift(cx, cy),
                         cy * px + self.half))
-          model:draw(mvp, nil, nil, nil, nil)
+          model:draw(mvp, nil, self.terrainAnim and self.terrainAnim:materials(land, self.clock),
+                     nil, nil)
           drawn = drawn + 1
           local record = self.terrain.chunks[land]
           for _, object in ipairs(self:objectsFor(land, record)) do
@@ -4220,7 +4227,7 @@ function Gen4Ground:bdhcFor(land)
     return nil
   end
   if self.heights == nil then
-    local file = fs.newFile(Assets.resolve(path), "r")
+    local file = require("src.render.Gen4RangeFile").open(Assets.resolve(path))
     self.heights = file or false
   end
   local file = self.heights or nil
@@ -4413,7 +4420,7 @@ function Gen4Ground:permBlockFor(land)
   if record and record.permAt and record.permBytes
      and terrain.permissionFile and fs and fs.newFile then
     if self.permFile == nil then
-      local file = fs.newFile(Assets.resolve(terrain.permissionFile), "r")
+      local file = require("src.render.Gen4RangeFile").open(Assets.resolve(terrain.permissionFile))
       self.permFile = file or false
     end
     local file = self.permFile or nil

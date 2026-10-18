@@ -18,6 +18,19 @@
 io.stdout:setvbuf("line")
 local install = assert(os.getenv("INSTALL"), "set INSTALL to the version's folder")
 
+-- POKEPORT_SIMULATE_SWITCH=1: reproduce the read path the Switch ends up with
+-- (docs/switch.md). love-nx cannot overlay a version folder, so CacheFs falls
+-- back to its prefix shim and every generated file is reachable ONLY as
+-- "<version>/assets/generated/..." through the wrapped loaders. So mount the
+-- PARENT of INSTALL (the cache root, as the Switch's save directory is), not
+-- INSTALL itself, and install the same shim.
+local simulateSwitch = (os.getenv("POKEPORT_SIMULATE_SWITCH") or "") ~= ""
+  and os.getenv("POKEPORT_SIMULATE_SWITCH") ~= "0"
+local mountDir = install
+if simulateSwitch then
+  mountDir = install:gsub("[/\\]+$", ""):match("^(.*)[/\\][^/\\]+$") or install
+end
+
 local ffi = require("ffi")
 pcall(ffi.cdef, "int PHYSFS_mount(const char *newDir, const char *mountPoint, int appendToPath);")
 local mounted = false
@@ -25,10 +38,63 @@ for _, lib in ipairs({ function() return ffi.C end, function() return ffi.load("
   local ok, l = pcall(lib)
   if ok and l then
     local okf, fn = pcall(function() return l.PHYSFS_mount end)
-    if okf and fn and fn(install, "", 1) ~= 0 then mounted = true break end
+    if okf and fn and fn(mountDir, "", 1) ~= 0 then mounted = true break end
   end
 end
-print(("mounted %s: %s"):format(install, tostring(mounted)))
+print(("mounted %s: %s"):format(mountDir, tostring(mounted)))
+-- MODS_ROOT=G:/Gen2Recomped: mount the folder holding `mods/` as well, so
+-- the harness loads the user's mods (DRAMATIC_SHAPE ...) the way the game does
+if os.getenv("MODS_ROOT") then
+  local okM = pcall(function() return ffi.C.PHYSFS_mount(os.getenv("MODS_ROOT"), "", 1) end)
+  if not okM then pcall(function() return ffi.load("love").PHYSFS_mount(os.getenv("MODS_ROOT"), "", 1) end) end
+  print(("mods root %s mounted"):format(os.getenv("MODS_ROOT")))
+end
+-- BW_HEIGHTS_ROM=<black/white .nds>: read an install imported before
+-- src/import/Gen5Heights.lua as a new import would -- every BW map's height
+-- edits (the tiles' raw values) mapped through the table built from the ROM,
+-- with 0 written beside each raised tile -- in memory, the install untouched
+if os.getenv("BW_HEIGHTS_ROM") then
+  local Data = require("src.core.Data")
+  local load0 = Data.load
+  Data.load = function(self, ...)
+    local r = { load0(self, ...) }
+    local rom = require("src.import.NdsRom").open(os.getenv("BW_HEIGHTS_ROM"))
+    local T = rom and require("src.import.Gen5Heights").build(rom)
+    local maps, done = T and rawget(self, "maps") or self.maps, 0
+    for _, def in pairs(maps or {}) do
+      local e = type(def) == "table" and def.gen5 and def.gen4HeightEdits
+      if e and not def.gen5Rail and not def.gen5NoGrid then
+        local out = {}
+        for k, v in pairs(e) do out[k] = T[v] end
+        local add = {}
+        for k, v in pairs(out) do
+          if v ~= 0 then
+            local x, y = k:match("(-?%d+),(-?%d+)")
+            x, y = tonumber(x), tonumber(y)
+            for _, d in ipairs({ { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } }) do
+              local key = (x + d[1]) .. "," .. (y + d[2])
+              if e[key] == nil then add[key] = 0 end
+            end
+          end
+        end
+        for k, v in pairs(add) do out[k] = v end
+        def.gen4HeightEdits = out
+        done = done + 1
+      end
+    end
+    print(("BW_HEIGHTS_ROM: %d map(s) re-read through Gen5Heights"):format(done))
+    return (table.unpack or unpack)(r)
+  end
+end
+if simulateSwitch then
+  local leaf = install:gsub("[/\\]+$", ""):match("([^/\\]+)$")
+  local unshimmedNewFile = love.filesystem.newFile
+  require("src.import.CacheFs").installPrefixShim(leaf .. "/")
+  -- SIM_OLD_SHIM=1: the shim as it was before newFile was redirected, to
+  -- show the reported no-ground picture
+  if os.getenv("SIM_OLD_SHIM") then love.filesystem.newFile = unshimmedNewFile end
+  print(("simulated Switch: prefix shim on %s/, no direct cache reads"):format(leaf))
+end
 
 -- OUT_DIR: write the harness's PNGs there (plain io) instead of LÖVE's save
 -- folder -- for a machine whose system drive has no room
@@ -53,6 +119,8 @@ end
 
 -- the overworld harness reads these two at load time
 local env = { POKEPORT_DATA_DIR = install .. "/data/generated", POKEPORT_ASSET_ROOT = install }
+-- simulated Switch: no io.open shortcuts around the read path
+if simulateSwitch then env = {} end
 local getenv = os.getenv
 os.getenv = function(k) return env[k] or getenv(k) end
 
@@ -242,6 +310,76 @@ if os.getenv("AUTO_BATTLE") then
   end
 end
 
+-- MUSIC_TRACE=1: the harness has no audio device (conf.lua), so Music.play
+-- would return at once. This stands in a silent device -- a queue source the
+-- DS sequencer (src/audio/NitroAudio.lua) renders into for real -- and logs
+-- every cue plus each change of [music] song / playing state per tick, so a
+-- sequence that dies mid-battle shows up as `playing=false`.
+if os.getenv("MUSIC_TRACE") then
+  local function fake(queue)
+    return setmetatable({ playing = false }, { __index = function(_, k)
+      if k == "isPlaying" then return function(s) return queue and s.playing or false end
+      elseif k == "play" then return function(s) s.playing = true; return true end
+      elseif k == "stop" or k == "pause" then return function(s) s.playing = false end
+      elseif k == "getFreeBufferCount" then return function(s) s.free = not s.free; return s.free and 1 or 0 end
+      elseif k == "getVolume" then return function() return 1 end end
+      return function() return 0 end
+    end })
+  end
+  love.audio = love.audio or { newQueueableSource = function() return fake(true) end,
+    newSource = function() return fake(false) end, setVolume = function() end, stop = function() end }
+  love.sound = love.sound or { newSoundData = function() return fake(false) end }
+  -- MUSIC_TRACE_NITRO=<file>: another NitroAudio.lua (an older copy) for a
+  -- before / after comparison
+  if os.getenv("MUSIC_TRACE_NITRO") then
+    package.loaded["src.audio.NitroAudio"] = assert(loadfile(os.getenv("MUSIC_TRACE_NITRO")))()
+  end
+  local Music = require("src.core.Music")
+  local play, update = Music.play, Music.update
+  Music.play = function(data, song, loop, ctx)
+    print(("[music] cue %s (%s) reason=%s"):format(tostring(song),
+      tostring(data and data.audio and data.audio.songs and data.audio.songs[song] and data.audio.songs[song].name),
+      tostring(ctx and ctx.reason)))
+    return play(data, song, loop, ctx)
+  end
+  local tick, last = 0, nil
+  Music.update = function(data, ...)
+    local r = update(data, ...)
+    tick = tick + 1
+    local cur = Music.current()
+    local src
+    for i = 1, 60 do
+      local n, v = debug.getupvalue(play, i)
+      if not n then break end
+      if n == "state" then src = v and v.source break end
+    end
+    local playing = src and src:isPlaying() or false
+    local key = tostring(cur) .. "/" .. tostring(playing)
+    if key ~= last then
+      last = key
+      print(("[music] tick %d current=%s playing=%s"):format(tick, tostring(cur), tostring(playing)))
+    end
+    return r
+  end
+  -- gen4_battle_harness ticks the battle alone; tick the music with it
+  if os.getenv("HARNESS") == "gen4_battle_harness" then
+    local BS = require("src.battle.BattleState")
+    local bupdate = BS.update
+    BS.update = function(self, ...)
+      local r = { bupdate(self, ...) }
+      pcall(Music.update, self.data)
+      return (table.unpack or unpack)(r)
+    end
+  end
+end
+
+-- HGSS_FIELD_ROM=<HeartGold/SoulSilver .nds>: the water animation and the
+-- "!" art read from the ROM into memory (field_rom.lua)
+if os.getenv("HGSS_FIELD_ROM") then dofile("tools/gen4_hgss_overworld_harness/field_rom.lua") end
+-- BW_FIELD_ROM=<Black/White .nds>: the field effects read from the ROM as the
+-- data loads (bw_field_rom.lua)
+if os.getenv("BW_FIELD_ROM") then dofile("tools/gen4_hgss_overworld_harness/bw_field_rom.lua") end
+
 -- HARNESS picks another Gen 4 harness to run on the same mounted install
 -- (gen4_battle_harness, ...); the overworld one by default
 local harness = os.getenv("HARNESS") or "gen4_overworld_harness"
@@ -267,6 +405,70 @@ if camTilt then
     Gen4Camera.setTilt(at)
     print(("[cam] tilt %s (row %d)"):format(tostring(Gen4Camera.TILTS[at]), at))
     return (table.unpack or unpack)(r)
+  end
+end
+
+-- HGSS_MART_ROM=<HeartGold/SoulSilver .nds>: data.gen4_hgss_mart_art (the Poke
+-- Mart's BUY touch screen, src/import/Gen4HgssMartArt.lua) decoded from the
+-- ROM into memory as the overworld is pushed, for an install imported before
+-- it existed (the install is not written)
+if os.getenv("HGSS_MART_ROM") then
+  local StateStack = require("src.core.StateStack")
+  local push, injected = StateStack.push, false
+  StateStack.push = function(self, state, ...)
+    local G = package.loaded["src.core.Game"]
+    if not injected and G and G.data then
+      injected = true
+      local rom = assert(require("src.import.NdsRom").open(os.getenv("HGSS_MART_ROM")))
+      local idx, n = {}, 0
+      for key, img in pairs(require("src.import.Gen4HgssMartArt").images(rom) or {}) do
+        idx[key] = { image = love.image.newImageData(img.width, img.height, "rgba8", img.rgba),
+                     originX = img.originX, originY = img.originY }
+        n = n + 1
+      end
+      G.data.gen4_hgss_mart_art = idx
+      print(("[mart] gen4_hgss_mart_art from the ROM: %d pictures"):format(n))
+    end
+    return push(self, state, ...)
+  end
+end
+
+-- HGSS_SUMMARY_ROM=<HeartGold/SoulSilver .nds>: gen4_hgss_summary_art decoded
+-- from the ROM into memory (src/import/Gen4HgssSummaryArt.lua -- the egg /
+-- blank pages and the /a/0/3/9 status, marking and ribbon sprites an older
+-- install lacks); the install is not written. RIBBONS=1,33,73: the summary's
+-- Pokemon holds those ribbons; MON_STATUS=PSN / SHINY=1 / POKERUS=1 /
+-- MARKINGS=<bits> likewise.
+if os.getenv("HGSS_SUMMARY_ROM") or os.getenv("RIBBONS") or os.getenv("MON_STATUS")
+  or os.getenv("SHINY") or os.getenv("POKERUS") or os.getenv("MARKINGS") then
+  local Summary = require("src.ui.HgssSummaryMenu")
+  local new, loaded = Summary.new, false
+  Summary.new = function(game, arg)
+    if os.getenv("HGSS_SUMMARY_ROM") and not loaded and game and game.data then
+      loaded = true
+      local rom = assert(require("src.import.NdsRom").open(os.getenv("HGSS_SUMMARY_ROM")))
+      local idx, n = {}, 0
+      for key, rec in pairs(game.data.gen4_hgss_summary_art or {}) do idx[key] = rec end
+      for key, img in pairs(require("src.import.Gen4HgssSummaryArt").images(rom) or {}) do
+        idx[key] = { image = love.image.newImageData(img.width, img.height, "rgba8", img.rgba),
+                     originX = img.originX, originY = img.originY }
+        n = n + 1
+      end
+      game.data.gen4_hgss_summary_art = idx
+      print(("[summary] gen4_hgss_summary_art from the ROM: %d pictures"):format(n))
+    end
+    local mon = type(arg) == "table" and (arg.species and arg or arg.mon)
+    if mon then
+      if os.getenv("RIBBONS") then
+        mon.ribbons = mon.ribbons or {}
+        for id in os.getenv("RIBBONS"):gmatch("%d+") do mon.ribbons[tonumber(id)] = true end
+      end
+      if os.getenv("MON_STATUS") then mon.status = os.getenv("MON_STATUS") end
+      if os.getenv("POKERUS") then mon.pokerus = tonumber(os.getenv("POKERUS")) end
+      if os.getenv("MARKINGS") then mon.markings = tonumber(os.getenv("MARKINGS")) end
+      if os.getenv("SHINY") then mon.shiny = true end
+    end
+    return new(game, arg)
   end
 end
 

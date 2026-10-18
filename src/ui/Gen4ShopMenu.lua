@@ -85,7 +85,16 @@ function Shop:line(n, fallback, ...)
     local entries={[1]=1,[2]=6,[3]=11,[4]=12,[5]=14,[6]=15,[7]=16,[8]=17,[9]=18,
       [10]=20,[15]=42,[18]=30,[19]=31,[20]=36,[22]=38}
     if not entries[n] then return fallback end
-    if n==5 then args={args[1],args[3]} end
+    -- #14 "For {STRVAR_1 51 0 0}, that will be ${STRVAR_1 55 1 0}": the
+    -- count in slot 0 and the total in slot 1 (not the name)
+    if n==5 then args={args[2],args[3]} end
+    -- "In Bag:" is its own line (#35) beside the count (#36) on HeartGold
+    if n==20 then
+      local label=T.resolve(self.game.data,bank,35,self.game)
+      T.buffer(self.game,unpack(args))
+      local count=T.resolve(self.game.data,bank,36,self.game)
+      if label and count then return label..' '..count end
+    end
     n=entries[n]
   end
   T.buffer(self.game, unpack(args))
@@ -118,6 +127,10 @@ function Shop.new(game, stock, onQuit, goods, opts)
     -- HGSS's field script already asks BUY / SELL / SEE YA. MartBuy
     -- launches the purchase list directly, not a second context menu.
     self.direct=true;self.mode='buy';self.message=nil
+    -- MartSell (scrcmd_mart.c ScrCmd_MartSell: Mart_Init(.., isSell 1)):
+    -- straight into the Bag in sell mode (src/script/HgssMartCommands.lua
+    -- opens it once this counter is on the stack)
+    if opts and opts.sell then self.mode,self.transaction='sell','sell' end
   end
   -- Shop_GetCameraPosDest: ten steps, eight when the player faces west
   local ow = game.overworld
@@ -356,6 +369,13 @@ function Shop:transact()
       local def = self:def(self.item) or {}
       local pockets = ((self.game.data.gen4_menus or {}).bag or {}).pockets or {}
       local pocket = pockets[(tonumber(def.fieldPocket) or 0) + 1] or ''
+      -- HGSS: the pocket's name is the first word of its bag line (bank 10,
+      -- 120 + pocket: "Medicine Pocket\n...")
+      if pocket == '' then
+        local info = require('src.core.GameVersion').info()
+        local line = info and info.family == 'hgss' and T.resolve(self.game.data, 10, 120 + (tonumber(def.fieldPocket) or 0), self.game)
+        pocket = line and line:match('^(.-) Pocket') or ''
+      end
       self.message = self:line(6, 'Thank you!', def.name or '', pocket)
       -- Platinum awards one Premier Ball per purchase of at least ten Poke Balls.
       if self.item == 4 and self.qty >= 10 and self.game.data.items[12] then
@@ -706,5 +726,8 @@ function Shop:draw()
   end
   g.setColor(1, 1, 1, 1)
 end
+
+-- HeartGold / SoulSilver choose on the touch screen (overlay 31's grid)
+require('src.ui.HgssMartBuy').install(Shop)
 
 return Shop

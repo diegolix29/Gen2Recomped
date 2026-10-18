@@ -72,6 +72,10 @@ local function readSource(source, version)
   if #source == saveSize(version) then
     return source
   end
+  -- one of this port's own .lua saves, handed over as its text
+  if require("src.save_convert.SaveVariants").isPortSave(source) then
+    return source
+  end
   -- ...and an emulator's wrapped image (a .dsv is the save plus a footer) is
   -- bytes too: no picker path runs to tens of kilobytes
   if #source > 4096 then
@@ -104,25 +108,34 @@ function SaveFileIO.importToSlot(source, version)
   local want = saveSize(version)
   local bytes, readErr = readSource(source, version)
   if not bytes then return false, readErr end
-  -- DS SAVES COME IN EMULATOR WRAPPERS: DeSmuME's .dsv carries a footer,
-  -- no$gba a header, some tools pad to 1 MiB. Unwrapped here so the size
-  -- check below measures the 512 KiB cartridge image itself.
-  if isNds(version) then
-    local raw, why = require("src.save_convert.NdsSave").unwrap(bytes)
-    if not raw then return false, why end
-    bytes = raw
+  -- OLD SAVES AND WRAPPED SAVES (src/save_convert/SaveVariants.lua): this
+  -- port's own .lua slot files from an older build go through the migration
+  -- pass instead of a codec; emulator RTC footers, padding, 64 KiB GBA flash
+  -- images and the DS containers (.dsv, no$gba, 1 MiB) are trimmed to the
+  -- cartridge image before the size check below measures it.
+  local Variants = require("src.save_convert.SaveVariants")
+  local save, convertErr
+  if Variants.isPortSave(bytes) then
+    save, convertErr = Variants.importPortSave(bytes, version)
+    if not save then return false, convertErr end
+  else
+    local gen = 1
+    pcall(function() gen = GameVersion.generation(version) or 1 end)
+    local family = isNds(version) and "nds" or Variants.family(gen)
+    local raw, why = Variants.normalize(bytes, want, family)
+    if raw then bytes = raw elseif why and family == "nds" then return false, why end
+    if #bytes ~= want then
+      local info = GameVersion.info(version)
+      return false, ("A %s save file must be %d bytes (%d KB); this one is %d.%s")
+        :format((info and info.displayName) or tostring(version), want,
+                math.floor(want / 1024), #bytes, why and (" (" .. why .. ")") or "")
+    end
+    -- 3rd arg: the crosswalk has to come from THIS game's ROM cache.  The
+    -- launcher imports before the cache is mounted on the un-prefixed paths, so
+    -- SaveConvert cannot find the generated tables by itself here (#420).
+    save, convertErr = SaveConvert.importSav(bytes, version, version)
+    if not save then return false, convertErr end
   end
-  if #bytes ~= want then
-    local info = GameVersion.info(version)
-    return false, ("A %s save file must be %d bytes (%d KB); this one is %d.")
-      :format((info and info.displayName) or tostring(version), want,
-              math.floor(want / 1024), #bytes)
-  end
-  -- 3rd arg: the crosswalk has to come from THIS game's ROM cache.  The
-  -- launcher imports before the cache is mounted on the un-prefixed paths, so
-  -- SaveConvert cannot find the generated tables by itself here (#420).
-  local save, convertErr = SaveConvert.importSav(bytes, version, version)
-  if not save then return false, convertErr end
   -- Tag the game version and normalize the meta stamp: SaveConvert leaves
   -- meta.format = "gen1_import", but SaveData.load's migration pass compares
   -- the format numerically, so re-stamp it to the current format (the imported

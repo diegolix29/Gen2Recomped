@@ -163,6 +163,16 @@ Saves, options and the mod enable-state do not move at all. They are kilobytes,
 and they are what you most want to still have when the drive this points at is
 not plugged in.
 
+## Readers that open the cache themselves
+
+Anything that reads another game's cache with `io.open` (not through the
+mounted read path) has to try every root, not just `SaveData.dataDir()`: that
+is nil in portable mode and when no folder was chosen (Android's default). The
+Pokewalker's pictures did exactly that and showed nothing on Android or in a
+fused build; `src/pokewalker/WalkerArt.lua` now tries `CacheFs.root()`,
+`SaveData.dataDir()`, `SaveData.portableBaseDir()` and the save directory in
+that order (docs/pokewalker.md, "Which game's pictures").
+
 ## The one remaining bypass
 
 `src/import/BorrowedTiles.lua` writes the map editor's extended tile atlas with

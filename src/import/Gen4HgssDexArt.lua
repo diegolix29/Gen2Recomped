@@ -43,15 +43,21 @@
 --   orders               zukan_data member 11 (national) / 12 (Johto), u16
 --                        species lists
 --
--- NOT DONE: the area (82-87), size (89-92, OBJ 105-114), forms (93-100),
--- search (57-68, OBJ 72-75 / 23-25) and confirm (101-104) states' art, the
--- foreign-language entry OBJ (53-56), the footprint frame OBJ (77-79).
+-- The search / entry pages' art and the search data: A.addPages and
+-- A.searchData below (keys search_*, area_*, size_*, forms_*, compare_*,
+-- return_*, srch_*, srch2_*, size105_/109_/111_/114_*, searchAnims,
+-- search2Anims, size*Anims, and `search` = heights, weights, body styles,
+-- sort / filter lists, slider stops, area flags, size scales).
+-- NOT DONE: the area map's marker OBJ and zukan_enc (/a/1/3/3) per-species
+-- places, the foreign-language entry OBJ (53-56), the footprint frame OBJ
+-- (77-79), the slider / arrow / scroll OBJ of the new pages.
 
 local A = {}
 
 A.PATH = "/a/0/6/8"
 A.FOOT = "/a/0/6/9"
 A.DATA = "/a/0/7/4"
+A.HW = "/a/0/7/5"
 
 -- `ov18_021FBE10` (char member per TYPE_*) and `ov18_021FBDFC` (palette row)
 A.TYPE_CHAR = { [0] = 36, 42, 50, 46, 44, 41, 47, 43, 45, 36, 37, 39, 38, 40, 51, 49, 52, 48 }
@@ -195,7 +201,186 @@ function A.images(rom)
       end
     end
   end
-  return out, anims
+  local meta = {}
+  A.addPages(m, out, main, sub, meta)
+  return out, anims, meta
+end
+
+-- THE SEARCH AND ENTRY PAGES' BACKGROUNDS (added for SEARCH / AREA / SIZE /
+-- FORMS; drawn by src/ui/HgssDexSearch.lua and src/ui/HgssDexDetails.lua).
+-- Read from ov18_021E7048 (search, state 5), ov18_021E71D0 (its sub-pages),
+-- ov18_021E7BD0 / 7D90 / 800C / 81A8 / 7ED8 (the entry pages 1-4) and the
+-- fragment table ov18_021E6308 (fragment 6 = member 69, 7 = 70, 23 = 88):
+--   search_bg            MAIN2 screen 57 over char 58
+--   search_<page>        MAIN2 screens 62-68 over char 58 (order, name, type,
+--                        height, weight, area, body)
+--   search_bar / search_okbar
+--                        fragments 6 / 7 (members 69 / 70, 32 x 4, row 20)
+--                        over char 4 (MAIN1)
+--   search_top3 / search_top2
+--                        SUB3 screen 59 / SUB2 screen 60 over char 58
+--   area_base            MAIN3 screen 82 over char 83; area_tabs_<0|1> MAIN0
+--                        screen 80 (no National Dex) / 81 over char 83
+--   area_top             SUB3 screen 84 over char 85; area_map SUB0 screen 86
+--                        over char 87 (512 wide, scrolled -72 / +104)
+--   area_unknown         fragment 23 (member 88, 20 x 4) over char 85
+--   size_base / size_top MAIN3 89 over 90 / SUB2 91 over 92
+--   forms_base / forms_front / forms_one / forms_top
+--                        MAIN3 96 / MAIN0 95 over 93, member 100 (16 x 4, at
+--                        (16,16) when one form was seen) / SUB3 97 over 94
+--   compare_base / compare_top
+--                        MAIN3 98 over 93 / SUB3 99 over 94
+--   return_base / return_top
+--                        MAIN3 101 over 102 / SUB2 103 over 104 (page 4,
+--                        "RETURN TO LIST")
+-- Main pages use palette member 2, the top ones member 18. Each picture is
+-- independent: a member that fails to decode is simply absent and the UI
+-- draws its fallback.
+function A.addPages(m, out, main, sub, meta)
+  local G = require("src.import.Gen4Graphics")
+  local function cut(img, w, h)
+    if img and (img.width > w or img.height > h) then return crop(img, 0, 0, math.min(w, img.width), math.min(h, img.height)) end
+    return img
+  end
+  local chars = {}
+  local function ch(i)
+    if chars[i] == nil then chars[i] = G.tiles(m(i)) or false end
+    return chars[i] or nil
+  end
+  local function pic(key, member, char, pal, w, h)
+    local ok, err = pcall(function()
+      local map = G.tilemap(m(member))
+      local img = map and ch(char) and G.compose(map, ch(char), pal)
+      out[key] = cut(img, w or 256, h or 192)
+    end)
+    if not ok then out[key] = nil end
+    return err
+  end
+  pic("search_bg", 57, 58, main)
+  for i, name in ipairs({ "order", "name", "type", "height", "weight", "area", "body" }) do
+    pic("search_" .. name, 61 + i, 58, main)
+  end
+  pic("search_bar", 69, 4, main, 256, 32)
+  pic("search_okbar", 70, 4, main, 256, 32)
+  pic("search_top3", 59, 58, sub)
+  pic("search_top2", 60, 58, sub)
+  pic("area_base", 82, 83, main)
+  pic("area_tabs_0", 80, 83, main)
+  pic("area_tabs_1", 81, 83, main)
+  pic("area_top", 84, 85, sub)
+  pic("area_map", 86, 87, sub, 512, 192)
+  pic("area_unknown", 88, 85, sub, 160, 32)
+  pic("size_base", 89, 90, main)
+  pic("size_top", 91, 92, sub)
+  pic("forms_base", 96, 93, main)
+  pic("forms_front", 95, 93, main)
+  pic("forms_one", 100, 93, main, 128, 32)
+  pic("forms_top", 97, 94, sub)
+  pic("compare_base", 98, 93, main)
+  pic("compare_top", 99, 94, sub)
+  pic("return_base", 101, 102, main)
+  pic("return_top", 103, 104, sub)
+  -- the search's OBJ (ov18_021F2F3C): char 72 / pal 75 / cell 73 / anim 74
+  -- (`srch_<cell>`, `searchAnims[a]` = first cell of animation a) and
+  -- char 23 / pal 32 / cell 24 / anim 25 (`srch2_<cell>`, `search2Anims`)
+  local Cells = require("src.import.Gen4Cells")
+  local CellAnim = require("src.import.Gen4CellAnim")
+  -- the SIZE page's OBJ (ov18_021F4A6C): chars 105 / 109 (cell 106, anim
+  -- 107) and 111 / 114 (cell 112, anim 113), palettes 108 / 110 -- the
+  -- trainer's figure, boy and girl (`size_<char>_<cell>`)
+  for _, set in ipairs({ { "size105_", "size105Anims", 105, 108, 106, 107 }, { "size109_", "size109Anims", 109, 110, 106, 107 },
+                         { "size111_", "size111Anims", 111, 108, 112, 113 }, { "size114_", "size114Anims", 114, 110, 112, 113 },
+                         { "srch_", "searchAnims", 72, 75, 73, 74 }, { "srch2_", "search2Anims", 23, 32, 24, 25 } }) do
+    pcall(function()
+      local sheet, pal = G.tiles(m(set[3])), G.palette(m(set[4]))
+      local bank, anim = Cells.parse(m(set[5]), G), CellAnim.parse(m(set[6]), G)
+      if not (sheet and pal and bank) then return end
+      for i, cell in ipairs(bank.cells) do
+        local p = Cells.assemble(cell, sheet, pal, bank, G)
+        if p then p.originX, p.originY = Cells.extent(cell); out[set[1] .. (i - 1)] = p end
+      end
+      if anim then
+        local firsts = {}
+        for a = 0, #anim.sequences - 1 do
+          local f = CellAnim.frames(anim, a)
+          if f and f[1] then firsts[a] = f[1].cell end
+        end
+        if meta then meta[set[2]] = firsts end
+      end
+    end)
+  end
+end
+
+-- THE SEARCH'S DATA (ov18_021E8410 / ov18_021F7ED4): zukan_data (/a/0/7/4)
+-- members 0 / 1 / 2 = height (dm) / weight (hg) / body style per species
+-- (u32, u32, u8; index = species), the sort and filter lists (members 13-17
+-- alphabetical / heaviest / lightest / tallest / shortest, 18-43 the first
+-- letters a-z, 62-78 the types normal..dark, 79-92 the body styles), and
+-- zukan_hw_data (/a/0/7/5): member 0 the slider's 153 {height, weight}
+-- stops (u16 pairs), member 1 a byte of area flags per species (bit 0 Johto,
+-- bit 1 Kanto, bit 2 unknown, bit 3 all; the HeartGold / SoulSilver file is
+-- whichever this ROM carries).
+function A.searchData(rom)
+  local Narc = require("src.import.NarcArchive")
+  local function open(path)
+    local raw = rom:read(path)
+    local arc = raw and Narc.parse(raw)
+    if not arc then return nil end
+    -- raw members (json2bin, no LZ): a list that starts with species 16
+    -- (0x10) would read as an LZ77 header, so nothing is decompressed here
+    return function(i) return arc:get(i) end
+  end
+  local data, hw = open(A.DATA), open(A.HW)
+  if not data then return nil end
+  local function u16s(b)
+    local t = {}
+    if not b then return t end
+    for k = 0, math.floor(#b / 2) - 1 do
+      local lo, hi = b:byte(k * 2 + 1, k * 2 + 2)
+      t[#t + 1] = lo + hi * 256
+    end
+    return t
+  end
+  local function list(i)
+    local t = {}
+    for _, v in ipairs(u16s(data(i))) do if v == 0 then break end t[#t + 1] = v end
+    return t
+  end
+  local function u32s(b)
+    local t = {}
+    if not b then return t end
+    for k = 0, math.floor(#b / 4) - 1 do
+      local a, b2, c, d = b:byte(k * 4 + 1, k * 4 + 4)
+      t[k] = a + b2 * 256 + c * 65536 + d * 16777216
+    end
+    return t
+  end
+  local out = { height = u32s(data(0)), weight = u32s(data(1)), body = {} }
+  local bodyRaw = data(2) or ""
+  for k = 1, #bodyRaw do out.body[k - 1] = bodyRaw:byte(k) end
+  -- members 3-10: the SIZE page's scales and y offsets (u16 per species,
+  -- ov18_021E8410): player / mon scale for a girl (3 / 4) and a boy (5 / 6),
+  -- player / mon y for a girl (7 / 8) and a boy (9 / 10)
+  out.size = {}
+  for k, name in ipairs({ "playerScaleF", "monScaleF", "playerScaleM", "monScaleM", "playerYF", "monYF", "playerYM", "monYM" }) do
+    local t = {}
+    for i, v in ipairs(u16s(data(2 + k))) do t[i - 1] = v >= 32768 and v - 65536 or v end
+    out.size[name] = t
+  end
+  out.sorts = { alphabetical = list(13), heaviest = list(14), lightest = list(15), tallest = list(16), shortest = list(17) }
+  out.letters, out.types, out.bodies = {}, {}, {}
+  for l = 0, 25 do out.letters[l] = list(18 + l) end
+  for t = 0, 16 do out.types[t] = list(62 + t) end
+  for s = 0, 13 do out.bodies[s] = list(79 + s) end
+  if hw then
+    local stops = u16s(hw(0))
+    out.stops = {}
+    for k = 0, math.floor(#stops / 2) - 1 do out.stops[k] = { stops[k * 2 + 1], stops[k * 2 + 2] } end
+    local flags = hw(1) or ""
+    out.areaFlags = {}
+    for k = 1, #flags do out.areaFlags[k - 1] = flags:byte(k) end
+  end
+  return out
 end
 
 -- zukan_data's species lists (u16 each, 0-terminated or padded)
@@ -221,14 +406,17 @@ function A.orders(rom)
 end
 
 function A.build(x)
-  local images, anims = A.images(x.rom)
+  local images, anims, meta = A.images(x.rom)
   if not images then return nil end
   local index = {}
   for key, image in pairs(images) do
     index[key] = x:saveImage("hgss_dex/" .. key, image, { originX = image.originX, originY = image.originY })
   end
   index.listAnims = anims
+  for key, value in pairs(meta or {}) do index[key] = value end
   index.orders = A.orders(x.rom)
+  local okSearch, search = pcall(A.searchData, x.rom)
+  index.search = okSearch and search or nil
   index.source = "ROM:/a/0/6/8 (zukan_gra), /a/0/6/9 (pokefoot), /a/0/7/4 (zukan_data)"
   return index
 end

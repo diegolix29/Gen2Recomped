@@ -556,6 +556,15 @@ local FIELD_ERROR_TEXT = {
 }
 function Gen4PartyMenu:bankLine(n)
   local T = require('src.import.Gen4Text')
+  -- HGSS's party bank is 300, renumbered (src/ui/Gen4PartyText.lua); its
+  -- bank 453 is a Viridian townsperson
+  local bank, i = require('src.ui.Gen4PartyText').partyIndex(self.game.data, n)
+  if bank and bank ~= 453 then
+    local s = T.resolve(self.game.data, bank, i, self.game)
+    if type(s) == 'string' and s:find('%S') then return s end
+    return Strings(FIELD_ERROR_TEXT[n] or "")
+  end
+  if not bank then return Strings(FIELD_ERROR_TEXT[n] or "") end
   local text = self.game.data and self.game.data.text and self.game.data.text[T.label(453, n)]
   return (type(text) == 'string' and text ~= '') and text or Strings(FIELD_ERROR_TEXT[n] or "")
 end
@@ -651,7 +660,8 @@ function Gen4PartyMenu:finishHpTransfer()
   -- 64 "{name}'s HP was restored by {n} point(s)."
   local T = require('src.import.Gen4Text')
   T.buffer(self.game, self:monName(target), tostring(amount))
-  local line = T.resolve(self.game.data, 453, 64, self.game)
+  local pb, pi = require('src.ui.Gen4PartyText').partyIndex(self.game.data, 64)
+  local line = pb and T.resolve(self.game.data, pb, pi, self.game)
     or Strings("%s's HP was restored by %d point(s).", self:monName(target), amount)
   self.game.stack:push(require('src.render.TextBox').new(self.game, line))
 end

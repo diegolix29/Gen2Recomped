@@ -39,6 +39,22 @@ function Audio.new(data,def)
  players[self]=true
  return self
 end
+-- Sequence variables: 0-15 belong to the player and 16-31 are shared by
+-- every player; each starts at SND_DEFAULT_VARIABLE (-1) and holds an s16.
+-- The game only reads them back (pokeheartgold sub_02005B78 ->
+-- NNS_SndPlayerReadVariable), so nothing outside the sequences writes them.
+local globalVariables={}
+function Player:variable(index)
+ if index>=32 then return 0 end
+ local v
+ if index<16 then v=self.variables and self.variables[index] else v=globalVariables[index-16] end
+ if v==nil then return -1 end;return v
+end
+function Player:setVariable(index,v)
+ v=math.floor(v)%65536;if v>=32768 then v=v-65536 end
+ if index<16 then self.variables=self.variables or {};self.variables[index]=v
+ elseif index<32 then globalVariables[index-16]=v end
+end
 function Player:setVolume(v) self.queue:setVolume(v) end
 -- A playback-rate factor over every voice (sound-effect pitch shifts).
 function Player:setPitch(v) self.pitch=tonumber(v) or 1 end
@@ -51,7 +67,7 @@ function Player:stop() self.running=false;self.queue:stop();self.voices={} end
 function Player:pause() self.paused=true;self.queue:pause() end
 function Player:play()
  if self.paused then self.paused=false;self.queue:play();return end
- self.queue:stop();self.tracks={[0]=track(self.start)};self.voices={};self.tickPhase=1
+ self.queue:stop();self.tracks={[0]=track(self.start)};self.voices={};self.tickPhase=1;self.variables={}
  self.ended=false;self.running=true;self:update();self.queue:play()
 end
 local function signed(v) return v>=128 and v-256 or v end
@@ -90,27 +106,62 @@ function Player:events(t)
  local function word() local a,c=read(),read();return a+c*256 end
  local function address() local a,c,d=read(),read(),read();return self.start+a+c*256+d*65536 end
  local function variable() local v=0;for _=1,5 do local c=read();v=v*128+c%128;if c<128 then return v end end;error('invalid sequence variable') end
+ local function s16(v) v=v%65536;return v>=32768 and v-65536 or v end
  for _=1,2048 do
   if t.done or t.wait>0 then return end
   local op=read()
-  local override,velocityOverride
-  if op==160 or op==161 then
-   local prefix=op;op=read()
-   if op<128 then velocityOverride=read() end
-   if prefix==160 then
-    local lo,hi=word(),word();lo=lo>=32768 and lo-65536 or lo;hi=hi>=32768 and hi-65536 or hi
-    override=math.random(math.min(lo,hi),math.max(lo,hi))
-   else local index=read();override=(self.variables or {})[index] or 0 end
+  -- The NitroSDK sequencer's three prefixes, in any order: 0xA2 runs the
+  -- next command only while the track's compare flag is set (the args are
+  -- still read), 0xA0 / 0xA1 replace its last argument with a random value
+  -- (s16 min, s16 max) or a sequence variable (u8 index). The argument is
+  -- read where the command reads it, so `A1 B0 var idx` takes its variable
+  -- number first. HEARTGOLD / SOULSILVER's battle themes open on
+  -- `B0 00 00 00` (setvar): unhandled, it raised on the first tick and
+  -- NitroAudio.update stopped the player -- the silent battle.
+  local run,argType=true,nil
+  while op==160 or op==161 or op==162 do
+   if op==162 then run=t.cmp~=false else argType=op end
+   op=read()
   end
-  local function parameter(fn) if override~=nil then local v=override;override=nil;return v end return fn() end
+  local function parameter(fn)
+   if argType==160 then
+    local lo,hi=s16(word()),s16(word());argType=nil
+    return math.random(math.min(lo,hi),math.max(lo,hi))
+   elseif argType==161 then
+    argType=nil;return self:variable(read())
+   end
+   return fn()
+  end
   if op<128 then
-   local velocity=velocityOverride or read();local duration=parameter(variable);self:note(t,op,velocity,duration)
-   if t.noteWait then t.wait=duration end
-  elseif op==128 then t.wait=parameter(variable)
-  elseif op==129 then t.program=parameter(variable)%128
-  elseif op==147 then local id=read();self.tracks[id]=track(address())
-  elseif op==148 then local dest=address();if not self.looping and dest<t.at then t.done=true else t.at=dest end
-  elseif op==149 then local dest=address();assert(#t.calls<16,'sequence call overflow');t.calls[#t.calls+1]=t.at;t.at=dest
+   local velocity=read();local duration=parameter(variable)
+   if run then
+    self:note(t,op,velocity,duration)
+    if t.noteWait then t.wait=duration end
+   end
+  elseif op==128 then local v=parameter(variable);if run then t.wait=v end
+  elseif op==129 then local v=parameter(variable);if run then t.program=v%128 end
+  elseif op==147 then local id=read();local dest=address();if run then self.tracks[id]=track(dest) end
+  elseif op==148 then local dest=address();if run then if not self.looping and dest<t.at then t.done=true else t.at=dest end end
+  elseif op==149 then local dest=address();if run then assert(#t.calls<16,'sequence call overflow');t.calls[#t.calls+1]=t.at;t.at=dest end
+  elseif op>=176 and op<=189 then
+   -- variable arithmetic and compares (u8 variable, s16 argument)
+   local index=read();local v=parameter(function() return s16(word()) end)
+   if run then
+    local cur=self:variable(index)
+    if op==176 then self:setVariable(index,v)
+    elseif op==177 then self:setVariable(index,cur+v)
+    elseif op==178 then self:setVariable(index,cur-v)
+    elseif op==179 then self:setVariable(index,cur*v)
+    elseif op==180 then if v~=0 then local q=cur/v;self:setVariable(index,q<0 and math.ceil(q) or math.floor(q)) end
+    elseif op==181 then self:setVariable(index,v>=0 and cur*2^v or math.floor(cur/2^(-v)))
+    elseif op==182 then local r=math.random(0,math.abs(v));self:setVariable(index,v<0 and -r or r)
+    elseif op==184 then t.cmp=cur==v elseif op==185 then t.cmp=cur>=v
+    elseif op==186 then t.cmp=cur>v elseif op==187 then t.cmp=cur<=v
+    elseif op==188 then t.cmp=cur<v elseif op==189 then t.cmp=cur~=v end
+   end
+  elseif not run and (op==252 or op==253 or op==255) then
+   -- a skipped loop end / return / fin
+  elseif not run and op==254 then word()
   elseif op==253 then t.at=table.remove(t.calls);if not t.at then t.done=true end
   elseif op==254 then word()
   elseif op==255 then t.done=true
@@ -119,6 +170,8 @@ function Player:events(t)
     loop.count=loop.count-1
     if loop.forever and self.looping or loop.count>0 then t.at=loop.at else table.remove(t.loops) end
    end
+  elseif not run and (op>=192 and op<=223) then parameter(read)
+  elseif not run and (op==224 or op==225 or op==227) then parameter(word)
   elseif op>=192 and op<=223 then
    local v=parameter(read)
    if op==192 then t.pan=v elseif op==193 then t.volume=v elseif op==194 then self.master=v/127

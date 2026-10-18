@@ -73,20 +73,51 @@ end
 
 local function serializer() return require("src.core.SaveSerializer") end
 
+-- ONE STATE PER PROCESS (W.live): the screen, the launcher's background step
+-- pump, the passive watts (WalkerEconomy, ticking during play too) and the
+-- minigames all hold the same table, so none of them writes over another's
+-- watts with a stale copy. W.reload() reads the disk again.
+W.live = nil
+
 function W.load()
+  if W.live then return W.live end
   if love and love.filesystem and love.filesystem.getInfo(W.FILE) then
     local ok, t = pcall(serializer().decode, love.filesystem.read(W.FILE) or "")
     if ok and type(t) == "table" then
       local fresh = W.newState()
       for k, v in pairs(fresh) do if t[k] == nil then t[k] = v end end
+      W.live = t
       return t
     end
   end
-  return W.newState()
+  W.live = W.newState()
+  return W.live
 end
 
+function W.reload() W.live = nil return W.load() end
+
 function W.save(st)
+  if st then W.live = st end
   if love and love.filesystem then love.filesystem.write(W.FILE, serializer().encode(st)) end
+end
+
+-- the walker's own finds (Dowsing, the Poke Radar, a find): three of each, as
+-- the original. What the minigames grant (WalkerEconomy, `granted = true`)
+-- rides along without taking those places.
+local function heldCount(list)
+  local n = 0
+  for _, it in ipairs(list or {}) do if not it.granted then n = n + 1 end end
+  return n
+end
+W.heldCount = heldCount
+
+-- the index of the n-th own (not granted) entry, for a swap
+local function ownIndex(list, n)
+  local k = 0
+  for i, it in ipairs(list or {}) do
+    if not it.granted then k = k + 1; if k == n then return i end end
+  end
+  return nil
 end
 
 local function note(st, text)
@@ -203,7 +234,7 @@ function W.collectFind(st)
     st.lifetimeWatts = st.lifetimeWatts + f.watts
     return ("Got %d W!"):format(f.watts)
   end
-  if #st.items >= W.MAX_ITEMS then
+  if heldCount(st.items) >= W.MAX_ITEMS then
     table.insert(st.finds, 1, f)
     return nil, "full", f
   end
@@ -268,11 +299,20 @@ end
 
 -- ---------------------------------------------------------- Poke Radar
 
+-- the walk's progress for unlocking its encounters and items: the steps
+-- walked plus the watts earned without walking (minigames, the hourly
+-- trickle) at 20 steps a watt (WalkerEconomy's addWatts)
+function W.walkSteps(st)
+  local w = st and st.walking
+  if not w then return 0 end
+  return (tonumber(w.steps) or 0) + (tonumber(w.bonusSteps) or 0)
+end
+
 -- which of the three drawn encounters the bushes can hold now
 local function reachable(st)
   local out = {}
   for _, e in ipairs((st.walking and st.walking.encounters) or {}) do
-    if (st.walking.steps or 0) >= W.stepsNeeded(st, e) then out[#out + 1] = e end
+    if W.walkSteps(st) >= W.stepsNeeded(st, e) then out[#out + 1] = e end
   end
   return out
 end
@@ -286,42 +326,68 @@ function W.radarStart(st)
   if #pool == 0 then return nil, "nothing around yet -- keep walking" end
   st.watts = st.watts - W.RADAR_COST
   -- C is common, A rare
-  local weights = { A = 1, B = 3, C = 6 }
-  local sum = 0
-  for _, e in ipairs(pool) do sum = sum + (weights[e.group] or 1) end
-  local roll, pick = rnd(sum), pool[1]
-  for _, e in ipairs(pool) do
-    roll = roll - (weights[e.group] or 1)
-    if roll <= 0 then pick = e break end
+  local function coursePick(list)
+    local weights = { A = 1, B = 3, C = 6 }
+    local sum = 0
+    for _, e in ipairs(list) do sum = sum + (weights[e.group] or 1) end
+    local roll, pick = rnd(sum), list[1]
+    for _, e in ipairs(list) do
+      roll = roll - (weights[e.group] or 1)
+      if roll <= 0 then pick = e break end
+    end
+    return pick
+  end
+  -- the walking Pokemon's game's own wild Pokemon and, rarely, a legendary
+  -- (WalkerRadarPools); the course's three stay in the mix
+  local okR, Radar = pcall(require, "src.pokewalker.WalkerRadarPools")
+  local okP, wide = false, nil
+  if okR then okP, wide = pcall(Radar.roll, st, pool, rnd, coursePick) end
+  local pick = (okP and type(wide) == "table" and wide) or coursePick(pool)
+  if pick.legendary then
+    return { bush = rnd(4), legendary = true, encounter = pick, timer = 3.5 }
   end
   local marks = pick.group == "A" and (rnd(2) == 1 and 3 or 2) or pick.group == "B" and (rnd(2) == 1 and 2 or 1) or 1
   return { bush = rnd(4), marks = marks, encounter = pick, timer = 3.0 }
 end
 
--- the battle: one turn; returns the new battle state and what happened
-function W.newBattle(enc) return { me = 4, wild = 4, enc = enc, over = nil } end
+-- the battle: one turn; returns the new battle state and what happened.
+-- A legendary has six bars and is much harder to catch.
+W.LEGEND_HP = 6
+function W.newBattle(enc)
+  local hp = enc and enc.legendary and W.LEGEND_HP or 4
+  return { me = 4, wild = hp, max = hp, enc = enc, over = nil, legendary = enc and enc.legendary or nil }
+end
 
 function W.battleTurn(st, b, action)
   if b.over then return b, nil end
   local r = rnd(100)
   local text
+  local legend = b.legendary or (b.enc and b.enc.legendary)
   if action == "attack" then
-    if r <= 15 then text = "It dodged!"
+    if r <= (legend and 30 or 15) then text = "It dodged!"
     elseif r <= 30 then b.wild = b.wild - 2; text = "A critical hit!"
     else b.wild = b.wild - 1; text = "It hit!" end
   elseif action == "evade" then
     if r <= 40 then b.wild = b.wild - 1; text = "Dodged and countered!"
-    elseif r <= 85 then text = "They stared each other down..."
+    elseif r <= (legend and 94 or 85) then text = "They stared each other down..."
     else b.over = "fled"; text = "The wild Pokemon fled!" end
   elseif action == "catch" then
-    -- likelier the weaker it is
-    local chance = ({ [4] = 25, [3] = 40, [2] = 60, [1] = 80 })[math.max(1, b.wild)] or 25
-    if r <= chance then b.over = "caught"; text = "Gotcha!"
-    else b.over = "fled"; text = "It broke free and fled!" end
+    -- likelier the weaker it is; a legendary hardly at all at full strength,
+    -- and it may shake the ball off and stay to fight
+    if legend then
+      local chance = W.LEGEND_CATCH[math.max(1, math.min(6, b.wild))] or 5
+      if r <= chance then b.over = "caught"; text = "Gotcha! The legendary Pokemon was caught!"
+      elseif rnd(100) <= 35 then b.over = "fled"; text = "It broke free and fled!"
+      else text = "It broke free!" end
+    else
+      local chance = ({ [4] = 25, [3] = 40, [2] = 60, [1] = 80 })[math.max(1, b.wild)] or 25
+      if r <= chance then b.over = "caught"; text = "Gotcha!"
+      else b.over = "fled"; text = "It broke free and fled!" end
+    end
   end
   if not b.over and b.wild <= 0 then b.over = "fled"; text = (text or "") .. " The wild Pokemon fled!" end
   -- the wild one hits back when the fight goes on
-  if not b.over and action ~= "catch" and rnd(100) <= 35 then
+  if not b.over and (action ~= "catch" or legend) and rnd(100) <= (legend and 45 or 35) then
     b.me = b.me - 1
     text = (text or "") .. " It attacked!"
     if b.me <= 0 then
@@ -333,8 +399,9 @@ function W.battleTurn(st, b, action)
   end
   if b.over == "caught" then
     local e = b.enc
-    local caught = { species = e.species, name = e.name, level = e.level, gender = e.gender, moves = e.moves }
-    if #st.caught < W.MAX_CAUGHT then
+    local caught = { species = e.species, name = e.name, level = e.level, gender = e.gender, moves = e.moves,
+                     legendary = e.legendary or nil, shiny = e.shiny or nil }
+    if heldCount(st.caught) < W.MAX_CAUGHT then
       st.caught[#st.caught + 1] = caught
       note(st, ("Caught %s!"):format(e.name or "a Pokemon"))
     else
@@ -344,7 +411,11 @@ function W.battleTurn(st, b, action)
   return b, text
 end
 
+-- a legendary's catch odds (percent) by its bars left
+W.LEGEND_CATCH = { [6] = 5, [5] = 9, [4] = 14, [3] = 20, [2] = 30, [1] = 42 }
+
 function W.swapCaught(st, index, caught)
+  index = ownIndex(st.caught, index) or index
   if st.caught[index] and caught then st.caught[index] = caught end
 end
 
@@ -352,7 +423,7 @@ end
 
 function W.availableItems(st, course)
   local out = {}
-  local steps = st.walking and st.walking.steps or 0
+  local steps = W.walkSteps(st)
   for _, it in ipairs((course and course.items) or {}) do
     if steps >= (tonumber(it.steps) or 0) then out[#out + 1] = it end
   end
@@ -373,7 +444,7 @@ function W.dowseTry(st, d, i)
   if d.tries <= 0 then return "none" end
   d.tries = d.tries - 1
   if i == d.at then
-    if #st.items < W.MAX_ITEMS then
+    if heldCount(st.items) < W.MAX_ITEMS then
       st.items[#st.items + 1] = { name = d.item }
       note(st, ("Dowsed up %s."):format(d.item))
     else
@@ -387,6 +458,7 @@ function W.dowseTry(st, d, i)
 end
 
 function W.swapItem(st, index, item)
+  index = ownIndex(st.items, index) or index
   if st.items[index] and item then st.items[index] = item end
 end
 

@@ -1277,6 +1277,9 @@ function Gen3Save.patchBoxMon(bytes, off, changes)
   if changes.metLocation then setU8("misc", 1, changes.metLocation) end
   if changes.origins then setU16("misc", 2, changes.origins) end
   if changes.ivWord then setU32("misc", 4, changes.ivWord) end
+  -- the ribbon word, whose top bit is the fateful-encounter (obedience) mark
+  -- an event Mew or Deoxys needs (a Monster Walker distribution carries it)
+  if changes.ribbons then setU32("misc", 8, changes.ribbons) end
 
   local sum = 0
   for i = 0, Gen3Save.SECURE_SIZE / 2 - 1 do
@@ -1356,6 +1359,8 @@ local function boxOrigins(mon, cw)
     spAttack = (mon.ivs or {}).spatk, spDefense = (mon.ivs or {}).spdef,
     isEgg = mon.isEgg, altAbility = mon.altAbility,
   })
+  -- a built record's ribbons + fateful mark (src/pokewalker/WalkerEvents.lua)
+  if tonumber(mon.gen3Ribbons) then out.ribbons = math.floor(tonumber(mon.gen3Ribbons)) % 4294967296 end
   return out
 end
 

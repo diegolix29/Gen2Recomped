@@ -53,6 +53,9 @@ function M.zones(bytes)
       events = u16(bytes, o + 0x16), parent = u16(bytes, o + 0x18),
       nameIndex = u8(bytes, o + 0x1A),
       townMapMatrix = u16(bytes, o + 0x20),
+      -- +0x1E u16: the field's permissions (bike, fly, ...), read by
+      -- src/world/Gen5FieldRules.lua (houses 0x4921, routes 0xEC40)
+      fieldFlags = u16(bytes, o + 0x1E),
       -- bits 9..15 of +0x1C: the camera, a record of /a/0/6/0 (the field
       -- camera set-up at 0x0218E018 reads it through 0x02013BBC)
       camera = math.floor(u16(bytes, o + 0x1C) / 512) % 128,

@@ -128,6 +128,8 @@ local physfsMountFn = nil
 local function resolveMount()
   if physfsMountFn ~= nil then return physfsMountFn end
   physfsMountFn = false
+  -- simulated Switch: the symbol does not resolve there (docs/switch.md)
+  if require("src.core.Platform").simulatesSwitch() then return physfsMountFn end
   local ok, ffi = pcall(require, "ffi")
   if not ok then return physfsMountFn end
   pcall(ffi.cdef,
@@ -1028,6 +1030,13 @@ function CacheFs.mountVersion(version)
   -- non-zero value having mounted nothing.  Asking the read path whether the
   -- file is now visible cannot be faked.
 
+  -- SIMULATED SWITCH (POKEPORT_SIMULATE_SWITCH): none of the three mounts
+  -- below lands on love-nx, so go straight to where the Switch ends up.
+  if require("src.core.Platform").simulatesSwitch() then
+    if CacheFs.installPrefixShim(prefix) and overlayVisible() then return true end
+    return false, "could not overlay " .. sub .. "/ onto the read path"
+  end
+
   -- 1. Whole version folder at "", by save-dir-relative name.  No FFI, and
   --    it is enough wherever PhysFS has no colliding data/ to shadow it.
   --
@@ -1153,6 +1162,29 @@ function CacheFs.installPrefixShim(prefix)
   --    across the UI, the battle screen and the overworld.
   fs.read = function(path, ...) return shimRealRead(shimRedirect(path), ...) end
   fs.getInfo = function(path, ...) return shimRealGetInfo(shimRedirect(path), ...) end
+
+  -- ...AND THE RANGED READERS.  The Gen 4/5 ground opens its packed terrain
+  -- (assets/generated/gen4/terrain/{chunks,heights,permissions}.bin) with
+  -- love.filesystem.newFile and seeks, because the geometry is 17 MB and a
+  -- map needs a few hundred KB of it.  Only read/getInfo were redirected, so
+  -- on the Switch -- where this shim is the ONLY way into the cache -- every
+  -- buildings module (require) and texture (newImage) loaded and the terrain
+  -- file "did not exist": buildings, sprites and NPCs over the clear colour,
+  -- no ground, indoors or out.  docs/switch.md.  newFileData only in its
+  -- one-argument (load-from-path) form; with two it is in-memory bytes.
+  for _, name in ipairs({ "newFile", "lines" }) do
+    local real = fs[name]
+    if type(real) == "function" then
+      fs[name] = function(path, ...) return real(shimRedirect(path), ...) end
+    end
+  end
+  if type(fs.newFileData) == "function" then
+    local real = fs.newFileData
+    fs.newFileData = function(a, ...)
+      if select("#", ...) == 0 then a = shimRedirect(a) end
+      return real(a, ...)
+    end
+  end
 
   local g = love.graphics
   if g then

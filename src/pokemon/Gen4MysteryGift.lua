@@ -94,6 +94,12 @@ function MysteryGift.text() return MysteryGift.hgss() and MysteryGift.HGSS.TEXT 
 
 local function byKey(key)
   for _, g in ipairs(MysteryGift.gifts()) do if g.key == key then return g end end
+  -- a gift bought on the Monster Walker (src/pokewalker/WalkerEvents.lua):
+  -- "walker:<event>" -- a distribution's Pokemon, or the Secret Key
+  if type(key) == "string" and key:sub(1, 7) == "walker:" then
+    local ok, WE = pcall(require, "src.pokewalker.WalkerEvents")
+    if ok and WE and WE.gen4Gift then return WE.gen4Gift(key) end
+  end
 end
 MysteryGift.byKey = byKey
 
@@ -178,6 +184,8 @@ function MysteryGift.give(game, save, setVar)
         mon.shiny = true
         pcall(function() if Pokemon.makeShiny then Pokemon.makeShiny(mon, save) end end)
       end
+      -- a walker distribution's own trainer, moves, item and ribbons
+      if g.decorate then pcall(g.decorate, game.data, save, mon) end
       save.party = save.party or {}
       if #save.party < 6 then table.insert(save.party, mon) end
     end
@@ -203,7 +211,8 @@ function MysteryGift.owed(save)
   if not save then return 0 end
   local s = state(save)
   local taken = 0
-  for _, how in pairs(s.taken) do if how ~= "start" then taken = taken + 1 end end
+  -- "walker": bought on the Monster Walker, not one of the induction picks
+  for _, how in pairs(s.taken) do if how ~= "start" and how ~= "walker" then taken = taken + 1 end end
   local wins = type(save.hallOfFame) == "table" and #save.hallOfFame or math.floor(tonumber(save.hallOfFame) or 0)
   return math.max(0, wins - taken)
 end

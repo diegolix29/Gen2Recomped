@@ -1233,7 +1233,8 @@ local function markerFor(version)
   local revision = version == "platinum" and "platinum-geometry-v17:" or ""
   -- gen5-trades-v5: constants.gen5Trades, gen5_trade_art and the trade
   -- commands' operands in map_scripts (Gen5Trades / Gen5TradeArt)
-  if version == "black" or version == "white" then revision = "gen5-trades-v5:" end
+  -- gen5-starter-v6: gen5_starter_art, the gift box app (Gen5StarterArt)
+  if version == "black" or version == "white" then revision = "gen5-starter-v6:" end
   -- emerald-trade-scene-v3 / firered-trade-scene-v1: the in-game trade
   -- sequence's art (extractTradeScene, gen3_trade_art) -- without it special
   -- 257 falls back to the bare swap, so both Gen 3 caches re-import once
@@ -1244,7 +1245,19 @@ local function markerFor(version)
   -- hgss-phone-call-v1: gen4_hgss_phone_call (Gen4HgssPhoneCall), the
   -- scripted Pokegear calls' phonebook / script defs / ink
   -- hgss-emotes-v1: gen4_emotes from HGSS's own /a/1/0/3 (members 118 / 125)
-  if version == "heartgold" or version == "soulsilver" then revision = "hgss-emotes-v1:" end
+  -- hgss-mart-buy-v1: gen4_hgss_mart_art (Gen4HgssMartArt), the Poke Mart's
+  -- BUY touch screen (/a/0/6/0 members 15-25, overlay 31)
+  -- hgss-water-emotes-v1: gen4_emotes actually written for HGSS (the terrain
+  -- stage's HGSS branch never called it) and gen4_terrain.texAnims /
+  -- texAnimLand / maps[].texAnim, the sea's /a/1/4/0 animation (Gen4HgssTexAnim)
+  -- hgss-gear-dex-v1: gen4_hgss_pokegear_art's app art and data
+  -- (Gen4HgssPokegearExtra: button states, OBJ, the whole map, location
+  -- specs, generic call headers, sort keys) and gen4_hgss_dex_art's search /
+  -- area / size / forms art and zukan data (Gen4HgssDexArt)
+  -- hgss-summary-v2: gen4_hgss_summary_art gains the egg / bare-ribbon pages
+  -- (14 / 11) and /a/0/3/9's status, marking, shiny, Pokerus and ribbon
+  -- sprites (Gen4HgssSummaryArt.pstImages)
+  if version == "heartgold" or version == "soulsilver" then revision = "hgss-gear-dex-v1:hgss-summary-v2:" end
   -- Include version-specific field encounters, sleep, swarm and rate tables.
   -- Only these three caches need rebuilding; other markers remain stable.
   -- v8: field.gen2TradeAnim, GSC's own trade movie art (Gen2TradeArt).
@@ -2721,7 +2734,7 @@ local function chooseSav()
   local platform = love.system.getOS()
   if platform == "OS X" then
     return commandOutput(
-      ([[osascript -e 'POSIX path of (choose file with prompt "%s" of type {"sav", "dsv"})' 2>/dev/null]])
+      ([[osascript -e 'POSIX path of (choose file with prompt "%s" of type {"sav", "dsv", "lua"})' 2>/dev/null]])
         :format(prompt))
   elseif platform == "Windows" then
     local script = table.concat({
@@ -2729,7 +2742,8 @@ local function chooseSav()
       "$d=New-Object System.Windows.Forms.OpenFileDialog;",
       "$d.Title='" .. prompt .. "';",
       -- .dsv: DeSmuME's DS save (SaveFileIO unwraps it)
-      "$d.Filter='Save file (*.sav;*.dsv)|*.sav;*.dsv|All files (*.*)|*.*';",
+      -- .lua: this port's own slot file from an older build (SaveVariants)
+      "$d.Filter='Save file (*.sav;*.dsv;*.lua)|*.sav;*.dsv;*.lua|All files (*.*)|*.*';",
       -- UTF-8, like the ROM and mod pickers (#325)
       "if($d.ShowDialog() -eq 'OK'){[Console]::OutputEncoding=[Text.Encoding]::UTF8; [Console]::Write($d.FileName)}",
     })
@@ -2737,11 +2751,11 @@ local function chooseSav()
       'powershell -NoProfile -STA -Command "' .. script .. '"')
   elseif platform == "Linux" then
     local path = commandOutput(
-      ([[zenity --file-selection --title="%s" --file-filter="Save file | *.sav *.dsv" 2>/dev/null]])
+      ([[zenity --file-selection --title="%s" --file-filter="Save file | *.sav *.dsv *.lua" 2>/dev/null]])
         :format(prompt))
     if path then return path end
     return commandOutput(
-      [[kdialog --getopenfilename "$HOME" "*.sav *.dsv|Save file" 2>/dev/null]])
+      [[kdialog --getopenfilename "$HOME" "*.sav *.dsv *.lua|Save file" 2>/dev/null]])
   end
   return nil
 end

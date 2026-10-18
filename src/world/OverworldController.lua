@@ -11863,7 +11863,8 @@ function OverworldState:startTrainerApproach(npc, dist, partner)
   -- bounce, thirty of hold) with the SEQ_SE_DP_DECIDE pop as it appears.
   local spotFrames = 60
   if (self.map.def and self.map.def.generation) == 4 then
-    spotFrames = require("src.import.Gen4Emotes").FRAMES
+    -- (HGSS at the field's rate, two engine ticks a frame: Gen4Emotes.framesFor)
+    spotFrames = require("src.import.Gen4Emotes").framesFor(self.map.def)
     pcall(function() require("src.core.Sound").play(Game.data, "SEQ_SE_DP_DECIDE") end)
   end
   self.emote = {
@@ -16782,6 +16783,14 @@ function OverworldState:drawWorld()
       if img then
         local age = math.max(0, (self.emote.totalFrames or Gen4Emotes.FRAMES)
                                 - (self.emote.frames or 0))
+        -- HEARTGOLD / SOULSILVER: the cartridge's own anchor, 32 world units
+        -- over the owner through the camera now drawing, the player
+        -- included (src/world/Gen4EmoteDraw.lua); Platinum below, unchanged
+        local EmoteDraw = require("src.world.Gen4EmoteDraw")
+        if EmoteDraw.applies(self.map) then
+          EmoteDraw.draw(self, g4ground, npc, cam, record, img, age)
+          return
+        end
         local bx, by, rise = OverworldState.gen4EmoteSpot(g4ground, npc, cam,
                                                           record, age)
         local function draw()

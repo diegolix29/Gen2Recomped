@@ -76,7 +76,10 @@ function Warp:draw()
   if self.model then
     if not self.colour then self.colour, self.depth = Gen4Model.newTarget(W, H) end
     if self.colour then
-      local previous = { g.getCanvas() }
+      -- push("all") / pop() saves and restores the whole render target (and
+      -- its depth): handing getCanvas()'s answer back to setCanvas raised
+      -- "Canvas expected" when a mod's renderer had bound its own target.
+      g.push("all")
       g.setCanvas({ self.colour, depthstencil = self.depth })
       g.clear(0, 0, 0, 1, true, true)
       local at = self.frame % (self.frames or 240)
@@ -93,7 +96,7 @@ function Warp:draw()
         return track and Gen4Anim.unpackFrame(track.matrices, at) or nil
       end)
       self.model:draw(vp, pose, require("src.render.Gen4TexAnim").materials(self.materials, at))
-      g.setCanvas(previous[1] and previous or nil)
+      g.pop()
       g.setColor(1, 1, 1, 1)
       g.draw(self.colour, 0, 0)
     end

@@ -2385,8 +2385,10 @@ function Commands.g4_move(ctx, id, steps)
       -- up now runs ALONGSIDE it (`ow.extraEmotes`), as the cartridge's two
       -- field effects do.
       local Gen4Emotes = require("src.import.Gen4Emotes")
-      local bubble = { npc = entity, frames = Gen4Emotes.FRAMES,
-                       totalFrames = Gen4Emotes.FRAMES,
+      -- HGSS at the field's rate, two engine ticks a frame (Gen4Emotes.framesFor)
+      local emoteDef = ow and ow.map and ow.map.def
+      local bubble = { npc = entity, frames = Gen4Emotes.FRAMES * Gen4Emotes.ticksFor(emoteDef),
+                       totalFrames = Gen4Emotes.FRAMES * Gen4Emotes.ticksFor(emoteDef),
                        bubble = (action.emote == "double_exclamation") and "double" or 1,
                        onDone = nextStep }
       if ow.emote then
@@ -2508,8 +2510,15 @@ end
 
 function Commands.g4_menu_entry(ctx, entry, index)
   local menu = menuState(ctx)
+  local text = menuLine(ctx, entry)
+  -- HGSS's PC rows are two-line strings ("DEPOSIT\nPOKéMON", msg_0191
+  -- 67-70) written for the touch screen's buttons; in the one-line field
+  -- list the break is a space, not a glyph
+  if type(text) == "string" and require("src.import.Gen4ScriptBands").family == "hgss" then
+    text = text:gsub("[\n\v\f]+", " ")
+  end
   menu.rows[#menu.rows + 1] = {
-    text = menuLine(ctx, entry),
+    text = text,
     value = tonumber(index) or (#menu.rows),
   }
 end
@@ -2580,6 +2589,11 @@ function Commands.g4_menu_show(ctx)
       local widest = 0
       for _, it in ipairs(items) do widest = math.max(widest, Font.width(it.label or "")) end
       menuState_.tw = math.max(4, math.ceil(widest / 8) + 3)
+      -- ov01_021EDDD8: the window is the widest row + 12 pixels, the list
+      -- cursor (ListMenuCursorNew: glyph 0x011F "‣", ink 1/2) at its x 0
+      -- and the text at x 12 -- the arrow had sat against the letters
+      menuState_.tw = math.max(4, math.ceil((widest + 12) / 8) + 2)
+      menuState_.labelX = (tx + 1) * 8 + 12
     end
   end
   ctx.game.stack:push(menuState_)

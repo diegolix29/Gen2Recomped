@@ -462,10 +462,11 @@ B[#B + 1] = { name = "the s.s. ticket",
             { "until", function(r) return r:flag(0xF2) end, 20000 } },
   expect = function(r) return r:flag(0xF2) end, why = "flag 0xF2 (S.S. Ticket)" }
 
--- Olivine port (P01R0101): the seaman (person 0) takes the ticket and walks
+-- Olivine port (P01R0101), from beside its door (the long walk down from the
+-- town met wandering sailors in a full run): the seaman (person 0) takes the ticket and walks
 -- the player out to the boat (VAR_BOAT_DIRECTION 0x40E1 = 1).
 B[#B + 1] = { name = "boarding the s.s. aqua",
-  steps = { { "teleport", "T26", 20, 30, "down" }, { "warpto", "P01R0101" }, { "talk", 0 },
+  steps = { { "teleport", "T26", 23, 50, "down" }, { "warpto", "P01R0101" }, { "talk", 0 },
             { "until", function(r) return r:var(0x40E1) == 1 end, 20000 } },
   expect = function(r) return r:var(0x40E1) == 1 end, why = "0x40E1 = 1 (boat leaves Olivine)" }
 

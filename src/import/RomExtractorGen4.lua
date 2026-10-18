@@ -5824,6 +5824,16 @@ function RomExtractorGen4:extractTerrain(names)
     -- the Headbutt tutor and the Frontier's three (Gen4MoveTutor.HGSS)
     self:moveTutor()
     self:poketchEvolutionArt()
+    -- the "!" and "!!" (Gen4Emotes: /a/1/0/3 members 118 / 125), which
+    -- only Platinum's tail below ever wrote, so HGSS fell back to the box
+    self:emotes()
+    -- the sea, ponds and shorelines: the area's /a/1/4/0 texture animation
+    -- (Gen4HgssTexAnim), into this same table
+    local okT, texAnim = pcall(require("src.import.Gen4HgssTexAnim").extractInto, self, out)
+    if not (okT and texAnim) then
+      require("src.core.Logger").warn("gen4 terrain: HGSS texture animation not read (%s)",
+                                      tostring(texAnim))
+    end
     self:write("gen4_terrain", out)
     self.terrainReport = { chunks = packed, refused = refused, sets = setsBuilt,
       pairedShapes = pairedShapes, undecoded = undecoded, maps = attributed,
@@ -7180,6 +7190,8 @@ RomExtractorGen4.STAGE_CHAIN = {
                              { "src.import.Gen4HgssTitleArt", "gen4_hgss_title_art" },
                              { "src.import.Gen4HgssBootArt", "gen4_hgss_boot_art" },
                              { "src.import.Gen4HgssBoxArt", "gen4_hgss_box_art" },
+                             -- the Poke Mart's BUY touch screen (overlay 31)
+                             { "src.import.Gen4HgssMartArt", "gen4_hgss_mart_art" },
                              { "src.import.Gen4HgssPokegearArt", "gen4_hgss_pokegear_art" },
                              -- the Kimono Girls' dance: clear bell, rings, leaves
                              { "src.import.Gen4HgssLegendArt", "gen4_legend_art" },

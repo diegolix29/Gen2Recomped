@@ -39,6 +39,7 @@ F.PATH = {
 }
 F.CHUNK = 32
 F.NO_CHUNK = 0xFFFF
+F.HeightValues = require("src.import.Gen5Heights")
 
 -- permissions(raw WB section) -> 1024 Gen 4 permission words, little-endian
 function F.permissions(raw)
@@ -86,7 +87,8 @@ end
 -- (its header's width / height), or nil for an ordinary 32 x 32 one: the
 -- blocks in the shape the rails write (0xFF blocked), the behaviours, and the
 -- flat tiles' heights
-function F.bigGrid(raw)
+-- (`values`: Gen5Heights' table, what each tile's height value means)
+function F.bigGrid(raw, values)
   if type(raw) ~= "string" or #raw < 4 then return nil end
   local w = raw:byte(1) + raw:byte(2) * 256
   local h = raw:byte(3) + raw:byte(4) * 256
@@ -100,7 +102,7 @@ function F.bigGrid(raw)
     behav[t + 1] = string.char(raw:byte(at + 5))
     if raw:byte(at + 1) == 0 and raw:byte(at + 2) == 0 then
       local y = raw:byte(at + 3) + raw:byte(at + 4) * 256
-      if y >= 0x8000 then y = y - 0x10000 end
+      if values then y = values[y] or 0 elseif y >= 0x8000 then y = y - 0x10000 end
       if y ~= 0 then heights[(t % w) .. "," .. math.floor(t / w)] = y end
     end
   end
@@ -108,6 +110,9 @@ function F.bigGrid(raw)
            heights = heights }
 end
 
+-- (SUPERSEDED for the maps' heights: the u16 below NAMES a height rather
+-- than being one -- src/import/Gen5Heights.lua -- and the map loop reads it
+-- through that table; this raw reader is kept for its callers.)
 -- HEIGHTS, from the same 8-byte tile records: bytes 0-1 are 0 on a flat
 -- tile, and then bytes 2-3 are its height in world units (16 to a tile),
 -- signed. Striaton's ground is 0 with ledges at 24; the Trio Badge gym's
@@ -316,6 +321,8 @@ function F.build(x, save)
   -- chunks: packed models and translated permissions
   local blob = Terrain.newBlob()
   local terrainChunks, permissions, lands, refused, heightsOf = {}, {}, {}, {}, {}
+  -- what each tile's height value means (src/import/Gen5Heights.lua)
+  local heightTable = F.HeightValues.build(rom) or {}
   -- NG ("no grid") chunks: no permissions, and a model at posScale 512 --
   -- eight times a WB chunk's 64 -- so each spans 4,096 units, 256 tiles.
   -- A matrix made only of them is a RAIL map (Gen5Field's rails below).
@@ -548,17 +555,31 @@ function F.build(x, save)
         gen5Camera = cameras[z.camera or 0] or cameras[0],
         gen5Rail = rails[id] and { file = rails[id].file, cameraArea = rails[id].cameraArea } or nil,
         gen5NoGrid = ngScale[z.matrix] and true or nil,
+        -- the zone's field permissions (Gen5FieldRules.allowBike ...)
+        gen5Flags = z.fieldFlags,
       }
       -- the heights, as the per-tile override Gen4Ground:heightsAt reads first
+      -- (the tile's flat value NAMES a height: src/import/Gen5Heights.lua;
+      -- a 0 is written only beside a raised tile, so the floor next to a
+      -- table does not take the table's height from Gen4Ground's neighbours)
       local def, edits, n = maps[mapId], {}, 0
+      local zeros = {}
       for ly = 0, def.height - 1 do
         for lx = 0, def.width - 1 do
           local mx, my = def.originX + lx, def.originY + ly
           local cx, cy = math.floor(mx / F.CHUNK), math.floor(my / F.CHUNK)
           local cid = cx < g4.width and cy < g4.height and g4.maps[cy * g4.width + cx + 1]
-          local hs = cid and heightsOf[cid]
-          local h = hs and hs[(my % F.CHUNK) * F.CHUNK + (mx % F.CHUNK) + 1]
-          if h then edits[lx .. "," .. ly] = h; n = n + 1 end
+          local raw = cid and rawPerms[cid]
+          local v = raw and F.HeightValues.valueAt(raw, (my % F.CHUNK) * F.CHUNK + (mx % F.CHUNK))
+          local h = v and heightTable[v]
+          if h and h ~= 0 then edits[lx .. "," .. ly] = h; n = n + 1
+          elseif h then zeros[#zeros + 1] = { lx, ly } end
+        end
+      end
+      for _, z in ipairs(zeros) do
+        local x, y = z[1], z[2]
+        if edits[(x - 1) .. "," .. y] or edits[(x + 1) .. "," .. y] or edits[x .. "," .. (y - 1)] or edits[x .. "," .. (y + 1)] then
+          edits[x .. "," .. y] = 0; n = n + 1
         end
       end
       if n > 0 then def.gen4HeightEdits = edits end
@@ -570,7 +591,7 @@ function F.build(x, save)
       -- the map unable to move. Its model spans 1,024 units: chunk scale 2.
       if g4.width == 1 and g4.height == 1 then
         local raw = rawPerms[g4.maps[1]]
-        local big = raw and F.bigGrid(raw)
+        local big = raw and F.bigGrid(raw, heightTable)
         if big then
           def.width, def.height = big.width, big.height
           def.blocks, def.behaviorCells = big.blocks, big.behaviorCells

@@ -36,6 +36,25 @@ Gen4Emotes.BOUNCE = { 6, 10, 12, 12, 10, 6, 0 }
 Gen4Emotes.HOLD = 30
 Gen4Emotes.FRAMES = #Gen4Emotes.BOUNCE + Gen4Emotes.HOLD
 
+-- HOW MANY ENGINE TICKS ONE OF THOSE FRAMES IS, by camera family. The table
+-- above is in FIELD frames (ov01_02200614 in HGSS, ov5_021F5A10.c in
+-- Platinum: the same 6-then-less-2 rise and the same 0x1E hold), and the
+-- field runs at half this engine's tick -- a ledge's 16 field frames are 32
+-- here. HGSS plays its emote at that rate (Gen4EmoteDraw); Platinum keeps the
+-- one-tick-a-frame timing it has always had.
+Gen4Emotes.TICKS_PER_FRAME = { hgss = 2 }
+
+function Gen4Emotes.ticksFor(def)
+  -- Black / White's field is 30 frames a second too (ov21 0x21BB808)
+  if def and def.gen5 then return 2 end
+  return Gen4Emotes.TICKS_PER_FRAME[def and def.cameraFamily or false] or 1
+end
+
+-- The emote's whole life in engine ticks on the map `def`.
+function Gen4Emotes.framesFor(def)
+  return Gen4Emotes.FRAMES * Gen4Emotes.ticksFor(def)
+end
+
 function Gen4Emotes.extract(arc)
   local Nsbmd = require("src.import.Gen4Nsbmd")
   local Models = require("src.import.Gen4Models")

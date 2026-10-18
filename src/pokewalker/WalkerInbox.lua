@@ -17,12 +17,23 @@
 
 local I = {}
 
-local function norm(s) return (tostring(s or ""):upper():gsub("[^%w]", "")) end
+-- "POKé BALL" (Gen 2-3 charmaps) and "Poké Ball" read as POKEBALL: the é was
+-- stripped with the punctuation, so no ball ever matched and every ball the
+-- walker sent home became a Potion
+local function norm(s)
+  s = tostring(s or ""):gsub("\195\169", "E"):gsub("\195\137", "E")
+  return (s:upper():gsub("[^%w]", ""))
+end
 
 local function speciesKey(data, dex)
   for key, def in pairs(data.pokemon or {}) do
     if type(def) == "table" and tonumber(def.dex) == dex then return key, def end
   end
+  -- Sinnoh's and Johto-on-DS tables carry no `dex`: they are keyed by it
+  -- (data.pokemon[25] is Pikachu). Without this every catch sent home to
+  -- HeartGold / SoulSilver / Platinum was dropped from the inbox unmade.
+  local def = (data.pokemon or {})[dex]
+  if dex > 0 and type(def) == "table" and def.dex == nil and tonumber(def.id or dex) == dex then return dex, def end
   return nil
 end
 
@@ -71,6 +82,8 @@ end
 
 -- returns a short report, or nil when there was nothing
 function I.apply(save, data)
+  -- the Watt Shop's Events shelf: its own queue (src/pokewalker/WalkerEvents.lua)
+  pcall(function() require("src.pokewalker.WalkerEvents").apply(save, data) end)
   local box = save and save.walkerInbox
   if type(box) ~= "table" then return nil end
   data = data or require("src.core.Data")
@@ -97,7 +110,7 @@ function I.apply(save, data)
         end
       end
       if found then
-        pcall(levelUp, data, found, r.steps)
+        pcall(levelUp, data, found, (tonumber(r.steps) or 0) + (tonumber(r.bonusExp) or 0))
         if r.friendship then
           if found.happiness ~= nil then found.happiness = r.friendship else found.friendship = r.friendship end
         end
@@ -105,7 +118,7 @@ function I.apply(save, data)
       end
       table.remove(box.returning, i)
     elseif type(mon) == "table" then
-      pcall(levelUp, data, mon, r.steps)
+      pcall(levelUp, data, mon, (tonumber(r.steps) or 0) + (tonumber(r.bonusExp) or 0))
       if r.friendship then
         if mon.happiness ~= nil then mon.happiness = r.friendship
         else mon.friendship = r.friendship end
@@ -126,6 +139,12 @@ function I.apply(save, data)
         mon.metLocation = "POKEWALKER"
         mon.ot = mon.ot or (save.player and save.player.name)
         mon.otId = mon.otId or (save.player and save.player.id)
+        -- a Poke Radar legendary keeps its mark; a shiny find is made shiny
+        -- the game's own way (Gen 2 DVs, Gen 3+ a personality against the OT)
+        if c.legendary then mon.walkerLegendary = true end
+        if c.shiny and not Pokemon.isShiny(mon) then
+          pcall(Pokemon.forceShiny, data, mon, nil, mon.otId)
+        end
         if Boxes.deposit(save, mon) then table.remove(box.mons, i); report.caught = report.caught + 1 end
       end
     else
@@ -136,10 +155,12 @@ function I.apply(save, data)
   local Bag = require("src.inventory.Bag")
   for i = #(box.items or {}), 1, -1 do
     local id = itemId(data, box.items[i].name)
+    -- a stack (the Watt Shop, the minigames) keeps its count
+    local n = math.max(1, math.floor(tonumber(box.items[i].count) or 1))
     if id then
-      if not Bag.add(save, id, 1, data) then
+      if not Bag.add(save, id, n, data) then
         save.pcItems = save.pcItems or {}
-        save.pcItems[id] = (save.pcItems[id] or 0) + 1
+        save.pcItems[id] = (save.pcItems[id] or 0) + n
       end
       report.items = report.items + 1
     end

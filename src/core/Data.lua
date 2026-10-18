@@ -284,6 +284,11 @@ local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
                         "gen4_trade_art",
                         -- Black / White's NPC trade demo (Gen5TradeArt)
                         "gen5_trade_art",
+                        -- Black / White's gift box starter app (Gen5StarterArt)
+                        "gen5_starter_art",
+                        -- Black / White's field effects: phenomena, the rod's
+                        -- lure, ripples (Gen5FieldEffects, /a/0/7/5)
+                        "gen5_field_effects",
                         -- the field start menu's icons in both palettes and
                         -- their swell/wiggle animations (Gen4StartMenuArt).
                         "gen4_start_menu_art", "gen4_start_menu_ink",

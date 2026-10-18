@@ -923,6 +923,11 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
   -- item_use_functions.c), so that is what picks the branch here: 4 is
   -- ITEM_USE_FUNC_BICYCLE, 21 ESCAPE_ROPE, and 19 BAG_MESSAGE -- the bag's own
   -- UseItemInBag, which knows exactly the three Repels and the two Flutes.
+  -- BLACK / WHITE dispatch on their own `fieldUse` (src/inventory/Gen5ItemUse.lua)
+  if data and data.gen5_version and itemDef and itemDef.fieldUse ~= nil then
+    local kind, msgs, extra = require("src.inventory.Gen5ItemUse").use(data, save, rawItemId, itemDef, target, battle, ow)
+    if kind then return kind, msgs or {}, extra end
+  end
   -- PLATINUM'S OWN DISPATCH (src/inventory/Gen4ItemUse.lua) answers first
   do
     local kind, msgs, extra = require("src.inventory.Gen4ItemUse").use(data, save, rawItemId, itemDef, target, battle)
@@ -1513,7 +1518,9 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
     local T = require("src.import.Gen4Text")
     local function line(i, fallback)
       if Game then pcall(T.buffer, Game, save.player.name, name) end
-      return (Game and T.resolve(data, 7, i, Game)) or fallback
+      -- HGSS: bank 10, renumbered (src/ui/Gen4PartyText.lua)
+      local bank, n = require("src.ui.Gen4PartyText").bagIndex(data, i)
+      return (Game and bank and T.resolve(data, bank, n, Game)) or fallback
     end
     if itemId == "BLACK_FLUTE" or itemId == "WHITE_FLUTE" then
       save.gen4Flute = itemId == "BLACK_FLUTE" and "black" or "white"

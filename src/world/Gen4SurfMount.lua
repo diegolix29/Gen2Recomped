@@ -26,6 +26,8 @@ local M = {}
 M.MODEL = 81
 -- HeartGold/SoulSilver's copy of the archive is /a/1/0/3, `sea_ride` at 86
 M.HGSS_MODEL = 86
+-- Black / White's /a/0/7/5 (src/import/Gen5FieldEffects.lua)
+M.BW_MODEL = 49
 M.MIN_Y, M.MAX_Y, M.DELTA = 1, 4, 0x400 / 4096
 M.SPRITE_Y, M.SPRITE_Z = 7, 4
 -- HeartGold/SoulSilver's renderer (pokeheartgold overlay 1 ov01_021FE8C8)
@@ -46,6 +48,12 @@ end
 local function isGen4()
   local G = Game()
   local GV = require("src.core.GameVersion")
+  if G and G.data and GV.isGen5() then
+    -- BLACK / WHITE: `sea_ride` is /a/0/7/5 member 49 (Gen5FieldEffects);
+    -- drawn when the cache carries that fldeff set
+    local set = ((G.data.gen4_models or {}).sets or {}).fldeff
+    return set and set.byMember and set.byMember[M.BW_MODEL] and true or false
+  end
   return G and G.data and G.data.isGen4Cache and not GV.isGen5()
 end
 
@@ -277,7 +285,8 @@ local function rotY(deg)
 end
 
 local function model(ground)
-  return ground:building(isHgss() and M.HGSS_MODEL or M.MODEL, "fldeff")
+  local GV = require("src.core.GameVersion")
+  return ground:building(GV.isGen5() and M.BW_MODEL or isHgss() and M.HGSS_MODEL or M.MODEL, "fldeff")
 end
 
 -- the free camera's pass: `vp` is the world's view-projection

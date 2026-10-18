@@ -284,9 +284,24 @@ end
 
 -- one world constant, falling back per key so a cache that stamps half of
 -- constants.world still resolves the other half
+-- THE DS FIELD RUNS AT 30 FRAMES A SECOND. The Gen 4 importer states the
+-- cartridge's walk and run as MovementAction_InitWalk's durations -- 8 and 4
+-- field frames for a cell -- and the field ticks once per two vblanks, so at
+-- this engine's 60 ticks a second they are 16 and 8 (Gen4TerrainAnim and the
+-- HGSS emote timing use the same rate). Read raw, Sinnoh and Johto walked at
+-- double the cartridge's pace: reported from play, "in hgss the player is
+-- moving a lot faster than they should be". Black and White are left as
+-- their cache states them.
+local GEN4_FIELD_TICKS = 2
+local FIELD_FRAME_KEYS = { stepFrames = true, runStepFrames = true }
+
 function FieldDefaults.world(data, key)
   local world = data and data.constants and data.constants.world
   local value = world and world[key]
+  if value ~= nil and FIELD_FRAME_KEYS[key] and data.isGen4Cache
+     and not data.gen5_version and data.constants.gen ~= 5 then
+    return value * GEN4_FIELD_TICKS
+  end
   if value ~= nil then return value end
   return FieldDefaults.CONSTANTS.world[key]
 end

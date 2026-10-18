@@ -86,7 +86,9 @@ function love.load()
       end
       Data.gen5_boot_art=require('src.import.Gen5BootArt').build(X)
       Data.gen5_main_menu_art=require('src.import.Gen5MainMenuArt').build(X)
-      Data.gen5_juniper_art=require('src.import.Gen5JuniperArt').build(X);X:close()
+      Data.gen5_juniper_art=require('src.import.Gen5JuniperArt').build(X)
+      -- the gift box's starter app (overlay 223, /a/2/0/5)
+      Data.gen5_starter_art=require('src.import.Gen5StarterArt').build(X);X:close()
       local Assets=require('src.render.Assets');local original=Assets.image
       Assets.image=function(path,...) return pictures[path] or original(path,...) end
     end
@@ -126,6 +128,21 @@ function love.load()
           end
         end
         Data[entry[2]]=index
+      end
+      -- HGSS_DEX_ART=1: the Pokedex's art and search data fresh from the ROM
+      -- (Gen4HgssDexArt: images + listAnims, orders, search), as a re-import
+      -- would write them
+      if os.getenv('HGSS_DEX_ART') then
+        local A=require('src.import.Gen4HgssDexArt')
+        local images,anims,meta=A.images(rom)
+        local index={listAnims=anims,orders=A.orders(rom),search=A.searchData(rom)}
+        for key,value in pairs(meta or {}) do index[key]=value end
+        for key,pic in pairs(images or {}) do
+          local path='__hgss_ui/gen4_hgss_dex_art/'..key..'.png'
+          pictures[path]=love.graphics.newImage(require('src.import.ImageWriter').fromRGBA8(pic.width,pic.height,pic.rgba))
+          index[key]={path=path,width=pic.width,height=pic.height,originX=pic.originX,originY=pic.originY}
+        end
+        Data.gen4_hgss_dex_art=index
       end
       do
         local X=assert(require('src.import.RomExtractorGen4').new(os.getenv('HGSS_UI_ROM'),os.getenv('VERSION') or 'heartgold'))
@@ -527,6 +544,20 @@ function love.load()
         Game.save.party[1], tonumber(os.getenv("LEARN_MOVE")), function() print("[learn] done") end)
       print(("[learn] push -> %s"):format(okL and "ok" or tostring(errL)))
     end
+    -- HGSS_GEAR="cards=1,2;numbers=0,1,2;level=2;skin=3;app=2": the HGSS
+    -- Pokegear's save record (cards 1 map / 2 radio, phone numbers, the map's
+    -- unlock level, the skin, the last used app)
+    if os.getenv("HGSS_GEAR") and Game.save then
+      local pg = { cards = {}, numbers = {}, mapLevel = 0 }
+      for k, v in tostring(os.getenv("HGSS_GEAR")):gmatch("(%a+)=([^;]*)") do
+        if k == "cards" or k == "numbers" then
+          for n in v:gmatch("%d+") do pg[k][tonumber(n)] = true end
+        elseif k == "level" then pg.mapLevel = tonumber(v)
+        elseif k == "app" then pg.lastApp = tonumber(v)
+        else pg[k] = tonumber(v) or v end
+      end
+      Game.save.hgssPokegear = pg
+    end
     if screenName then
       local Screens = require("src.ui.Screens")
       -- OPEN IT AT A NAMED PAGE.  A screen that only ever renders its first
@@ -535,6 +566,29 @@ function love.load()
       -- highlighted one MOVES.
       local opts = {}
       if os.getenv("POCKET") then opts.pocket = os.getenv("POCKET") end
+      -- BOX_MODE=move (deposit / withdraw / items): the PC box screen's mode;
+      -- BOX_MONS="1:155,158,0,161": box 1's slots (0 = empty), EGG_SLOT=box:slot
+      -- makes one an Egg, MAIL_PARTY=n gives party mon n a Mail (item 137)
+      if os.getenv("BOX_MODE") then opts.mode = os.getenv("BOX_MODE") end
+      if os.getenv("BOX_MONS") and Game.save then
+        local Pokemon = require("src.pokemon.Pokemon")
+        local boxes = require("src.pokemon.Boxes").ensure(Game.save)
+        for b, list in tostring(os.getenv("BOX_MONS")):gmatch("(%d+):([%d,]+)") do
+          local s = 0
+          for id in list:gmatch("%d+") do
+            s = s + 1
+            if tonumber(id) > 0 then boxes[tonumber(b)][s] = Pokemon.new(Data, tonumber(id), 10) end
+          end
+        end
+        for b, s in tostring(os.getenv("EGG_SLOT") or ""):gmatch("(%d+):(%d+)") do
+          local m = boxes[tonumber(b)][tonumber(s)]
+          if m then m.egg = true; m.isEgg = true end
+        end
+      end
+      if os.getenv("MAIL_PARTY") and Game.save and Game.save.party then
+        local m = Game.save.party[tonumber(os.getenv("MAIL_PARTY"))]
+        if m then m.heldItem = tonumber(os.getenv("MAIL_ITEM") or "137") end
+      end
       -- the summary opens on the lead (PARTY=...)
       if screenName == "SummaryMenu" and Game.save and Game.save.party then opts.mon = Game.save.party[1] end if screenName == "SummaryMenu" and os.getenv("LEARN_CHOOSE") then opts.choose = { move = tonumber(os.getenv("LEARN_CHOOSE")), onChoose = function(i) print("[learn] chose " .. tostring(i)) end } end
       -- CERT=<id>: which HGSS certificate (0 Johto, 1 National, 2 Shiny Leaf)
@@ -708,6 +762,53 @@ function love.load()
           print(("[battle menu shot] frozen at the command menu, tick %d"):format(i))
         end
       end
+      -- TAPS="20:128,170;40:30,60": a touch at bottom-screen (x, y) on each
+      -- named tick, handed to the top state as the touch screen would (in a
+      -- vertical / horizontal window, through the window rect; else as an
+      -- injected second-screen touch, which every Gen 4 screen reads as local)
+      for t, tx, ty in (os.getenv("TAPS") or ""):gmatch("(%d+):(%d+),(%d+)") do
+        if tonumber(t) == i then
+          local SS = require("src.ui.SecondScreen")
+          local top = Game.stack.states[#Game.stack.states]
+          tx, ty = tonumber(tx), tonumber(ty)
+          if top and top.touchpressed then
+            local px, py = tx, ty
+            if SS.combined(Game) then
+              local wx, wy, s = SS.windowRect(Game)
+              px, py = wx + tx * s, wy + ty * s
+            else Game.secondScreenInjecting = true end
+            local okT, res = pcall(top.touchpressed, top, 1, px, py)
+            if top.touchreleased then pcall(top.touchreleased, top, 1, px, py) end
+            Game.secondScreenInjecting = nil
+            print(("[tap] tick %d (%d,%d) -> %s"):format(i, tx, ty, tostring(okT and res or res)))
+            if os.getenv("TAP_DEBUG") then
+              local up = require("src.render.Renderer").uiPresentation or {}
+              print(("[tap] ui (%s,%s) x%s row=%s col=%s held=%s party=%s/%s"):format(tostring(up.x), tostring(up.y),
+                tostring(up.scaleX), tostring(top.row), tostring(top.col), tostring(top.held ~= nil),
+                tostring(top.partyOpen), tostring(top.partyIndex)))
+            end
+          end
+        end
+      end
+      -- DRAGS="30:40,106>376,136": a stylus drag on one tick -- pressed at the
+      -- first point, moved to the second and let go there (same coordinates
+      -- as TAPS; the window's)
+      for t, x1, y1, x2, y2 in (os.getenv("DRAGS") or ""):gmatch("(%d+):(%d+),(%d+)>(%d+),(%d+)") do
+        if tonumber(t) == i then
+          local top = Game.stack.states[#Game.stack.states]
+          if top and top.touchpressed then
+            x1, y1, x2, y2 = tonumber(x1), tonumber(y1), tonumber(x2), tonumber(y2)
+            local ok1 = pcall(top.touchpressed, top, 1, x1, y1)
+            if top.touchmoved then
+              pcall(top.touchmoved, top, 1, (x1 + x2) / 2, (y1 + y2) / 2, 0, 0)
+              pcall(top.touchmoved, top, 1, x2, y2, 0, 0)
+            end
+            local ok2, res = true, nil
+            if top.touchreleased then ok2, res = pcall(top.touchreleased, top, 1, x2, y2) end
+            print(("[drag] tick %d (%d,%d)>(%d,%d) -> %s %s"):format(i, x1, y1, x2, y2, tostring(ok1), tostring(ok2 and res or res)))
+          end
+        end
+      end
       -- PRESS_KEYS="5:right,9:a": one button on each named tick
       if not PT then
       keyNow = nil
@@ -724,6 +825,14 @@ function love.load()
       end
       -- STRENGTH=1: Strength active (as the boulder's field-move script leaves it)
       if os.getenv("STRENGTH") and OW and i == 1 then OW.strengthActive = true end
+      -- EMOTE_AT=<tick>[:kind]: the "!" (or "double") over the player, as a
+      -- trainer's sighting starts it (OverworldController's emote record)
+      if os.getenv("EMOTE_AT") and OW and i == tonumber(os.getenv("EMOTE_AT"):match("^(%d+)")) then
+        local E = require("src.import.Gen4Emotes")
+        local n = E.framesFor(OW.map and OW.map.def)
+        OW.emote = { npc = OW.player, frames = n, totalFrames = n,
+                     bubble = os.getenv("EMOTE_AT"):match(":(%a+)$") or 1 }
+      end
       -- USE_ITEM=<id> USE_ITEM_AT=<tick>: use an item from the bag (as the
       -- bag's USE does -- BagMenu.useItem)
       if os.getenv("USE_ITEM") and OW and i == (tonumber(os.getenv("USE_ITEM_AT") or "") or 5) then

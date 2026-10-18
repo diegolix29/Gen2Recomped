@@ -69,11 +69,25 @@ function A.images(rom)
     out['radio_bottom_'..skin]=compose(radio,40+skin,34+skin,palette(radio,4,true))
     out['config_top_'..skin]=compose(config,16+skin,10+skin,palette(config,4,false))
   end
-  return out
+  -- the app controllers' extra art and data (src/import/Gen4HgssPokegearExtra.lua)
+  local meta
+  local okX,Extra=pcall(require,'src.import.Gen4HgssPokegearExtra')
+  if okX then
+    local okI,extra,m=pcall(Extra.images,rom)
+    if okI and extra then
+      for k,v in pairs(extra) do out[k]=v end
+      meta=m
+    end
+  end
+  return out,nil,meta
 end
 function A.build(x)
   local out={}
-  for name,img in pairs(A.images(x.rom)) do out[name]=x:saveImage('hgss_pokegear/'..name,img) end
+  local images,_,meta=A.images(x.rom)
+  for name,img in pairs(images) do
+    out[name]=x:saveImage('hgss_pokegear/'..name,img,{originX=img.originX,originY=img.originY})
+  end
+  for k,v in pairs(meta or {}) do out[k]=v end
   -- phonebook_dat.c sPhoneMessageGmm, found by its first six bank IDs.
   local arm9=x.rom:arm9()
   local anchor=string.char(152,2,204,2,154,2,150,2,151,2,131,2)

@@ -26,6 +26,9 @@ local Courses = require("src.pokewalker.WalkerCourses")
 local Link = require("src.pokewalker.WalkerLink")
 local Art = require("src.pokewalker.WalkerArt")
 local Steps = require("src.pokewalker.WalkerSteps")
+-- the economy: watts besides steps, the Watt Shop, awards, leaderboards
+-- (pages: src/ui/WalkerEconomyPages.lua, installed at the end of this file)
+local E = require("src.pokewalker.WalkerEconomy")
 
 local P = {}
 P.__index = P
@@ -33,6 +36,7 @@ P.__index = P
 P.TILES = {
   { id = "walk", label = "Walk" }, { id = "radar", label = "Poke Radar", cost = W.RADAR_COST },
   { id = "dowse", label = "Dowsing", cost = W.DOWSE_COST }, { id = "bag", label = "Bag" },
+  { id = "shop", label = "Watt Shop" }, { id = "awards", label = "Awards" },
   { id = "card", label = "Trainer Card" }, { id = "settings", label = "Settings" },
 }
 
@@ -73,6 +77,8 @@ local THEMES = {
 }
 
 local function setc(c, a) love.graphics.setColor(c[1], c[2], c[3], a or 1) end
+P.COLORS = { INK = INK, DIM = DIM, GOLD = GOLD, CARD = CARD, ACCENT = ACCENT, RED = RED }
+P._setc = setc
 
 local function card(x, y, w, h, r, c, a)
   local g = love.graphics
@@ -85,6 +91,7 @@ local function card(x, y, w, h, r, c, a)
   g.setColor(1, 1, 1, 0.10)
   g.rectangle("line", x + 0.5, y + 0.5, w - 1, h - 1, r, r)
 end
+P._card = card
 
 -- ------------------------------------------------------------- the app
 
@@ -114,6 +121,8 @@ function P:update(dt)
     r.timer = r.timer - dt
     if r.timer <= 0 then r.timer = nil; self.radar = nil; self:say("The Pokemon got away...") end
   end
+  -- the day's login bonus, achievements reached by steps
+  pcall(self.econTick, self, dt)
 end
 
 function P:rect(x, y, w, h, fn) self.rects[#self.rects + 1] = { x = x, y = y, w = w, h = h, fn = fn } end
@@ -122,6 +131,7 @@ local function hovered(x, y, w, h)
   local mx, my = love.mouse.getPosition()
   return mx >= x and mx <= x + w and my >= y and my <= y + h
 end
+P._hovered = hovered
 
 -- a big touch button
 function P:button(x, y, w, h, label, fn, kind, font)
@@ -342,7 +352,9 @@ function P:mousepressed(mx, my)
   for i = #self.rects, 1, -1 do
     local r = self.rects[i]
     if mx >= r.x and mx <= r.x + r.w and my >= r.y and my <= r.y + r.h then
-      if r.fn then r.fn() end
+      -- toasts show beside the tap, inside the part of the page on screen
+      self.tapY = my
+      if r.fn then pcall(self.chirp, self); r.fn() end
       return true
     end
   end
@@ -355,7 +367,8 @@ function P:keypressed(key)
   if key == "left" and i and not self.panel then self:openTab(P.TILES[math.max(1, i - 1)].id) return true end
   if key == "right" and i and not self.panel then self:openTab(P.TILES[math.min(#P.TILES, i + 1)].id) return true end
   if key == "escape" or key == "backspace" then
-    if self.panel then self.panel = nil return true end
+    if self.shopConfirm then self.shopConfirm = nil return true end
+    if self.panel then self.panel = nil; self.pickFor = nil return true end
     if self.tab ~= "walk" then self.tab = "walk" return true end
   end
   return false
@@ -374,7 +387,7 @@ function P:drawHero(x, y, w, h, f)
   local c = self:course()
   g.stencil(function() g.rectangle("fill", x, y, w, h, 18, 18) end, "replace", 1)
   g.setStencilTest("greater", 0)
-  self:scene(x, y, w, h, c and c.name, wk and self.t * 60 or 0)
+  self:scene(x, y, w, h, self:sceneName(c and c.name), wk and self.t * 60 or 0)
   if wk then
     local size = math.min(h * 0.62, 200)
     local px, py = x + w * 0.36, y + h * 0.86
@@ -402,6 +415,13 @@ function P:drawHero(x, y, w, h, f)
       "Send a Pokemon", function() self.tab = "walk"; self.panel = "pickGame" end, "accent", f.body)
   end
   g.setStencilTest()
+  -- a shell colour from the Watt Shop frames the scene
+  local shell, isDefault = self:shellColor()
+  if not isDefault then
+    g.setLineWidth(4); setc(shell)
+    g.rectangle("line", x + 2, y + 2, w - 4, h - 4, 17, 17)
+    g.setLineWidth(1)
+  end
   -- the counters
   local today = (st.history[1] and st.history[1].day == math.floor(os.time() / 86400)) and st.history[1].steps or 0
   local pills = { { tostring(today), "steps today" }, { tostring(st.watts or 0) .. " W", "watts" } }
@@ -467,23 +487,37 @@ local function tileIcon(id, cx, cy, r, t)
       local a = k * math.pi / 4 + t * 0.5
       g.line(cx + math.cos(a) * r * 0.45, cy + math.sin(a) * r * 0.45, cx + math.cos(a) * r * 0.7, cy + math.sin(a) * r * 0.7)
     end
+  elseif P.econIcon then
+    P.econIcon(id, cx, cy, r, t)
   end
   g.setLineWidth(1)
 end
 
-function P:drawTiles(x, y, w, h, f)
+function P:drawTiles(x, y, w, h, f, rows)
   local g = love.graphics
   local n = #P.TILES
   local gap = 12
-  local tw = (w - gap * (n - 1)) / n
+  -- a phone in portrait: two rows of three, so the labels fit their tiles
+  local per = math.ceil(n / (rows or 1))
+  local tw = (w - gap * (per - 1)) / per
+  local y0 = y
   for i, t in ipairs(P.TILES) do
-    local tx = x + (i - 1) * (tw + gap)
+    local tx = x + ((i - 1) % per) * (tw + gap)
+    local y = y0 + math.floor((i - 1) / per) * (h + gap)
     local on = self.tab == t.id
     local hot = hovered(tx, y, tw, h)
-    card(tx, y, tw, h, 16, on and { 0.20, 0.48, 0.38 } or CARD, on and 0.95 or (hot and 0.95 or 0.85))
+    card(tx, y, tw, h, 16, on and (self:shellColor()) or CARD, on and 0.95 or (hot and 0.95 or 0.85))
     tileIcon(t.id, tx + tw / 2, y + h * 0.38, h * 0.22, self.t)
     g.setFont(f.small); setc(on and INK or DIM)
-    g.printf(t.label .. (t.cost and ("  " .. t.cost .. " W") or ""), tx, y + h * 0.70, tw, "center")
+    local full = t.label .. (t.cost and ("  " .. t.cost .. " W") or "")
+    if t.cost and f.small:getWidth(full) > tw - 10 then
+      -- eight tiles: the cost on its own line rather than wrapping off the tile
+      g.printf(t.label, tx, y + h * 0.64, tw, "center")
+      setc(GOLD, on and 1 or 0.8)
+      g.printf(t.cost .. " W", tx, y + h * 0.64 + f.small:getHeight(), tw, "center")
+    else
+      g.printf(full, tx, y + h * 0.70, tw, "center")
+    end
     local id = t.id
     self:rect(tx, y, tw, h, function() self:openTab(id) end)
   end
@@ -491,30 +525,55 @@ end
 
 -- ------------------------------------------------------------- the pages
 
+-- Returns the height it used, which can be more than `h`: the launcher pages
+-- the column on that number, and a page that drew past what it reported ran
+-- under the launcher's footer (Android, landscape: Bring it home / Send
+-- presents home and the Diary sat beneath the footer).
 function P:pageWalk(x, y, w, h, f)
   local g = love.graphics
   local st, wk = self.st, self.st.walking
-  local lw = math.min(w * 0.5, 560)
-  card(x, y, lw, h, 18)
+  local y0 = y
+  -- NARROW (a phone in portrait): the Pokemon's card over the diary, each the
+  -- full width, instead of two half-width cards side by side
+  local narrow = w < 640
+  local lw = narrow and w or math.min(w * 0.5, 560)
+  local psz = narrow and math.min(136, math.floor(w * 0.3)) or 136
+  local tx = x + psz + 14
+  local bh = f.body:getHeight() + 26
+  local textH = 8 + f.head:getHeight() + 5 * (f.body:getHeight() + 4)
+  -- MINIGAMES beside Send presents home when three fit, else on a row below
+  local three = (lw - 72) / 3 >= f.body:getWidth("Send presents home") + 24
+  local extra = three and 0 or bh + 12
+  local monH = h
+  if narrow then
+    monH = wk and (18 + math.max(psz - 6, textH) + 14 + bh + extra + 18)
+      or (18 + f.head:getHeight() + f.body:getHeight() * 6 + 20 + bh + 14 + bh + 18)
+  else
+    monH = wk and math.max(h, 18 + math.max(psz + 4, textH) + bh + extra + 18)
+      or math.max(h, 18 + f.head:getHeight() + f.body:getHeight() * 6 + 20 + bh + 14 + bh + 18)
+    h = monH
+  end
+  card(x, y, lw, monH, 18)
   local yy = y + 18
   if wk then
-    self:drawPortrait(wk.species, x + 10, yy - 6, 136)
+    self:drawPortrait(wk.species, x + 10, yy - 6, psz)
     g.setFont(f.head); setc(INK)
-    g.print(("%s  Lv%d"):format(wk.name or "?", wk.level or 1), x + 150, yy + 4)
+    g.print(("%s  Lv%d"):format(wk.name or "?", wk.level or 1), tx, yy + 4)
     g.setFont(f.body); setc(DIM)
     local c = self:course()
     local GameVersion = require("src.core.GameVersion")
     local info = GameVersion.info(wk.source and wk.source.version)
     local lines = {
       ("%d steps this walk"):format(wk.steps or 0),
+      ("Friendship %d / 255"):format(tonumber(wk.friendship) or 70)
+        .. (((wk.bonusExp or 0) > 0) and ("   +%d EXP"):format(wk.bonusExp) or ""),
       c and ("On " .. c.name) or "",
       "From " .. ((info and (info.launcherName or info.displayName)) or "?"),
     }
-    for i, l in ipairs(lines) do g.print(l, x + 150, yy + 8 + f.head:getHeight() + (i - 1) * (f.body:getHeight() + 4)) end
-    if wk.advantage then setc(ACCENT); g.print("Type advantage: finds come 25% sooner", x + 150, yy + 8 + f.head:getHeight() + 3 * (f.body:getHeight() + 4)) end
-    local bh = f.body:getHeight() + 26
-    yy = math.max(yy + 140, y + h - bh - 18)
-    local bw = (lw - 54) / 2
+    for i, l in ipairs(lines) do g.print(l, tx, yy + 8 + f.head:getHeight() + (i - 1) * (f.body:getHeight() + 4)) end
+    if wk.advantage then setc(ACCENT); g.printf("Type advantage: finds come 25% sooner", tx, yy + 8 + f.head:getHeight() + 4 * (f.body:getHeight() + 4), x + lw - tx - 12) end
+    yy = math.max(yy + math.max(psz + 4, textH), y + monH - bh - extra - 18)
+    local bw = three and (lw - 72) / 3 or (lw - 54) / 2
     self:button(x + 18, yy, bw, bh, "Bring it home", function()
       local ok, why = Link.bringHome(st, false)
       self:say(ok and "Home! Open the game to see it." or ("Could not: " .. tostring(why)))
@@ -525,36 +584,121 @@ function P:pageWalk(x, y, w, h, f)
       local ok, why = Link.bringHome(st, true)
       self:say(ok and "Sent! Open the game to receive them." or ("Could not: " .. tostring(why)))
     end, nil, f.body)
+    if three then
+      self:button(x + 54 + 2 * bw, yy, bw, bh, "Minigames", function() self:openMinigames() end, "gold", f.body)
+    else
+      self:button(x + 18, yy + bh + 12, lw - 36, bh, "Minigames", function() self:openMinigames() end, "gold", f.body)
+      yy = yy + bh + 12
+    end
     yy = yy + bh + 14
   else
     g.setFont(f.head); setc(INK)
     g.print("Take a Pokemon for a walk", x + 18, yy)
     g.setFont(f.body); setc(DIM)
-    g.printf("Any game's Pokemon can come along. It walks with your steps, earns watts, finds items and meets wild Pokemon you can catch -- then goes home to its own game.", x + 18, yy + f.head:getHeight() + 8, lw - 36)
-    yy = yy + f.head:getHeight() + f.body:getHeight() * 4 + 20
+    local blurb = "Any game's Pokemon can come along. It walks with your steps, earns watts, finds items and meets wild Pokemon you can catch -- then goes home to its own game."
+    g.printf(blurb, x + 18, yy + f.head:getHeight() + 8, lw - 36)
+    local _, wrapped = f.body:getWrap(blurb, lw - 36)
+    yy = yy + f.head:getHeight() + f.body:getHeight() * math.max(4, #wrapped) + 20
     self:button(x + 18, yy, lw - 36, f.body:getHeight() + 26, "Send a Pokemon", function() self.panel = "pickGame" end, "accent", f.body)
     yy = yy + f.body:getHeight() + 40
+    self:button(x + 18, yy - 12, lw - 36, f.body:getHeight() + 26, "Minigames", function() self:openMinigames() end, "gold", f.body)
+    yy = yy + f.body:getHeight() + 28
   end
+  local used = math.max(h, yy - y)
   local rx, rw = x + lw + 16, w - lw - 16
-  local sbw = math.min(220, rw * 0.45)
+  if narrow then
+    -- the diary under the card: at least its title and four entries
+    rx, rw = x, w
+    local top = y + math.max(monH, yy - y) + 16
+    local minH = 20 + f.head:getHeight() + 4 * (f.small:getHeight() + 8) + 10
+    h = math.max(minH, y + h - top)
+    y = top
+  end
+  -- wide enough for its label on one line when the card allows it
+  local sbw = math.min(math.max(math.min(220, rw * 0.45), f.small:getWidth("Read my steps now") + 28),
+                       rw - f.head:getWidth("Diary") - 50)
+  local sbh = f.small:getHeight() + 18
   card(rx, y, rw, h, 18)
-  self:button(rx + rw - sbw - 14, y + 10, sbw, f.small:getHeight() + 18, "Read my steps now", function()
+  self:button(rx + rw - sbw - 14, y + 10, sbw, sbh, "Read my steps now", function()
     local n = Steps.pump(st, self.courses, true)
     self:say(n > 0 and ("+%d steps"):format(n) or (Steps.available() and "Reading your phone's step counter..." or "No step counter on this device -- steps come from your phone."))
   end, nil, f.small)
   -- the diary
   g.setFont(f.head); setc(GOLD)
   g.print("Diary", rx + 18, y + 14)
+  -- the login streak (WalkerEconomy), when there is room beside the title
+  local streak = (st.econ and st.econ.login and st.econ.login.streak) or 0
+  if streak > 0 then
+    local stx = rx + 18 + f.head:getWidth("Diary") + 14
+    local label = ("%d-day streak"):format(streak)
+    if stx + f.small:getWidth(label) < rx + rw - sbw - 24 then
+      g.setFont(f.small); setc(ACCENT)
+      g.print(label, stx, y + 14 + f.head:getHeight() - f.small:getHeight() - 2)
+    end
+  end
   g.setFont(f.small)
-  local ly = y + 20 + f.head:getHeight()
+  local ly = math.max(y + 20 + f.head:getHeight(), y + 10 + sbh + 8)
   for i = #st.log, 1, -1 do
     if ly > y + h - f.small:getHeight() - 10 then break end
     local e = st.log[i]
     setc(DIM); g.print(os.date("%b %d  %H:%M", e.t), rx + 18, ly)
     setc(INK); g.printf(e.text, rx + 140, ly, rw - 158)
-    ly = ly + f.small:getHeight() + 8
+    -- a long entry wraps (a phone in portrait): the next one goes under it
+    local _, wl = f.small:getWrap(e.text, rw - 158)
+    ly = ly + math.max(1, #wl) * f.small:getHeight() + 8
   end
   if #st.log == 0 then setc(DIM); g.print("Nothing yet -- go for a walk!", rx + 18, ly) end
+  return math.max(used, (y + h) - y0)
+end
+
+-- THE LEGENDARY MARK: a gold five-point star with a soft pulsing glow and
+-- four sparkles turning about it -- what a Poke Radar legendary shows over
+-- its bush instead of "!", and the badge on its cards. `t` animates it.
+function P.drawStar(cx, cy, r, t, glow)
+  local g = love.graphics
+  t = t or 0
+  local pulse = 0.5 + 0.5 * math.sin(t * 5)
+  if glow ~= false then
+    g.setColor(1.00, 0.86, 0.40, 0.18 + 0.14 * pulse)
+    g.circle("fill", cx, cy, r * (1.45 + 0.15 * pulse))
+    g.setColor(1.00, 0.95, 0.70, 0.22)
+    g.circle("fill", cx, cy, r * 1.05)
+  end
+  local pts = {}
+  for i = 0, 9 do
+    local a = -math.pi / 2 + i * math.pi / 5
+    local rr = (i % 2 == 0) and r or r * 0.45
+    pts[#pts + 1] = cx + math.cos(a) * rr
+    pts[#pts + 1] = cy + math.sin(a) * rr
+  end
+  -- a star is not convex: a fan of triangles from the middle
+  g.setColor(0.55, 0.36, 0.05, 0.55)
+  for i = 0, 9 do
+    local j = (i + 1) % 10
+    g.polygon("fill", cx + 1.5, cy + 2, pts[i * 2 + 1] + 1.5, pts[i * 2 + 2] + 2, pts[j * 2 + 1] + 1.5, pts[j * 2 + 2] + 2)
+  end
+  setc(GOLD)
+  for i = 0, 9 do
+    local j = (i + 1) % 10
+    g.polygon("fill", cx, cy, pts[i * 2 + 1], pts[i * 2 + 2], pts[j * 2 + 1], pts[j * 2 + 2])
+  end
+  g.setColor(1.00, 0.97, 0.80, 0.85)
+  g.circle("fill", cx - r * 0.14, cy - r * 0.16, r * 0.16)
+  g.setColor(0.70, 0.46, 0.08, 1)
+  g.setLineWidth(math.max(1, r * 0.08))
+  g.polygon("line", pts)
+  g.setLineWidth(1)
+  if glow ~= false then
+    for k = 0, 3 do
+      local a = t * 1.6 + k * math.pi / 2
+      local d = r * (1.35 + 0.12 * math.sin(t * 4 + k))
+      local sx, sy = cx + math.cos(a) * d, cy + math.sin(a) * d
+      local s = r * (0.16 + 0.06 * math.sin(t * 7 + k * 1.3))
+      g.setColor(1, 1, 0.85, 0.9)
+      g.polygon("fill", sx, sy - s * 1.6, sx + s * 0.4, sy, sx, sy + s * 1.6, sx - s * 0.4, sy)
+      g.polygon("fill", sx - s * 1.6, sy, sx, sy - s * 0.4, sx + s * 1.6, sy, sx, sy + s * 0.4)
+    end
+  end
 end
 
 function P:bushes(x, y, w, h, n, f, onTap, opts)
@@ -573,7 +717,9 @@ function P:bushes(x, y, w, h, n, f, onTap, opts)
     g.circle("fill", cx + r * 0.45 + shake, cy, r * 0.62)
     setc(opened and { 0.50, 0.52, 0.36 } or { 0.24, 0.64, 0.28 })
     g.circle("fill", cx + shake, cy - r * 0.35, r * 0.7)
-    if opts.marks and opts.shake == i then
+    if opts.legendary and opts.shake == i then
+      P.drawStar(cx, cy - r * 1.45, math.max(14, r * 0.42), self.t)
+    elseif opts.marks and opts.shake == i then
       g.setFont(f.title); setc(GOLD)
       g.printf(("!"):rep(opts.marks), cx - 60, cy - r * 1.7, 120, "center")
     end
@@ -581,6 +727,26 @@ function P:bushes(x, y, w, h, n, f, onTap, opts)
     local idx = i
     self:rect(cx - cw / 2, y, cw, h, function() onTap(idx) end)
   end
+end
+
+-- why a Search would be refused, shown on the page itself (a toast sits at
+-- the page's top, off screen once the launcher has scrolled down to here);
+-- with no Pokemon walking, a button to send one. Returns true when blocked.
+function P:searchBlocked(x, y, w, f, cost, ready)
+  local g = love.graphics
+  local st = self.st
+  local why
+  if not st.walking then why = "Send a Pokemon on a walk first -- it does the searching."
+  elseif (st.watts or 0) < cost then why = ("You need %d W (you have %d W)."):format(cost, st.watts or 0)
+  elseif not ready then why = "Nothing around yet -- keep walking." end
+  if not why then return false end
+  g.setFont(f.body); setc(GOLD)
+  g.printf(why, x + 40, y, w - 80, "center")
+  if not st.walking then
+    self:button(x + w / 2 - 160, y + f.body:getHeight() + 16, 320, f.body:getHeight() + 30,
+      "Send a Pokemon", function() self.tab = "walk"; self.panel = "pickGame" end, "accent", f.body)
+  end
+  return true
 end
 
 function P:pageRadar(x, y, w, h, f)
@@ -591,44 +757,122 @@ function P:pageRadar(x, y, w, h, f)
   if b then return self:pageBattle(x, y, w, h, f) end
   if self.radar then
     g.setFont(f.head); setc(INK)
-    g.printf("Which bush is moving? Tap it, quick!", x, y + 16, w, "center")
+    if self.radar.legendary then setc(GOLD) end
+    g.printf(self.radar.legendary and "Something is shining in the bushes! Tap it, quick!" or "Which bush is moving? Tap it, quick!", x, y + 16, w, "center")
     self:bushes(x + 20, y + 30, w - 40, h - 40, 4, f, function(i)
       local r = self.radar
       if r and i == r.bush then
         self.battle = W.newBattle(r.encounter)
-        self.battle.text = ("A wild %s appeared!"):format(r.encounter.name or "Pokemon")
+        self.battle.text = (r.encounter.legendary and "The legendary %s appeared!" or "A wild %s appeared!"):format(r.encounter.name or "Pokemon")
       else
         self:say("Nothing there... it got away.")
       end
       self.radar = nil
-    end, { shake = self.radar.bush, marks = self.radar.marks })
+    end, { shake = self.radar.bush, marks = self.radar.marks, legendary = self.radar.legendary })
     return
   end
   g.setFont(f.head); setc(INK)
   g.printf("Poke Radar", x, y + 24, w, "center")
   g.setFont(f.body); setc(DIM)
-  g.printf(("Spend %d W to search the bushes. The more \"!\" over the moving bush, the rarer the Pokemon. Catches so far: %d / %d."):format(W.RADAR_COST, #st.caught, W.MAX_CAUGHT), x + 40, y + 34 + f.head:getHeight(), w - 80, "center")
-  self:button(x + w / 2 - 160, y + h * 0.55, 320, f.body:getHeight() + 30, ("Search  (%d W)"):format(W.RADAR_COST), function()
-    local r, why = W.radarStart(st)
-    if not r then self:say(why) return end
-    self.radar = r
-    W.save(st)
-  end, "accent", f.body)
+  g.printf(("Spend %d W to search the bushes. The more \"!\" over the moving bush, the rarer the Pokemon -- and a gold star means a legendary. Catches so far: %d / %d."):format(W.RADAR_COST, #st.caught, W.MAX_CAUGHT), x + 40, y + 34 + f.head:getHeight(), w - 80, "center")
+  if not self:searchBlocked(x, y + h * 0.55, w, f, W.RADAR_COST, #W.reachable(st) > 0) then
+    self:button(x + w / 2 - 160, y + h * 0.55, 320, f.body:getHeight() + 30, ("Search  (%d W)"):format(W.RADAR_COST), function()
+      local r, why = W.radarStart(st)
+      if not r then self:say(why) return end
+      self.radar = r
+      W.save(st)
+    end, "accent", f.body)
+  end
+  -- what has been caught, under the search, each one sendable home
+  return h + 16 + self:radarCaught(x, y + h + 16, w, f)
+end
+
+-- the caught list: portrait, name and level, a Send button each, and Send
+-- all; sent to the walking Pokemon's game (WalkerLink.sendCaught).
+-- Returns the height drawn.
+function P:radarCaught(x, y, w, f)
+  local g = love.graphics
+  local st = self.st
+  local list = st.caught or {}
+  local bh = f.body:getHeight() + 22
+  local rowH = math.max(72, bh + 20)
+  local headH = f.head:getHeight() + 24
+  local ch = headH + math.max(1, #list) * rowH + (#list > 1 and bh + 20 or 0) + 12
+  card(x, y, w, ch, 18)
+  g.setFont(f.head); setc(INK)
+  g.print("Caught on this walk", x + 18, y + 14)
+  local yy = y + headH
+  if #list == 0 then
+    g.setFont(f.body); setc(DIM)
+    g.print("Nothing yet -- tap Search to find wild Pokemon.", x + 18, yy + (rowH - f.body:getHeight()) / 2)
+    return ch
+  end
+  local home = st.walking and st.walking.source and st.walking.source.version
+  local GameVersion = require("src.core.GameVersion")
+  local info = home and GameVersion.info(home)
+  local bw = math.min(220, w * 0.34)
+  for i, c in ipairs(list) do
+    self:drawPortrait(c.species, x + 14, yy + 2, rowH - 8)
+    g.setFont(f.body); setc(c.legendary and GOLD or INK)
+    local label = ("%s  Lv%d"):format(c.name or "?", c.level or 1)
+    local ly = yy + (rowH - f.body:getHeight()) / 2
+    g.print(label, x + 14 + rowH, ly)
+    -- the legendary mark (and a shiny's sparkle) after the name
+    local bx = x + 14 + rowH + f.body:getWidth(label) + 10
+    if c.legendary then
+      P.drawStar(bx + f.body:getHeight() * 0.45, ly + f.body:getHeight() * 0.5, f.body:getHeight() * 0.45, self.t, false)
+      bx = bx + f.body:getHeight() + 6
+    end
+    if c.shiny then g.setFont(f.small); setc(GOLD); g.print("Shiny", bx, ly + (f.body:getHeight() - f.small:getHeight()) / 2) end
+    local idx = i
+    self:button(x + w - bw - 18, yy + (rowH - bh) / 2, bw, bh, "Send to game", function()
+      local Link = require("src.pokewalker.WalkerLink")
+      local ok, why = Link.sendCaught(st, idx)
+      self:say(ok and "Sent! It will be in the PC when you next load the game." or ("Could not: " .. tostring(why)))
+    end, "accent", f.body)
+    yy = yy + rowH
+  end
+  if #list > 1 then
+    self:button(x + 18, yy + 4, w - 36, bh, "Send all to " .. ((info and info.name) or "your game"), function()
+      local Link = require("src.pokewalker.WalkerLink")
+      local ok, why = Link.sendCaught(st)
+      self:say(ok and "Sent! They will be in the PC when you next load the game." or ("Could not: " .. tostring(why)))
+    end, nil, f.body)
+  end
+  return ch
 end
 
 function P:pageBattle(x, y, w, h, f)
   local g = love.graphics
   local st, b = self.st, self.battle
-  local function pips(px, py, n, label)
+  local function pips(px, py, n, label, total)
     g.setFont(f.small); setc(INK); g.print(label, px, py - f.small:getHeight() - 4)
-    for i = 1, 4 do
+    for i = 1, total or 4 do
       setc(i <= n and { 0.35, 0.90, 0.45 } or { 0.25, 0.25, 0.28 })
       g.rectangle("fill", px + (i - 1) * 34, py, 30, 10, 4, 4)
     end
   end
   local size = math.min(h * 0.55, 220)
   self:drawPortrait(b.enc.species, x + w * 0.62, y + 20, size)
-  pips(x + w * 0.62, y + size + 40, math.max(0, b.wild), ("%s  Lv%d"):format(b.enc.name or "?", b.enc.level or 1))
+  local wildTotal = b.max or 4
+  pips(math.min(x + w * 0.62, x + w - 20 - wildTotal * 34), y + size + 40, math.max(0, b.wild),
+       ("%s  Lv%d%s"):format(b.enc.name or "?", b.enc.level or 1, b.enc.shiny and "  (Shiny)" or ""), wildTotal)
+  -- THE LEGENDARY BANNER: a gold ribbon with the star at each end
+  if b.enc.legendary then
+    local bw2, bh2 = math.min(w * 0.36, 300), f.head:getHeight() + 14
+    local bx2, by2 = x + w * 0.62 + size / 2 - bw2 / 2, y + 6
+    bx2 = math.max(x + 10, math.min(bx2, x + w - bw2 - 10))
+    g.setColor(0.45, 0.28, 0.04, 0.9)
+    g.rectangle("fill", bx2 + 3, by2 + 4, bw2, bh2, 10, 10)
+    setc(GOLD)
+    g.rectangle("fill", bx2, by2, bw2, bh2, 10, 10)
+    g.setColor(1, 1, 1, 0.25)
+    g.rectangle("fill", bx2, by2, bw2, bh2 * 0.45, 10, 10)
+    g.setFont(f.head); g.setColor(0.30, 0.18, 0.02, 1)
+    g.printf("Legendary!", bx2, by2 + 7, bw2, "center")
+    P.drawStar(bx2 + bh2 * 0.5, by2 + bh2 * 0.5, bh2 * 0.36, self.t, false)
+    P.drawStar(bx2 + bw2 - bh2 * 0.5, by2 + bh2 * 0.5, bh2 * 0.36, self.t, false)
+  end
   if st.walking then
     self:drawWalker(st.walking.species, x + w * 0.22, y + h * 0.62, size * 0.75, "right")
     pips(x + w * 0.10, y + h * 0.70, math.max(0, b.me), st.walking.name or "")
@@ -650,6 +894,7 @@ function P:pageBattle(x, y, w, h, f)
       self:button(x + 20 + (i - 1) * (bw + 20), by, bw, bh, a[2], function()
         local _, text = W.battleTurn(st, b, action)
         b.text = text
+        if b.over == "caught" then E.achievement(st, "catch", 1) end
         W.save(st)
       end, a[3], f.body)
     end
@@ -674,6 +919,7 @@ function P:pageDowse(x, y, w, h, f)
       d.opened = d.opened or {}
       d.opened[i] = true
       local r = W.dowseTry(st, d, i)
+      if r == "found" then E.achievement(st, "dowse", 1) end
       d.hint = r == "found" and ("Found %s!"):format(d.item) or r == "close" and "It's close -- right next to that one!"
         or r == "far" and "It's far from there..." or ("Nothing... it was %s."):format(d.item)
       if d.swap then W.swapItem(st, 1, d.swap); d.hint = d.hint .. " (bag full: swapped the first item)" end
@@ -685,6 +931,7 @@ function P:pageDowse(x, y, w, h, f)
   g.printf("Dowsing", x, y + 24, w, "center")
   g.setFont(f.body); setc(DIM)
   g.printf(("Spend %d W to search six bushes for an item. Two tries -- a miss tells you whether it is close or far. Items so far: %d / %d."):format(W.DOWSE_COST, #st.items, W.MAX_ITEMS), x + 40, y + 34 + f.head:getHeight(), w - 80, "center")
+  if self:searchBlocked(x, y + h * 0.55, w, f, W.DOWSE_COST, #W.availableItems(st, self:course()) > 0) then return end
   self:button(x + w / 2 - 160, y + h * 0.55, 320, f.body:getHeight() + 30, ("Search  (%d W)"):format(W.DOWSE_COST), function()
     local dd, why = W.dowseStart(st, self:course())
     if not dd then self:say(why) return end
@@ -696,31 +943,44 @@ end
 function P:pageBag(x, y, w, h, f)
   local g = love.graphics
   local st = self.st
+  -- three of each, as the original; what the minigames grant (WalkerEconomy)
+  -- adds cards, three to a row
+  local y0 = y
+  local nc = math.max(W.MAX_CAUGHT, #st.caught)
   local cw = (w - 2 * 16) / 3
-  local ch = h * 0.55
-  for i = 1, W.MAX_CAUGHT do
-    local cx = x + (i - 1) * (cw + 16)
+  local ch = math.max(150, math.min(h * 0.55, 260))
+  for i = 1, nc do
+    local cx = x + ((i - 1) % 3) * (cw + 16)
+    if i > 1 and (i - 1) % 3 == 0 then y = y + ch + 16 end
     card(cx, y, cw, ch, 18)
     local c = st.caught[i]
     if c then
       local ps = math.min(cw - 20, ch - f.body:getHeight() - 30)
       self:drawPortrait(c.species, cx + (cw - ps) / 2, y + 8, ps)
-      g.setFont(f.body); setc(INK)
+      g.setFont(f.body); setc(c.legendary and GOLD or INK)
       g.printf(("%s  Lv%d"):format(c.name or "?", c.level or 1), cx, y + ch - f.body:getHeight() - 14, cw, "center")
+      -- the legendary badge, top right; a shiny's tag, top left
+      if c.legendary then P.drawStar(cx + cw - 26, y + 26, 16, self.t) end
+      if c.shiny then g.setFont(f.small); setc(GOLD); g.print("Shiny", cx + 12, y + 10) end
     else
       g.setFont(f.small); setc(DIM)
       g.printf("Empty -- catch one with the Poke Radar", cx + 10, y + ch / 2 - 10, cw - 20, "center")
     end
   end
   local iy = y + ch + 16
-  local ih = h - ch - 16
-  for i = 1, W.MAX_ITEMS do
-    local cx = x + (i - 1) * (cw + 16)
+  local ni = math.max(W.MAX_ITEMS, #st.items)
+  local ih = math.max(f.body:getHeight() * 2 + 30, (y0 + h - iy - 16 * (math.ceil(ni / 3) - 1)) / math.ceil(ni / 3))
+  for i = 1, ni do
+    local cx = x + ((i - 1) % 3) * (cw + 16)
+    if i > 1 and (i - 1) % 3 == 0 then iy = iy + ih + 16 end
     card(cx, iy, cw, ih, 18)
     local it = st.items[i]
+    local label = it and (it.count and it.count > 1 and ("%s x%d"):format(it.name, it.count) or it.name) or "No item"
     g.setFont(f.body); setc(it and INK or DIM)
-    g.printf(it and it.name or "No item", cx, iy + ih / 2 - f.body:getHeight() / 2, cw, "center")
+    local _, wrapped = f.body:getWrap(label, cw - 16)
+    g.printf(label, cx + 8, iy + ih / 2 - #wrapped * f.body:getHeight() / 2, cw - 16, "center")
   end
+  return math.max(h, iy + ih - y0)
 end
 
 function P:pageCard(x, y, w, h, f)
@@ -792,10 +1052,14 @@ end
 
 function P:pickGame(x, y, w, h, f)
   local g = love.graphics
-  local yy = self:pickHeader(x, y, w, f, "Which game is it in?", function() self.panel = nil end)
+  local yy = self:pickHeader(x, y, w, f, self.pickFor and "Deliver to which game?" or "Which game is it in?",
+    function() self.panel = nil; self.pickFor = nil end)
   local GameVersion = require("src.core.GameVersion")
   local list = {}
-  for _, v in ipairs(GameVersion.ORDER) do if self.host and self.host.ready and self.host.ready[v] then list[#list + 1] = v end end
+  for _, v in ipairs(GameVersion.ORDER) do
+    -- the Watt Shop (pickFor): only games with a save to deliver to
+    if self.host and self.host.ready and self.host.ready[v] and (not self.pickFor or self:hasSaves(v)) then list[#list + 1] = v end
+  end
   local cols = math.max(1, math.floor(w / 260))
   local cw = (w - (cols - 1) * 14) / cols
   local ch = 120
@@ -835,6 +1099,12 @@ function P:pickSlot(x, y, w, h, f)
       g.print(meta, x + 20, yy + 14 + f.body:getHeight())
       local id = s.id
       self:rect(x, yy, w, ch, function()
+        -- the Watt Shop's target, not a walk
+        if self.pickFor then
+          local cb = self.pickFor
+          self.pickFor, self.panel = nil, nil
+          return cb(self.pickVersion, id)
+        end
         self.pickSlot, self.panel = id, "pickCourse"
         self.monList = Link.boxMons(self.pickVersion, id) or {}
         self.natDex = Link.hasNatDex(self.pickVersion, id)
@@ -929,6 +1199,7 @@ function P:draw(x, y, w, h, fonts)
   self.rects = {}
   local g = love.graphics
   g.push("all")
+  local bottom = y + h
   local f = fonts
   if self.panel then
     local fn = ({ pickGame = P.pickGame, pickSlot = P.pickSlot, pickCourse = P.pickCourse, pickMon = P.pickMon })[self.panel]
@@ -938,24 +1209,37 @@ function P:draw(x, y, w, h, fonts)
     self:drawHero(x, y, w, heroH, f)
     local tilesY = y + heroH + 16
     local tileH = math.max(76, math.min(104, h * 0.13))
-    self:drawTiles(x, tilesY, w, tileH, f)
-    local py = tilesY + tileH + 16
+    -- as many rows as keep each tile 95 px wide (a phone in portrait: 3 of 3)
+    local rows = 1
+    while rows < 4 and w / math.ceil(#P.TILES / rows) < 95 do rows = rows + 1 end
+    self:drawTiles(x, tilesY, w, tileH, f, rows)
+    local py = tilesY + rows * tileH + (rows - 1) * 12 + 16
     local ph = math.max(220, y + h - py)
     local page = ({ walk = P.pageWalk, radar = P.pageRadar, dowse = P.pageDowse, bag = P.pageBag,
-                    card = P.pageCard, settings = P.pageSettings })[self.tab]
-    if page then page(self, x, py, w, ph, f) end
+                    card = P.pageCard, settings = P.pageSettings, shop = P.pageShop, awards = P.pageAwards,
+                    leaderboard = P.pageLeaderboard })[self.tab]
+    local used = page and page(self, x, py, w, ph, f)
+    -- THE HEIGHT ACTUALLY DRAWN, not the height asked for: the launcher
+    -- scrolls the page and places its footer on this number, so reporting
+    -- `h` while drawing 220 px of page below a short `h` (a phone in
+    -- landscape) left the footer over the page's buttons and diary.
+    bottom = math.max(bottom, py + ph, py + (tonumber(used) or 0))
   end
   if self.toast and self.t < self.toast.till then
     g.setFont(f.body)
     local tw = math.min(w - 40, f.body:getWidth(self.toast.text) + 40)
+    local th = f.body:getHeight() + 20
     local tx, ty = x + (w - tw) / 2, y + 12
+    if self.tapY then ty = math.max(y + 12, self.tapY - th - 36) end
     g.setColor(0.06, 0.06, 0.08, 0.94)
     g.rectangle("fill", tx, ty, tw, f.body:getHeight() + 20, 14, 14)
     setc(GOLD)
     g.printf(self.toast.text, tx + 20, ty + 10, tw - 40, "center")
   end
   g.pop()
-  return h
+  return math.max(h, bottom - y)
 end
+
+require("src.ui.WalkerEconomyPages").install(P)
 
 return P

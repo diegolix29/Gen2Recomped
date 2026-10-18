@@ -189,6 +189,9 @@ local function deliver(version, slotId, parcel)
       raw = (not at) and parcel.mon.raw or nil, placed = at,
       species = parcel.mon.raw and parcel.mon.raw.species,
       steps = parcel.mon.steps or 0,
+      -- what the minigames added (WalkerEconomy.friendship): EXP on top of
+      -- the steps, still under the one-level cap
+      bonusExp = parcel.mon.bonusExp,
       friendship = parcel.mon.friendship, course = parcel.course,
     }
   end
@@ -196,6 +199,10 @@ local function deliver(version, slotId, parcel)
   for _, it in ipairs(parcel.items or {}) do box.items[#box.items + 1] = it end
   return SaveData.writeSlot(version, slotId, save)
 end
+
+-- THE WATT SHOP's delivery (WalkerEconomy): { items = { { name, count } },
+-- caught = { { species, level } } } into any game's save, the same way
+L.deliverTo = deliver
 
 -- RETURN FROM WALK (keep = false) or RECEIVE PRESENT (keep = true)
 function L.bringHome(st, keep)
@@ -208,6 +215,25 @@ function L.bringHome(st, keep)
   if not ok then return false, err end
   W.takeHome(st, keep)
   W.note(st, keep and "Presents sent to your game." or ("%s came home."):format(w.name or "Your Pokemon"))
+  W.save(st)
+  return true
+end
+
+-- one caught Pokemon (st.caught[index], or all of them with no index) home
+-- to the walking Pokemon's game, from the Poke Radar page; the items and
+-- the walker stay. It reaches the PC when that game next loads (the inbox).
+function L.sendCaught(st, index)
+  local W = require("src.pokewalker.Walker")
+  local w = st.walking
+  if not w then return false, "no Pokemon is walking" end
+  local list = st.caught or {}
+  local send = index and { list[index] } or list
+  if #send == 0 then return false, "nothing caught yet" end
+  local ok, err = deliver(w.source.version, w.source.slot, { caught = send, items = {}, course = st.course })
+  if not ok then return false, err end
+  if index then table.remove(list, index) else st.caught = {} end
+  W.note(st, #send == 1 and ("%s was sent to your game."):format(send[1].name or "A Pokemon")
+    or ("%d Pokemon were sent to your game."):format(#send))
   W.save(st)
   return true
 end

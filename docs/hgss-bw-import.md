@@ -640,7 +640,7 @@ HGSS's three pages:
 
 - **INFO:** the trainer memo on top; the info grid and EXP bar on the touch screen.
 - **MOVES:** stats and ability on top; the four moves on the touch screen.
-- **RIBBONS:** only when the Pokémon has a ribbon.
+- **RIBBONS:** the ribbon grid on the touch screen; the Pokéathlon PERFORMANCE panel on top (see below).
 
 The right-hand column is the same on every page. On top it shows the ball, name, gender, level, picture and item. On the touch screen it shows the six party boxes (tap one to switch) and Cancel.
 
@@ -698,6 +698,24 @@ Positions were measured off Bulbapedia's capture. Stand-ins: the black foot bar 
 - **Foot:** «, », the registered-item box and check box (Key Items), the red ✕ and the blue back.
 - **Toss:** the count is the quantity window (screen 35), and the prompt comes from the ROM's bank 3.
 - **Single screen:** SELECT shows the top screen.
+
+### HGSS summary on one screen, ribbons and the top column (2026-10-17)
+
+**What one screen dropped.** With the bottom screen on the same panel (`swap`, `off`, or stowed) the summary drew only the touch half; the trainer memo, stats, HP bar, ability and its description, the picture, ball, name, level and item were behind an unmarked SELECT. `swap` with the second screen un-stowed was worse: `bottomOnSecond` counted it as a second screen and drew the touch page over the top one at (0, 0). The third page was empty on both screens (no ribbons drawn), and the status, markings, shiny and Pokérus sprites were not drawn anywhere.
+
+**The fix** (`src/ui/HgssSummaryMenu.lua`):
+
+- One screen now means `not (SecondScreen.separate and not stowed)`. LEFT / RIGHT walks every view in reading order: INFO (touch), TRAINER MEMO (top), SKILLS (top), BATTLE MOVES (touch), RIBBONS (touch). SELECT still flips a page's two halves, as on the other HGSS screens; a tap on a top view returns to the touch one. A on the moves or skills view opens the move details (touch), A on the ribbons view the ribbon cursor. UP / DOWN switch Pokémon on every view. Dual screen keeps LEFT / RIGHT as pages. Black / White's summary (which builds on this one) keeps its own behaviour.
+- **Ribbons page**, from the decomp: it is there whenever the caller's page mask has it (`_020FA0B0` = {0, 1, 2, 3} from the party), not only with a ribbon. Touch: the 3 × 3 grid at `_021039E8`'s rectangles (scrolled by rows, a triangle where more are above / below) and "No. of Ribbons:" (bank 302 #182). A or a tap selects a ribbon; the d-pad moves, A / B leave. Its name (white) and description (black) print where `_02104C84`'s windows 1 and 2 are, from bank 424 (HGSS's ribbon bank, numbered as Platinum's 535). Special ribbons read the save slot (0 when unset).
+- **Top column sprites** at the OBJ template positions: status (232, 58) or Pokérus (228, 54), markings from (200, 150), shiny (252, 72), cured Pokérus (252, 132).
+- **Animation:** the picture plays the species' PicAnim strip on opening and whenever the shown Pokémon changes.
+- The move description panel now shows its fifth line.
+
+**Import** (`src/import/Gen4HgssSummaryArt.lua`): adds `top_ribbons_blank` (11) and `touch_info_egg` (14), and from /a/0/3/9 (Platinum's pst, byte-identical members) `status_*`, `marking_*`, `shiny`, `pokerus_*` and `ribbon_NN`. The HGSS marker is now `hgss-gear-dex-v1:hgss-summary-v2:` in `RomImporter.lua`, so HGSS caches re-import once. The harness can decode it in memory with `HGSS_SUMMARY_ROM=<.nds>`; `RIBBONS=0,33,73`, `MON_STATUS=PSN`, `MARKINGS=<bits>`, `SHINY=1` and `POKERUS=n` dress the summary's Pokémon (`tools/gen4_hgss_overworld_harness`).
+
+**HGSS has no Condition or Contest page.** The third page's top screen is the Pokéathlon PERFORMANCE (screen 10: five 32-px rows, Speed / Power / Skill / Stamina / Jump, bank 302 #157 / #187-191, stars 162/66-68), shown once flag 0x982 is set (the Pokéathlon Dome); before that it is the bare panel 11, which is what the port draws.
+
+**Not yet:** the PERFORMANCE stars (they need `/poketool/personal/performance` and the ARM9 `sPokeathlonPerformanceArcIdxs` table, plus `CalcBoxmonPokeathlonStars`), so the performance view is not in the one-screen walk. The ribbon cursor (162/6-8), the ribbon scroll strips (73-75), the move cursor (162/62-64) and the description panels are drawn stand-ins. The Pokémon's motion program (squash, shake) is not played; only the two-frame strip is.
 - **Still a stand-in:** the black foot bar's art isn't found yet. The boy's top palette was chosen by eye.
 
 ## Black / White Pokémon summary and type badges
@@ -1730,3 +1748,333 @@ Platinum's 85 / 108 would have picked `h_exit`. `Gen4Emotes` now tries both
 archives and finds each emote by its texture name (the cartridge member first).
 Import marker `hgss-emotes-v1`. Black / White's emote is a 2D sprite (no model
 texture in the ROM matches), handled with the BW field work.
+
+## Pass 43 -- HGSS play-test fixes: battle music, item text, the Poké Mart, menus, PC Move (2026-10-17)
+
+Six bugs reported from play, each reproduced in `tools/gen4_hgss_overworld_harness`
+first (screenshots under `G:/Gen2Recomped/scratch_claude/hgssui/`).
+
+**Battle music.** HeartGold/SoulSilver's battle themes (SEQ_GS_VS_NORAPOKE 1116,
+VS_TRAINER 1117, VS_GYMREADER 1118, VS_ROCKET 1120, and PT_TITLE 1136) open with
+the NitroSDK sequence-variable command `B0` (setvar var 0 = 0, 1, 2… as the song
+advances; the game only reads it back, `sub_02005B78` → `NNS_SndPlayerReadVariable`).
+`src/audio/NitroAudio.lua` didn't know 0xB0–0xBD or the 0xA2 "if" prefix, so the
+sequencer raised on the first tick and `NitroAudio.update` stopped the player:
+every wild, trainer, gym and Rocket battle was silent, while the rival's theme
+(no B0) played. The sequencer now runs setvar/add/sub/mul/div/shift/rand and the
+six compares, the per-track compare flag behind 0xA2, and the A0/A1/A2 prefixes
+in any order. Variables 0–15 are per player, 16–31 are shared, all start at −1
+and are s16. The cache was already right (`gen4_battle_music` matches
+`sndseq.h`), so no re-import is needed. Check: `MUSIC_TRACE=1` on the HGSS
+harness (with `HARNESS=gen4_battle_harness TRAINER=20` for Falkner) logs
+`[music] tick N current=1118 playing=true`.
+
+**Item text ("weird text").** Two Platinum bank numbers read on an HGSS cache.
+Platinum's party bank is 453 (on HeartGold: a Viridian townsperson) and its bag
+bank is 7 (on HeartGold: the save-delete screen, "Delete all saved data?").
+`src/ui/Gen4PartyText.lua` holds HeartGold's renumbering: the bag's bank 10
+(`BAG_ENTRY`, Platinum entry → HGSS entry, checked line by line; lines HGSS
+hasn't got, such as PLANT / OPEN / Yes / No, fall back instead of reading
+whatever sits at that number) and the party's bank 300 (`PARTY_ENTRY`). Every
+bank-7 reader goes through it (Gen4BagMenu / HgssBagMenu `text`, Gen4ItemUse,
+ItemEffects' Repel lines, BagMenu's TM lines), as does Gen4PartyMenu:bankLine.
+An item used on a Pokémon now prints the party screen's own line, as
+`party_menu_items.c` does: the item's kind from its ItemPartyParam bytes
+(ItemId_GetPartyUseType), then msg_0300 65 "{nick}'s HP was restored by {n}
+point(s).", 71 / 72, the status cures 66-69 / 92 / 74 / 75, 76 "base {stat}
+rose!" (stat names msg_0443), 104-106 the EV-down berries, 73 / 70 PP, 102 "It
+won't have any effect." Giving an item: 107, 79 (the swap question), 85.
+
+**Poké Mart BUY.** HeartGold never prints into the top-screen list window
+(`ov03_022594C6[0]`); its goods are chosen on the touch screen (overlay 31, art
+`/a/0/6/0` members 15-25). `src/import/Gen4HgssMartArt.lua` → `gen4_hgss_mart_art`
+(screens 17 panel / 18 buttons / 19 count / 20 question, cells of 23/24 in
+palette 22: the red slot frame, page arrows, back, up/down, A/B buttons);
+`src/ui/HgssMartBuy.lua` is mixed into Gen4ShopMenu: six items a page, item
+windows at tiles (4|20, 5|10|15) with the price at (36, 16), money window
+(1, 0), page "n/m" (bank 435 #43), CANCEL, the count and the question with
+A (BUY / YES) / B. Dual screen: the top keeps the field, money, description,
+count and YES/NO; one screen: the touch screen with the clerk's line over it.
+The count / total / In Bag text positions and the up/down/A/B sprite spots are
+measured, not read (overlay 31's sprite templates aren't decoded). Also fixed:
+bank 435 #14 "For {n}, that will be ${m}" took the item name as the count; the
+"In Bag:" label (#35) beside the count (#36); the pocket name in "You put away
+the … in the … Pocket" (bank 10, 120 + pocket). Import marker
+`hgss-mart-buy-v1` (RomImporter); the harness loads the art from the ROM in
+memory with `HGSS_MART_ROM=<.nds>` for an older install.
+
+**Poké Mart SELL.** `MartSell` (op 0x30E, `ScrCmd_MartSell` →
+Mart_Init(.., isSell 1)) was unlowered, so the clerk went straight to "Is there
+anything else I may do for you?". `src/script/HgssMartCommands.lua` lowers it
+onto the counter (`ShopMenu` with `opts.sell`): the Bag in pick mode, then bank
+10's 76-79 ("How many will you sell?", "I can pay $n.", "Turned over the … and
+received $n."), the till, and the Bag again until B.
+
+**Menu cursor.** HGSS's field list (MenuInitStdGmm → ov01_021EDC84) is the
+widest row + 12 pixels with ListMenuCursorNew's glyph 0x011F "‣" (ink 1/2) at
+x 0 and the text at x 12; the port drew the text at x 8 so the arrow sat
+against the letters (Menu.lua `labelX`, set for HGSS script menus). The PC's
+rows are two-line strings meant for the touch buttons ("DEPOSIT\nPOKéMON",
+msg_0191 67-70): a space in the one-line list instead of a glyph. Note: the
+font's `subscreen` face has no glyph at 0x011F -- a list drawn in that face
+would lose its cursor. The Gen 2 `PokegearMenu` reached by `SCREEN=PokegearMenu`
+is not HGSS's Pokégear and draws Game Boy borders; left to the Pokégear work.
+
+**PC "Move Pokémon".** `src/ui/HgssBoxMove.lua`, mixed into HgssBoxMenu: the
+party panel on the right of the touch screen is a place the hand goes -- the pad
+walks off the box's sixth column into a 2×3 party grid plus EXIT, and in MOVE
+mode a Pokémon can be picked up and put down (A / MOVE / tap) or dragged with
+the stylus; a refused or missed drop flies back. Legality follows overlay 14's
+drop check ov14_021E690C with ov14_021E6480 ("another party Pokémon, not an
+Egg, HP > 0"): a party Pokémon may not go to the box holding Mail (bank 25 #30)
+or a Ball Capsule (#29), nor when nothing else in the party can fight unless
+what it swaps with can -- a box Egg can't (#6); a box Pokémon dropped on a
+party one applies the same checks to the one leaving; party-to-party is always
+allowed. Refusals are shown in the ROM's message bar at the bottom of the touch
+screen as well as in the preview. Harness: BOX_MODE, BOX_MONS, EGG_SLOT,
+MAIL_PARTY, DRAGS, TAP_DEBUG. Not yet: Box Capsule drop, the hover hints
+(#36, #56-58), dropping on a box tab, the refusal SE, the party gap while
+carrying.
+
+## Pass 44 -- HGSS water, the shoreline, the "!" and the ledge hop (2026-10-17)
+
+**Water didn't animate.** Platinum's moving water is props (`r04_w`, `l_lake`,
+`wfall`, scrolled by `bm_anime`). HGSS's is terrain, moved by one texture-SRT
+animation per area:
+- The area record's +4 is the animation id, not an unused field.
+  `AreaDataManager_Load` reads it at +0x8B4 and, unless it is 0xFFFF, calls
+  `ov01_0220463C`. That loads `/a/1/4/0[id]` (a BTA0) with
+  `mapData[i] = i | 0x100`: the model's material i plays the animation's entry
+  i. The map is positional, not by name.
+- Every land chunk's render object gets the animation, except chunks 0xD0, 0xD2
+  and 0xD3 (`sub_02054E20`). It loops for good, one frame per field frame.
+- `/a/1/4/0` holds two animations, 360 frames each. `area00_ani` drives pond_on,
+  swave_p, pond_edge, sea_line02, sea_un, sea_on, river and river_r.
+  `dun18_ani` drives river, river_r, sea_line02, sea_un and sea_on. The 106
+  area records name 0 (33), 1 (10) or none (63).
+- Of the 676 land chunks, 289 open with area00's eight materials in that order,
+  127 with dun18's five, and 260 carry none of them.
+- `src/import/Gen4HgssTexAnim.lua` reads the animations, each map's id and each
+  chunk's leading material names (from the model's material dictionary) into
+  `gen4_terrain` (`texAnims`, `texAnimLand`, `texAnimSkip`, `maps[].texAnim`).
+  The terrain stage's HGSS branch calls it.
+- `src/render/Gen4TerrainAnim.lua` builds the per-chunk material table
+  positionally. It runs at the field rate (two engine ticks a frame).
+  `Gen4Ground`'s live pass and free pass hand that table to the chunk draw.
+  Platinum and HGSS rooms get nil, so nothing changes there.
+
+**The blue line on the beach was the same fault.** `swave_p` is the surf
+washing up the sand: a 32x32 texture whose top seven rows are water and the rest
+transparent. On the cartridge its T translate stays between 0.60 and 0.80.
+Unanimated it sat at 0, which left those seven rows of water as a still blue
+stripe inside every shoreline (Cherrygrove's sandbar shows it best). With the
+animation playing, the stripe is gone. Not the cause: every water material's
+texture parameter is plain repeat (0x30000 / 0x40030000), and `sea_line02`'s
+translucent palette is drawn correctly.
+
+**The "!" art.** The terrain stage's HGSS branch returned before `self:emotes()`,
+so no HGSS install ever had `gen4_emotes` (the `hgss-emotes-v1` marker
+re-imported without it). The world then fell back to the hand-drawn box, placed
+with flat 2D maths, which landed at the player's feet under a tilted or free
+camera. The branch now calls it.
+- HGSS draws the "!" with `ov01_021F1758`: model 118 / 125, textures 17 / 24 of
+  `/a/1/0/3`. Those textures are byte for byte Platinum's fldeff 85.
+
+**The "!" position and timing.** `ov01_02200614` anchors the bubble at the
+owner's draw position plus (0, 32, 1) units. Its rise is 6, 10, 12, 12, 10, 6,
+0 world units, then it holds for 0x1E frames, the same as Platinum.
+- Characters are 32-unit full billboards, so a sprite is 32 pixels tall at any
+  pitch. The anchor's 32 world units shrink with cos(pitch): 21 pixels at HGSS's
+  48.68 degrees. So the bubble's tail sits on the head, not on the frame's empty
+  top edge 10 pixels above the hair.
+- `src/world/Gen4EmoteDraw.lua` places it through the camera now drawing:
+  - On the cartridge camera and the tilt rungs: the feet minus
+    (32 + rise) x heightScale, plus 1 x groundScale.
+  - In third and first person: `freeEntity` with the anchor as a pose lift, the
+    same projection as the sprite, depth-tested at the bubble's middle.
+  - The player in first person (who is the eye): the top of the view.
+- HGSS's emote lasts 74 engine ticks (`Gen4Emotes.framesFor`: scripted
+  `EmoteExclamationMark` and trainer sight). Platinum keeps 37 ticks and the
+  sprite-top rule, unchanged by request. `Gen4EmoteDraw.FAMILIES` is the switch.
+- The player's own emote was always queued as `ow.emote.npc = player`. It went
+  wrong only through the missing art and the fallback box.
+
+**Floating after a ledge in third / first person.** The free cameras hand the
+player a free-walk input every frame, stick centred or not. `Player:update`
+returned through `freeWalk` before the hop countdown, so the arc froze mid-air.
+The countdown now also runs in that branch.
+- The arc on Gen 4 maps is now the cartridge's `sJumpHeights_High`
+  (MovementAction_Jump_Step1: 6, 8, 10, 11, 12, 12, 12, 11, 10, 9, 8, 6, 4, 0
+  world units over 16 field frames). `src/world/Gen4Jump.lua` draws it up by:
+  - on the cartridge and tilt cameras: x heightScale, the lean every terrain
+    height gets
+  - in the free cameras: the projected rise above the ground under the player
+- Other generations keep the 10-pixel sine. HGSS and Platinum ledges are flat in
+  the BDHC (no ledge on R27, R29-R33, R36, R45, R46 or R201-R206 has a height
+  step), so terrain only enters through the ground height under the player.
+
+**Import / harness.**
+- Marker `hgss-water-emotes-v1` (RomImporter).
+- On an older install, `HGSS_FIELD_ROM=<.nds>` reads both into memory as the
+  overworld is pushed (`tools/gen4_hgss_overworld_harness/field_rom.lua`).
+- Check: `python tools/run_lua_check.py tools/gen4_hgss_field_check.lua [<.nds>]`
+  (23 checks).
+- Pictures: `G:/Gen2Recomped/scratch_claude/hgssfield/{before,after}`.
+- `tools/gen4_emote_check.lua`'s `freeEntity` signature test now allows the
+  later `pose` argument.
+
+
+### HGSS start menu gating, Pokégear apps and Pokédex buttons (2026-10-17)
+
+Reported from play: the Pokédex was available from the start of the game, and
+some buttons did nothing in the Pokégear and the Pokédex.
+
+**Start menu (root cause).** `HgssStartMenu` gated BAG, POKéGEAR, the card,
+SAVE and OPTIONS on their cartridge flags, but left POKéDEX and POKéMON to
+Platinum's stand-ins. Those stand-ins were "a species has been seen"
+(`Flags.hasPokedex`'s Gen 4 fallback) and "the party is not empty". So the
+Pokédex row appeared as soon as the starter was in the party, a route before
+Oak gives the Pokédex at Mr. Pokémon's house. A save with none of the flags
+also showed every row, which included a new game in the bedroom.
+
+**Start menu (fix).**
+- Every entry now answers to its own flag, as in `FieldSystem_ShouldDrawStartMenuIcon`:
+  POKéDEX 0x6B, POKéMON 0x6A, BAG 0x11B, card 0x11C, SAVE 0x11D, OPTIONS 0x11E, POKéGEAR 0x9C.
+- An empty panel still opens and closes, as the cartridge's does before Mom's gifts.
+- The old "show everything" fallback now applies only to a save that has a party and none of these flags.
+- On HGSS, `Flags.hasPokedex` reads FLAG_GOT_POKEDEX 0x6B (or `GivePokedex`'s
+  ENGINE_POKEDEX) and nothing else. That also fixes the trainer card's dex
+  row and the main menu's CONTINUE panel (`Gen4MainMenu:hasPokedex`).
+
+**Pokégear (root cause).** `HgssPokegear` drew page backgrounds and nothing else:
+- The bar's buttons were mapped to the wrong apps.
+- The touch screen and top screen were swapped.
+- The phone list could not be acted on.
+- The map, radio and skins pages had no controls.
+
+**Pokégear (fix).** `HgssPokegear` is now overlay 100's shell. The apps are
+new modules: `HgssGearPhone`, `HgssGearMap`, `HgssGearRadio` and
+`HgssGearConfig`, plus `HgssTouchList` (the touchscreen list menu) and
+`HgssPhoneOutgoing` (which call the player makes).
+
+Read from pokeheartgold:
+- **The bar**: button rects, atlas states, masks for missing cards, the cursor
+  zone and the cursor-grid specs.
+- **The clock sprites**, and the opening app (last used, configure without its card).
+- **The phone**: list geometry and colours; scroll and page keys; touch rects;
+  Call / Sort / Quit; Sort by sortParam; Move; tooltips; outgoing calls.
+  - Outgoing calls cover Mom (the intro by location, then the savings prompt and menu), Elm's flag ladder, the Bike Shop, every contact's at-home script, and trainers through `sGenericPhoneCallHeaders`.
+  - Rematch and gift side effects are kept in `save.hgssPhoneState`.
+  - A map without outgoing calls gets "out of the area".
+- **The map**: the whole 47 × 20 map, the Kanto mask by unlock level, cursor
+  bounds, the view, zoom (X or button), tap to move, drag to scroll, the Y/X
+  button states, and the player icon.
+  - The top screen shows the region, the landmark name, the flavour text and the landmark picture from the 100 `sLocationSpecs`.
+- **The radio**: the dial, channel buttons (A or tap), tuning with held keys or a drag, and the station sets by map and flags.
+  - Shows are translated by hour, with each show's title and host.
+  - Pokémon Music plays its day line and track; the Poké Flute and Unown play their music.
+- **Configure**: the six skins, cursor links, touch rects, CHANGE / QUIT, and the skin swap fade.
+
+`HgssPhoneCall` changes:
+- It accepts `outgoing` calls (an initial ring, staying on the open Pokégear).
+- It has generic handler types 1 and 2, and the script side effects.
+- It returns to the phone list with the cursor in the list, and keeps the clock up.
+
+New import data: `src/import/Gen4HgssPokegearExtra.lua`, merged into
+`gen4_hgss_pokegear_art`, adds:
+- `buttons_*`, `obj_*`, `map_full_*`, `map_ui_*`, `map_info_*`, `map_landmarks`, `phone_full_*`, `radio_full_*`, `radio_back_*`, `config_sel_*` and `sbox`;
+- `ink`, `locations`, `genericHeaders`, `sortParams` and `contacts` banks.
+
+**Without a re-import every app still works.** The bar, the cursor, the clock
+and the list colours are drawn with plain fallbacks.
+
+**Import marker**: `hgss-gear-dex-v1`, set in `RomImporter.lua`.
+
+**Pokédex** (done by a delegated agent, in `HgssPokedex.lua` plus new
+`HgssDexSearch.lua`, `HgssDexDetails.lua` and `HgssDexData.lua`):
+- SEARCH works from the lid and the list, with all seven sub-pages, the results list and RESET.
+- DETAILS opens AREA, then SIZE, FORMS (with COMPARE) and RETURN.
+- All keys are mapped: Y, L/R, START, X.
+- The search filters follow `ov18_021F7ED4`.
+- `Gen4HgssDexArt` imports the search, area, size and forms art and the zukan height, weight and sort data. Its pages have drawn fallbacks.
+
+**Harness additions** (`tools/gen4_overworld_harness/main.lua`):
+- `TAPS="tick:x,y;..."` taps the bottom screen.
+- `HGSS_GEAR="cards=1,2;numbers=0,10;level=1;skin=0;app=3"` sets the Pokégear's save record.
+- `HGSS_DEX_ART=1` works with `HGSS_UI_ROM`.
+
+**Verify**:
+- `HGSS_UI_ROM=<HG.nds> SCREEN=HgssPokegear HGSS_GEAR=... TAPS=... PRESS_KEYS=...`
+  - Pictures are in `G:/Gen2Recomped/scratch_claude/hgssgear`.
+- The HGSS playthrough from a new game passes beats 1–11, including Mr. Pokémon (0x6B) and Elm's scripted call.
+  - Beat 12 (Slowpoke Well "talk: blocked") fails. This is a field or pathing issue and does not involve these screens.
+- `gen4_hgss_import_check`: 113/114. The remaining failure is the five HGSS-only animation opcodes, as before.
+
+**Not done**:
+- **Map**: markings mode (Y only answers), the roamer and rematch icons, greying unvisited towns, and the zoom's slide animation.
+- **Radio**: talk-show scripts (Oak's talk, profiles, the drama, Buena's Password, commercials, the Rocket broadcasts), static in the text, and the GB Sounds list.
+- **Phone**: outgoing calls to Oak, Bill, Kurt, the Day-Care couple, Buena, Ethan/Lyra, the gym leaders, Kenji, Irwin and Baoba (they ring and hang up). The field does not act on the rematches or gifts a call sets up, and incoming random calls are not implemented.
+- **Pokédex**: area map markers (zukan_enc), some sprites drawn plainly, foreign entries, and page animations.
+
+## Black/White: heights, the gift box screen, free-walk walls, the battle crash (2026-10-17)
+
+**Heights (the gift box floating over the table, Z391).**
+- Root cause: on a flat permission tile, bytes 2–3 do not hold a height. They hold an index into the field overlay's table of plane distances, and Gen5Field had read that index as world units. The table's index, 120, put the box 120 units (7.5 tiles) up, over the TV stand. Any map that mixes indices was wrong in the same way; Nacrene's terrace NPC, for example, stood in the treetops.
+- Where the table is: overlay 21, at +0x54258 in Black and +0x54250 in White.
+  - Each entry is an s32 `d` of the flat plane `y * 4095 + d = 0`, so the height is `-d / 4095`. For example, 120 → 8, 463 → 48, 14 → 16, 464 → -80.
+  - `src/import/Gen5Heights.lua` finds the table by its own entries, not by a hard-coded address.
+  - Every one of the 31 indices that NPCs stand on agrees with the NPC records' heights (fx32 at +32).
+  - An approximation from people and model surfaces is kept only as a fallback; 22 of 60 of its values were wrong.
+- `Gen5Field` maps every tile through the table, including the League's 64 × 64 grid. It writes 0 beside each raised tile so the floor does not take the table's height from `heightAt`'s neighbour rule.
+- Results:
+  - Z391 table and TV stand: 8 units, and the box sits on the table.
+  - Nacrene museum (Z017): the skull exhibit sits on its stand.
+  - Nacrene (Z016): the terrace NPC is on the terrace.
+- Not read yet: sloped tiles (bytes 0–1 hold an index into the normals table). They still take their neighbours' height.
+- The harness option `BW_HEIGHTS_ROM=<nds>` reads an older install as a re-import would, in memory.
+
+**Walking into walls / standing on them.**
+- Grid walking already refuses walls: checked in Z391, Z390 and Z006 (Striaton).
+- The free camera's `Player:freeWalk` let a diagonal cut corners, because its y half asked the cell of the column the player started in rather than the column the x half had just moved into. Black's bedroom: (7,7) down-left onto the table at (6,8). It also tested only the body's centre, so half the body went into a wall.
+- Fixed in `src/world/Player.lua`: it asks the current column, and the leading edge (`Player.FREE_REACH`, 6 px).
+- `scratch_claude/bwstart/freewalk_check.lua` walks into the wall with the old file and stops with the new one.
+- The rival scene keeps everyone on the floor with the corrected heights.
+
+**The gift box screen (overlay 223, `/a/2/0/5`).**
+- Command 0x153's handler is ov10 0x0215CBF0, which uses table slot 0x153 + 15. It starts overlay 223.
+- `src/import/Gen5StarterArt.lua` writes `gen5_starter_art` (members are listed in its header):
+  - the psel_s01 box opening and its baked camera;
+  - the psel_s02 open box and its camera;
+  - the psel_mb Poké Ball at the overlay's three points;
+  - the stage tinted per starter (palettes 9/8/10/7);
+  - the box screen;
+  - the three Pokémon's pictures (palettes 0/2/4);
+  - the glove.
+- `src/ui/Gen5StarterSelect.lua` plays the screen:
+  - the box opens (130 frames) and Juniper's letter appears (bank 430 #12);
+  - the camera sweeps in;
+  - you pick with left/right or touch, and the stage and type line follow the glove;
+  - YES/NO;
+  - the chosen ball opens (160 frames).
+  - The plain layout remains for caches without the art.
+- Wiring:
+  - `RomExtractorGen5:extractBootScreens` writes the art.
+  - `Data.lua` lists the new data file.
+  - The BW import marker is now `gen5-starter-v6`, which also brings in the new heights.
+- Still guessed: the field of view (62°, which spreads the balls the way the overlay's touch points do), the camera held while choosing (frame 57 of the s02 camera), the YES/NO position and the sound effects.
+- The harness builds the art in memory with `BW_UI_ROM`.
+
+**Battle crash under DRAMATIC_SHAPE (`Gen5MonAnimPlayer` / `Gen5BattleSceneView`, push/pop).**
+- The harness option `MODS_ROOT=G:/Gen2Recomped` mounts the mods folder.
+- With the mod loaded (Gen2Recomped-DramaticShapes 0.7.71), the BW playthrough ran beats 1–6, including Bianca's and Cheren's battles in Z391 (in-world 3D battles), with no crash.
+
+**Verify**:
+- The BW playthrough passed all 74 beats, from the bedroom to N's castle. It ran with `BW_UI_ROM` and `BW_HEIGHTS_ROM`, so the new starter screen and the corrected heights were both in use.
+- `gen5_import_check`: 99/99. The Z007 dais check now expects 16, the height that value names, instead of the raw value 14.
+- Pictures are in `G:/Gen2Recomped/scratch_claude/bwstart`:
+  - `h1`: the box on the table;
+  - `ui5`: the starter screen;
+  - `rival2`: the rival scene;
+  - `h2`: old and new heights compared;
+  - `walls`, `z006`: walking into walls;
+  - `modbat`: the battles with the mod loaded.

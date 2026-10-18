@@ -496,6 +496,19 @@ L.ALIASES = {
   [0x1BA] = { "bwteamsource", "ww" }, [0x067] = { "bwobjectpos", "www" },
   [0x0D3] = { "getcurrentmapid", "w" }, [0x137] = { "bwsavegame", "w" },
   [0x13B] = { "bwwirelessoff", "w" }, [0x13C] = { "noop", "" }, [0x1F0] = { "noop", "ww" },
+  -- BIG STADIUM / SMALL COURT (src/script/Gen5Stadium.lua, ov10
+  -- 0x0215F2F0..0x0215F52C): 0x1F4 / 0x1F5 load / free the athletes' table,
+  -- 0x1F6 <slot, object, tier> / 0x1F3 <slot, object, object, tier> dress
+  -- objects as a row's trainer, 0x1F7 <object x3, row x3> three visitors,
+  -- 0x1F8 clears the rows' trainer flags, 0x25C <var x6> draws six visitors;
+  -- the clock: 0x0CF <var> the weekday, 0x0D1 <hour, minute>
+  [0x1F4] = { "bwstadiumload", "" }, [0x1F5] = { "bwstadiumfree", "" }, [0x1F8] = { "bwstadiumreset", "" },
+  [0x1F6] = { "bwstadiumsingle", "www" }, [0x1F3] = { "bwstadiumdouble", "wwww" },
+  [0x1F7] = { "bwstadiumvisitors", "wwwwww" }, [0x25C] = { "bwstadiumdraw", "wwwwww" },
+  [0x0CF] = { "bwweekday", "w" }, [0x0D1] = { "bwtime", "ww" },
+  -- 0x0BF <zone, x, z, dir>: the lobby's walk onto the field (ov21
+  -- 0x021AFE64 -> 0x02185050, 0x0BE's shape) -- Z079 `0BF 82 9 61 0`
+  [0x0BF] = { "warp", "wwww", { 1, 1, 2, 3, 4 } },
 }
 
 -- THE STACK FORM. Most of BW's conditional jumps are an expression on the

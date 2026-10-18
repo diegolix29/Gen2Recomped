@@ -1,0 +1,116 @@
+-- Copyright (c) 2026 Cedric. All rights reserved.
+-- Source-available under the Gen2Recomped License (see LICENSE.md): you may
+-- read, build and privately modify this file; you may not redistribute it or
+-- use it commercially. Cartridge-derived data is excluded and is not the
+-- copyright holder's to license.
+
+-- WHAT A MINIGAME PLAYS WITH: the walking Pokemon, the current course's wild
+-- Pokemon and items, and a seeded random number generator. No drawing and no
+-- love.* at load, so the games' rules run headless (tools/walker_minigames_check).
+--
+--   ctx.walker   { dex, name, level, friendship } -- the walking Pokemon, or
+--                Pikachu standing in when nobody is out (ctx.standIn = true)
+--   ctx.course   { id, name, types }
+--   ctx.wild     { { dex, name, level, group = "A"|"B"|"C" }, ... } the
+--                course's six, already swapped into the walker's own game's
+--                dex by WalkerCourses.forGame when a Pokemon is walking
+--   ctx.items    item names the course can give (cheap ones first)
+--   ctx.rng(n)   1..n;  ctx.rand() [0, 1)
+
+local C = {}
+
+-- Park-Miller: deterministic, and every product stays exact in a double
+function C.newRng(seed)
+  local s = math.floor(tonumber(seed) or os.time()) % 2147483646 + 1
+  local function nextv()
+    s = (s * 16807) % 2147483647
+    return s
+  end
+  local rand = function() return (nextv() - 1) / 2147483646 end
+  local rng = function(n)
+    n = math.max(1, math.floor(n or 1))
+    return math.floor(rand() * n) + 1
+  end
+  return rng, rand
+end
+
+-- always handy: given to every run on top of the course's own items
+C.BASIC_ITEMS = { "Poke Ball", "Oran Berry", "Pecha Berry", "Potion", "Great Ball" }
+
+-- a stand-in roster for a course-less walker (the routes failed to load)
+C.FALLBACK_WILD = {
+  { dex = 16, name = "Pidgey", level = 5, group = "C" }, { dex = 161, name = "Sentret", level = 5, group = "C" },
+  { dex = 29, name = "Nidoran", level = 5, group = "B" }, { dex = 43, name = "Oddish", level = 6, group = "B" },
+  { dex = 84, name = "Doduo", level = 8, group = "A" }, { dex = 115, name = "Kangaskhan", level = 8, group = "A" },
+}
+
+local function routes()
+  local ok, Courses = pcall(require, "src.pokewalker.WalkerCourses")
+  if not ok then return nil end
+  local okR, r = pcall(Courses.routes)
+  return okR and r or nil, Courses
+end
+
+function C.build(st, seed)
+  local ctx = {}
+  ctx.rng, ctx.rand = C.newRng(seed)
+  local wk = st and st.walking
+  if wk and wk.species then
+    ctx.walker = { dex = wk.species, name = wk.name or "Your Pokemon", level = wk.level or 5,
+                   friendship = wk.friendship }
+  else
+    ctx.walker = { dex = 25, name = "Pikachu", level = 5 }
+    ctx.standIn = true
+  end
+  local all, Courses = routes()
+  local id = st and st.course or 0
+  local route = all and all[id]
+  ctx.course = { id = id, name = route and route.name or "Refreshing Field", types = route and route.types or {} }
+  -- the six: from the walker's own game when one is walking (so a catch can
+  -- go home), else the course's published list
+  local wild = {}
+  local version = wk and wk.source and wk.source.version
+  if version and Courses then
+    local ok, entries = pcall(Courses.forGame, id, version)
+    if ok and type(entries) == "table" then
+      for _, e in ipairs(entries) do
+        wild[#wild + 1] = { dex = e.species, name = e.name, level = e.level or 5, group = e.group or "C" }
+      end
+    end
+  end
+  if #wild == 0 and route then
+    for _, e in ipairs(route.pokemon or {}) do
+      wild[#wild + 1] = { dex = tonumber(e.species), name = e.name, level = e.level or 5, group = e.group or "C" }
+    end
+  end
+  if #wild == 0 then for _, e in ipairs(C.FALLBACK_WILD) do wild[#wild + 1] = e end end
+  ctx.wild = wild
+  -- items: the course's cheaper half, then the basics
+  local items, seen = {}, {}
+  local function add(n) if n and not seen[n] then seen[n] = true; items[#items + 1] = n end end
+  for _, it in ipairs((route and route.items) or {}) do
+    if (tonumber(it.steps) or 0) <= 1000 then add(it.name) end
+  end
+  for _, n in ipairs(C.BASIC_ITEMS) do add(n) end
+  ctx.items = items
+  return ctx
+end
+
+-- a wild Pokemon, weighted C common / B less / A rare (the radar's 6 / 3 / 1)
+C.GROUP_WEIGHT = { A = 1, B = 3, C = 6 }
+function C.pickWild(ctx)
+  local sum = 0
+  for _, e in ipairs(ctx.wild) do sum = sum + (C.GROUP_WEIGHT[e.group] or 1) end
+  local roll = ctx.rng(sum)
+  for _, e in ipairs(ctx.wild) do
+    roll = roll - (C.GROUP_WEIGHT[e.group] or 1)
+    if roll <= 0 then return e end
+  end
+  return ctx.wild[1]
+end
+
+function C.pickItem(ctx)
+  return ctx.items[ctx.rng(#ctx.items)]
+end
+
+return C

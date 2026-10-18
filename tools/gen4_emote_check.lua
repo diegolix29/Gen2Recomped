@@ -95,7 +95,7 @@ check(ow:find('if not emoteEarly then self:eachEmote(fxEmote) end', 1, true),
 check(ow:find('Gen4Emotes.LIFT + 8)', 1, true),
       'and depth-tested at the bubble\'s own height, not its trainer\'s feet')
 local gsrc = io.open('src/render/Gen4Ground.lua'):read('a')
-check(gsrc:find('function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw, depthLift)', 1, true),
+check(gsrc:find('function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw, depthLift', 1, true),
       'freeEntity must take that depth lift')
 
 print(('%d checks, %d failed'):format(PASS + FAIL, FAIL))

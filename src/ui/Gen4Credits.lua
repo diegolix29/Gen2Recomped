@@ -249,7 +249,10 @@ function Credits:drawProps(s)
     if not self.propTarget then self.noProps = true return end
   end
   local g = love.graphics
-  local previous = { g.getCanvas() }
+  -- push("all") / pop() saves and restores the whole render target (and
+  -- its depth): handing getCanvas()'s answer back to setCanvas raised
+  -- "Canvas expected" when a mod's renderer had bound its own target.
+  g.push("all")
   g.setCanvas({ self.propTarget, depthstencil = self.propDepth })
   g.clear(0, 0, 0, 0, true, true)
   local vp = multiply(FLIP_Y, multiply(Gen4Model.perspective(math.rad(44), 256 / 192, 1, 900),
@@ -263,7 +266,7 @@ function Credits:drawProps(s)
       end
     end
   end
-  g.setCanvas(previous[1] and previous or nil)
+  g.pop()
   local t = Credits.PROP_TINT[s.time] or { 1, 1, 1 }
   g.setColor(t[1], t[2], t[3], 1)
   g.draw(self.propTarget, 0, 0)

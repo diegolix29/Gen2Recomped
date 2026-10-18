@@ -8,7 +8,9 @@
 --   +0 u16 buildings   the area_build list, NARC 0x2B (/a/0/4/3), and the
 --                      building texture set, NARC 0x46 (/a/0/7/0)
 --   +2 u16 mapTexture  the map texture set, NARC 0x2C (/a/0/4/4)
---   +4 u16             (0, 1 or 0xFFFF; not read by the loader)
+--   +4 u16 texAnim     the map texture animation, /a/1/4/0 (0, 1 or 0xFFFF
+--                      for none): AreaDataManager_Load reads +0x8B4 and hands
+--                      it to ov01_0220463C -- see Gen4HgssTexAnim
 --   +6 u8  outdoors    AreaDataManager_Alloc: nonzero opens the OUTDOOR
 --                      building models NARC 0x28 (/a/0/4/0), zero the indoor
 --                      ones NARC 0x94 (/a/1/4/8)
@@ -37,6 +39,7 @@ function A.parse(record)
     buildings = u16(0),
     mapTexture = u16(2),
     unused04 = u16(4),
+    texAnim = (u16(4) ~= 0xFFFF) and u16(4) or nil,
     outdoors = outdoors,
     lightType = b[8],
     areaLight = A.LIGHT_ARCHIVE[b[8]] or 0,

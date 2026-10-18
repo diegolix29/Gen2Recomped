@@ -38,6 +38,11 @@ Ops.TERMINATORS = { [0x02] = true, [0x05] = true, [0x1E] = true }
 Ops.JUMPS = { [0x04] = "call", [0x1E] = "jump", [0x1F] = "if" }
 -- widths measured by hand where the handler hides its reads (see `derive`)
 Ops.HAND_WIDTHS = { [0xB2] = 7, [0x137] = 2 }
+-- 0x05D <u8 kind, u8 buffer, var-or-value> (ov10 0x0215D884, the Musical's
+-- word buffer: a prop, a show title...) reads two bytes inline and a
+-- halfword through 0x02159B10 -- four bytes, measured as three, and the
+-- theater's receptionist (Z077 entry 9) decoded askew after it
+Ops.HAND_WIDTHS[0x5D] = 4
 
 local function u16(s, o) return s:byte(o + 1) + s:byte(o + 2) * 256 end
 local function u32(s, o) return u16(s, o) + u16(s, o + 2) * 65536 end

@@ -86,8 +86,11 @@ function Gen3MysteryGift.owed(game)
   local save = game and game.save
   if not save then return 0 end
   local taken = 0
+  -- a row the Monster Walker unlocked (src/pokewalker/WalkerEvents.lua) was
+  -- bought, not one of the induction picks
+  local walker = type(save.walkerEvents) == "table" and save.walkerEvents.gen3Rows or {}
   for _, row in ipairs(Gen3MysteryGift.events(game)) do
-    if Gen3MysteryGift.isUnlocked(game, row) then taken = taken + 1 end
+    if Gen3MysteryGift.isUnlocked(game, row) and not walker[row.item] then taken = taken + 1 end
   end
   local wins = math.floor(tonumber(save.hallOfFame) or 0)
   return math.max(0, wins - taken)

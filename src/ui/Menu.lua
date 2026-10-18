@@ -192,7 +192,9 @@ function Menu:draw()
   for row = 1, visible do
     local item = self.items[self.scroll + row]
     if not item then break end
-    Font.draw(item.label, (self.tx + 2) * 8,
+    -- `labelX`: a menu that knows its cartridge's text column (HGSS's field
+    -- list: the ‣ at the window's x 0, the text at x 12)
+    Font.draw(item.label, self.labelX or (self.tx + 2) * 8,
       (self.ty + self.th - 2 - (visible - row) * self.rowStep) * 8 - lift)
   end
   local cursorRow = self.index - self.scroll

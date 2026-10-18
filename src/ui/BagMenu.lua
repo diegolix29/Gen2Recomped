@@ -173,10 +173,22 @@ BagMenu.refreshCount = refreshCount
 -- every other item the picker popped itself first and closePicker's identity
 -- check makes it a no-op (#252).
 local function useOn(game, battle, id, target, list, moveIndex, picker)
+  -- HGSS: the party screen's own msg_0300 line for the item (src/ui/Gen4PartyText.lua)
+  local PartyText = require("src.ui.Gen4PartyText")
+  local g4Before = (not battle and target) and PartyText.snapshot(game, target) or nil
   local result, payload, extra = ItemEffects.use(game.data, game.save, id, target,
                                                  battle, moveIndex, game.overworld)
+  if g4Before then
+    payload = PartyText.itemUseMessages(game, id, target, g4Before, result, payload, moveIndex)
+  end
   local function closePicker()
     if picker then picker:close() end
+  end
+  -- BLACK / WHITE's own field uses: the bike, repels, the Dowsing MCHN ...
+  -- (src/inventory/Gen5ItemUse.lua)
+  if type(result) == "string" and result:sub(1, 3) == "bw_" then
+    require("src.inventory.Gen5ItemUse").handle(game, list, id, result, payload, extra, showMessages)
+    return
   end
 
   -- field POKé FLUTE: play the tune, then the no-effect text
@@ -866,15 +878,19 @@ local function useItem(game, battle, id, list)
       if require("src.core.GameVersion").isGen4() then
         local Gen4Text = require("src.import.Gen4Text")
         Gen4Text.buffer(game, moveName)
-        local contained = Gen4Text.resolve(game.data, BAG_TEXT_BANK,
-                                           BAG_TEXT_CONTAINED, game)
+        -- HGSS: bank 10, one later (src/ui/Gen4PartyText.lua)
+        local PT = require("src.ui.Gen4PartyText")
+        local function bag(i)
+          local b, n = PT.bagIndex(game.data, i)
+          if b ~= BAG_TEXT_BANK then i = n end
+          return Gen4Text.resolve(game.data, b or BAG_TEXT_BANK, i, game)
+        end
+        local contained = bag(BAG_TEXT_CONTAINED)
         if contained then
           cart = {
             contained = contained,
-            bootedTM = Gen4Text.resolve(game.data, BAG_TEXT_BANK,
-                                        BAG_TEXT_BOOTED_TM, game),
-            bootedHM = Gen4Text.resolve(game.data, BAG_TEXT_BANK,
-                                        BAG_TEXT_BOOTED_HM, game),
+            bootedTM = bag(BAG_TEXT_BOOTED_TM),
+            bootedHM = bag(BAG_TEXT_BOOTED_HM),
           }
         end
       end
@@ -956,21 +972,26 @@ local function handOver(game, mon, id, onChanged, opts)
   end
   if not held then
     if hand() then
-      showMessages(game, { Strings("%s is now holding\n%s.", monName, name) })
+      -- HGSS: msg_0300 107 (src/ui/Gen4PartyText.lua)
+      showMessages(game, { require("src.ui.Gen4PartyText").say(game, 107,
+        Strings("%s is now holding\n%s.", monName, name), monName, name) })
     end
     return
   end
   local heldName = (game.data.items[held] or {}).name or held
   local ChoiceBox = require("src.ui.ChoiceBox")
-  showMessages(game, {
+  -- HGSS: msg_0300 79 (both sentences in one line) and 85
+  local PartyTextH = require("src.ui.Gen4PartyText")
+  local hgAsk = PartyTextH.say(game, 79, nil, monName, heldName)
+  showMessages(game, hgAsk and { hgAsk } or {
     Strings("%s is already\nholding %s.", monName, heldName),
     Strings("Switch items?"),
   }, function()
     game.stack:push(ChoiceBox.new(game, function(yes)
       if not yes then return end
       if hand() then
-        showMessages(game, { Strings("Took %s and\nmade it hold %s.",
-          heldName, name) })
+        showMessages(game, { PartyTextH.say(game, 85, Strings("Took %s and\nmade it hold %s.",
+          heldName, name), monName, heldName, name) })
       end
     end))
   end)

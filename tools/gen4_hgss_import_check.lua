@@ -806,7 +806,11 @@ do
   check(price:find('200',1,true) and not price:find('anything',1,true),'HGSS shop prices use bank 435 entry 18')
   local Gear=require('src.ui.HgssPokegear')
   local gear=Gear.new({save={hgssPokegear={cards={}}},data={}},{})
-  check(gear:canPage(2) and not gear:canPage(1) and not gear:canPage(3),'Pokegear gates map and radio cards')
+  -- PokegearApp_HandleTouchInput_SwitchApps: no card, no switch (map 104-152, radio 56-104)
+  gear:tapBar(128,170);local mapBlocked=not(gear.fade and gear.fade.kind=='out')
+  gear:tapBar(80,170);local radioBlocked=not(gear.fade and gear.fade.kind=='out')
+  gear:tapBar(30,170);local configOpens=gear.fade and gear.fade.kind=='out' and gear.fade.to==0
+  check(gear.app==3 and mapBlocked and radioBlocked and configOpens,'Pokegear gates map and radio cards')
   local Screen=require('src.ui.Gen4HgssStarterSelect')
   local SS=require('src.ui.SecondScreen');local draw=SS.draw
   local top,bottom=0,0

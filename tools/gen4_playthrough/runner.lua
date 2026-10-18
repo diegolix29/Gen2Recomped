@@ -69,6 +69,9 @@ function R:busy()
   if ow.runner and ow.runner.isRunning and ow.runner:isRunning() then return true, "script" end
   if #(ow.scriptMoves or {}) > 0 then return true, "moves" end
   if ow.player and ow.player.moving then return true, "moving" end
+  -- a trainer's "!" and walk-up freeze the player (HGSS's emote now runs the
+  -- cartridge's 74 ticks): standing still then is not being blocked
+  if ow.emote or ow.engaging or (ow.extraEmotes and #ow.extraEmotes > 0) then return true, "engage" end
   return false
 end
 local function stateName(st)
@@ -126,6 +129,12 @@ function R:fail(why)
   self:say("FAIL beat %d %s: %s", self.beat, b and b.name or "?", why)
   self:say("  at %s (%s,%s) top=%s text=%q", tostring(self:map()), tostring(x), tostring(y),
     stateName(self:top()), self:screenText())
+  for _, n in ipairs((self.ow and self.ow.npcs) or {}) do
+    if not n.hidden and x and math.abs((n.cellX or -99) - x) <= 2 and math.abs((n.cellY or -99) - y) <= 2 then
+      self:say("  near: person %s at (%s,%s)%s moving=%s", tostring(n.localId or (n.def and n.def.localId)),
+        tostring(n.cellX), tostring(n.cellY), n.passable and " passable" or "", tostring(n.moving))
+    end
+  end
 end
 
 -- { "answers", {...} } queued: the next menus get their cursor put on these

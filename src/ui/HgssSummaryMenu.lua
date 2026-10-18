@@ -7,8 +7,16 @@
 --
 --   page     top screen (/a/1/6/2)           touch screen
 --   INFO     13: trainer memo + the Pokemon  12: dex no. .. to next lv., EXP
+--                                            (14 for an Egg: one tab)
 --   MOVES    19: stats + ability             17: the four battle moves
---   RIBBONS  10                              9  (only with a ribbon)
+--   RIBBONS  10: Pokeathlon PERFORMANCE      9: the ribbons, 3 x 3
+--            (11, the bare panel, before the Pokeathlon flag 0x982)
+--
+-- The third page is there whenever the caller's page mask has it -- the party
+-- menu's `_020FA0B0` is { 0, 1, 2, 3 } -- with or without a ribbon; the
+-- two-tab touch pages (77 / 78) are the mask without it (`_02089F98`).
+-- There is no Condition or Contest page in HGSS; PERFORMANCE is the third
+-- page's top screen.
 --
 -- The right-hand column is the same on every page: on top the ball, name,
 -- gender, level, picture and held item; below, the party's six icons in their
@@ -16,7 +24,23 @@
 -- from the art; the pad does what Platinum's does (left / right pages, up /
 -- down the party, B leaves). The words are bank 302; abilities 720 / 722.
 --
--- One screen: the touch page is shown, SELECT swaps to the top one.
+-- ONE SCREEN (swap / off, or the second screen stowed): every page is two
+-- views, and LEFT / RIGHT walks all of them in reading order -- INFO (touch),
+-- TRAINER MEMO (top), SKILLS (top), BATTLE MOVES (touch), RIBBONS (touch).
+-- (PERFORMANCE, the third page's top, joins the walk once there is something
+-- on it.) SELECT flips between a page's two halves as on every other HGSS
+-- screen; a tap on a top view goes back to the touch one. A on the moves (or
+-- skills) view opens the move details, A on the ribbons view the ribbon
+-- cursor; both are touch views.
+--
+-- RIBBONS: A, or a tap on one, selects a ribbon (d-pad moves, A / B leave);
+-- its name and description are the cartridge's windows 1 and 2 of
+-- `_02104C84` (touch (8,128) 21 x 2 in white, (8,144) 30 x 4 in black). The
+-- grid is `_021039E8`'s rectangles; the cursor and the description's panel
+-- are drawn stand-ins (162/6-8 and the SUB_1 layer are not imported).
+--
+-- THE PICTURE PLAYS ITS ANIMATION (PicAnim, the species' two-frame strip) on
+-- opening and on every switch, with the cry.
 --
 -- MEASURED off the art and Bulbapedia's captures of the cartridge, not read
 -- from code (the summary is still assembly): every text position.
@@ -49,12 +73,13 @@ local BANK = 302
 local B = { item = 4, none = 6, info = 7, dexNo = 8, name = 10, type = 12, ot = 13, idNo = 15,
             exp = 17, toNext = 19, unknown = 22, memo = 23, skills = 109, hp = 110, attack = 111,
             defense = 112, spAtk = 113, spDef = 114, speed = 115, ability = 116, slash = 117,
-            moves = 128, pp = 135, cancel = 146, dashes = 153, ribbons = 179, male = 1, female = 2 }
+            moves = 128, pp = 135, cancel = 146, dashes = 153, ribbons = 179, male = 1, female = 2,
+            performance = 157, ribbonCount = 182 }
 
 local PAGES = {
   { key = "info", top = "top_info", touch = "touch_info", touchTwo = "touch_info_two", title = B.memo, sub = B.info },
   { key = "skills", top = "top_skills", touch = "touch_moves", touchTwo = "touch_moves_two", title = B.skills, sub = B.moves },
-  { key = "ribbons", top = "top_ribbons", touch = "touch_ribbons", title = B.ribbons, sub = B.ribbons },
+  { key = "ribbons", top = "top_ribbons_blank", topFallback = "top_ribbons", touch = "touch_ribbons", title = B.ribbons, sub = B.ribbons },
 }
 
 -- the right-hand column, top screen
@@ -87,6 +112,14 @@ local SWITCH_RECT = { 138, 150, 10, 86 }
 local PANEL = { 130, 8, 126, 152 }
 local DETAIL_ROWS = { 32, 48, 64 }
 local DETAIL_LABEL_X, DETAIL_RIGHT, DETAIL_DESC_Y = 143, 248, 84
+-- the top column's sprites (the summary's OBJ templates, unk_0208B1AC.s)
+local STATUS_AT, POKERUS_AT, MARKINGS_AT, SHINY_AT, CURED_AT = { 232, 58 }, { 228, 54 }, { 200, 150 }, { 252, 72 }, { 252, 132 }
+-- ribbons (touch): `_021039E8`'s nine rectangles, centres 32/64/96 x 24/64/104
+local RIBBON_COLS, RIBBON_ROWS = { { 16, 47 }, { 48, 79 }, { 80, 112 } }, { { 8, 39 }, { 48, 79 }, { 88, 119 } }
+local RIBBON_UP, RIBBON_DOWN = { 12, 51, 116, 139 }, { 76, 115, 116, 139 }
+local RIBBON_COUNT_LABEL, RIBBON_COUNT_RIGHT, RIBBON_COUNT_Y = 8, 144, 137
+local RIBBON_NAME_AT, RIBBON_DESC_AT = { 8, 128 }, { 8, 144 }
+local RIBBON_EXIT = { 176, 191, 208, 255 }
 
 local function inRect(r, p) return p.y >= r[1] and p.y <= r[2] and p.x >= r[3] and p.x <= r[4] end
 
@@ -96,6 +129,7 @@ function HgssSummaryMenu.new(game, arg)
   self.hg = (game.data or {}).gen4_hgss_summary_art or {}
   self.hgPage = 1
   self.showTop = false
+  self.ribbonIndex = 1
   if type(arg) == "table" and arg.species == nil and type(arg.choose) == "table" then
     self.choose = arg.choose
     self.hgPage = 2
@@ -113,14 +147,70 @@ end
 function HgssSummaryMenu:hgImg(key)
   local rec = self.hg[key]
   if type(rec) ~= "table" then return nil end
+  if rec.image and not rec.path then
+    -- decoded in memory (a harness's ROM read): an ImageData, made once
+    if not self.cache[rec] then
+      self.cache[rec] = love.graphics.newImage(rec.image)
+      self.cache[rec]:setFilter("nearest", "nearest")
+    end
+    return self.cache[rec], rec
+  end
   return self:image(rec.path), rec
 end
 
-function HgssSummaryMenu:pagesShown()
-  local out = { 1, 2 }
-  if not Party.isEgg(self.mon) and #self:ribbonList() > 0 then out[#out + 1] = 3 end
-  if Party.isEgg(self.mon) then out = { 1 } end
+-- an OBJ at its template position (the cell's origin added)
+function HgssSummaryMenu:hgSprite(key, x, y)
+  local img, rec = self:hgImg(key)
+  if not img then return false end
+  love.graphics.setColor(1, 1, 1, 1)
+  love.graphics.draw(img, x + (tonumber(rec.originX) or 0), y + (tonumber(rec.originY) or 0))
+  return true
+end
+
+-- ONE SCREEN: the bottom screen has no panel of its own (swap or off, or the
+-- player stowed it). `swap` used to count as a second screen here, and drew
+-- the touch page over the top one at (0, 0).
+function HgssSummaryMenu:singleScreen()
+  return not self:bottomOnSecond()
+end
+
+-- the views LEFT / RIGHT walks on one screen: { page, top? }
+function HgssSummaryMenu:views()
+  local out = {}
+  for _, p in ipairs(self:pagesShown()) do
+    if p == 2 then
+      out[#out + 1] = { 2, true }; out[#out + 1] = { 2, false }
+    else
+      out[#out + 1] = { p, false }
+      -- the third page's top is the bare panel until the Pokeathlon
+      -- performance is drawn there: nothing to walk to
+      if p ~= 3 then out[#out + 1] = { p, true } end
+    end
+  end
   return out
+end
+
+function HgssSummaryMenu:stepView(delta)
+  local views = self:views()
+  local at = 1
+  for i, v in ipairs(views) do
+    if v[1] == self.hgPage and v[2] == (self.showTop and true or false) then at = i end
+  end
+  local n = views[(at - 1 + delta) % #views + 1]
+  if not n then return end
+  self.showTop = n[2]
+  if n[1] ~= self.hgPage then self:setPage(n[1]) else self:sfx("SEQ_SE_DP_SELECT5") end
+end
+
+-- only HGSS's own summary walks views and has the ribbon page; Black / White's
+-- (Gen5SummaryMenu) builds on this one with its own two pages
+function HgssSummaryMenu:ownLayout()
+  return getmetatable(self) == HgssSummaryMenu
+end
+
+function HgssSummaryMenu:pagesShown()
+  if Party.isEgg(self.mon) then return { 1 } end
+  return { 1, 2, 3 }
 end
 
 function HgssSummaryMenu:setPage(p)
@@ -148,6 +238,7 @@ function HgssSummaryMenu:switchTo(mon)
     if m == mon and m ~= self.mon then
       self.mon = mon
       self.ribbonIndex = 1
+      self.ribbonMode = nil
       if self.cry and self.cry.stop then self.cry:stop() end
       if not Party.isEgg(mon) then self.cry = require("src.core.Sound").playCry(self.game.data, mon.species) end
     end
@@ -226,12 +317,90 @@ function HgssSummaryMenu:moveInput(input, tap)
   end
 end
 
-function HgssSummaryMenu:update()
+-- the picture's animation: rebuilt (and so replayed) whenever the Pokemon
+-- shown changes -- the open, the pad's up / down, a tap on the party
+function HgssSummaryMenu:stepAnim(dt)
+  if self.animMon ~= self.mon then
+    self.animMon = self.mon
+    self.picAnim = nil
+    if self.mon and not Party.isEgg(self.mon) then
+      local ok, anim = pcall(require("src.pokemon.PicAnim").forMon, self.game.data, self.mon)
+      self.picAnim = ok and anim or nil
+      if self.picAnim and self.picAnim.start then self.picAnim:start() end
+    end
+  end
+  if self.picAnim and self.picAnim.update then self.picAnim:update(dt or 1 / 60) end
+end
+
+-- the ribbon page's cursor: three to a row, nine shown, scrolled a row at a time
+function HgssSummaryMenu:ribbonScrollRow()
+  local index = math.max(1, self.ribbonIndex or 1)
+  return math.max(0, floor((index - 1) / 3) - 2)
+end
+
+function HgssSummaryMenu:ribbonInput(input, tap)
+  local ribbons = self:ribbonList()
+  local n = #ribbons
+  if tap then
+    local scroll = self:ribbonScrollRow()
+    for r, rr in ipairs(RIBBON_ROWS) do
+      for c, cc in ipairs(RIBBON_COLS) do
+        if tap.y >= rr[1] and tap.y <= rr[2] and tap.x >= cc[1] and tap.x <= cc[2] then
+          local i = (scroll + r - 1) * 3 + c
+          if ribbons[i] then self.ribbonIndex = i; return self:sfx("SEQ_SE_DP_SELECT") end
+          return
+        end
+      end
+    end
+    if inRect(RIBBON_UP, tap) and self.ribbonIndex > 3 then self.ribbonIndex = self.ribbonIndex - 3; return self:sfx("SEQ_SE_DP_SELECT") end
+    if inRect(RIBBON_DOWN, tap) and self.ribbonIndex + 3 <= n then self.ribbonIndex = self.ribbonIndex + 3; return self:sfx("SEQ_SE_DP_SELECT") end
+    if inRect(RIBBON_EXIT, tap) then self.ribbonMode = nil; return self:sfx("SEQ_SE_DP_SYU01") end
+    return
+  end
+  if not input then return end
+  local i = self.ribbonIndex or 1
+  if input:wasPressed("left") and (i - 1) % 3 > 0 then i = i - 1
+  elseif input:wasPressed("right") and (i - 1) % 3 < 2 and i < n then i = i + 1
+  elseif input:wasPressed("up") and i > 3 then i = i - 3
+  elseif input:wasPressed("down") and i < n then i = math.min(n, i + 3)
+  elseif input:wasPressed("b") or input:wasPressed("a") then
+    self.ribbonMode = nil
+    return self:sfx("SEQ_SE_DP_SYU01")
+  elseif input:wasPressed("select") then self.showTop = not self.showTop; return
+  end
+  if i ~= self.ribbonIndex then self.ribbonIndex = i; self:sfx("SEQ_SE_DP_SELECT") end
+end
+
+function HgssSummaryMenu:enterRibbons()
+  if #self:ribbonList() == 0 then return false end
+  self.ribbonMode = true
+  self.ribbonIndex = math.min(math.max(1, self.ribbonIndex or 1), #self:ribbonList())
+  self.showTop = false
+  self:sfx("SEQ_SE_DP_SYU01")
+  return true
+end
+
+function HgssSummaryMenu:update(dt)
   self.t = (self.t or 0) + 1
+  if self:ownLayout() then self:stepAnim(dt) end
   local tap = self.tapAt
   self.tapAt = nil
   if self.moveMode then return self:moveInput(self.game.input, tap) end
+  if self.ribbonMode then return self:ribbonInput(self.game.input, tap) end
   if tap then
+    -- a ribbon on the ribbon page selects it
+    if self.hgPage == 3 and self:ownLayout() then
+      local ribbons = self:ribbonList()
+      for r, rr in ipairs(RIBBON_ROWS) do
+        for c, cc in ipairs(RIBBON_COLS) do
+          local i = (self:ribbonScrollRow() + r - 1) * 3 + c
+          if tap.y >= rr[1] and tap.y <= rr[2] and tap.x >= cc[1] and tap.x <= cc[2] and ribbons[i] then
+            self.ribbonIndex = i
+            return self:enterRibbons()
+          end
+        end
+      end
+    end
     -- a move on the moves page opens its details
     if self.hgPage == 2 and not Party.isEgg(self.mon) then
       for i = 1, 4 do
@@ -254,14 +423,19 @@ function HgssSummaryMenu:update()
   end
   local input = self.game.input
   if not input then return end
-  if input:wasPressed("right") then self:stepPage(1)
-  elseif input:wasPressed("left") then self:stepPage(-1)
+  local walk = self:ownLayout() and self:singleScreen()
+  if input:wasPressed("right") then if walk then self:stepView(1) else self:stepPage(1) end
+  elseif input:wasPressed("left") then if walk then self:stepView(-1) else self:stepPage(-1) end
   elseif input:wasPressed("up") then self:changePokemon(-1); self:switchTo(self.mon)
   elseif input:wasPressed("down") then self:changePokemon(1); self:switchTo(self.mon)
   elseif input:wasPressed("select") then self.showTop = not self.showTop
   elseif input:wasPressed("a") and self.hgPage == 2 and not Party.isEgg(self.mon) then
     self.moveMode, self.moveIndex = true, 1
+    -- the details are on the touch screen
+    if self:ownLayout() then self.showTop = false end
     self:sfx("SEQ_SE_DP_SYU01")
+  elseif input:wasPressed("a") and self.hgPage == 3 and self:ownLayout() then
+    self:enterRibbons()
   elseif input:wasPressed("b") then
     local ok, Sound = pcall(require, "src.core.Sound")
     if ok and Sound.playSe then pcall(Sound.playSe, self.game.data, "SEQ_SE_DP_DECIDE") end
@@ -270,7 +444,7 @@ function HgssSummaryMenu:update()
 end
 
 function HgssSummaryMenu:bottomOnSecond()
-  return SecondScreen.mode(self.game) ~= "off" and not SecondScreen.stowed(self.game)
+  return SecondScreen.separate(self.game) and not SecondScreen.stowed(self.game)
 end
 
 function HgssSummaryMenu:touchpressed(id, px, py)
@@ -281,6 +455,10 @@ function HgssSummaryMenu:touchpressed(id, px, py)
     local rect = require("src.render.Renderer").uiPresentation
     x, y = px, py
     if rect then x, y = (px - rect.x) / rect.scaleX, (py - rect.y) / rect.scaleY end
+  elseif self:ownLayout() then
+    -- one screen, a top view up: a tap brings the touch half back
+    self.showTop = false
+    return true
   end
   if not x or x < 0 or y < 0 or x >= W or y >= H then return false end
   self.tapAt = { x = floor(x), y = floor(y) }
@@ -350,10 +528,24 @@ function HgssSummaryMenu:drawMonColumn()
     self:put("black", "Lv." .. tostring(tonumber(mon.level) or 1), LV_AT[1], LV_AT[2])
   end
   local image, flip = self:pictureArt()
+  local frame = self.picAnim and self.picAnim.image and self.picAnim:image(mon)
+  if frame and frame.getDimensions then image = frame end
   if image then
     local w, h = image:getDimensions()
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.draw(image, PICTURE_AT[1], PICTURE_AT[2], 0, flip and -1 or 1, 1, w / 2, h / 2)
+  end
+  -- status (or Pokerus), markings, shiny / cured: /a/0/3/9's OBJs
+  local status = self:statusIndex()
+  if status then self:hgSprite("status_" .. status, STATUS_AT[1], STATUS_AT[2])
+  elseif not egg and self:pokerus() == "active" then self:hgSprite("pokerus_icon", POKERUS_AT[1], POKERUS_AT[2]) end
+  local bits = self:markingBits()
+  for i, m in ipairs(require("src.import.Gen4SummaryArt").MARKINGS) do
+    self:hgSprite(("marking_%s_%d"):format(m, floor(bits / 2 ^ (i - 1)) % 2), MARKINGS_AT[1] + (i - 1) * 8, MARKINGS_AT[2])
+  end
+  if not egg then
+    if require("src.pokemon.Pokemon").isShiny(mon) then self:hgSprite("shiny", SHINY_AT[1], SHINY_AT[2]) end
+    if self:pokerus() == "cured" then self:hgSprite("pokerus_cured", CURED_AT[1], CURED_AT[2]) end
   end
   if not egg then
     self:put("white", self:w(B.item, "Item"), ITEM_LABEL[1], ITEM_LABEL[2])
@@ -497,7 +689,7 @@ function HgssSummaryMenu:drawTop()
   local page = PAGES[self.hgPage] or PAGES[1]
   local g = love.graphics
   g.setColor(1, 1, 1, 1)
-  local back = self:hgImg(page.top)
+  local back = self:hgImg(page.top) or (page.topFallback and self:hgImg(page.topFallback))
   if back then g.draw(back, 0, 0) else g.setColor(0.9, 0.9, 0.95, 1); g.rectangle("fill", 0, 0, W, H) end
   if not self.mon then return end
   self:put("white", self:w(page.title, ""), HEADER_AT[1], HEADER_AT[2])
@@ -553,7 +745,7 @@ function HgssSummaryMenu:drawMoveDetails()
   local desc = tostring(record.description or ""):gsub("[\v\f]", "\n"):gsub("\n+$", "")
   local ly = DETAIL_DESC_Y
   for line in (desc .. "\n"):gmatch("([^\n]*)\n") do
-    if ly < y + h - 12 then self:put("black", line, x + 4, ly) end
+    if ly + 12 <= y + h then self:put("black", line, x + 4, ly) end
     ly = ly + 16
   end
 end
@@ -571,12 +763,78 @@ function HgssSummaryMenu:drawMoveCursor()
   g.setColor(1, 1, 1, 1)
 end
 
+function HgssSummaryMenu:ribbonText(index)
+  local text = (self.game.data or {}).text or {}
+  local s = text[("TEXT_B0424_%05d"):format(index)]
+  return type(s) == "string" and (s:gsub("{[^}]*}", "")) or nil
+end
+
+-- the 3 x 3 grid (touch), the count, and in ribbon mode the cursor and the
+-- chosen ribbon's name and description
+function HgssSummaryMenu:drawRibbonsTouch()
+  local g = love.graphics
+  local ribbons = self:ribbonList()
+  local data = require("src.ui.Gen4RibbonData")
+  local scroll = self:ribbonScrollRow()
+  for r, rr in ipairs(RIBBON_ROWS) do
+    for c, cc in ipairs(RIBBON_COLS) do
+      local id = ribbons[(scroll + r - 1) * 3 + c]
+      if id then
+        local cx, cy = floor((cc[1] + cc[2] + 1) / 2), floor((rr[1] + rr[2] + 1) / 2)
+        if not self:hgSprite(("ribbon_%02d"):format(id), cx, cy) then
+          -- no ribbon art in this install: a dot in its circle
+          g.setColor(0.93, 0.55, 0.13, 1); g.circle("fill", cx, cy, 8); g.setColor(1, 1, 1, 1)
+        end
+      end
+    end
+  end
+  -- more above / below: the scroll strips show it
+  g.setColor(0.26, 0.26, 0.26, 1)
+  if scroll > 0 then g.polygon("fill", 127, 26, 121, 36, 133, 36) end
+  if (scroll + 3) * 3 < #ribbons then g.polygon("fill", 121, 90, 133, 90, 127, 100) end
+  g.setColor(1, 1, 1, 1)
+  self:put("black", self:w(B.ribbonCount, "No. of Ribbons:"), RIBBON_COUNT_LABEL, RIBBON_COUNT_Y)
+  self:putRight("black", tostring(#ribbons), RIBBON_COUNT_RIGHT, RIBBON_COUNT_Y)
+  if not self.ribbonMode then return end
+  local index = math.min(self.ribbonIndex or 1, #ribbons)
+  local slot = index - 1 - scroll * 3
+  local cc, rr = RIBBON_COLS[slot % 3 + 1], RIBBON_ROWS[floor(slot / 3) + 1]
+  if cc and rr then
+    g.setColor(0.93, 0.13, 0.13, 1); g.setLineWidth(2)
+    g.rectangle("line", cc[1] + 1, rr[1] + 1, cc[2] - cc[1] - 1, rr[2] - rr[1] - 1, 4, 4)
+  end
+  -- the panel the name and description are printed on (stand-in)
+  g.setColor(0.26, 0.26, 0.26, 1); g.rectangle("fill", 0, 124, W, H - 124)
+  g.setColor(0.55, 0.61, 0.68, 1); g.rectangle("fill", 2, 126, W - 4, 16)
+  g.setColor(0.90, 0.94, 0.94, 1); g.rectangle("fill", 2, 143, W - 4, 32)
+  g.setColor(0.18, 0.40, 0.80, 1)
+  g.rectangle("fill", RIBBON_EXIT[3], RIBBON_EXIT[1], RIBBON_EXIT[4] - RIBBON_EXIT[3], RIBBON_EXIT[2] - RIBBON_EXIT[1] + 1, 3, 3)
+  g.setColor(1, 1, 1, 1)
+  self:putCentre("white", self:w(B.cancel, "Cancel"), RIBBON_EXIT[3], RIBBON_EXIT[4], RIBBON_EXIT[1])
+  local rec = data[ribbons[index]]
+  if not rec then return end
+  self:put("white", self:ribbonText(rec.name) or rec.key, RIBBON_NAME_AT[1], RIBBON_NAME_AT[2])
+  local description = rec.description
+  if rec.special then
+    -- the save's special-ribbon slot; an unset one reads 0, as the save does
+    local value = (self.mon.specialRibbons or {})[rec.special] or 0
+    description = 146 + value
+  end
+  local y = RIBBON_DESC_AT[2]
+  local body = tostring(description and self:ribbonText(description) or ""):gsub("[\v\f]", "\n")
+  for line in body:gmatch("[^\n]+") do
+    if y < RIBBON_DESC_AT[2] + 32 then self:put("black", line, RIBBON_DESC_AT[1], y) end
+    y = y + 16
+  end
+end
+
 function HgssSummaryMenu:drawTouch()
   local page = PAGES[self.hgPage] or PAGES[1]
   local g = love.graphics
   g.setColor(1, 1, 1, 1)
   local two = #self:pagesShown() < 3 and page.touchTwo
   local key = self.choose and "touch_moves_learn" or (two or page.touch)
+  if Party.isEgg(self.mon) and page.key == "info" and self.hg.touch_info_egg then key = "touch_info_egg" end
   local back = self:hgImg(key) or self:hgImg(page.touch)
   if back then g.draw(back, 0, 0) else g.setColor(0.9, 0.9, 0.95, 1); g.rectangle("fill", 0, 0, W, H) end
   if not self.mon then return end
@@ -585,6 +843,9 @@ function HgssSummaryMenu:drawTouch()
   elseif page.key == "skills" then
     self:drawMovesTouch()
     if self.choose then self:drawMoveRow(MOVE_ROWS[5][1] + 3, self.choose.move) end
+  elseif page.key == "ribbons" then
+    self:drawRibbonsTouch()
+    if self.ribbonMode then return end
   end
   if self.moveMode then
     self:drawMoveCursor()

@@ -230,6 +230,12 @@ function Gen4MainMenu:value(key)
 end
 
 function Gen4MainMenu:hasPokedex()
+  -- HeartGold / SoulSilver: the cartridge's FLAG_GOT_POKEDEX (Flags.hasPokedex),
+  -- not "anything seen" -- the starter is seen a route before Oak's gift
+  local v = require("src.core.GameVersion").get()
+  if v == "heartgold" or v == "soulsilver" then
+    return require("src.script.Flags").hasPokedex(self.save)
+  end
   local dex = self.save and self.save.pokedex
   if not dex then return false end
   if next(dex.seen or {}) ~= nil then return true end

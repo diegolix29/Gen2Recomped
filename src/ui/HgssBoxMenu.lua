@@ -50,6 +50,8 @@ local PARTY_SLOTS = { { 188, 36 }, { 230, 36 }, { 188, 68 }, { 230, 68 }, { 188,
 local MENU_X, MENU_Y, MENU_W, MENU_H, MENU_PITCH = 166, 42, 84, 21, 24
 local EXIT_RECT = { 165, 188, 190, 249 }
 local HEADER_RECT = { 17, 38, 4, 160 }
+-- for src/ui/HgssBoxMove.lua (the party panel as a place the hand goes)
+HG.PARTY_SLOTS, HG.ICON_X, HG.ICON_Y, HG.PITCH = PARTY_SLOTS, ICON_X, ICON_Y, PITCH
 
 local INK = {
   dark = { text = { 0.29, 0.29, 0.33 }, shadow = { 0.78, 0.78, 0.74 } },
@@ -120,6 +122,17 @@ function HG:update(dt)
     self.showTop = not self.showTop
     return
   end
+  if input then
+    for _, k in ipairs({ "a", "b", "up", "down", "left", "right" }) do
+      if input:wasPressed(k) then self.alert = nil; break end
+    end
+  end
+  -- the pad between the box and the party panel (HgssBoxMove)
+  if input and self:moveCursor(input) then
+    self.t = (self.t or 0) + (dt or 1 / 60)
+    for _ = 1, self:frames(dt) do self:step() end
+    return
+  end
   return PC.update(self, dt)
 end
 
@@ -135,6 +148,10 @@ function HG:touchpressed(id, px, py)
   if r then x, y = (px - r.x) / r.scaleX, (py - r.y) / r.scaleY end
   if x < 0 or y < 0 or x >= W or y >= H then return false end
   if self.jump or self:busy() then return true end
+  self.alert = nil
+  -- MOVE mode: a press on a Pokemon may become a drag (HgssBoxMove); the tap
+  -- itself is acted on at release, through here again with `dragTap` set
+  if not self.menu and not self.dragTap and self:dragBegin(x, y) then return true end
   if self.menu then
     local first = math.max(1, (self.menuTop or 1))
     for i = 1, math.min(#self.menu - first + 1, 5) do
@@ -172,8 +189,7 @@ function HG:touchpressed(id, px, py)
   end
   return true
 end
-function HG:touchmoved() return false end
-function HG:touchreleased() return false end
+-- touchmoved / touchreleased: the drag, in src/ui/HgssBoxMove.lua
 
 -- ----------------------------------------------------------------- draw --
 
@@ -273,10 +289,13 @@ function HG:drawTouch()
   elseif self.row == 0 then hx, hy = NAME_CENTRE, 14
   elseif self.row >= 1 and self.row <= 5 then hx, hy = ICON_X + (self.col - 1) * PITCH, ICON_Y + (self.row - 1) * PITCH - 12
   else hx, hy = 220, 172 end
+  local dx, dy = self:dragPoint()
+  if dx then hx, hy = dx, dy end
   if self.held then self:drawIcon(self.held.mon, hx, hy + 4) end
   if not self:hgSprite(self.held and "hand_9" or "hand_8", hx, hy) then
     g.setColor(1, 1, 1, 1); g.polygon("fill", hx - 4, hy - 8, hx + 4, hy - 8, hx, hy)
   end
+  self:drawAlert(put, INK.dark)
   g.setColor(1, 1, 1, 1)
 end
 
@@ -360,5 +379,7 @@ function HG:draw()
   end
   g.setColor(1, 1, 1, 1)
 end
+
+require("src.ui.HgssBoxMove").install(HG, PC)
 
 return HG

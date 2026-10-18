@@ -101,7 +101,12 @@ local ENTRY = { [42] = 43, [45] = 46, [52] = 53, [53] = 54, [54] = 55,
 function HgssBagMenu:text(index, fallback, ...)
   local Gen4Text = require("src.import.Gen4Text")
   if select("#", ...) > 0 then Gen4Text.buffer(self.game, ...) end
-  local s = Gen4Text.resolve(self.game.data, HGSS_BANK, ENTRY[index] or index, self.game)
+  -- the whole renumbering (src/ui/Gen4PartyText.lua BAG_ENTRY): a Platinum
+  -- line HeartGold has not got (PLANT, OPEN, Yes / No...) is the fallback,
+  -- never whichever line sits at that number in bank 10
+  local hg = require("src.ui.Gen4PartyText").BAG_ENTRY[index]
+  if hg == nil then return fallback or "" end
+  local s = Gen4Text.resolve(self.game.data, HGSS_BANK, hg, self.game)
   if type(s) ~= "string" or not s:find("%S") then return fallback or "" end
   return (s:gsub("[\v\f]", "\n"))
 end

@@ -53,10 +53,17 @@
 -- slide speed, CRY/DETAILS greyed (screen 71) when the cell is unseen, the
 -- cover's SEEN/OBTAINED text colour (no capture of the cover was found).
 --
--- NOT DONE: SEARCH (state 5), AREA / SIZE / FORMS (states 1-3; DETAILS shows
--- their button bar and BACK only), the foreign-language entries, the confirm
--- dialog, the scroll animation between pages (pages change at once), the
--- cartridge's own sound ids (DP ones stand in).
+-- SEARCH (lid / list SEARCH, Y) is src/ui/HgssDexSearch.lua and its results
+-- list is this list over `self.results` (numbers are the species' own dex
+-- numbers, QUIT / B goes back to the full list); DETAILS (A) opens the entry
+-- pages, src/ui/HgssDexDetails.lua (AREA / SIZE / FORMS / RETURN TO LIST).
+-- The keys are ov18_021F6B00 (lid: A / START open, B quit, Y search, LEFT /
+-- RIGHT switch) and ov18_021F6BBC (list: A details, B quit, X cry, Y search,
+-- L / R a page with repeat, START shuts the lid).
+--
+-- NOT DONE: the foreign-language entries (SELECT), the scroll animation
+-- between pages (pages change at once), the page fades, the cartridge's own
+-- sound ids on the list (DP ones stand in; the new pages use the GS ones).
 
 local Assets = require("src.render.Assets")
 local Font = require("src.render.Font")
@@ -132,6 +139,7 @@ function HgssPokedex:status(species)
 end
 
 function HgssPokedex:rebuild()
+  if self.results then return self:rebuildResults() end
   local orders = self.art.orders or {}
   local order = orders[self.mode == 1 and "national" or "johto"]
   if not order then
@@ -139,6 +147,7 @@ function HgssPokedex:rebuild()
     for id = 1, self.mode == 1 and 493 or 251 do order[id] = id end
   end
   self.order = order
+  self.baseOrder = order
   local count, seen, owned = 0, 0, 0
   for i, sp in ipairs(order) do
     local s = self:status(sp)
@@ -271,6 +280,8 @@ local function putOutline(fill, line, s, x, y)
 end
 local OUTLINE_FILL, OUTLINE_LINE = { 208 / 255, 216 / 255, 216 / 255 }, { 88 / 255, 88 / 255, 88 / 255 }
 local function putCentre(ink, s, l, r, y) put(ink, s, l + floor((r - l - Font.width(s)) / 2), y) end
+-- for src/ui/HgssDexSearch.lua / HgssDexDetails.lua (`dex.ui`)
+HgssPokedex.ui = { put = put, putRight = putRight, putCentre = putCentre }
 
 -- ----------------------------------------------------------------- sound --
 
@@ -348,9 +359,84 @@ function HgssPokedex:move(dx, dy)
   self:select(page, row * 5 + col)
 end
 
+-- ------------------------------------------------- search / details / results
+
+-- SEARCH (state 21): from the lid (MainSeq_06 case 1 -> 10 -> 21) or the
+-- list (MainSeq_11 case 2 -> 18 -> 21); the criteria survive a return from
+-- the results (MainSeq_62 keeps dexSearchCriteria)
+function HgssPokedex:openSearch()
+  local Search = require("src.ui.HgssDexSearch")
+  self:se("SEQ_SE_GS_ZKN04")
+  self.sub = Search.new(self, self.searchCriteria)
+  self.searchCriteria = self.sub.c
+  self.subKind = "search"
+end
+
+-- CANCEL / B (MainSeq_25 -> 19): the list, open, in its own order
+function HgssPokedex:closeSearch()
+  self.sub, self.subKind = nil, nil
+  self.results = nil
+  self.state, self.lid = "list", 256
+  self:rebuild()
+end
+
+-- the search's results (MainSeq_23 -> 57): the list made of them
+function HgssPokedex:showResults(list, criteria)
+  self.sub, self.subKind = nil, nil
+  self.searchCriteria = criteria
+  self.results = list
+  self.page, self.cursor = 0, 0
+  self.state, self.lid = "list", 256
+  self:rebuild()
+end
+function HgssPokedex:rebuildResults()
+  self.order = self.results
+  self.count = #self.results
+  local last = math.max(0, floor((self.count - 1) / 15))
+  if self.page > last then self.page = last end
+  if self.count > 0 and self:index() > self.count then self.cursor = (self.count - 1) % 15 end
+end
+-- QUIT / B on the results (MainSeq_57 cases 5 / 6 -> 63 -> 09): the list
+function HgssPokedex:exitResults()
+  self:se("SEQ_SE_GS_GEARCANCEL")
+  local sp = self.order[self:index()]
+  self.results = nil
+  self:rebuild()
+  -- the cursor follows the species looked at (UnkStruct_02092BB8_Set)
+  for i, s in ipairs(self.order) do
+    if s == sp then self.page, self.cursor = floor((i - 1) / 15), (i - 1) % 15; break end
+  end
+end
+
+-- a species' number in the current dex (the results list shows them)
+function HgssPokedex:dexNumber(species)
+  if not species then return 0 end
+  if self.mode == 1 then return tonumber(species) or 0 end
+  if self.johtoFor ~= self.baseOrder then
+    self.johtoFor, self.johtoIndex = self.baseOrder, {}
+    for i, sp in ipairs(self.baseOrder or {}) do self.johtoIndex[sp] = i end
+  end
+  return self.johtoIndex[species] or 0
+end
+
+-- DETAILS (A): the entry pages, AREA first (MainSeq_11 case 4 -> 66)
+function HgssPokedex:openDetails()
+  local sp = self:entry(self:index())
+  if not sp then return end
+  local Details = require("src.ui.HgssDexDetails")
+  self:se("SEQ_SE_GS_ZKN04")
+  self.sub = Details.new(self, sp)
+  self.subKind = "details"
+end
+function HgssPokedex:closeDetails()
+  self.sub, self.subKind = nil, nil
+end
+
+-- ------------------------------------------------------------------ taps --
+
 function HgssPokedex:tapCover(x, y)
   if y >= 152 and y <= 187 then
-    if x <= 63 then return self:se("SEQ_SE_DP_SELECT") end -- SEARCH: not done
+    if x <= 63 then return self:openSearch() end
     if x <= 191 then return self:open() end
     return self:close()
   end
@@ -359,18 +445,18 @@ function HgssPokedex:tapCover(x, y)
 end
 
 function HgssPokedex:tapList(x, y)
-  if self.details then
-    if y >= 168 and y <= 183 and x >= 199 and x <= 249 then self.details = false; return self:se("SEQ_SE_DP_DECIDE") end
-    return
-  end
   if y >= 152 and y <= 187 then
     local b = floor(x / 64)
-    if b == 1 then return self:cry()
-    elseif b == 2 then if self:entry(self:index()) then self.details = true; self:se("SEQ_SE_DP_DECIDE") end; return
-    elseif b == 3 then return self:close() end
+    if b == 0 then return self:openSearch()
+    elseif b == 1 then return self:cry()
+    elseif b == 2 then return self:openDetails()
+    elseif b == 3 then
+      if self.results then return self:exitResults() end
+      return self:close()
+    end
     return
   end
-  if x < 24 and y < 152 then return self:shut() end
+  if x < 24 and y < 152 and not self.results then return self:shut() end
   if inRect(x, y, 27, 4, 226, 123) then
     local col, row = math.min(4, floor((x - 28) / 40)), math.min(2, floor((y - 4) / 40))
     return self:select(self.page, row * 5 + math.max(0, col))
@@ -389,7 +475,8 @@ function HgssPokedex:bottomOnSecond()
   return SecondScreen.mode(self.game) ~= "off" and not SecondScreen.stowed(self.game)
 end
 
-function HgssPokedex:touchpressed(id, px, py)
+-- a window touch to the touch screen's (x, y), or nil off it
+function HgssPokedex:touchLocal(px, py)
   local x, y
   if self:bottomOnSecond() then
     x, y = SecondScreen.toLocal(self.game, px, py)
@@ -398,52 +485,106 @@ function HgssPokedex:touchpressed(id, px, py)
     x, y = px, py
     if rect then x, y = (px - rect.x) / rect.scaleX, (py - rect.y) / rect.scaleY end
   end
-  if not x or x < 0 or y < 0 or x >= W or y >= H then return false end
-  self.tapAt = { x = floor(x), y = floor(y) }
+  if not x or x < 0 or y < 0 or x >= W or y >= H then return nil end
+  return floor(x), floor(y)
+end
+
+function HgssPokedex:touchpressed(id, px, py)
+  local x, y = self:touchLocal(px, py)
+  if not x then return false end
+  self.tapAt = { x = x, y = y }
+  self.touchDown = true
   return true
 end
-function HgssPokedex:touchmoved() return false end
-function HgssPokedex:touchreleased() return false end
+function HgssPokedex:touchmoved(id, px, py)
+  if not self.touchDown then return false end
+  local x, y = self:touchLocal(px, py)
+  if x and self.sub and self.sub.drag then self.sub:drag(x, y) end
+  return x ~= nil
+end
+function HgssPokedex:touchreleased()
+  local was = self.touchDown
+  self.touchDown = false
+  if self.sub and self.sub.release then self.sub:release() end
+  return was and true or false
+end
+
+-- -------------------------------------------------------------- update --
+
+-- the d-pad and shoulder repeat (SetKeyRepeatTimers(4, 8): after 8 frames,
+-- every 4)
+local REPEAT_KEYS = { "up", "down", "left", "right", "l", "r" }
+function HgssPokedex:stepHolds()
+  local input = self.game.input
+  self.holds = self.holds or {}
+  for _, k in ipairs(REPEAT_KEYS) do
+    if input and input:isDown(k) then self.holds[k] = (self.holds[k] or 0) + 1 else self.holds[k] = 0 end
+  end
+end
+function HgssPokedex:repeated(k)
+  local input = self.game.input
+  if input and input:wasPressed(k) then return true end
+  local n = (self.holds or {})[k] or 0
+  return n > 8 and (n - 8) % 4 == 0
+end
 
 function HgssPokedex:update(dt)
   self.t = self.t + 1
+  self:stepHolds()
   if self.state == "opening" then
     self.lid = math.min(256, self.lid + 32)
     if self.lid >= 256 then self.state = "list" end
     return
   elseif self.state == "closing" then
     self.lid = math.max(0, self.lid - 32)
-    if self.lid <= 0 then self.state = "cover"; self.details = false end
+    if self.lid <= 0 then self.state = "cover" end
     return
+  end
+  local input = self.game.input
+  local function pressed(k) return input and input:wasPressed(k) end
+  local function rep(k) return self:repeated(k) end
+  local function held(k)
+    if k == "touch" then return self.touchDown end
+    return input and input:isDown(k)
   end
   local tap = self.tapAt
   self.tapAt = nil
+  if self.sub then
+    if tap then return self.sub:tap(tap.x, tap.y) end
+    -- SELECT shows the other screen on a one-screen window, except on the
+    -- AREA page, where it is the cartridge's JOHTO / KANTO switch
+    if pressed("select") and not self:bottomOnSecond() and self.subKind ~= "details" then self.showTop = not self.showTop; return end
+    return self.sub:update(pressed, rep, held)
+  end
   if tap then
     if self.state == "cover" then return self:tapCover(tap.x, tap.y) end
     return self:tapList(tap.x, tap.y)
   end
-  local input = self.game.input
   if not input then return end
-  local function pressed(k) return input:wasPressed(k) end
   if pressed("select") then self.showTop = not self.showTop; return end
   if self.state == "cover" then
-    if pressed("a") then self:open()
+    -- ov18_021F6B00: A / START open, B quits, Y searches, LEFT / RIGHT
+    -- switch the dex
+    if pressed("a") or pressed("start") then self:open()
     elseif pressed("b") then self:close()
+    elseif pressed("y") then self:openSearch()
     elseif pressed("left") or pressed("right") then self:toggleMode() end
     return
   end
-  if self.details then
-    if pressed("b") then self.details = false; self:se("SEQ_SE_DP_DECIDE") end
-    return
-  end
-  if pressed("up") then self:move(0, -1)
-  elseif pressed("down") then self:move(0, 1)
-  elseif pressed("left") then self:move(-1, 0)
-  elseif pressed("right") then self:move(1, 0)
+  -- ov18_021F6BBC: the d-pad, A DETAILS, B QUIT, X CRY, Y SEARCH, L / R a
+  -- page, START shuts the lid
+  if rep("up") then self:move(0, -1)
+  elseif rep("down") then self:move(0, 1)
+  elseif rep("left") then self:move(-1, 0)
+  elseif rep("right") then self:move(1, 0)
+  elseif rep("l") then self:select(self.page - 1, self.cursor)
+  elseif rep("r") then self:select(self.page + 1, self.cursor)
   elseif pressed("x") then self:cry()
-  elseif pressed("a") then
-    if self:entry(self:index()) then self.details = true; self:se("SEQ_SE_DP_DECIDE") end
-  elseif pressed("b") then self:close()
+  elseif pressed("y") then self:openSearch()
+  elseif pressed("a") then self:openDetails()
+  elseif pressed("b") then
+    if self.results then self:exitResults() else self:close() end
+  elseif pressed("start") and not self.results then self:shut()
   end
 end
 
@@ -465,6 +606,7 @@ function HgssPokedex:drawDigits(n, x, y, caught)
 end
 
 function HgssPokedex:number(i)
+  if self.results then return self:dexNumber(self.order[i]) end
   if self.mode == 1 then return self.order[i] or i end
   return i
 end
@@ -520,8 +662,7 @@ function HgssPokedex:drawListFront()
   local sp = self:entry(self:index())
   local def = sp and ((self.game.data or {}).pokemon or {})[sp]
   if def and def.name then putCentre("plate", def.name, 80, 168, 128) end
-  if self.details then self:bg("bar_details", 0, 160)
-  else self:bg(sp and "bar_list" or "bar_list2", 0, 152) end
+  self:bg(sp and "bar_list" or "bar_list2", 0, 152)
 end
 
 function HgssPokedex:drawCover(x)
@@ -612,13 +753,17 @@ function HgssPokedex:draw()
   g.setColor(0, 0, 0, 1)
   g.rectangle("fill", 0, 0, W, H)
   g.setColor(1, 1, 1, 1)
+  -- SEARCH and the entry pages draw both screens themselves
+  local sub = self.sub
+  local top = sub and function() g.setColor(1, 1, 1, 1); sub:drawTop() end or function() self:drawTop() end
+  local touch = sub and function() g.setColor(1, 1, 1, 1); sub:drawTouch() end or function() self:drawTouch() end
   if self:bottomOnSecond() then
-    self:drawTop()
-    SecondScreen.draw(self.game, function() self:drawTouch() end)
+    top()
+    SecondScreen.draw(self.game, touch)
   elseif self.showTop then
-    self:drawTop()
+    top()
   else
-    self:drawTouch()
+    touch()
   end
   g.setColor(1, 1, 1, 1)
 end

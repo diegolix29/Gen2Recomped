@@ -9,12 +9,23 @@
 --                   tabs (no ribbons); 18 moves with a fifth row (learning)
 --   ball_<b>        the caught ball, b = BALL_* 0..25: char 25 for none, else
 --                   24 + b; palette 49 + `_02104C68`[b]
+--   top_ribbons_blank   11, the third page's top without the Pokeathlon
+--                   PERFORMANCE rows (`_02089F98`: page 2 with flag 0x982 clear)
+--   touch_info_egg  14, an Egg's info page (one tab)
+--
+-- FROM /a/0/3/9 (Platinum's pl_pst_gra, byte-identical members; the summary
+-- opens it as NARC 0x27 and its OBJ resources are still read there): the
+-- sprites the top screen's right column carries -- status_<s>, marking_<m>_<s>,
+-- shiny, pokerus_cured, pokerus_icon (Gen4SummaryArt's own decode, through a
+-- one-path view) -- and the touch page's ribbons, ribbon_<id> (ribbons.NCLR
+-- row = Gen4RibbonData's palette, as Gen4UIResources builds Platinum's).
 
 local A = {}
 
 A.PATH = "/a/1/6/2"
-A.TOP = { info = 13, skills = 19, ribbons = 10 }
-A.TOUCH = { info = 12, moves = 17, ribbons = 9, info_two = 77, moves_two = 78, moves_learn = 18 }
+A.TOP = { info = 13, skills = 19, ribbons = 10, ribbons_blank = 11 }
+A.TOUCH = { info = 12, moves = 17, ribbons = 9, info_two = 77, moves_two = 78, moves_learn = 18, info_egg = 14 }
+A.PST_PATH = "/a/0/3/9"
 -- `_02104C68`, BALL_NONE .. BALL_SPORT (BALL_PARK takes the last row too)
 A.BALL_PALETTE = { [0] = 2, 0, 2, 2, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 2, 0, 4, 5, 6, 7, 8, 9, 10, 11, 11 }
 
@@ -46,6 +57,56 @@ function A.images(rom)
       for t = 0, side * side - 1 do cells[t + 1] = { tile = t, palette = 0 } end
       local img = G.compose({ width = side * 8, height = side * 8, cells = cells }, sheet, bp)
       if img then img.originX, img.originY = -side * 4, -side * 4; out["ball_" .. b] = img end
+    end
+  end
+  for k, v in pairs(A.pstImages(rom) or {}) do out[k] = v end
+  return out
+end
+
+-- the /a/0/3/9 pieces (see the header)
+function A.pstImages(rom)
+  local SummaryArt = require("src.import.Gen4SummaryArt")
+  local view = { read = function(_, path)
+    if path == SummaryArt.PATH then return rom:read(A.PST_PATH) end
+  end }
+  local out = {}
+  local ok, pst = pcall(SummaryArt.images, view)
+  if ok and type(pst) == "table" then
+    for key, img in pairs(pst) do
+      if key:match("^status_%d+$") or key:match("^marking_") or key == "shiny"
+        or key == "pokerus_cured" or key == "pokerus_icon" then
+        out[key] = img
+      end
+    end
+  end
+  local raw = rom:read(A.PST_PATH)
+  local arc = raw and require("src.import.NarcArchive").parse(raw)
+  if not arc then return out end
+  local G = require("src.import.Gen4Graphics")
+  local C = require("src.import.Gen4Cells")
+  local Anim = require("src.import.Gen4CellAnim")
+  local Arch = require("src.import.Gen4Archives")
+  local function m(name)
+    local i = Arch.find(SummaryArt.PATH, name)
+    local b = i and arc:get(i)
+    if b and G.isCompressed(b) then b = G.decompress(b) end
+    return b
+  end
+  local palette = G.palette(m("ribbons.NCLR"))
+  local bank = C.parse(m("ribbons_cell.NCER"), G)
+  if palette and bank and bank.cells and bank.cells[1] then
+    for id, ribbon in pairs(require("src.ui.Gen4RibbonData")) do
+      local name = tostring(ribbon.art):match("/([^/]+)$")
+      local sheet = name and G.tiles(m(name .. ".NCGR"))
+      local colours = {}
+      for i = 1, 16 do colours[i] = palette[(ribbon.palette or 0) * 16 + i] end
+      if sheet and colours[16] then
+        local pic = C.assemble(bank.cells[1], sheet, Anim.paletteFor(colours, Anim.bankOf(bank) or 0), bank, G)
+        if pic then
+          pic.originX, pic.originY = C.extent(bank.cells[1])
+          out[("ribbon_%02d"):format(id)] = pic
+        end
+      end
     end
   end
   return out

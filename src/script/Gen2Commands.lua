@@ -5145,7 +5145,12 @@ function Gen2Commands.gsBallAvailable(save)
   if type(save) ~= "table" then return false end
   local flags = save.flags
   if type(flags) ~= "table" then return false end
-  if not flags[GS_BALL_FLAGS.beatEliteFour] then return false end
+  -- ...or the distribution itself: save.gen2MobileEvent is the byte the
+  -- Mobile Adapter wrote (sMobileEventIndex), $0B = GS_BALL_AVAILABLE, which
+  -- the Monster Walker's Events shelf sets (src/pokewalker/WalkerEvents.lua).
+  -- The Japanese mobile event asked nothing else of the save.
+  if not flags[GS_BALL_FLAGS.beatEliteFour]
+     and tonumber(save.gen2MobileEvent) ~= 0x0B then return false end
   if flags[GS_BALL_FLAGS.gotGsBall] then return false end
   return true
 end

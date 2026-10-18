@@ -65,7 +65,9 @@ local function bagLine(data, index, fallback, ...)
   local Game = game()
   local T = require("src.import.Gen4Text")
   if Game and select("#", ...) > 0 then pcall(T.buffer, Game, ...) end
-  return (Game and T.resolve(data, 7, index, Game)) or fallback
+  -- HGSS's bag bank is 10, renumbered (src/ui/Gen4PartyText.lua)
+  local bank, n = require("src.ui.Gen4PartyText").bagIndex(data, index)
+  return (Game and bank and T.resolve(data, bank, n, Game)) or fallback
 end
 
 -- ITEM_USE_CANNOT_USE_GENERIC's words: BagContext_FormatErrorMessage's

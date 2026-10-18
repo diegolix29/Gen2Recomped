@@ -61,6 +61,17 @@ function Platform.isNX()
   return Platform.detect().nx
 end
 
+-- POKEPORT_SIMULATE_SWITCH=1 on a desktop build: take the read path the
+-- Switch is left with -- no FFI PHYSFS mounts (love-nx is statically linked,
+-- no dlopen) and therefore CacheFs's prefix shim as the only way into a
+-- version's cache.  Deliberately NOT folded into isNX(): the UI, input and
+-- import paths keep behaving as desktop so a harness can still drive them.
+-- docs/switch.md.
+function Platform.simulatesSwitch()
+  local v = os.getenv and os.getenv("POKEPORT_SIMULATE_SWITCH")
+  return v ~= nil and v ~= "" and v ~= "0"
+end
+
 function Platform.isUWP()
   return Platform.detect().uwp
 end

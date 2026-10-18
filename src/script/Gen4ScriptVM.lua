@@ -4151,5 +4151,9 @@ require("src.script.Gen5TradeCommands").install(L)
 require("src.script.HgssPhoneCallCommands").install(L)
 -- Black / White's Battle Subway (0x15A and its kin): src/script/Gen5BattleSubway.lua
 require("src.script.Gen5BattleSubway").install(L)
+-- Black / White's Big Stadium / Small Court (0x1F3-0x1F8, 0x25C): src/script/Gen5Stadium.lua
+require("src.script.Gen5Stadium").install(L)
+-- HGSS's MartSell (0x30E): src/script/HgssMartCommands.lua
+require("src.script.HgssMartCommands").install(L)
 
 return Gen4ScriptVM

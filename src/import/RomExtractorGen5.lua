@@ -296,7 +296,21 @@ function X:extractField()
   self:write("gen5_rails", out.rails or {})
   self:write("gen4_terrain", out.terrain)
   self:write("gen5_zones", out.zones)
+  -- THE FIELD EFFECTS (/a/0/7/5, src/import/Gen5FieldEffects.lua): the "!"
+  -- and its siblings as gen4_emotes, the phenomena / lure / ripple pictures,
+  -- and the surf mount model in the fldeff set Gen4Ground reads
+  do
+    local okE, fx = pcall(require("src.import.Gen5FieldEffects").build, self.rom,
+      function(rel, image, extra) return self:saveImage(rel, image, extra) end)
+    if okE and fx then
+      if fx.emotes then self:write("gen4_emotes", fx.emotes) end
+      if fx.effects then self:write("gen5_field_effects", fx.effects) end
+      if fx.modelSet and out.models and out.models.sets then out.models.sets.fldeff = fx.modelSet end
+    elseif not okE then print("Gen5FieldEffects failed: " .. tostring(fx)) end
+  end
   self:write("gen4_models", out.models)
+  -- the bike and surf sheets' frame order (src/world/Gen5PlayerForms.lua)
+  pcall(require("src.world.Gen5PlayerForms").facings, out.sprites, out.spriteTable)
   self:write("sprites", out.sprites)
   self:write("gen5_sprite_table", out.spriteTable)
   -- the player: sprite id 1 is Hilbert (32 frames, walk then run); the field
@@ -319,10 +333,14 @@ function X:extractField()
       playerSprites = { walk = hero }, playerForms = { order = { "boy", "girl" },
         boy = { label = "BOY", walk = hero,
           back = self._trainerBacks and self._trainerBacks[0] and self._trainerBacks[0].path,
-          bike = out.spriteTable[3] and ("SPRITE_G4_%03d"):format(out.spriteTable[3]) },
+          -- the sprite table's rows are walk, bike, surf (a seated rider,
+          -- four frames up/down/left/right) per gender: rows 2 / 3 and 5 / 6
+          bike = out.spriteTable[2] and ("SPRITE_G4_%03d"):format(out.spriteTable[2]),
+          surf = out.spriteTable[3] and ("SPRITE_G4_%03d"):format(out.spriteTable[3]) },
         girl = { label = "GIRL", walk = out.spriteTable[4] and ("SPRITE_G4_%03d"):format(out.spriteTable[4]) or hero,
           back = self._trainerBacks and self._trainerBacks[1] and self._trainerBacks[1].path,
-          bike = out.spriteTable[6] and ("SPRITE_G4_%03d"):format(out.spriteTable[6]) } } })
+          bike = out.spriteTable[5] and ("SPRITE_G4_%03d"):format(out.spriteTable[5]),
+          surf = out.spriteTable[6] and ("SPRITE_G4_%03d"):format(out.spriteTable[6]) } } })
   end
   local Tileset = require("src.import.Gen4Tileset")
   self:write("map_tilesets", { [Tileset.PRIMARY_ID] = Tileset.primary() })
@@ -401,6 +419,16 @@ function X:extractConstants()
   -- the in-game trades, /a/1/6/5 + system bank 35 (src/import/Gen5Trades.lua)
   local okTrades, trades = pcall(require("src.import.Gen5Trades").build, self)
   if okTrades then constants.gen5Trades = trades end
+  -- the Battle Subway's trainers, sets, regulations, ranges and BP
+  -- (src/import/Gen5Subway.lua), and Nimbasa's other facilities -- Big
+  -- Stadium / Small Court's athletes, the Musical (src/import/Gen5Facilities.lua)
+  local okSub, subway = pcall(require("src.import.Gen5Subway").build, self)
+  if okSub then constants.gen5Subway = subway
+  else print("Gen5Subway failed: " .. tostring(subway)) end
+  local okFac, facilities = pcall(require("src.import.Gen5Facilities").build, self)
+  if okFac and type(facilities) == "table" then
+    for k, v in pairs(facilities) do constants[k] = v end
+  elseif not okFac then print("Gen5Facilities failed: " .. tostring(facilities)) end
   self:write("constants", constants)
   return constants
 end
@@ -655,6 +683,10 @@ function X:extractBootScreens()
   local okO, opening = pcall(require("src.import.Gen5OpeningArt").build, self)
   if okO and opening then self:write("gen5_opening", opening)
   elseif not okO then print("Gen5OpeningArt failed: " .. tostring(opening)) end
+  -- ...and the gift box's starter app (src/import/Gen5StarterArt.lua)
+  local okS, starter = pcall(require("src.import.Gen5StarterArt").build, self)
+  if okS and starter then self:write("gen5_starter_art", starter)
+  elseif not okS then print("Gen5StarterArt failed: " .. tostring(starter)) end
 end
 
 function X:run()

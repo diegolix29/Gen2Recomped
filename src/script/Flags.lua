@@ -64,6 +64,16 @@ function Flags.hasPokedex(save)
     return true
   end
   local okV, GameVersion = pcall(require, "src.core.GameVersion")
+  -- HEARTGOLD / SOULSILVER KEEP THE CARTRIDGE'S OWN FLAG: FLAG_GOT_POKEDEX
+  -- (0x6B, CheckGotPokedex), set by Mr. Pokemon's house (scr_seq R30R0201)
+  -- right after GivePokedex. The "anything seen" answer below opened the dex
+  -- the moment the starter was received in Elm's lab, a route before Oak
+  -- hands it over -- so on HGSS that flag (or GivePokedex's ENGINE_POKEDEX,
+  -- above) is the whole answer.
+  local version = okV and GameVersion and GameVersion.get and GameVersion.get()
+  if version == "heartgold" or version == "soulsilver" then
+    return type(flags) == "table" and flags.FLAG_G4_006B == true
+  end
   if okV and GameVersion and GameVersion.isGen4 and GameVersion.isGen4() then
     local dex = type(save) == "table" and save.pokedex or nil
     if type(dex) ~= "table" then return false end

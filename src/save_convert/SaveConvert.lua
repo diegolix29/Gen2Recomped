@@ -347,6 +347,12 @@ function SaveConvert.importSav(bytes, version, gameVersion)
     bytes = raw
   end
   local want = SaveConvert.saveSizeFor(gameVersion)
+  -- emulator RTC footers, padding and 64 KiB GBA flash images (SaveVariants)
+  if #bytes ~= want and codec ~= Gen4Save and codec ~= Gen5Save then
+    local raw = require("src.save_convert.SaveVariants").normalize(bytes, want,
+      codec == Gen3Save and "gba" or "gb")
+    if raw then bytes = raw end
+  end
   if #bytes ~= want then
     return nil, ("save must be %d bytes, got %d"):format(want, #bytes)
   end

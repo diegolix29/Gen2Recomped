@@ -1320,6 +1320,13 @@ local function newBattle(game)
     local ok, Gen4MoveAnimPlayer = pcall(require, "src.battle.Gen4MoveAnimPlayer")
     if ok and Gen4MoveAnimPlayer then
       self.gen4Anim = Gen4MoveAnimPlayer.new(game.data)
+      -- BLACK AND WHITE'S effect VM answers the same questions from the same
+      -- slot (src/battle/Gen5MoveAnimPlayer.lua); a BW cache has no
+      -- `gen4_move_anims`, so the Sinnoh player above came back nil
+      if not self.gen4Anim then
+        local okG5, Gen5MoveAnimPlayer = pcall(require, "src.battle.Gen5MoveAnimPlayer")
+        if okG5 and Gen5MoveAnimPlayer then self.gen4Anim = Gen5MoveAnimPlayer.new(game.data) end
+      end
       -- ...AND THE SOUND SEAM, WHICH NOTHING HAD EVER SET. The player has emitted
       -- sound events since it was written and `onSound` was nil on every boot, so
       -- 1,241 sound commands over 378 of the 501 programs reached nothing and every

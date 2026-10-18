@@ -98,8 +98,19 @@ function Call.new(game, call, onDone, ctx)
   self.bank = contact and contact.bank
   self.name = (self.bank and textOf(game, self.bank, 0)) or (contact and contact.name) or ""
   self.plan = Call.choose(data, call.caller, call.kind, call.id)
-  local ok, Gear = pcall(require, "src.ui.HgssPokegear")
-  if ok then self.gear = Gear.new(game, {}) end
+  -- AN OUTGOING CALL (the player rang them from the Pokegear's list):
+  -- src/ui/HgssPhoneOutgoing.lua picks the script, the open Pokegear stays
+  -- under the call, and PhoneCall_InitialRing rings first
+  if call.outgoing then
+    self.plan = require("src.ui.HgssPhoneOutgoing").choose(game, call.caller, call.header, call.headerId)
+    if self.plan.kind ~= "outofarea" then self.phase = "ring" end
+  end
+  if call.gear then
+    self.gear = call.gear
+  else
+    local ok, Gear = pcall(require, "src.ui.HgssPokegear")
+    if ok then self.gear = Gear.new(game, { app = "phone", silent = true }) end
+  end
   self:script()
   return self
 end
@@ -115,6 +126,7 @@ function Call:message(bank, index)
   for k, v in pairs(saved or {}) do game.stringBuffers[k] = v end
   game.stringBuffers[1] = tostring(game.save.player and game.save.player.name or "")
   game.stringBuffers[2] = self.name
+  for k, v in pairs(self.extraBuffers or {}) do game.stringBuffers[k] = v end
   local text = textOf(game, bank, index)
   game.stringBuffers = saved
   if not text then
@@ -129,6 +141,34 @@ function Call:step(fn) self.queue[#self.queue + 1] = { run = fn } end
 -- the handler's script, as a queue of lines and actions
 function Call:script()
   local plan, pc = self.plan, self.pc
+  if plan.kind == "outofarea" then
+    -- PhoneCall_Main 255..258: "......" x3 with no tone, the hang-up tone,
+    -- then bank 271 37 "That number is out of the area."
+    self:step(function() self.outOfArea = true end)
+    self.queue[#self.queue + 1] = { say = (pc.texts and pc.texts[37]) or self:message(271, 37) }
+    return
+  end
+  if plan.kind == "unsupported" then
+    Logger.warn("hgss phone: calling contact %s is not ported yet (its handler picks the script)",
+      tostring(self.call.caller))
+    return
+  end
+  if plan.kind == "mother" and plan.outgoing then
+    -- GearPhoneCall_Mother, the player calling: the intro by where the
+    -- player is (bank 664 7 + momCallIntro), then the savings prompt --
+    -- 23 / 27 saving (with / without a balance), 24 / 28 not -- and the menu
+    local balance = tonumber(self.game.save.hgssMomSavings) or 0
+    local saving = (self.game.save.flags or {})[("FLAG_G4_%04X"):format(FLAG_SYS_MOMS_SAVINGS)] == true
+    self.extraBuffers = { [11] = tostring(balance) }
+    self:say(self.bank, 7 + (tonumber(plan.intro) or 0))
+    self:say(self.bank, saving and (balance ~= 0 and 23 or 27) or (balance ~= 0 and 24 or 28))
+    self.queue[#self.queue + 1] = { menu = { pc.texts and pc.texts[8] or "", pc.texts and pc.texts[9] or "" },
+      choose = function(i)
+        self:flag(FLAG_SYS_MOMS_SAVINGS, i == 1)
+        table.insert(self.queue, self.at + 1, { say = self:message(self.bank, i == 1 and 25 or 26) })
+      end }
+    return
+  end
   if plan.kind == "mother" then
     for _, f in ipairs(plan.sets or {}) do self:flag(f, true) end
     -- scripted: straight to MomCallGetSaveMoneyPromptMsg's 22, then the menu
@@ -141,14 +181,20 @@ function Call:script()
     return
   end
   local def = pc.scripts and pc.scripts[plan.script]
-  if plan.kind ~= "simple" or not def then
+  if (plan.kind ~= "simple" and plan.kind ~= "generic") or not def then
     Logger.warn("hgss phone: no script %s for contact %s (%s, %s)", tostring(plan.script),
       tostring(self.call.caller), tostring(self.call.kind), tostring(self.call.id))
     return
   end
-  -- PhoneCall_ApplyGenericNPCcallSideEffect: of its kinds only the flag one
-  -- (1, 2) means anything without the rematch / gift / word machinery
-  if def.kind == 1 or def.kind == 2 then self:flag(def.param1, def.param0 ~= 0) end
+  self:sideEffect(def)
+  local handler = plan.kind == "generic" and (plan.scriptType or 0) or 0
+  if handler == 1 then
+    -- GearPhoneCall_Generic: slot 10 one of their Pokemon, slot 11 a wild
+    -- one from their route at this time of day
+    self.extraBuffers = self.extraBuffers or {}
+    self.extraBuffers[11] = self:speciesName(self:trainerMon()) or ""
+    self.extraBuffers[12] = self:speciesName(self:wildMon()) or ""
+  end
   local entry = pc.book and pc.book[self.call.caller]
   local greet = entry and entry.greeting
   if greet and greet ~= 0xFF and pc.greetings and pc.greetings[greet] then
@@ -157,10 +203,82 @@ function Call:script()
     local band = require("src.import.Gen4Encounters").timeOfDayForHour(tonumber(os.date("%H")))
     local tod = (band == 0 and 0) or ((band == 1 or band == 2) and 1) or 2
     local row = pc.greetings[greet]
-    local k = tod * 2 + 6 + (self.girl and 1 or 0)
+    local k = tod * 2 + (self.call.outgoing and 0 or 6) + (self.girl and 1 or 0)
     if row[k] then self:say(640, row[k]) end
   end
+  if handler == 2 then
+    -- GearPhoneCall_Generic2: one of eleven lines from the script's first
+    local r = math.random(0, 10)
+    if def[1] == def[2] then self:say(self.bank, def[1] + r)
+    else self:say(self.bank, self.girl and (def[2] + 2 * r + 1) or (def[1] + 2 * r)) end
+    return
+  end
   self:say(self.bank, def[self.girl and 2 or 1])
+end
+
+-- PhoneCall_ApplyGenericNPCcallSideEffect by the script's kind: 1 / 2 a flag,
+-- 3 a rematch the contact now seeks, 4 a gift they now hold (a Cheri Berry
+-- is any of the ten berries, a Poke Ball any of three balls from the Ultra
+-- Ball), 5 a word from their bank into slot 4 -- the rematch / gift kept in
+-- save.hgssPhoneState (the field does not act on them yet)
+function Call:sideEffect(def)
+  local caller = self.call.caller
+  if def.kind == 1 or def.kind == 2 then
+    self:flag(def.param1, def.param0 ~= 0)
+  elseif def.kind == 3 or def.kind == 4 then
+    local st = require("src.ui.HgssPhoneOutgoing").state(self.game.save)
+    if def.kind == 3 then st.seeking[caller] = true
+    else
+      local item = def.param1
+      if item == 149 then item = 149 + math.random(0, 9)
+      elseif item == 4 then item = 2 + math.random(0, 2) end
+      st.gift[caller] = item
+    end
+  elseif def.kind == 5 and (def.param0 or 0) > 0 then
+    self.extraBuffers = self.extraBuffers or {}
+    self.extraBuffers[5] = self:message(self.bank, def.param1 + math.random(0, def.param0 - 1))
+  end
+end
+
+function Call:speciesName(id)
+  local def = id and ((self.game.data or {}).pokemon or {})[id]
+  return def and def.name
+end
+
+-- getRandomTrainerMon: one of the contact's trainer's party (Rattata when
+-- the trainer is not known)
+function Call:trainerMon()
+  local entry = ((self.pc or {}).book or {})[self.call.caller]
+  local tr = entry and ((self.game.data or {}).trainers or {})[entry.trainerId]
+  local party = tr and tr.party or {}
+  if #party == 0 then return 19 end
+  return tonumber(party[math.random(1, #party)].species) or 19
+end
+
+-- getRandomEncounterSlot: a Good Rod slot for a Fisherman (class 0x? by the
+-- book), else one of the twelve land slots of the time of day, on the
+-- contact's home map; Rattata where it has no wild encounters
+function Call:wildMon()
+  local data = self.game.data or {}
+  local entry = ((self.pc or {}).book or {})[self.call.caller]
+  if not entry then return 19 end
+  local def
+  for _, m in pairs(data.maps or {}) do
+    if type(m) == "table" and tonumber(m.header) == entry.mapId then def = m break end
+  end
+  local area = def and def.encounters and (data.encounters or {})[def.encounters]
+  if not area then return 19 end
+  local band = require("src.import.Gen4Encounters").timeOfDayForHour(tonumber(os.date("%H")))
+  local tod = (band == 0 and "morning") or ((band == 1 or band == 2) and "day") or "night"
+  local className = ((data.trainers or {})[entry.trainerId] or {}).className
+  if className == "Fisherman" and area.goodRod and area.goodRod.slots then
+    local slot = area.goodRod.slots[math.random(1, 5)]
+    return slot and tonumber(slot.species) or 19
+  end
+  local slots = area.timed and area.timed[tod]
+  local pick = slots and slots[math.random(1, 12)]
+  if (tonumber(pick) or 0) == 0 then return 19 end
+  return tonumber(pick)
 end
 
 function Call:flag(id, on)
@@ -242,7 +360,22 @@ end
 function Call:update(dt)
   self.t = self.t + 1
   local input = self.game.input
-  if self.phase == "fadein" then
+  if self.phase == "ring" then
+    -- PhoneCall_InitialRing: SEQ_SE_GS_PHONE0 and "......", again with
+    -- "...... ......", then the handler (a ring is about 40 frames here)
+    self.ringT = (self.ringT or 0) + 1
+    local n = self.ringT == 1 and 1 or (self.ringT == 41 and 2 or nil)
+    if n then
+      local ok, Sound = pcall(require, "src.core.Sound")
+      if ok and Sound.playSe then pcall(Sound.playSe, self.game.data, "SEQ_SE_GS_PHONE0") end
+      self.lines = { (self.pc.texts and self.pc.texts[29 + n]) or "......" }
+    end
+    if self.ringT >= 80 then
+      self.lines = {}
+      self.phase, self.at = "run", 0
+      self:next()
+    end
+  elseif self.phase == "fadein" then
     if self.t >= FADE_FRAMES then self.phase, self.at = "run", 0; self:next() end
   elseif self.phase == "say" then
     if self:printing() then self:next() end
@@ -300,10 +433,16 @@ function Call:finish()
   if self.done then return end
   self.done = true
   local game, onDone = self.game, self.onDone
+  if self.call.outgoing then
+    game.stack:pop()
+    if onDone then onDone() end
+    return
+  end
   game.stack:pop()
   local ok, Gear = pcall(require, "src.ui.HgssPokegear")
   if ok and Gear then
-    game.stack:push(Gear.new(game, { onCancel = onDone }))
+    -- PhoneCall_Exit: the contact list, the cursor in it (not on the bar)
+    game.stack:push(Gear.new(game, { onCancel = onDone, app = "phone", zone = false, silent = true }))
   elseif onDone then
     onDone()
   end
@@ -351,6 +490,8 @@ function Call:subPanel()
   g.setColor(1, 1, 1, 1); g.rectangle("fill", 0, 0, 256, 192)
   self:picture("frame_bottom")
   self:picture("phone_bottom")
+  -- the shell's clock stays up through the call (its OBJ is on SUB)
+  if self.gear and self.gear.drawClock then pcall(self.gear.drawClock, self.gear) end
   Font.pushStyle(self:ink())
   if self.phase ~= "fadein" then Font.draw(self.name, NAME_X, NAME_Y) end
   g.setScissor(MSG_X, MSG_Y, MSG_W, LINE_H * 2)
