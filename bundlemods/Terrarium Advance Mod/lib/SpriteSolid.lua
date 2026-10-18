@@ -60,6 +60,14 @@
 --   grown in from the interior. The frontal area keeps the original, outline
 --   and all, where it reads correctly.
 --
+-- SMOOTH, NOT PIXELATED. A 32 px sprite stretched over a body that is big on screen
+-- shows hard squares if each atlas texel is one sprite pixel drawn with nearest
+-- filtering. So each picture is first RECONSTRUCTED larger (`S.smooth`: EPX, which
+-- turns every pixel-art staircase into a clean curve and leaves flat colour
+-- crisp, then a one-texel anti-alias), the atlas is baked at `texScale` times the
+-- sprite's resolution from that, and the engine filters it linearly. Plain
+-- bilinear was tried and smears the face to mush; EPX does not.
+--
 -- A colour that is a function of the 3D point is the same on both sides of every
 -- cell edge. Vertices are duplicated per cell, so an edge is never a crack.
 -- `src` must be colour-padded (`padRGBA`): the mesh is rounder than the pixels.
@@ -86,6 +94,8 @@ S.DEFAULT = {
   margin = 3,           -- empty px kept around the body for the blur
   below = 3,            -- virtual rows under the soles
   blendBand = 0.5,      -- front<->back mix width at the flanks (normalised depth; ~0 = hard)
+  texScale = 4,         -- atlas texels per sprite pixel per axis (1, 2, 4 or 8)
+  texBlur = 1,          -- anti-alias radius in atlas texels after the upscale (0 = none)
   wrap = 1,             -- 0 = carry the edge column round (dark outline slab), 1 = spread the outer columns
   wrapStart = 0.7,      -- rad from the front where the picture starts to compress (~40 deg)
   light = { 0.15, 0.85, 0.5 },   -- body-attached key light (model space)
@@ -188,6 +198,98 @@ function S.padRGBA(rgba, imgW, imgH, cw, ch, radius, thr)
   end
   grow(R, G, B, solid, imgW, imgH, lo, hi, radius)
   return packRGBA(R, G, B, solid, n)
+end
+
+-- ------------------------------------------------------------- smoothing --
+
+local function noop() end
+
+-- smooth(img, K [, blur [, tick]]) -> img2
+--   img  { w, h, R, G, B, solid }: 0-based arrays, solid[i] = the texel is art
+--   K    wanted scale; the nearest power of two at or below it is used (EPX
+--        doubles). K = 1 returns the picture unchanged.
+--   blur anti-alias radius in the NEW texels (0 = none).
+-- EPX (Eric's Pixel Expansion): a pixel is split in four, and a quarter takes a
+-- neighbour's colour only where two neighbours that touch agree and the other
+-- two disagree, i.e. exactly at the corner of a staircase. Flat areas and
+-- dithering are untouched; diagonals and curves come out smooth. Not solid
+-- counts as a colour of its own, so it takes part in the corner rule but its
+-- (absent) colour is never blended into art.
+function S.smooth(img, K, blur, tick)
+  tick = tick or noop
+  blur = blur or 0
+  local w, h = img.w, img.h
+  local C = {}
+  for i = 0, w * h - 1 do
+    if img.solid[i] then
+      C[i] = img.R[i] * 65536 + img.G[i] * 256 + img.B[i]
+    else
+      C[i] = -1
+    end
+  end
+  local k = 1
+  while k * 2 <= (K or 1) do
+    local O, w2 = {}, w * 2
+    for y = 0, h - 1 do
+      local up, dn = (y > 0) and y - 1 or y, (y < h - 1) and y + 1 or y
+      for x = 0, w - 1 do
+        local lf, rt = (x > 0) and x - 1 or x, (x < w - 1) and x + 1 or x
+        local P = C[y * w + x]
+        local nA, nD = C[up * w + x], C[dn * w + x]
+        local nC, nB = C[y * w + lf], C[y * w + rt]
+        local p1, p2, p3, p4 = P, P, P, P
+        if nC == nA and nC ~= nD and nA ~= nB then p1 = nA end
+        if nA == nB and nA ~= nC and nB ~= nD then p2 = nB end
+        if nD == nC and nD ~= nB and nC ~= nA then p3 = nC end
+        if nB == nD and nB ~= nA and nD ~= nC then p4 = nD end
+        local o = (y * 2) * w2 + x * 2
+        O[o], O[o + 1], O[o + w2], O[o + w2 + 1] = p1, p2, p3, p4
+      end
+    end
+    C, w, h, k = O, w2, h * 2, k * 2
+    tick()
+  end
+
+  local R, G, B, solid = {}, {}, {}, {}
+  for i = 0, w * h - 1 do
+    local c = C[i]
+    if c >= 0 then
+      solid[i] = true
+      R[i] = floor(c / 65536)
+      G[i] = floor(c / 256) % 256
+      B[i] = c % 256
+    end
+  end
+  if blur > 0 then
+    local R2, G2, B2 = {}, {}, {}
+    for y = 0, h - 1 do
+      for x = 0, w - 1 do
+        local i = y * w + x
+        if solid[i] then
+          local sr, sg, sb, sw = 0, 0, 0, 0
+          for dy = -blur, blur do
+            local yy = y + dy
+            if yy >= 0 and yy < h then
+              for dx = -blur, blur do
+                local xx = x + dx
+                if xx >= 0 and xx < w then
+                  local j = yy * w + xx
+                  if solid[j] then
+                    local wgt = (blur + 1 - abs(dx)) * (blur + 1 - abs(dy))
+                    sr, sg, sb, sw = sr + R[j] * wgt, sg + G[j] * wgt, sb + B[j] * wgt, sw + wgt
+                  end
+                end
+              end
+            end
+          end
+          R2[i], G2[i], B2[i] = floor(sr / sw + 0.5), floor(sg / sw + 0.5), floor(sb / sw + 0.5)
+        end
+      end
+      if y % 16 == 15 then tick() end
+    end
+    R, G, B = R2, G2, B2
+  end
+  return { w = w, h = h, R = R, G = G, B = B, solid = solid, scale = k }
 end
 
 -- --------------------------------------------------------------- rows --
@@ -293,8 +395,6 @@ local function blurAxis(f, nx, ny, nz, axis, passes, tick)
 end
 
 -- ------------------------------------------------------------ the build --
-
-local function noop() end
 
 -- shade(nx, ny, nz, o) -> signed shade for Voxel3D's VertexShade. The sign is
 -- the shader's "this face points at the sky" flag.
@@ -560,7 +660,10 @@ function S.build(views, layout, opts, tick)
   local imgW = layout.imgW
   local AN = { { 0, 0, 1 }, { 0, 0, -1 }, { -1, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 } }
   local VIEWS = { "front", "back", "right", "left" }
-  local atlasW, atlasH = W, 4 * H + W
+  local K = 1                                    -- texels per sprite pixel (a power of two)
+  while K * 2 <= (o.texScale or 1) do K = K * 2 end
+  local aw0, ah0 = W, 4 * H + W                  -- the atlas in sprite pixels
+  local atlasW, atlasH = aw0 * K, ah0 * K        -- ...and in texels
   local origin = { 0, H, 2 * H, 3 * H, 4 * H }
   local cellRows = { H, H, H, H, W }
   local half = W / 2
@@ -594,7 +697,7 @@ function S.build(views, layout, opts, tick)
     if col < 0.5 then col = 0.5 elseif col > W - 0.5 then col = W - 0.5 end
     if row < 0.5 then row = 0.5 elseif row > rows - 0.5 then row = rows - 0.5 end
     local ay = origin[c] + row
-    verts[#verts + 1] = { x, y, z, col / atlasW, ay / atlasH,
+    verts[#verts + 1] = { x, y, z, col / aw0, ay / ah0,
                           shadeOf(nx_, ny_, nz_, o), 0 }
     idx = #verts
     VP[idx] = { x, y, z, nx_, ny_, nz_, c, col, ay }
@@ -649,22 +752,29 @@ function S.build(views, layout, opts, tick)
     local g = ad * (1 - w) + (t / PI2) * w
     return (d < 0 and -g or g), w
   end
-  -- outline-free copies of the front and back picture (see header)
+  -- Both pictures, smoothly reconstructed K times larger: `orig` as drawn, and
+  -- `inner` with its silhouette ring replaced by colour grown in from the
+  -- interior (the outline-free copy, see header).
   local rowLo, rowHi = {}, {}
   for y = 0, H - 1 do rowLo[y], rowHi[y] = 0, H - 1 end
-  local inner = {}
+  local orig, inner = {}, {}
   for c = 1, 2 do
     local m = views[VIEWS[c]]
+    local OR, OG, OB, OS = {}, {}, {}, {}
     local IR, IG, IB, IS = {}, {}, {}, {}
     local any = false
     for y = 0, H - 1 do
       for x = 0, W - 1 do
         local i0 = y * W + x
+        local at = ((cellY[VIEWS[c]] + y) * imgW + cellX + x) * 4
+        local r, g, bb, al = byte(src, at + 1, at + 4)
+        if al and al >= S.ALPHA then
+          OR[i0], OG[i0], OB[i0], OS[i0] = r, g, bb, true
+        end
         if m[i0 + 1] then
           local ring = x == 0 or x == W - 1 or y == 0 or y == H - 1
             or not m[i0] or not m[i0 + 2] or not m[i0 + 1 - W] or not m[i0 + 1 + W]
           if not ring then
-            local at = ((cellY[VIEWS[c]] + y) * imgW + cellX + x) * 4
             IR[i0], IG[i0], IB[i0] = byte(src, at + 1, at + 3)
             IS[i0] = true
             any = true
@@ -673,24 +783,27 @@ function S.build(views, layout, opts, tick)
       end
     end
     if any then grow(IR, IG, IB, IS, W, H, rowLo, rowHi, 6) end
-    inner[c] = { IR, IG, IB, IS }
+    orig[c] = S.smooth({ w = W, h = H, R = OR, G = OG, B = OB, solid = OS }, K, o.texBlur, tick)
+    inner[c] = S.smooth({ w = W, h = H, R = IR, G = IG, B = IB, solid = IS }, K, o.texBlur, tick)
+    tick()
   end
+  local KW, KH = W * K, H * K
 
   -- colour of picture c (1 front, 2 back) at a model point; `wi` (0..1) is how
   -- much of the outline-free copy to use
   local function pick(c, x, y, z, wi)
     local col, row = project(c, x, y, z)
-    local ci, ri = floor(col), floor(row)
-    if ci < 0 then ci = 0 elseif ci > W - 1 then ci = W - 1 end
-    if ri < 0 then ri = 0 elseif ri > H - 1 then ri = H - 1 end
-    local at = ((cellY[VIEWS[c]] + ri) * imgW + cellX + ci) * 4
-    local r, g, bb, al = byte(src, at + 1, at + 4)
-    if not (al and al >= S.ALPHA) then r = nil end
+    local ci, ri = floor(col * K), floor(row * K)
+    if ci < 0 then ci = 0 elseif ci > KW - 1 then ci = KW - 1 end
+    if ri < 0 then ri = 0 elseif ri > KH - 1 then ri = KH - 1 end
+    local i0 = ri * KW + ci
+    local t = orig[c]
+    local r, g, bb
+    if t.solid[i0] then r, g, bb = t.R[i0], t.G[i0], t.B[i0] end
     if wi > 0 then
-      local t = inner[c]
-      local i0 = ri * W + ci
-      if t[4][i0] then
-        local ir, ig, ib = t[1][i0], t[2][i0], t[3][i0]
+      t = inner[c]
+      if t.solid[i0] then
+        local ir, ig, ib = t.R[i0], t.G[i0], t.B[i0]
         if r then
           return r + (ir - r) * wi, g + (ig - g) * wi, bb + (ib - bb) * wi
         end
@@ -737,15 +850,15 @@ function S.build(views, layout, opts, tick)
   for t = 1, #map, 3 do
     local v1, v2, v3 = VP[map[t]], VP[map[t + 1]], VP[map[t + 2]]
     local c = v1[7]
-    local x1, y1, x2, y2, x3, y3 = v1[8], v1[9], v2[8], v2[9], v3[8], v3[9]
+    local x1, y1, x2, y2, x3, y3 = v1[8] * K, v1[9] * K, v2[8] * K, v2[9] * K, v3[8] * K, v3[9] * K
     local area = (x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1)
     if abs(area) > 1e-9 then
-      local lo = origin[c]
-      local hi = lo + cellRows[c] - 1
+      local lo = origin[c] * K
+      local hi = lo + cellRows[c] * K - 1
       local tx0, tx1 = floor(min(x1, x2, x3)), floor(max(x1, x2, x3))
       local ty0, ty1 = floor(min(y1, y2, y3)), floor(max(y1, y2, y3))
       if tx0 < 0 then tx0 = 0 end
-      if tx1 > W - 1 then tx1 = W - 1 end
+      if tx1 > KW - 1 then tx1 = KW - 1 end
       if ty0 < lo then ty0 = lo end
       if ty1 > hi then ty1 = hi end
       for ty = ty0, ty1 do
@@ -776,14 +889,14 @@ function S.build(views, layout, opts, tick)
         end
       end
     end
-    if t % 600 == 1 then tick() end
+    if t % 150 == 1 then tick() end
   end
 
   -- texels no triangle reached (cracks between tiny triangles): grow into them
   local lo, hi = {}, {}
   for c = 1, 5 do
-    for y = origin[c], origin[c] + cellRows[c] - 1 do
-      lo[y], hi[y] = origin[c], origin[c] + cellRows[c] - 1
+    for y = origin[c] * K, (origin[c] + cellRows[c]) * K - 1 do
+      lo[y], hi[y] = origin[c] * K, (origin[c] + cellRows[c]) * K - 1
     end
   end
   grow(R, G, B, solid, atlasW, atlasH, lo, hi, 2)
@@ -792,7 +905,7 @@ function S.build(views, layout, opts, tick)
   return {
     verts = verts, map = map,
     vertexCount = #verts, triangleCount = #map / 3,
-    atlas = atlas, atlasW = atlasW, atlasH = atlasH,
+    atlas = atlas, atlasW = atlasW, atlasH = atlasH, scale = K,
     cellOrigin = origin,
     height = bodyH, halfW = max(abs(xmin), abs(xmax)), halfD = max(abs(zmin), abs(zmax)),
     base = base, top = top,
