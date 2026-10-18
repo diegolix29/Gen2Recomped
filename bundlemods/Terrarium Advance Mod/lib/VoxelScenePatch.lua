@@ -207,8 +207,13 @@ local function patchCastLoop(source)
       -- Dramatic Shape's original 2D card for this frame.
       elseif not OverworldColosseum.safeDraw(p)
           and not OverworldStadium.safeDraw(p) and p.sprite then
-        drawEntity(p.sprite, p.px, p.py, facing, p.phase, p.flip, p.gh,
-                   p.colors, p.lift, p.waterline, p.isPlayer, yaw, hdDef)
+        -- A person as a smooth 3D body (Gen4NpcModels); the card when there
+        -- is no body yet. tryNpcBody is a local of the installed VoxelScene,
+        -- and a nil global (older copy) just reads as "no body".
+        if not (tryNpcBody and tryNpcBody(p, hdDef)) then
+          drawEntity(p.sprite, p.px, p.py, facing, p.phase, p.flip, p.gh,
+                     p.colors, p.lift, p.waterline, p.isPlayer, yaw, hdDef)
+        end
       end
     end
   end
