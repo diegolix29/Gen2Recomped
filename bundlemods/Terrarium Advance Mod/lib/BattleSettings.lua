@@ -619,6 +619,10 @@ local function openBattleMenu(game,returnId,returnParent)
   game.stack:push(menu)
 end
 
+function S.open(game)
+  openBattleMenu(game, startMenuId(), nil)
+end
+
 function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trainerRoster,compat,audioFidelity)
   if installed then return true end
   modRef,Trainer,Music,ArenaCatalog,BattleMenuUI,CacheManager,TrainerRoster,Compat,AudioFidelity=mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trainerRoster,compat,audioFidelity
@@ -647,6 +651,24 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
     end})
     return out
   end,200) -- Run after XD_BATTLE_ENVIRONMENTS (priority 115) but before other high-priority mods
+
+  -- Install Gen4StartMenuHook for Platinum/HGSS/Black-White start menus
+  local okHook, Gen4StartMenuHook = pcall(require, "lib.Gen4StartMenuHook")
+  if okHook and Gen4StartMenuHook and type(Gen4StartMenuHook.install) == "function" then
+    Gen4StartMenuHook.install(function(game)
+      return {
+        label = "TERRARIUM BATTLES",
+        onSelect = function()
+          local parent = game and game.stack and type(game.stack.top) == "function" and game.stack:top() or nil
+          local returnId = (parent and (parent.screenId == GEN1_START or parent.screenId == "Gen2StartMenu"))
+            and parent.screenId or startMenuId()
+          local returnParent = (parent and parent.screenId == returnId) and parent or nil
+          openBattleMenu(game, returnId, returnParent)
+        end
+      }
+    end)
+  end
+
   installed=true
   return true
 end

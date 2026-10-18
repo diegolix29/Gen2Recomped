@@ -84,7 +84,11 @@ function HgssStartMenu.new(game, opts)
   setmetatable(self, HgssStartMenu)
   self.menuArt = (game.data or {}).gen4_hgss_menu_art or {}
   local keep = {}
-  for _, row in ipairs(self.rows) do keep[row.id] = true end
+  local terrariumBattleRow = nil
+  for _, row in ipairs(self.rows) do
+    keep[row.id] = true
+    if row.id == "terrariumBattles" then terrariumBattleRow = row end
+  end
   -- the rows Platinum's menu decided are allowed, plus POKeGEAR, in HGSS order
   keep.pokegear = true
   local flags = (game.save or {}).flags or {}
@@ -111,6 +115,14 @@ function HgssStartMenu.new(game, opts)
   -- waits until the game is over.
   local mods = Gen4StartMenu.modsRow(game)
   if mods and #rows < #SLOTS then rows[#rows + 1] = mods end
+  -- TERRARIUM BATTLES (the hook's injected row) before OPTIONS, like Platinum
+  if terrariumBattleRow and #rows < #SLOTS then
+    local at = #rows + 1
+    for i, row in ipairs(rows) do
+      if row.id == "options" then at = i break end
+    end
+    table.insert(rows, at, terrariumBattleRow)
+  end
   self.rows = rows
   self.index = 1
   for i, row in ipairs(rows) do if row.id == game.gen4StartMenuCursor then self.index = i end end
@@ -155,6 +167,16 @@ function HgssStartMenu:select()
     end
     Logger.warn("hgss start menu: the Pokegear app is not ported yet")
     se(self, "SEQ_SE_GS_GEARCANCEL")
+    return
+  end
+  if row and row.id == "terrariumBattles" and row.entry then
+    -- Same contract as Gen4StartMenuHook: pop first, then run the row
+    self.game.stack:pop()
+    local okRun, err = pcall(row.entry.onSelect)
+    if not okRun then
+      Logger.warn("hgss start menu: '%s' failed: %s", tostring(row.label), tostring(err))
+      pcall(self:reopen())
+    end
     return
   end
   return Gen4StartMenu.select(self)

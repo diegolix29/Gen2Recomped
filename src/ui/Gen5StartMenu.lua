@@ -40,7 +40,13 @@ function Gen5StartMenu.new(game, opts)
   setmetatable(self, Gen5StartMenu)
   self.menuArt = (game.data or {}).gen5_menu_art or {}
   local keep = {}
-  for _, row in ipairs(self.rows) do keep[row.id] = true end
+  local terrariumBattleRow = nil
+  for _, row in ipairs(self.rows) do
+    if row and row.id then
+      keep[row.id] = true
+      if row.id == "terrariumBattles" then terrariumBattleRow = row end
+    end
+  end
   local rows = {}
   for _, id in ipairs(ORDER) do
     if keep[id] then
@@ -55,7 +61,17 @@ function Gen5StartMenu.new(game, opts)
   self.gridCount = #rows
   local mods = Gen4StartMenu.modsRow(game)
   if mods then rows[#rows + 1] = mods end
+  -- TERRARIUM BATTLES (the hook's injected row) before OPTIONS, like Platinum
+  if terrariumBattleRow then
+    local at = #rows + 1
+    for i, row in ipairs(rows) do
+      if row.id == "options" then at = i break end
+    end
+    table.insert(rows, at, terrariumBattleRow)
+  end
   self.rows = rows
+  -- Update gridCount after adding terrariumBattles (it goes in the grid)
+  self.gridCount = #rows - (mods and 1 or 0)
   self.index = 1
   for i, row in ipairs(rows) do if row.id == game.gen4StartMenuCursor then self.index = i end end
   return self
@@ -73,6 +89,24 @@ function Gen5StartMenu:word(id)
   local text = ((self.game.data or {}).text or {})[("TEXT_G5S_%04d_%05d"):format(BANK, WORD[id] or 0)]
   if type(text) ~= "string" or text == "" then return id:upper() end
   return text
+end
+
+function Gen5StartMenu:select()
+  local row = self.rows[self.index]
+  if row and row.id == "terrariumBattles" and row.entry then
+    -- Same contract as Gen4StartMenuHook: pop first, then run the row
+    self.game.stack:pop()
+    local okRun, err = pcall(row.entry.onSelect)
+    if not okRun then
+      local ok, Logger = pcall(require, "src.core.Logger")
+      if ok and Logger and Logger.warn then
+        Logger.warn("gen5 start menu: '%s' failed: %s", tostring(row.label), tostring(err))
+      end
+      pcall(self:reopen())
+    end
+    return
+  end
+  return Gen4StartMenu.select(self)
 end
 
 -- the MODS tab: the strip under the grid, the grid's left column wide
@@ -105,7 +139,8 @@ function Gen5StartMenu:update()
     for i = 1, count do
       if inRect(self:rect(i), tap) then
         self.index = i
-        self.game.gen4StartMenuCursor = self.rows[i].id
+        local row = self.rows[i]
+        self.game.gen4StartMenuCursor = row and row.id
         self:se("SEQ_SE_DP_SELECT")
         return self:select()
       end
@@ -142,7 +177,8 @@ function Gen5StartMenu:update()
   if self.index ~= before then
     self:se("SEQ_SE_DP_SELECT")
     self.swellFrom = self.frame
-    self.game.gen4StartMenuCursor = self.rows[self.index].id
+    local row = self.rows[self.index]
+    self.game.gen4StartMenuCursor = row and row.id
   end
 end
 

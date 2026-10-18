@@ -112,6 +112,9 @@ SettingsMenu.CATEGORIES = {
   { id = "freefly", label = "FREE FLY..",
     help = "Party Pokemon that know FLY can carry you freely over overworld terrain. "
       .. "Configure altitude, speed, encounters, and gate behavior." },
+  { id = "terrariumBattles", label = "TERRARIUM BATTLES..",
+    help = "Colosseum-style 3D battles, realtime mode, trainer models, arena selection, "
+      .. "and encounter configuration for wild/trainer/gym battles." },
 }
 
 -- ------- help for the rows that are not settings
@@ -273,7 +276,18 @@ function SettingsMenu.rows(catId, game)
           label = cat.label,
           value = valueFunc,
           activate = function(g)
-            g.stack:push(SettingsMenu.new(g, cat.id))
+            -- Special case for terrariumBattles: open BattleSettings directly
+            if cat.id == "terrariumBattles" then
+              local ok, BattleSettings = pcall(V.require, "BattleSettings")
+              if ok and BattleSettings and type(BattleSettings.open) == "function" then
+                BattleSettings.open(g)
+              else
+                -- Fallback to regular category menu
+                g.stack:push(SettingsMenu.new(g, cat.id))
+              end
+            else
+              g.stack:push(SettingsMenu.new(g, cat.id))
+            end
           end,
         }
       end

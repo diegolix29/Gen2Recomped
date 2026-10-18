@@ -147,11 +147,11 @@ function Gen4StartMenu.new(game, opts)
   else
     local kept = {}
     for index, row in ipairs(hooked) do
-      if type(row) == "table" and type(row.label) == "string" then
+      if type(row) == "table" and type(row.label) == "string" and type(row.id) == "string" then
         kept[#kept + 1] = row
       else
         Logger.warn("gen4 start menu: ui.start_menu.items row %d has no "
-                    .. "label; dropped", index)
+                    .. "label or id; dropped", index)
       end
     end
     self.rows = kept
