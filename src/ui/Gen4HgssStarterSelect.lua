@@ -35,6 +35,7 @@ local Gen4Anim = require("src.import.Gen4Anim")
 local Gen4Model = require("src.render.Gen4Model")
 local Logger = require("src.core.Logger")
 local Sprites = require("src.pokemon.Sprites")
+local SecondScreen = require("src.ui.SecondScreen")
 
 local Screen = {}
 Screen.__index = Screen
@@ -207,8 +208,10 @@ function Screen:update()
 
   local input = self.game.input
   if not input then return end
-  local a, b = input:wasPressed("a"), input:wasPressed("b")
-  local left, right = input:wasPressed("left"), input:wasPressed("right")
+  local tap=self.tap;self.tap=nil
+  local a, b = input:wasPressed("a") or tap=='a', input:wasPressed("b")
+  if input:wasPressed("l") or input:wasPressed("select") then self.showScene = not self.showScene end
+  local left, right = input:wasPressed("left") or tap=='left', input:wasPressed("right") or tap=='right'
   if a and self.page < #self.pages then self.page = self.page + 1 return end
 
   if self.state == "intro" then
@@ -304,7 +307,7 @@ function Screen:image(path)
   return self.pics[path] or nil
 end
 
-function Screen:draw()
+function Screen:drawTurntable()
   local g = love.graphics
   g.setColor(0, 0, 0, 1)
   g.rectangle("fill", 0, 0, W, H)
@@ -312,14 +315,28 @@ function Screen:draw()
   local scene = not self.unavailable and self:drawScene()
   if scene then g.draw(scene, 0, 0) end
 
-  -- the species, once its ball is inspected (the cartridge's other screen)
+end
+
+function Screen:drawPreview()
+  local g=love.graphics
+  g.setColor(1,1,1,1);g.rectangle('fill',0,0,W,H)
+  local art=self.game.data.gen4_hgss_starter_art or {}
+  for _,key in ipairs({'preview','preview_overlay'}) do
+    local rec=art[key]
+    local image=rec and self:image(rec.path)
+    if image then
+      g.setColor(1,1,1,key=='preview_overlay' and 5/16 or 1)
+      g.draw(image,0,0)
+    end
+  end
+  g.setColor(1,1,1,1)
+  -- createOneMonRender places the 80x80 sprite at (128,96) on this screen.
   if self.state == "inspect" or self.state == "confirm" then
     local species = self.species[self.selection + 1]
     local pic = species and self:image(Sprites.path(self.game.data, species, "front", { kind = "summary" }))
     if pic then
       local pw, ph = pic:getDimensions()
-      local s = 48 / math.max(pw, ph)
-      g.draw(pic, 8, 8, 0, s, s)
+      g.draw(pic, 128-pw/2, 96-ph/2)
     end
   end
 
@@ -337,6 +354,33 @@ function Screen:draw()
     g.rectangle("fill", 0, 0, W, H)
   end
   g.setColor(1, 1, 1, 1)
+end
+
+function Screen:draw()
+  local dual=SecondScreen.separate(self.game)
+  if dual then
+    self:drawPreview()
+    SecondScreen.draw(self.game,function() self:drawTurntable() end)
+    self.game.secondScreenPointerOwner=self
+  elseif not self.showScene and (self.state=='inspect' or self.state=='confirm') then
+    self:drawPreview()
+  else
+    self:drawTurntable()
+    Font.drawDialogueBox(BOX.tx,BOX.ty,BOX.tw,BOX.th)
+    Font.draw(self.pages and self.pages[self.page] or '',TEXT_X,TEXT_Y)
+  end
+end
+
+function Screen:touchpressed(id,x,y)
+  local px,py=SecondScreen.toLocal(self.game,x,y)
+  if not px then
+    local rect=require('src.render.Renderer').uiPresentation
+    if not rect then return false end
+    px,py=(x-rect.x)/rect.scaleX,(y-rect.y)/rect.scaleY
+  end
+  if px<0 or py<0 or px>=W or py>=H then return false end
+  self.tap = px<80 and 'left' or px>176 and 'right' or 'a'
+  return true
 end
 
 return Screen

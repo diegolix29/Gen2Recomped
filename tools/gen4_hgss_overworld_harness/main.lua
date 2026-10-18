@@ -14,6 +14,8 @@
 -- hands over to the overworld harness unchanged. Pictures land in this
 -- harness's own save folder (identity hgss_ow).
 
+-- every line out as it is printed, so a hard crash still shows where it was
+io.stdout:setvbuf("line")
 local install = assert(os.getenv("INSTALL"), "set INSTALL to the version's folder")
 
 local ffi = require("ffi")
@@ -181,7 +183,7 @@ if os.getenv("PARTY_DETAIL") then
       for i, mon in ipairs((G and G.save and G.save.party) or {}) do
         local moves = {}
         for _, mv in ipairs(mon.moves or {}) do moves[#moves + 1] = tostring(mv.id) end
-        print0(("  party %d: species %s friendship %s egg %s moves %s"):format(i, tostring(mon.species),
+        print0(("  party %d: species %s level %s shiny %s fateful %s friendship %s egg %s moves %s"):format(i, tostring(mon.species), tostring(mon.level), tostring(require("src.pokemon.Pokemon").isShiny(mon)), tostring(mon.fatefulEncounter),
           tostring(mon.happiness or mon.friendship), tostring(mon.isEgg or mon.egg or false),
           table.concat(moves, ",")))
       end
@@ -234,7 +236,8 @@ end
 if os.getenv("AUTO_BATTLE") then
   local Commands = require("src.script.Commands")
   Commands.start_battle = function(ctx, kind, id)
-    ctx.lastBattleResult = os.getenv("AUTO_BATTLE")
+    -- AUTO_BATTLE_WILD=caught: a different result for a wild battle
+    ctx.lastBattleResult = (kind == "wild" and os.getenv("AUTO_BATTLE_WILD")) or os.getenv("AUTO_BATTLE")
     print(("[auto battle] %s %s -> %s"):format(tostring(kind), tostring(id), ctx.lastBattleResult))
   end
 end
@@ -264,6 +267,106 @@ if camTilt then
     Gen4Camera.setTilt(at)
     print(("[cam] tilt %s (row %d)"):format(tostring(Gen4Camera.TILTS[at]), at))
     return (table.unpack or unpack)(r)
+  end
+end
+
+-- HGSS_PHONE_ROM=<HeartGold/SoulSilver .nds>: data.gen4_hgss_phone_call read
+-- from the ROM as the overworld is pushed (src/import/Gen4HgssPhoneCall.lua),
+-- so the scripted Pokegear calls run on an install imported before it existed
+if os.getenv("HGSS_PHONE_ROM") then
+  local StateStack = require("src.core.StateStack")
+  local push, injected = StateStack.push, false
+  StateStack.push = function(self, state, ...)
+    local G = package.loaded["src.core.Game"]
+    if not injected and G and G.data then
+      injected = true
+      local path = os.getenv("HGSS_PHONE_ROM")
+      local rom = assert(require("src.import.NdsRom").open(path))
+      local X = assert(require("src.import.RomExtractorGen4").new(path, os.getenv("VERSION") or "heartgold"))
+      G.data.gen4_hgss_phone_call = require("src.import.Gen4HgssPhoneCall").read(rom,
+        function(bank, i) return X:string(bank, i) end)
+      X:close()
+      print(("[phone] gen4_hgss_phone_call from %s: %d phonebook rows"):format(path, G.data.gen4_hgss_phone_call.book.count))
+    end
+    return push(self, state, ...)
+  end
+end
+
+-- HGSS_PROP_ROM=<HeartGold/SoulSilver .nds>: the map prop animations
+-- (gen4_models.sets.field / interiorField, src/import/Gen4HgssPropAnim.lua)
+-- read from the ROM as the overworld is pushed, with the flipbook frames the
+-- import would write decoded into memory instead -- so the windmill turns on
+-- an install imported before they existed. HGSS_PROP_OFF=1: drop them instead
+-- (the "before" picture).
+if os.getenv("HGSS_PROP_ROM") or os.getenv("HGSS_PROP_OFF") then
+  local StateStack = require("src.core.StateStack")
+  local push, injected = StateStack.push, false
+  local memory = {}
+  local Assets = require("src.render.Assets")
+  local image = Assets.image
+  Assets.image = function(path, ...)
+    if type(path) == "string" and memory[path] then
+      local img = love.graphics.newImage(memory[path])
+      return img
+    end
+    return image(path, ...)
+  end
+  StateStack.push = function(self, state, ...)
+    local G = package.loaded["src.core.Game"]
+    if not injected and G and G.data and G.data.gen4_models then
+      injected = true
+      local sets = G.data.gen4_models.sets or {}
+      if os.getenv("HGSS_PROP_OFF") then
+        sets.field, sets.interiorField = nil, nil
+        print("[props] prop animations dropped")
+        return push(self, state, ...)
+      end
+      local path = os.getenv("HGSS_PROP_ROM")
+      local X = assert(require("src.import.RomExtractorGen4").new(path, os.getenv("VERSION") or "heartgold"))
+      local P = require("src.import.Gen4HgssPropAnim")
+      local report = assert(P.extractInto(X, G.data.gen4_models))
+      -- the BTP0 frames, decoded from each claiming model's own TEX0
+      local Nsbmd = require("src.import.Gen4Nsbmd")
+      local Models = require("src.import.Gen4Models")
+      local Graphics = require("src.import.Gen4Graphics")
+      local ImageWriter = require("src.import.ImageWriter")
+      local frames = 0
+      for key, modelsKey, archive in ([[field buildings /a/0/4/0 interiorField interiorBuildings /a/1/4/8]]):gmatch("(%S+) (%S+) (%S+)") do
+        local fset, mset = sets[key], sets[modelsKey]
+        local arc = X:archiveAt(archive)
+        for _, record in ipairs((fset and fset.animations) or {}) do
+          for _, index in ipairs((record.pattern and record.props) or {}) do
+            local packed = mset and mset.models and mset.models[index + 1]
+            local bytes = packed and arc and arc:get(index)
+            if bytes and Graphics.isCompressed(bytes) then bytes = Graphics.decompress(bytes) end
+            local sections = bytes and Nsbmd.sections(bytes)
+            local textures = sections and sections.TEX0 and Models.parse(bytes, sections.TEX0)
+            if textures then
+              packed.patternImages = packed.patternImages or {}
+              for i, name in ipairs(record.pattern.textures or {}) do
+                local ti, pi
+                for j, t in ipairs(textures.textures) do if t.name == name then ti = j end end
+                for j, p in ipairs(textures.palettes) do if p.name == (record.pattern.palettes or {})[i] then pi = j end end
+                local img = ti and Models.decode(textures, bytes, ti, pi or 1)
+                local data = img and ImageWriter.fromRGBA8(img.width, img.height, img.rgba)
+                if data then
+                  local key2 = ("hgssprop:%s/%d/%s"):format(modelsKey, index, name)
+                  memory[key2] = data
+                  packed.patternImages[name] = key2
+                  frames = frames + 1
+                end
+              end
+            end
+          end
+        end
+      end
+      X:close()
+      print(("[props] from %s: outdoor %d props / %d records, rooms %d props / %d records, %d flipbook frames"):format(
+        path, report.field and report.field.props or 0, report.field and report.field.records or 0,
+        report.interiorField and report.interiorField.props or 0,
+        report.interiorField and report.interiorField.records or 0, frames))
+    end
+    return push(self, state, ...)
   end
 end
 
@@ -368,3 +471,4 @@ if probe then
     return table.unpack and table.unpack(r) or unpack(r)
   end
 end
+

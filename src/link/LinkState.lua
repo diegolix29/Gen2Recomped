@@ -589,7 +589,17 @@ function LinkState:updateTrade(input)
     self.game.stack:pop()
     local game = self.game
     require("src.core.Sound").play(game.data, "Trade_Machine")
-    Screens.push(game, "TradeAnim", {
+    -- Each generation's own cable movie: Gen 2's TradeAnimation
+    -- (Gen2TradeAnim) on a Gen 2 dataset, Red's InternalClockTradeAnim
+    -- everywhere else (Gen 3+ keep it, with their own TradeText lines).
+    -- On the cartridge the side that drives the clock plays the
+    -- "player first" sequence and the other side the mirrored one
+    -- (ExternalClockTradeAnim / TradeAnimationPlayer2); the host stands in
+    -- for the internally clocked side.
+    local GameVersion = require("src.core.GameVersion")
+    local classic = GameVersion.isGen1() or GameVersion.isGen2()
+    Screens.push(game, GameVersion.isGen2() and "Gen2TradeAnim" or "TradeAnim", {
+      externalClock = classic and not self.isHost or nil,
       sent = sent, received = received,
       enemyName = (self.peerName or "TRAINER"),
       playerOt = game.save.player.name,

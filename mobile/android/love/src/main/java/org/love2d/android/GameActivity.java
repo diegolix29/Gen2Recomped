@@ -84,6 +84,7 @@ public class GameActivity extends SDLActivity {
     public static final int FILE_PICKER_REQUEST_CODE = 4;
     public static final int FILE_CREATE_REQUEST_CODE = 5;
     public static final int STEP_PERMISSION_REQUEST_CODE = 6;
+    public static final int NOTIFY_PERMISSION_REQUEST_CODE = 7;
     public static final int RESTART_REQUEST_CODE = 7;
     public static final int FOLDER_PICKER_REQUEST_CODE = 8;
     /** @deprecated Prefer FILE_PICKER_REQUEST_CODE; kept for older call sites. */
@@ -1155,6 +1156,99 @@ public class GameActivity extends SDLActivity {
      * runtime permission; the first call shows the system prompt and a later
      * sync (the mod retries on save load / option change) delivers.
      */
+    /**
+     * Pokéwalker notifications, called from Lua as love.system.walkerNotify
+     * (src/pokewalker/WalkerNotify.lua): one JSON command, handled by
+     * WalkerNotifications. Android 13+ needs POST_NOTIFICATIONS at runtime;
+     * the first call asks for it (a refusal only means no notifications).
+     */
+    /**
+     * Cloud saves (src/cloud/Http.lua through love.system.httpRequest): one
+     * HTTP request of any method. In: {"method","url","headers":{..},"body"};
+     * out: {"status": n, "body": "..."} or {"error": "..."}. Runs on the
+     * calling (Lua) thread, which is not the UI thread, so blocking is fine.
+     * Redirects are followed (Microsoft Graph answers downloads with 302).
+     */
+    @Keep
+    public static String httpRequest(String json) {
+        org.json.JSONObject out = new org.json.JSONObject();
+        HttpURLConnection conn = null;
+        try {
+            org.json.JSONObject req = new org.json.JSONObject(json);
+            String method = req.optString("method", "GET");
+            URL url = new URL(req.getString("url"));
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(120000);
+            conn.setInstanceFollowRedirects(true);
+            if ("PATCH".equals(method)) {
+                // HttpURLConnection has no PATCH: the override header Drive honours
+                conn.setRequestMethod("POST");
+                conn.setRequestProperty("X-HTTP-Method-Override", "PATCH");
+            } else {
+                conn.setRequestMethod(method);
+            }
+            org.json.JSONObject headers = req.optJSONObject("headers");
+            if (headers != null) {
+                java.util.Iterator<String> keys = headers.keys();
+                while (keys.hasNext()) {
+                    String k = keys.next();
+                    conn.setRequestProperty(k, headers.getString(k));
+                }
+            }
+            if (req.has("body") && !req.isNull("body")) {
+                byte[] body = req.getString("body").getBytes("UTF-8");
+                conn.setDoOutput(true);
+                conn.setFixedLengthStreamingMode(body.length);
+                OutputStream os = conn.getOutputStream();
+                os.write(body);
+                os.close();
+            }
+            int status = conn.getResponseCode();
+            InputStream in = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
+            String text = "";
+            if (in != null) {
+                java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+                byte[] chunk = new byte[8192];
+                int n;
+                while ((n = in.read(chunk)) > 0) buf.write(chunk, 0, n);
+                in.close();
+                text = buf.toString("UTF-8");
+            }
+            out.put("status", status);
+            out.put("body", text);
+        } catch (Exception e) {
+            try { out.put("error", String.valueOf(e)); } catch (Exception ignored) {}
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+        return out.toString();
+    }
+
+    @Keep
+    public static boolean walkerNotify(final String json) {
+        final GameActivity self = (GameActivity) mSingleton;
+        if (self == null) return false;
+        if (android.os.Build.VERSION.SDK_INT >= 33
+                && ActivityCompat.checkSelfPermission(self,
+                    "android.permission.POST_NOTIFICATIONS")
+                    != PackageManager.PERMISSION_GRANTED
+                && !self.getSharedPreferences(WalkerNotifications.PREFS, MODE_PRIVATE)
+                    .getBoolean("asked", false)) {
+            self.getSharedPreferences(WalkerNotifications.PREFS, MODE_PRIVATE)
+                .edit().putBoolean("asked", true).apply();
+            self.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    ActivityCompat.requestPermissions(self,
+                        new String[]{"android.permission.POST_NOTIFICATIONS"},
+                        NOTIFY_PERMISSION_REQUEST_CODE);
+                }
+            });
+        }
+        return WalkerNotifications.command(self.getApplicationContext(), json);
+    }
+
     @Keep
     public static boolean syncHealthSteps() {
         final GameActivity self = (GameActivity) mSingleton;

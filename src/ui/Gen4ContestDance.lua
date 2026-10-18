@@ -433,7 +433,7 @@ end
 function UI:drawPad()
   local ok, SS = pcall(require, "src.ui.SecondScreen")
   local mode = ok and SS.mode(self.game) or "off"
-  if not ((mode == "display" or mode == "inset") and not SS.stowed(self.game)) then return end
+  if not (require("src.ui.SecondScreen").separateMode(mode) and not SS.stowed(self.game)) then return end
   SS.draw(self.game, function()
     local g = love.graphics
     local ms = self.ms

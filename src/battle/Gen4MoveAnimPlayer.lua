@@ -442,6 +442,10 @@ Player.NOT_NEEDED = {
                        .. "does nothing",
   -- The two demo functions whose tasks nothing waits for. `AnimExample` is NOT
   -- here: it occupies an anim-task slot for two frames and is held.
+  -- See `bgShakeApply`: program 87's one base-layer shake moves BG2 inside a
+  -- FADE-mode switch, which never turns BG2 on -- invisible on the cartridge too.
+  ["shakebg on the base layer, which is not drawn"] = "the cartridge shakes a "
+      .. "layer that is switched off",
   ["callfunc:soundexample"] = "a demo task that does nothing, on the sound queue "
                               .. "no wait in this player reads",
   ["callfunc:genericexample"] = "a demo task that does nothing, on a plain "
@@ -751,6 +755,7 @@ function Player:start(moveId, attackerIsPlayer)
   -- and its two cousins all write slot 0; `createemitterex` names its own.
   self.emitterAt = {}
   self.emitterSeq = 0
+  self.projections = {}
   -- The 2D sprite managers (ids 0-3; the cartridge only ever uses 0) and the
   -- sprites in them. Cleared per run like the particle slots.
   self.managers = {}
@@ -818,10 +823,21 @@ function Player:start(moveId, attackerIsPlayer)
   -- The two transforms, per SIDE rather than per battler: this port draws one
   -- Pokemon a side in a Sinnoh battle, and `monOffset(isPlayer)` is the shape
   -- the seam already speaks.
+  -- rot/rise/alpha/mosaic/brightness/white/ghosts are the channels the
+  -- bespoke functions in `Gen4MoveAnimExtras` drive (rotation about the
+  -- centre, translucency, Pixelate's mosaic, a dimmed or whitened Pokemon, and
+  -- after-image copies); the draw reads them through `monRotate`,
+  -- `monSpecial` and `monGhosts`.
   self.state = {
-    [true]  = { dx = 0, dy = 0, sx = 1, sy = 1, hidden = false, tint = nil },
-    [false] = { dx = 0, dy = 0, sx = 1, sy = 1, hidden = false, tint = nil },
+    [true]  = { dx = 0, dy = 0, sx = 1, sy = 1, hidden = false, tint = nil,
+                rot = 0, rise = 0, alpha = 1, mosaic = 1, brightness = 1, white = 0 },
+    [false] = { dx = 0, dy = 0, sx = 1, sy = 1, hidden = false, tint = nil,
+                rot = 0, rise = 0, alpha = 1, mosaic = 1, brightness = 1, white = 0 },
   }
+  -- A whole-screen brightness/colour wash ({ r, g, b, a }) and an extra scroll
+  -- of the effect background ({ x, y }), both driven by extras.
+  self.screenFlash = nil
+  self.bgScroll = nil
   -- THE MON-SPRITE SLOTS, cleared per run for the reason every other per-run
   -- table is: `freepokemonspritemanager` empties them at the end of a well-formed
   -- program, and a program that ends without one must not leave a copy of the
@@ -880,9 +896,13 @@ function Player:clearTransforms()
   self.monSprites = {}
   self.monSpriteManager = false
   self.monWindowRect = nil
+  self.screenFlash = nil
+  self.bgScroll = nil
   if not self.state then return end
   for _, s in pairs(self.state) do
     s.dx, s.dy, s.sx, s.sy, s.hidden, s.tint = 0, 0, 1, 1, false, nil
+    s.rot, s.rise, s.alpha, s.mosaic, s.brightness, s.white = 0, 0, 1, 1, 1, 0
+    s.ghosts = nil
   end
 end
 
@@ -971,7 +991,13 @@ local SOUND_TASKS = { sndrepeat = true, snddelay = true, sndpan = true }
 function Player:taskCount()
   local n = 0
   for _, t in ipairs(self.tasks) do
-    if not t.done and not TASK_NOT_COUNTED[t.kind] then n = n + 1 end
+    if not t.done and not TASK_NOT_COUNTED[t.kind] and not t.uncounted then n = n + 1 end
+  end
+  -- ...AND EVERY LIVE SPRITE CALLBACK. All 33 `BattleAnimSpriteFunc_*` in pret
+  -- start their state machine with `BattleAnimSystem_StartAnimTask`, so a
+  -- `waitforanimtasks` after `addspritewithfunc` holds until the callback ends.
+  for _, ctx in ipairs(self.spriteCtxs or {}) do
+    if not ctx.done then n = n + 1 end
   end
   return n
 end
@@ -1565,6 +1591,11 @@ local STEP = {
   monrev = stepMonRev, emrev = stepEmitterRev,
   sndrepeat = stepSoundRepeat, snddelay = stepSoundDelay, sndpan = stepSoundPan,
   monprio = stepMonSpritePrio,
+  -- A TASK WHOSE BODY IS A FUNCTION. The bespoke script functions and sprite
+  -- callbacks in `Gen4MoveAnimExtras` (one per move, the long tail of pret's
+  -- sBattleAnimScriptFuncs) each carry their own state machine; `t.step(self, t)`
+  -- runs it and sets `t.done`.
+  fn = function(self, t) t.step(self, t) end,
 }
 
 -- THE PALETTE FADE STEPS LAST, and that is a priority and not a preference.
@@ -1636,6 +1667,16 @@ end
 -- It cost this pass an afternoon: the base fade read its end value as nil, became
 -- a fade from 0 to 0, and finished on its first frame, so a twenty-frame switch
 -- took five and nothing was ever tinted.)
+local extrasModule = nil
+local function loadExtras()
+  if extrasModule == nil then
+    local ok, m = pcall(require, "src.battle.Gen4MoveAnimExtras")
+    extrasModule = ok and m or false
+    if not ok then print("Gen4MoveAnimExtras: " .. tostring(m)) end
+  end
+  return extrasModule or nil
+end
+
 local function bgr555(value)
   value = value or 0
   local r = (value % 32) / 31
@@ -1721,14 +1762,56 @@ function Player:callFunc(args)
   end
 
   if id == F.FADE_BATTLER_SPRITE then
+    -- !! A ROUND TRIP, REPEATED, AND FOR A LONG TIME THIS WAS ONE WAY.
+    -- `BattleAnimTask_FadeBattlerSprite` (script_funcs_3.c) is a five-state
+    -- machine: StartFade(0 -> alpha), wait, hold `holdFrames`, StartFade(alpha
+    -- -> 0), wait -- and then `endDelay` is DECREMENTED and the whole thing
+    -- runs again until it reaches zero. So Thunderbolt's defender blinks
+    -- black six times and comes back; this arm used to ramp the tint up once
+    -- and leave the Pokemon a silhouette until the program ended. 270 calls
+    -- over 153 programs -- the commonest "hit" effect in Sinnoh.
+    --
+    -- `PokemonSprite_StartFade(sprite, from, to, delay, colour)` steps the
+    -- fraction by one sixteenth every `delay + 1` frames (Gen4AnimMath.monFade).
     local r, g, b = bgr555(arg(args, vars.colour))
+    local alpha = arg(args, vars.alpha) or 0
+    local delay = arg(args, vars.stepFrames) or 0
+    local hold0 = arg(args, vars.holdFrames) or 0
+    local sides = self:sidesFor(arg(args, vars.target))
+    local function apply(p, c)
+      local a = (c.applied or c.alpha or 0) / 16
+      for side in pairs(sides) do
+        p.state[side].tint = (a > 0) and { r, g, b, min(1, a) } or nil
+      end
+    end
     self:addTask({
-      kind = "fade",
-      frames = max(1, (arg(args, vars.stepFrames) or 1)
-                      * max(1, arg(args, vars.alpha) or 1)),
-      r = r, g = g, b = b,
-      alpha = min(1, (arg(args, vars.alpha) or 0) / 16),
-      sides = self:sidesFor(arg(args, vars.target)),
+      kind = "fn", state = 0, endDelay = arg(args, vars.endDelay) or 0,
+      hold = hold0,
+      step = function(p, t)
+        if t.state == 0 then
+          t.fade = Gen4AnimMath.monFade(0, alpha, delay, r, g, b)
+          t.hold = hold0
+          t.state = 1
+        elseif t.state == 1 then
+          if not Gen4AnimMath.monFadeUpdate(t.fade) then t.state = 2 end
+          apply(p, t.fade)
+        elseif t.state == 2 or t.state == 3 then
+          if t.state == 2 then
+            if t.hold > 0 then t.hold = t.hold - 1 return end
+          end
+          t.fade = Gen4AnimMath.monFade(alpha, 0, delay, r, g, b)
+          t.state = 4
+        elseif t.state == 4 then
+          if not Gen4AnimMath.monFadeUpdate(t.fade) then
+            t.endDelay = t.endDelay - 1
+            if t.endDelay <= 0 then t.state = 5 else t.state = 0 end
+          end
+          apply(p, t.fade)
+        else
+          for side in pairs(sides) do p.state[side].tint = nil end
+          t.done = true
+        end
+      end,
     })
     return
   end
@@ -1892,6 +1975,11 @@ function Player:callFunc(args)
     return
   end
 
+  -- THE LONG TAIL: one bespoke function per move (Strength, Double Team, Surf,
+  -- ...), ported in `Gen4MoveAnimExtras` and its batch modules. Anything still
+  -- not there is counted, as before.
+  local Extras = loadExtras()
+  if Extras and Extras.callFunc(self, id, args) then return end
   self:note("callfunc:" .. tostring(id))
 end
 
@@ -2167,7 +2255,10 @@ function Player:bgLayerState()
   local layer = self.bgLayer
   local shake = self.bgShake
   local anim = self.bgAnim
-  if not (layer or shake) then return nil end
+  -- `bgScroll` is the extras' scroll of the effect layer (Surf's wave,
+  -- ScrollSwitchedBg, Muddy Water) -- whole-layer offsets.
+  local scroll = self.bgScroll
+  if not (layer or shake or scroll) then return nil end
   local r, g, b, a
   if layer then r, g, b, a = self:groupTint("effect") end
   return {
@@ -2176,8 +2267,10 @@ function Player:bgLayerState()
     blend = layer and layer.blend or false,
     base = layer and layer.base or 1,
     effect = layer and layer.effect or 1,
-    offsetX = (anim and anim.offsetX or 0) + (shake and shake[1] or 0),
-    offsetY = (anim and anim.offsetY or 0) + (shake and shake[2] or 0),
+    offsetX = (anim and anim.offsetX or 0) + (shake and shake[1] or 0)
+              + (scroll and scroll.x or 0),
+    offsetY = (anim and anim.offsetY or 0) + (shake and shake[2] or 0)
+              + (scroll and scroll.y or 0),
     tint = (a and a > 0) and { r, g, b, a } or nil,
   }
 end
@@ -2530,6 +2623,11 @@ function Player:update()
       -- is what `waitforallemitters` waiting on all of them regardless of slot
       -- implies, and what a program that unloads before waiting requires.
       self.slots[tonumber(args[1]) or 0] = nil
+    elseif name == "setcameraprojection" then
+      -- (particle system, projection): which column of the world-position
+      -- tables the generic emitter callback reads. Orthographic by default.
+      self.projections = self.projections or {}
+      self.projections[tonumber(args[1]) or 0] = tonumber(args[2]) or 1
     elseif name == "createemitter" then
       self:createEmitter(args[1], args[2], args[3])
     elseif name == "createemitterex" then
@@ -2610,6 +2708,30 @@ function Player:update()
       end
     elseif name == "switchbg" then
       self:bgSwitchStart(args[1], args[2], false)
+    elseif name == "switchbgoffset" then
+      -- HGSS opcode 86: switchbg plus a direction/amount nudge of the switch's
+      -- x/y offset bytes. Both HGSS uses (Zap Cannon, Superpower) pass an
+      -- amount of 0, so the switch is the whole effect.
+      self:bgSwitchStart(args[1], args[2], false)
+      if hi16(args[3] or 0) ~= 0 then self:note("switchbgoffset with an offset") end
+    elseif name == "brightnessflash" then
+      -- HGSS opcode 85 (ov07_0221D374): the main screen's brightness goes
+      -- 0 -> +16 (white) over N frames and back 16 -> 0 over N, on
+      -- BG2|BG3|OBJ|BD. A plain SysTask: `waitforanimtasks` does not see it.
+      local n = max(1, (tonumber(args[1]) or 0) % 256)
+      self:addTask({ kind = "fn", uncounted = true, frames = 2 * n + 1,
+        step = function(p, t)
+          local f = t.frame
+          local a
+          if f <= n then a = f / n else a = max(0, (2 * n - f) / n) end
+          p.screenFlash = a > 0 and { 1, 1, 1, a } or nil
+          if f >= 2 * n then p.screenFlash = nil; t.done = true end
+        end })
+    elseif name == "jumpifanimflag" then
+      -- HGSS opcode 87 (ov07_0221D23C): jump if bit 1 of the animation
+      -- context's flag word is set. What sets that bit is not identified; it
+      -- is clear in an ordinary battle as far as this port knows, so the
+      -- program falls through and plays in full (the Platinum behaviour).
     elseif name == "restorebg" then
       -- The bg id operand IS READ and then not used: pret's own comment on the
       -- macro says so ("not actually used"), and the restore always goes back to
@@ -2815,6 +2937,23 @@ function Player:update()
       -- over 21 programs, and the hide is the observable half.
       local rec = self.monSprites and self.monSprites[signed(args[3])]
       if rec then rec.visible = false end
+    elseif name == "loadpokemonspriteintobg" then
+      -- (role, track): the battler's tiles copied into BG2 so a scanline or
+      -- blend effect can run on it (Acid Armor, Spite, Extrasensory, Sketch).
+      -- In a single battle the copy sits exactly where the battler stands,
+      -- so this port keeps drawing the battler and the bespoke function that
+      -- follows drives the battler's own channels (Gen4MoveAnimExtras).
+      -- Recorded so a function can ask which side is "in the BG".
+      self.monBgSide = self:sideForRole(signed(args[1] or 0))
+    elseif name == "removepokemonspritefrombg" then
+      self.monBgSide = nil
+    elseif name == "startbattlerslidein" or name == "startbattlerslideout" then
+      -- pret's names are misleading: both RELOAD a battler's sprite
+      -- (ov12_022380BC / 022382BC) -- Transform's copy of the foe, the
+      -- Substitute doll, Role Play's swap and back. This port's battle swaps
+      -- the picture itself when the effect lands (transform / substitute
+      -- state on the battler), so the command has nothing left to do here.
+      self.spriteReloads = (self.spriteReloads or 0) + 1
     elseif name == "freepokemonspritemanager" then
       self.monSpriteManager = false
       self.monSprites = {}
@@ -3136,6 +3275,41 @@ function Player:monOffset(isPlayer)
   return dx, dy
 end
 
+-- monRotate(isPlayer) -> radians, rise   (nil when upright)
+function Player:monRotate(isPlayer)
+  if not self:alive() then return nil end
+  local s = self.state[isPlayer and true or false]
+  if not s.rot or s.rot == 0 then return nil end
+  return s.rot, s.rise or 0
+end
+
+-- monSpecial(isPlayer) -> { alpha, mosaic, brightness, white } or nil
+function Player:monSpecial(isPlayer)
+  if not self:alive() then return nil end
+  local s = self.state[isPlayer and true or false]
+  local alpha, mosaic = s.alpha or 1, s.mosaic or 1
+  local brightness, white = s.brightness or 1, s.white or 0
+  if alpha >= 1 and mosaic <= 1 and brightness >= 1 and white <= 0 then return nil end
+  return { alpha = alpha, mosaic = mosaic, brightness = brightness, white = white }
+end
+
+-- monGhosts(isPlayer) -> list of { dx, dy, alpha, sx, sy, tint } or nil: copies
+-- of the battler's picture drawn under it (Double Team, Minimize, Agility ...).
+function Player:monGhosts(isPlayer)
+  if not self:alive() then return nil end
+  local list = self.state[isPlayer and true or false].ghosts
+  if not list or #list == 0 then return nil end
+  return list
+end
+
+-- screenWash() -> r, g, b, a (0-1) over the field, or nil.
+function Player:screenWash()
+  if not self:alive() then return nil end
+  local f = self.screenFlash
+  if not f or (f[4] or 0) <= 0 then return nil end
+  return f[1], f[2], f[3], f[4]
+end
+
 function Player:monAffine(isPlayer)
   if not self:alive() then return 1, 1 end
   local s = self.state[isPlayer and true or false]
@@ -3238,6 +3412,15 @@ function Player:createEmitter(slot, resource, callback, index)
     return false
   end
   local where = EMITTER_AT[tonumber(callback) or 0] or EMITTER_AT[0]
+  -- THE GENERIC CALLBACK (17) PLACES ITSELF FROM THE SCRIPT. 556 emitters over
+  -- 164 moves use it, and all of them were drawn at the midpoint between the
+  -- battlers -- Ember's flames burned in the empty air between the two
+  -- Pokemon. See `genericPlacement`.
+  local placed = nil
+  if tonumber(callback) == 17 then
+    placed = self:genericPlacement(slot)
+    if placed then where = placed end
+  end
   self.emitterSeq = self.emitterSeq + 1
   -- A SEED THAT IS A FUNCTION OF THE PROGRAM, not of the clock: `duration()`
   -- runs every program twice and compares nothing if the two passes diverge,
@@ -3247,6 +3430,12 @@ function Player:createEmitter(slot, resource, callback, index)
     system = sys, art = set.art, member = set.member,
     origin = where.origin, axis = where.axis and true or false,
   }
+  if placed and (placed.dx ~= 0 or placed.dy ~= 0) then
+    -- An emitter position is where particles are BORN; the particle system
+    -- carries it as `emitterX/Y` (pixels from the origin), which is also what
+    -- the emitter-moving functions overwrite.
+    sys.emitterX, sys.emitterY = placed.dx, placed.dy
+  end
   self.emitters[#self.emitters + 1] = record
   -- ...AND FILED UNDER ITS SLOT, because something addresses one now.
   --
@@ -3259,6 +3448,168 @@ function Player:createEmitter(slot, resource, callback, index)
   return true
 end
 
+-- ---------------------------------------------------------------------------
+-- THE GENERIC EMITTER CALLBACK (`BattleAnimEmitterCb_Generic`,
+-- generic_emitter_callback.c) AND WHY `setextraparams` NEVER RUNS.
+--
+-- The callback is called synchronously from inside `createemitter*`, with the
+-- script pointer sitting on the NEXT instruction -- and it reads its six
+-- parameters (priority, target mode, position, axis, behaviour, camera)
+-- straight out of the script with `BattleAnimSystem_GetExtraParams`, which
+-- skips the `setextraparams` opcode word and consumes `<count> <values>`. So
+-- the opcode whose handler is `GF_ASSERT(FALSE)` is never executed: it is the
+-- callback's DATA. Position modes that take an offset read a second block of
+-- four (flip, x, y, z), and the per-battler offset modes read six such blocks.
+--
+-- WHERE THE POSITIONS COME FROM. `BattleAnimUtil_GetBattlerTypeWorldPos*`
+-- holds 3D world positions per battler type, per position kind, per camera
+-- projection (battle_anim_util.c). The two solo NORMAL positions map onto the
+-- two screen centres this port draws at (64,112) and (192,48), and that pair
+-- fixes an affine map per projection; every other position kind and every
+-- explicit offset goes through the same map. The camera projection is per
+-- particle system, ORTHOGRAPHIC unless `setcameraprojection` says otherwise
+-- (`system->cameraProjections[i] = CAMERA_PROJECTION_ORTHOGRAPHIC` at init).
+-- Z is depth on the cartridge and is not drawn.
+-- ---------------------------------------------------------------------------
+
+local FX = 4096
+-- [kind] = { [projection] = { player {x, y}, enemy {x, y} } }, 0 persp 1 ortho
+local WORLD_POS = {
+  normal       = { [0] = { { -2.3477, -1.334 }, { 2.6992, 1.0742 } }, [1] = { { -2.5, -1.5625 }, { 2.5, 0.75 } } },
+  beam1        = { [0] = { { -0.9688, -0.8125 }, { 2.2812, 0.5312 } }, [1] = { { -1.6035, -0.9766 }, { 2.1484, 1.5781 } } },
+  beam2        = { [0] = { { -0.9688, -0.8125 }, { 2.2812, 0.5312 } }, [1] = { { -1.6406, -1.414 }, { 3.5469, 1.961 } } },
+  beam3        = { [0] = { { -2.1074, -1.6934 }, { 3.1504, 1.247 } } },
+  hypnosis     = { [0] = { { -3.0625, -0.9375 }, { 1.3262, 1.6309 } } },
+  triattack    = { [0] = { { -2.3516, -1.4297 }, { 3.209, 2.752 } } },
+  hydrocannon  = { [0] = { { -1.0117, -1.2695 }, { 4.0508, 1.2617 } } },
+  hypervoice   = { [0] = { { -3.0469, -1.0469 }, { 3.2188, 1.8594 } } },
+  grasswhistle = { [0] = { { -0.4375, -1.0312 }, { 4.125, 0.8125 } } },
+  dragonpulse  = { [0] = { { -2.0312, -1.0156 }, { 2.6562, 1.0938 } } },
+  hydropump    = { [0] = { { -1.5254, -0.7188 }, { 2.0215, 1.3262 } } },
+}
+-- position mode -> { kind, which battler, offset reading }
+local GENERIC_POS = {
+  [1] = { "normal" }, [2] = { "normal", true },
+  [4] = { "normal", false, "offset" }, [5] = { "normal", true, "offset" },
+  [6] = { "beam1" }, [7] = { "beam1", true },
+  [8] = { "hydropump" }, [9] = { "hydropump", true },
+  [10] = { "beam2" }, [11] = { "beam2", true },
+  [12] = { "normal", "attackerSide", "offset" }, [13] = { "normal", "defenderSide", "offset" },
+  [14] = { "beam3" }, [15] = { "beam3", true },
+  [16] = { "hypnosis" }, [17] = { "hypnosis", true },
+  [18] = { "triattack" }, [19] = { "triattack", true },
+  [20] = { "hydrocannon" }, [21] = { "hydrocannon", true },
+  [22] = { "hypervoice" }, [23] = { "hypervoice", true },
+  [24] = { "grasswhistle" }, [25] = { "grasswhistle", true },
+  [26] = { "dragonpulse" }, [27] = { "dragonpulse", true },
+  [34] = { "normal" },                                     -- DESTINY_BOND: start
+  [100] = { "normal", false, "offsetEx" }, [101] = { "normal", true, "offsetEx" },
+}
+-- The special absolute ones, per solo battler type of the start battler.
+local GENERIC_SPECIAL = {
+  [30] = { { -2.6904, -0.8516 }, { 2.6562, 1.8691 } },    -- BATON_PASS
+  [31] = { { -1.4063, -1.0625 }, { 2.3164, -0.4844 } },   -- BUBBLE
+  [32] = { { -1.125, -1.0938 }, { 1.8613, 0.5488 } },     -- DRAGON_BREATH
+}
+Player.WORLD_POS = WORLD_POS
+
+-- world (units) -> DS screen pixels, by the solo NORMAL pair of a projection.
+function Player.worldToScreen(wx, wy, projection)
+  local n = WORLD_POS.normal[projection == 0 and 0 or 1]
+  local p, e = n[1], n[2]
+  local kx = (192 - 64) / (e[1] - p[1])
+  local ky = (48 - 112) / (e[2] - p[2])
+  return 64 + (wx - p[1]) * kx, 112 + (wy - p[2]) * ky
+end
+
+-- Read one `setextraparams <count> <values>` block at the cursor, advancing it.
+function Player:readExtraParams(cursor, want)
+  local row = self.code and self.code[cursor.pc]
+  if not (row and Gen4MoveAnim.OPCODES[row[1]] == "setextraparams") then return nil end
+  cursor.pc = cursor.pc + 1
+  local count = tonumber(row[2]) or 0
+  if want and count ~= want then return nil end
+  local out = {}
+  for i = 1, count do out[i] = signed(row[2 + i] or 0) end
+  return out
+end
+
+-- genericPlacement(psSlot) -> { origin = name, dx, dy, axis } or nil
+function Player:genericPlacement(psSlot)
+  local cursor = { pc = self.pc }
+  local params = self:readExtraParams(cursor, 6)
+  if not params then return nil end
+  local targetMode, posMode, axisMode = params[2], params[3], params[4]
+  local projection = (self.projections and self.projections[tonumber(psSlot) or 0]) or 1
+  -- start/end battler: DEFAULT/DEFENDER modes go attacker -> defender, the
+  -- two ATTACKER modes (1, 3) defender -> attacker.
+  local startIsAttacker = not (targetMode == 1 or targetMode == 3)
+  local startSide
+  if startIsAttacker then startSide = self.attackerIsPlayer else startSide = not self.attackerIsPlayer end
+  local function originOf(isPlayerSide)
+    if isPlayerSide == self.attackerIsPlayer then return "attacker" end
+    return "defender"
+  end
+  local out = { axis = axisMode ~= 0, dx = 0, dy = 0 }
+  local function placeAt(isPlayerSide, wx, wy)
+    local n = WORLD_POS.normal[projection == 0 and 0 or 1]
+    local base = isPlayerSide and n[1] or n[2]
+    local sx, sy = Player.worldToScreen(wx, wy, projection)
+    local bx, by = Player.worldToScreen(base[1], base[2], projection)
+    out.origin = originOf(isPlayerSide)
+    out.dx, out.dy = sx - bx, sy - by
+  end
+  local function offsetBlock(dirSide)
+    local b = self:readExtraParams(cursor, 4)
+    if not b then return 0, 0 end
+    -- flip, x, y, z (fx32): x and y are negated when the START battler is on
+    -- the enemy side, unless the flip operand disables it.
+    local dir = dirSide and 1 or -1
+    if b[1] == 1 then dir = 1 end            -- BATTLE_PTCL_FLIP_DISABLE
+    return b[2] * dir / FX, b[3] * dir / FX
+  end
+  local spec = GENERIC_POS[posMode]
+  if posMode == 3 then
+    -- EXPLICIT: an absolute world position.
+    local ox, oy = offsetBlock(startSide)
+    local sx, sy = Player.worldToScreen(ox, oy, projection)
+    out.origin = "player"
+    out.dx, out.dy = sx - 64, sy - 112
+  elseif GENERIC_SPECIAL[posMode] then
+    local w = GENERIC_SPECIAL[posMode][startSide and 1 or 2]
+    placeAt(startSide, w[1], w[2])
+  elseif spec then
+    local kind, which, offset = spec[1], spec[2], spec[3]
+    local side
+    if which == "attackerSide" then side = self.attackerIsPlayer
+    elseif which == "defenderSide" then side = not self.attackerIsPlayer
+    elseif which == true then side = not startSide
+    else side = startSide end
+    local tbl = WORLD_POS[kind] or WORLD_POS.normal
+    local pair = tbl[projection == 0 and 0 or 1] or tbl[0]
+    local w = side and pair[1] or pair[2]
+    local wx, wy = w[1], w[2]
+    if offset == "offset" then
+      local ox, oy = offsetBlock(startSide)
+      wx, wy = wx + ox, wy + oy
+    elseif offset == "offsetEx" then
+      -- six blocks, one per battler type; the solo types are the first two.
+      local blocks = {}
+      for i = 1, 6 do blocks[i] = self:readExtraParams(cursor, 4) end
+      local b = blocks[side and 1 or 2]
+      if b then
+        local dir = startSide and 1 or -1
+        if b[1] == 1 then dir = 1 end
+        wx, wy = wx + b[2] * dir / FX, wy + b[3] * dir / FX
+      end
+    end
+    placeAt(side, wx, wy)
+  else
+    return nil                                  -- POS_NONE, contest specials
+  end
+  return out
+end
+
 -- WHICH OF THE SIX RESOURCES `createemitterformove` MEANT.
 --
 -- The operands are (system, plParallel, plDiagonal2, plDiagonal1, emParallel,
@@ -3267,8 +3618,13 @@ end
 -- has ONE orientation, so this takes the parallel resource for the attacking
 -- side -- the head-on one -- and says so rather than averaging the three.
 function Player:resourceForMove(args)
+  -- !! AND THAT IS EXACTLY THE CARTRIDGE'S CHOICE IN A SINGLE BATTLE, so it is
+  -- no longer counted as a gap. `BattleAnimSystem_GetParticleResIdxForMove`
+  -- indexes a 6x6 table by (attacker type, defender type): SOLO_PLAYER vs
+  -- SOLO_ENEMY is 1 and SOLO_ENEMY vs SOLO_PLAYER is 4, minus one -- resource
+  -- table entries 0 (player parallel) and 3 (enemy parallel). The diagonal
+  -- entries only exist for the doubles battler types.
   local attacker = self.attackerIsPlayer
-  self:note("createemitterformove picked the parallel resource")
   return attacker and args[2] or args[5], args[8]
 end
 
@@ -4370,6 +4726,10 @@ function Player:addSprite(id, funcId, char, palette, cell, anim)
   -- the callback is the motion on top of it.
   local func = funcId and SPRITE_FUNCS[funcId] or nil
   local motion = funcId and SPRITE_MOTION[funcId] or nil
+  if funcId and not motion then
+    local Extras = loadExtras()
+    motion = Extras and Extras.SPRITES[funcId] or nil
+  end
 
   -- AND FISSURE'S ABSOLUTE HEIGHT. The record carries the origin name for the X
   -- and an absolute screen Y beside it, because that is what the cartridge does:
@@ -4583,4 +4943,8 @@ function Player:missing()
 end
 
 Gen4MoveAnimPlayer.Player = Player
+-- Exported for the coverage audit (tools/gen4_move_anim_audit.lua), which
+-- asks statically whether every callback a program names has a motion.
+Player.SPRITE_MOTION = SPRITE_MOTION
+Player.SPRITE_FUNCS = SPRITE_FUNCS
 return Gen4MoveAnimPlayer

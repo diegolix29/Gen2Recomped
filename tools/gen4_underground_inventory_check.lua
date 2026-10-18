@@ -699,7 +699,8 @@ do
       missing[#missing + 1] = verb
     end
   end
-  ok(assigned >= 2,
+  -- one since pass 34, when the Hall of Fame row became a real screen
+  ok(assigned >= 1,
      "only %d verb(s) are assigned from `pending(...)`, which is too few for "
      .. "this sweep to have found the spelling it is about", assigned)
   ok(#missing == 0,

@@ -570,7 +570,7 @@ function PC:bottomShown()
  if not okS or not self.game then return false end
  local mode=SS.mode(self.game)
  local combined=SS.combined and SS.combined(self.game)
- return ((mode=='display' or mode=='inset') and not SS.stowed(self.game)) or combined or false,SS
+ return (require('src.ui.SecondScreen').separateMode(mode) and not SS.stowed(self.game)) or combined or false,SS
 end
 function PC:bottomPoint(px,py)
  local shown,SS=self:bottomShown()

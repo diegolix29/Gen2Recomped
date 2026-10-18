@@ -87,23 +87,25 @@ done
 [ -n "$MANIFESTS" ] || fail "no tools/rom_manifest*.json found; no ROM could be imported"
 say "manifests:$MANIFESTS"
 
-# mods/ ships too: the launcher's MODS tab lists what is installed, and the
-# bundled example mods (DramaticShapes among them) live there.
+# THE BUNDLED MODS (scripts/bundled_mods.txt) ship -- DRAMATIC SHAPES -- and
+# ONLY those: zipping all of mods/ packed whatever a working folder held,
+# every installed mod with its .git, release zips and the OpenXR drop.
+BUNDLED_MODS=""
+if [ -f "$ROOT/scripts/bundled_mods.txt" ]; then
+  while IFS= read -r line; do
+    line="${line%%#*}"; line="${line//[[:space:]]/}"
+    [ -n "$line" ] && [ -d "$ROOT/mods/$line" ] && BUNDLED_MODS="$BUNDLED_MODS mods/$line"
+  done < "$ROOT/scripts/bundled_mods.txt"
+fi
+# shellcheck disable=SC2086  # BUNDLED_MODS / MANIFESTS are word lists
 (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
-  main.lua conf.lua src data assets mods tools/save-editor tools/map-editor \
+  main.lua conf.lua src data assets $BUNDLED_MODS tools/save-editor tools/map-editor \
   $MANIFESTS \
-  main.lua conf.lua src data assets tools/save-editor \
-  tools/rom_manifest.json tools/rom_manifest_blue.json \
-  tools/rom_manifest_yellow.json tools/rom_manifest_gold.json \
-  tools/rom_manifest_silver.json bundlemods\
-  -x '*.DS_Store' 'data/generated/*' 'assets/generated/*')
-# Materialize the listing once and grep the file: piping unzip straight into
-# grep -q under `set -o pipefail` SIGPIPEs unzip when grep exits early on a
-# match, and the pipeline's failure reads as "missing <file>" for whichever
-# entry happened to match first (see the same fix in pack_love.sh).
-LOVE_LISTING="$WORK/love-listing.txt"
-unzip -Z1 "$LOVE_FILE" > "$LOVE_LISTING"
-if grep -Eq '^(data|assets)/generated/[^/]+|^(data|assets)/generated/.+/' "$LOVE_LISTING"; then
+  -x '*.DS_Store' 'data/generated/*' 'assets/generated/*' '*/generated/*' \
+     'mods/*/tests/*' 'mods/*/tools/*' 'mods/*/oxr/*' 'mods/*.zip' \
+     'mods/*/CHANGELOG.md' 'mods/*_PLAN.md' 'mods/*/.git*')
+if unzip -Z1 "$LOVE_FILE" \
+    | grep -Eq '^(data|assets)/generated/[^/]+|^(data|assets)/generated/.+/'; then
   fail "game.love unexpectedly contains generated ROM data"
 fi
 # The editor is only reachable if its entry point and both module directories
@@ -117,9 +119,8 @@ fi
 for required in tools/save-editor/App.lua tools/save-editor/Kit.lua \
                 tools/save-editor/panels/Party.lua \
                 tools/map-editor/MapEdits.lua tools/map-editor/ModExport.lua \
-                tools/map-editor/panels/Preview.lua; do
-  grep -qxF "$required" "$LOVE_LISTING" \
-    || fail "game.love is missing $required"
+                tools/map-editor/panels/Preview.lua \
+                $(for m in $BUNDLED_MODS; do echo "$m/manifest.json $m/main.lua"; done); do
   unzip -Z1 "$LOVE_FILE" | grep -qx "$required" \
     || fail "game.love is missing $required"
 done

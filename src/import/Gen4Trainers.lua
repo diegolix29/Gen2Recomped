@@ -109,7 +109,11 @@ function Gen4Trainers.parseParty(header, party)
     local o = i * stride
     local packed = u16(party, o + 4)
     local mon = {
-      ivScale = u16(party, o),
+      -- `difficulty` is ONE byte (pokeheartgold trainer_data.h); the next is
+      -- genderAbilityOverride (low nibble gender, high nibble ability). Read
+      -- as a u16 the two made Bugsy's Scyther's scale 8,272 -- IVs of 1,005.
+      ivScale = u8(party, o),
+      genderAbilityOverride = u8(party, o + 1),
       level = u16(party, o + 2),
       -- low 10 bits are the species; the rest is the form index
       species = packed % 1024,

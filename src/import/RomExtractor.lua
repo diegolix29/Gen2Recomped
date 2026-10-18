@@ -1963,6 +1963,18 @@ function RomExtractor:extractField()
   for index, values in pairs(adjacency) do converted[tonumber(index)] = values end
   data.hiddenExtras.trashCans.adjacent = converted
   data.source = "canonical Pokemon Red ROM + bundled port metadata"
+  -- The cable-trade cinematic's own tiles, tilemaps, ball and bubble
+  -- (engine/movie/trade.asm; src/import/Gen1TradeArt.lua).  Cosmetic, so a
+  -- manifest without the symbols, or a failed read, leaves TradeAnim on its
+  -- drawn fallbacks instead of failing the whole import.
+  local tradeOk, tradeArt = pcall(
+    require("src.import.Gen1TradeArt").extract, self)
+  if tradeOk then
+    data.tradeArt = tradeArt
+  else
+    require("src.core.Logger").warn("trade art not extracted: %s",
+                                    tostring(tradeArt))
+  end
   self:write("field", data)
   self:tick("Interface artwork", total, total)
   return data

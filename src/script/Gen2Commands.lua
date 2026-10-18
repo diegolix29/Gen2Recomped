@@ -3731,12 +3731,17 @@ function Commands.g2_trade(ctx, index)
     dex.owned[trade.get] = true
   end
 
-  require("src.ui.Screens").push(game, "TradeAnim", {
+  -- GSC's own movie (engine/movie/trade_animation.asm TradeAnimation; it
+  -- falls back to Red's when the cache has no field.gen2TradeAnim).  The OT's
+  -- gender mark is DoNPCTrade's: CAUGHT_BY_BOY unless the dialog set is
+  -- TRADE_DIALOGSET_GIRL.
+  require("src.ui.Screens").push(game, "Gen2TradeAnim", {
     sent = sent, received = newMon,
     enemyName = newMon.ot,
     playerOt = ctx.save.player.name,
     playerOtId = sent.otId or ctx.save.player.id,
     enemyOtId = newMon.otId,
+    otGender = (tonumber(trade.dialog) == 3) and "female" or "male",
     onDone = function() runner:resume() end,
   })
   runner:yield()

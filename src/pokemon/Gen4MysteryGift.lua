@@ -53,8 +53,47 @@ MysteryGift.GIFTS = {
     about = "A MANAPHY EGG -- hatches a MANAPHY" },
 }
 
+-- HEARTGOLD / SOULSILVER: their event content opens on a FATEFUL-ENCOUNTER
+-- Pokemon or an item (pokeheartgold's own checks), so these are what the
+-- deliveryman (scr_seq_0144, text bank 209) brings:
+--   FollowerPokeIsEventTrigger EVENT_SPIKY_EARED_PICHU -- a shiny fateful
+--     Pichu walking behind you at Ilex Forest's shrine
+--   EVENT_CELEBI -- a fateful Celebi there: the time-travel story
+--   PlayerHasSpecies SPECIES_ARCEUS (Ruins of Alph) -- Sinjoh Ruins
+--   GetPartySlotWithFatefulEncounter 492 (Goldenrod) -- the Gracidea
+--   HasItem ITEM_ENIGMA_STONE (Pewter) -- Latias / Latios
+-- The Pichu is this port's gift FROM THE START (start = true): it is waiting
+-- at the first Poke Mart and does not count against the Hall of Fame picks.
+MysteryGift.HGSS = {
+  BANK = 209,
+  TEXT = { CANNOT_PARTY_FULL = 4, CANNOT_TOO_MANY = 5, POKEMON = 7, ITEM = 9, MANAPHY_EGG = 13 },
+  GIFTS = {
+    { key = "pichu", type = 1, species = 172, level = 30, shiny = true, fateful = true, text = 7,
+      start = true, label = "Shiny PICHU", about = "ILEX FOREST -- the Spiky-eared PICHU" },
+    { key = "celebi", type = 1, species = 251, level = 30, fateful = true, text = 7,
+      label = "CELEBI", about = "ILEX FOREST -- CELEBI's journey through time" },
+    { key = "arceus", type = 1, species = 493, level = 100, fateful = true, text = 7,
+      label = "ARCEUS", about = "SINJOH RUINS -- DIALGA, PALKIA or GIRATINA" },
+    { key = "shaymin", type = 1, species = 492, level = 30, fateful = true, text = 7,
+      label = "SHAYMIN", about = "GOLDENROD -- the GRACIDEA" },
+    { key = "enigma_stone", type = 3, item = 536, text = 9,
+      about = "PEWTER CITY -- LATIAS or LATIOS" },
+    { key = "manaphy_egg", type = 7, text = 13, label = "MANAPHY Egg",
+      about = "A MANAPHY EGG -- hatches a MANAPHY" },
+  },
+}
+
+-- the running game's list, bank and texts
+function MysteryGift.hgss()
+  local v = require("src.core.GameVersion").get()
+  return v == "heartgold" or v == "soulsilver"
+end
+function MysteryGift.gifts() return MysteryGift.hgss() and MysteryGift.HGSS.GIFTS or MysteryGift.GIFTS end
+function MysteryGift.bank() return MysteryGift.hgss() and MysteryGift.HGSS.BANK or MysteryGift.BANK end
+function MysteryGift.text() return MysteryGift.hgss() and MysteryGift.HGSS.TEXT or MysteryGift.TEXT end
+
 local function byKey(key)
-  for _, g in ipairs(MysteryGift.GIFTS) do if g.key == key then return g end end
+  for _, g in ipairs(MysteryGift.gifts()) do if g.key == key then return g end end
 end
 MysteryGift.byKey = byKey
 
@@ -62,6 +101,17 @@ local function state(save)
   save.gen4MysteryGift = save.gen4MysteryGift or { waiting = {}, taken = {} }
   local s = save.gen4MysteryGift
   s.waiting, s.taken = s.waiting or {}, s.taken or {}
+  -- the gifts handed out from the start, queued once per save (an existing
+  -- save gets them the first time this runs)
+  if not s.startSeeded then
+    s.startSeeded = true
+    for _, g in ipairs(MysteryGift.gifts()) do
+      if g.start and not s.taken[g.key] then
+        s.taken[g.key] = "start"
+        table.insert(s.waiting, 1, g.key)
+      end
+    end
+  end
   return s
 end
 MysteryGift.state = state
@@ -116,6 +166,21 @@ function MysteryGift.give(game, save, setVar)
         if (tonumber(vars[MysteryGift.SHAYMIN_STATE_VAR]) or 0) == 0 then setVar(save, MysteryGift.SHAYMIN_STATE_VAR, 1) end
       end
     end
+  elseif g.species then
+    -- a distributed Pokemon: the met data MonMetadataMatchesEvent accepts is
+    -- the fateful-encounter mark, and the Pichu's event wants it shiny
+    local Pokemon = require("src.pokemon.Pokemon")
+    local okN, mon = pcall(Pokemon.new, game.data, g.species, g.level or 5)
+    if okN and mon then
+      mon.fatefulEncounter = true
+      mon.fateful = true
+      if g.shiny then
+        mon.shiny = true
+        pcall(function() if Pokemon.makeShiny then Pokemon.makeShiny(mon, save) end end)
+      end
+      save.party = save.party or {}
+      if #save.party < 6 then table.insert(save.party, mon) end
+    end
   elseif g.key == "manaphy_egg" then
     local Pokemon = require("src.pokemon.Pokemon")
     local okN, mon = pcall(Pokemon.new, game.data, MysteryGift.MANAPHY, 1)
@@ -138,7 +203,7 @@ function MysteryGift.owed(save)
   if not save then return 0 end
   local s = state(save)
   local taken = 0
-  for _ in pairs(s.taken) do taken = taken + 1 end
+  for _, how in pairs(s.taken) do if how ~= "start" then taken = taken + 1 end end
   local wins = type(save.hallOfFame) == "table" and #save.hallOfFame or math.floor(tonumber(save.hallOfFame) or 0)
   return math.max(0, wins - taken)
 end
@@ -147,7 +212,7 @@ end
 function MysteryGift.available(save)
   local s = state(save)
   local out = {}
-  for _, g in ipairs(MysteryGift.GIFTS) do if not s.taken[g.key] then out[#out + 1] = g end end
+  for _, g in ipairs(MysteryGift.gifts()) do if not s.taken[g.key] then out[#out + 1] = g end end
   return out
 end
 

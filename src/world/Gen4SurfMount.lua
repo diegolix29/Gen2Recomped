@@ -333,7 +333,13 @@ function M.drawLive(ground, left, top, vw, vh)
   local Gen4Ground = require("src.render.Gen4Ground")
   local m = Gen4Ground.liftMatrix(base, y)
   local spread = Gen4Ground.liftedSpread and Gen4Ground.liftedSpread(ground.spread, y) or ground.spread
-  mdl:draw(Gen4Model.multiply(m, rotY(M.ANGLE[ow.surfMount.facing] or 0)), nil, nil, nil, spread)
+  -- HEARTGOLD / SOULSILVER: the sea's own surface (`sea_un`, the same height
+  -- as the walkable plate the mount stands on) hid the whole mount under the
+  -- depth test, so a surfer stood on bare water (New Bark, Route 27). The
+  -- mount is drawn over the ground there; the canopy and the sprites still
+  -- go over it.
+  local depth = isHgss() and "always" or nil
+  mdl:draw(Gen4Model.multiply(m, rotY(M.ANGLE[ow.surfMount.facing] or 0)), nil, nil, nil, spread, depth)
 end
 
 return M

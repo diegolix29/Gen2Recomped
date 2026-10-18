@@ -310,17 +310,40 @@ pack_game_love() {
   rm -f "$LOVE_FILE"
   # Same payload as scripts/build.sh / build_android.sh: game sources plus
   # tools/save-editor, which the launcher's Edit button opens in-process.
-  # Deliberately NO fused mods: a mod inside game.love sits in the
-  # read-only app bundle, so the mod manager's Delete can't remove it and
-  # it reappears every launch.  Mods install as .zips at runtime instead
-  # (launcher -> MODS -> Import mod .zip), the same lifecycle as every
-  # other platform.
-  # shellcheck disable=SC2086  # MANIFESTS is a deliberate word list
+  # Only the BUNDLED mods (scripts/bundled_mods.txt) are fused -- DRAMATIC
+  # SHAPES ships on every platform. A mod inside game.love sits in the
+  # read-only app bundle, so the mod manager's Delete can't remove it (it
+  # can be switched off); every other mod installs as a .zip at runtime
+  # (launcher -> MODS -> Import mod .zip).
+  local BUNDLED_MODS="" line
+  if [ -f "$ROOT/scripts/bundled_mods.txt" ]; then
+    while IFS= read -r line; do
+      line="${line%%#*}"; line="${line//[[:space:]]/}"
+      [ -n "$line" ] && [ -d "$ROOT/mods/$line" ] && BUNDLED_MODS="$BUNDLED_MODS mods/$line"
+    done < "$ROOT/scripts/bundled_mods.txt"
+  fi
+  # shellcheck disable=SC2086  # MANIFESTS / BUNDLED_MODS are word lists
   (cd "$ROOT" && zip -q -9 -r "$LOVE_FILE" \
     main.lua conf.lua src data assets tools/save-editor \
-    $MANIFESTS \
+    $MANIFESTS $BUNDLED_MODS \
     -x '*.DS_Store' -x '*/.git/*' -x '*/.DS_Store' \
-    -x 'data/generated/*' -x 'assets/generated/*')
+    -x 'data/generated/*' -x 'assets/generated/*' -x '*/generated/*' \
+    -x 'mods/*/tests/*' -x 'mods/*/tools/*' -x 'mods/*/oxr/*' -x 'mods/*.zip' \
+    -x 'mods/*/CHANGELOG.md' -x 'mods/*_PLAN.md' -x 'mods/*/.git*')
+  # The cloud-save sign-in credentials (git-ignored; release.yml writes them
+  # with scripts/write_cloud_clients.sh). Without them Google Drive / OneDrive
+  # sign-in says "not set up" and the code popup never appears.
+  if [ -f "$ROOT/cloud_clients.lua" ]; then
+    (cd "$ROOT" && zip -q -9 "$LOVE_FILE" cloud_clients.lua)
+    say "packed cloud_clients.lua (cloud-save sign-in)"
+  else
+    warn "no cloud_clients.lua: Google Drive / OneDrive sign-in will say 'not set up'"
+  fi
+  local bundled
+  for bundled in $BUNDLED_MODS; do
+    unzip -Z1 "$LOVE_FILE" | grep -x "$bundled/manifest.json" >/dev/null \
+      || fail "game.love is missing the bundled mod $bundled"
+  done
   # NOTE: grep -q here would race pipefail — it exits on first match, unzip
   # dies of SIGPIPE (141), and the pipeline "fails" nondeterministically.
   # >/dev/null keeps grep reading the whole stream instead.
@@ -338,7 +361,7 @@ pack_game_love() {
   for required in src/update/Boot.lua tools/save-editor/App.lua \
                   tools/save-editor/Kit.lua tools/save-editor/panels/Party.lua \
                   $MANIFESTS; do
-    printf '%s\n' "$archive_entries" | grep -qx "$required" \
+    printf '%s\n' "$archive_entries" | grep -x "$required" >/dev/null \
       || fail "game.love is missing $required"
   done
   say "game.love: $(du -h "$LOVE_FILE" | cut -f1) -> $LOVE_FILE"

@@ -41,6 +41,20 @@ Gen4MoneyWindow.BANK = 543
 Gen4MoneyWindow.LABEL_ENTRY = 18
 Gen4MoneyWindow.AMOUNT_ENTRY = 19
 
+-- HEARTGOLD / SOULSILVER keep the same two lines in bank 435, entries 30 and
+-- 31 ("Money", "${STRVAR_1 55 0 0}"): FieldSystem_ShowMoneyBox and
+-- MoneyBoxSys_Update (pokeheartgold asm/overlay_01_021EDAFC.s) open 0x1B3 and
+-- read 0x1E / 0x1F -- bank 543 there is Elm's lab.
+Gen4MoneyWindow.HGSS = { bank = 435, label = 30, amount = 31 }
+local function moneyBank(data)
+  local v = data and data.gen4_version
+  if v and v.family == "hgss" then
+    local h = Gen4MoneyWindow.HGSS
+    return h.bank, h.label, h.amount
+  end
+  return Gen4MoneyWindow.BANK, Gen4MoneyWindow.LABEL_ENTRY, Gen4MoneyWindow.AMOUNT_ENTRY
+end
+
 -- `StringTemplate_SetNumber(template, 0, money, 6, PADDING_MODE_SPACES,
 -- CHARSET_MODE_EN)` -- six digits, padded with SPACES rather than zeros, into
 -- string slot 0.
@@ -84,10 +98,9 @@ function Gen4MoneyWindow.panelFor(game, left, top)
   local amount = (" "):rep(math.max(0, Gen4MoneyWindow.DIGITS - #digits)) .. digits
 
   Gen4Text.buffer(game, amount)
-  local label = Gen4Text.resolve(data, Gen4MoneyWindow.BANK,
-                                 Gen4MoneyWindow.LABEL_ENTRY, game)
-  local value = Gen4Text.resolve(data, Gen4MoneyWindow.BANK,
-                                 Gen4MoneyWindow.AMOUNT_ENTRY, game)
+  local bank, labelEntry, amountEntry = moneyBank(data)
+  local label = Gen4Text.resolve(data, bank, labelEntry, game)
+  local value = Gen4Text.resolve(data, bank, amountEntry, game)
   -- NO ENGLISH FALLBACK FOR THE LABEL, for the reason
   -- `Gen4UndergroundMenu:labelFor` gives: a missing bank entry is a broken
   -- import, and a hardcoded word hides it behind something that looks right.

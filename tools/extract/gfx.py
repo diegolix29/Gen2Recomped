@@ -836,10 +836,11 @@ def _all_tiles(im, cols):
 def extract_trade(pokered, assets_dir):
     """TradingAnimationGraphics (+ cable ball / bubble) for InternalClockTradeAnim.
 
-    game_boy.2bpp is built with --remove-duplicates; link_cable.2bpp is not.
-    Tilemaps reference absolute vChars2 ids starting at $31.  We rebuild the
-    open-cable plate and cable segment tiles from that atlas, and convert the
-    Game Boy / ball / bubble sheets for direct blitting.
+    The same field.tradeArt (format 2) the ROM importer writes
+    (src/import/Gen1TradeArt.lua): the 49 BG tiles vChars2 $31-$61 as one
+    8-wide sheet, the Game Boy / link cable tilemaps with their absolute tile
+    ids, and the cable ball / bubble OBJ tiles.  game_boy.2bpp is built with
+    --remove-duplicates; link_cable.2bpp is not.
     """
     trade_dir = os.path.join(pokered, "gfx/trade")
     out_dir = os.path.join(assets_dir, "trade")
@@ -851,68 +852,39 @@ def extract_trade(pokered, assets_dir):
     if len(atlas) != 49:
         util.die(f"trade atlas: expected 49 tiles after dedupe, got {len(atlas)}")
 
-    convert_png(os.path.join(trade_dir, "game_boy.png"),
-                os.path.join(out_dir, "game_boy.png"), transparent_matte=True)
-    convert_png(os.path.join(trade_dir, "bubble.png"),
-                os.path.join(out_dir, "bubble.png"), transparent_color0=True)
+    def sheet(tiles, per_row):
+        rows = (len(tiles) + per_row - 1) // per_row
+        im = Image.new("L", (per_row * 8, rows * 8), 255)
+        for i, tile in enumerate(tiles):
+            im.paste(tile, ((i % per_row) * 8, (i // per_row) * 8))
+        return im
 
-    # cable_ball.2bpp is four 8x8 tiles at vSprites $7c; the ball OAM uses
-    # tile $7e four times with X/Y flips (and $7f for the bulge frame).
-    ball_src = _convert_image(
-        Image.open(os.path.join(trade_dir, "cable_ball.png")),
-        transparent_color0=True)
-    if ball_src.size != (16, 16):
-        util.die(f"cable_ball.png: expected 16x16, got {ball_src.size}")
+    _save_png(_convert_image(sheet(atlas, 8)),
+              os.path.join(out_dir, "gen1_tiles.png"))
+    ball = Image.open(os.path.join(trade_dir, "cable_ball.png")).convert("L")
+    bubble = Image.open(os.path.join(trade_dir, "bubble.png")).convert("L")
+    _save_png(_convert_image(sheet(_all_tiles(ball, 2), 4), transparent_color0=True),
+              os.path.join(out_dir, "gen1_cable_ball.png"))
+    _save_png(_convert_image(sheet(_all_tiles(bubble, 2), 8), transparent_color0=True),
+              os.path.join(out_dir, "gen1_bubble.png"))
 
-    def compose_ball(tile):
-        out = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
-        out.paste(tile, (0, 0))
-        out.paste(tile.transpose(Image.FLIP_LEFT_RIGHT), (8, 0))
-        out.paste(tile.transpose(Image.FLIP_TOP_BOTTOM), (0, 8))
-        out.paste(tile.transpose(Image.FLIP_LEFT_RIGHT).transpose(
-            Image.FLIP_TOP_BOTTOM), (8, 8))
-        return out
-
-    _save_png(compose_ball(ball_src.crop((0, 8, 8, 16))),
-              os.path.join(out_dir, "cable_ball.png"))
-    _save_png(compose_ball(ball_src.crop((8, 8, 16, 16))),
-              os.path.join(out_dir, "cable_ball_alt.png"))
-
-    with open(os.path.join(trade_dir, "link_cable.tilemap"), "rb") as fh:
-        lc_map = fh.read()
-    if len(lc_map) != 36:
-        util.die(f"link_cable.tilemap: expected 36 bytes, got {len(lc_map)}")
-    open_cable = Image.new("L", (96, 24), 255)
-    for i, tid in enumerate(lc_map):
-        idx = tid - 0x31
-        if idx < 0 or idx >= len(atlas):
-            util.die(f"link_cable.tilemap: tile ${tid:02x} outside atlas")
-        open_cable.paste(atlas[idx], ((i % 12) * 8, (i // 12) * 8))
-    _save_png(_convert_image(open_cable), os.path.join(out_dir, "open_cable.png"))
-
-    for name, vid in (("cable_seg", 0x5E), ("cable_conn", 0x5D),
-                      ("cable_vert", 0x61), ("cable_corner", 0x5F),
-                      ("cable_end", 0x60)):
-        _save_png(_convert_image(atlas[vid - 0x31]),
-                  os.path.join(out_dir, f"{name}.png"))
-
-    horiz = Image.new("L", (160, 8), 255)
-    seg = atlas[0x5E - 0x31]
-    for x in range(20):
-        horiz.paste(seg, (x * 8, 0))
-    _save_png(_convert_image(horiz), os.path.join(out_dir, "cable_horiz.png"))
+    def tilemap(name, w, h):
+        with open(os.path.join(trade_dir, name), "rb") as fh:
+            ids = list(fh.read())
+        if len(ids) != w * h or not all(0x31 <= i <= 0x61 for i in ids):
+            util.die(f"{name}: expected {w}x{h} ids in $31-$61")
+        return {"w": w, "h": h, "ids": ids}
 
     return {
-        "gameBoy": "assets/generated/trade/game_boy.png",
-        "openCable": "assets/generated/trade/open_cable.png",
-        "cableHoriz": "assets/generated/trade/cable_horiz.png",
-        "cableConn": "assets/generated/trade/cable_conn.png",
-        "cableVert": "assets/generated/trade/cable_vert.png",
-        "cableCorner": "assets/generated/trade/cable_corner.png",
-        "cableEnd": "assets/generated/trade/cable_end.png",
-        "cableBall": "assets/generated/trade/cable_ball.png",
-        "cableBallAlt": "assets/generated/trade/cable_ball_alt.png",
-        "bubble": "assets/generated/trade/bubble.png",
+        "format": 2,
+        "tiles": "assets/generated/trade/gen1_tiles.png",
+        "tileBase": 0x31,
+        "tileCount": 49,
+        "tilesPerRow": 8,
+        "cableBall": "assets/generated/trade/gen1_cable_ball.png",
+        "bubble": "assets/generated/trade/gen1_bubble.png",
+        "gameBoy": tilemap("game_boy.tilemap", 6, 8),
+        "linkCable": tilemap("link_cable.tilemap", 12, 3),
         "source": "gfx/trade/* (TradingAnimationGraphics, "
                   "engine/movie/trade.asm InternalClockTradeAnim)",
     }

@@ -110,7 +110,11 @@ end
 -- script before the mon was ever visible.  BattleState starts it on the
 -- first frame it actually draws the pic; the summary screen, which is up
 -- the moment it is constructed, starts it straight away.
-function PicAnim.new(data, species, mon)
+function PicAnim.new(data, species, mon, side)
+ local def=data and data.pokemon and data.pokemon[species]
+ if def and def.gen5Animation then
+  return require("src.pokemon.Gen5MonAnimPlayer").new(data,species,mon,side)
+ end
   local anim = PicAnim.record(data, species, mon)
   if not anim then return nil end
   local self = setmetatable({ anim = anim, paused = true }, PicAnim)
@@ -120,8 +124,8 @@ end
 
 -- ...and the same, remembering the Pokemon whose colours the strip should be
 -- drawn in.  `species` alone cannot answer that: two ZIGZAGOON differ.
-function PicAnim.forMon(data, mon)
-  local self = PicAnim.new(data, mon and mon.species, mon)
+function PicAnim.forMon(data, mon, side)
+  local self = PicAnim.new(data, mon and mon.species, mon, side)
   if self then self.mon = mon end
   return self
 end

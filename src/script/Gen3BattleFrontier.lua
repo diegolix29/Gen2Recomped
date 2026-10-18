@@ -714,6 +714,80 @@ function F.saveFrontier(ctx)
   save.party, save.gen3PartyStash = party, stash
 end
 
+-- ------------------------------------------------ stranded party recovery --
+--
+-- Reported from play: a Battle Dome entry of three, two of them after the
+-- first round, and the rest of the team gone for good once the challenge was
+-- over and saved. LoadPlayerParty (special 41) used to delete the stash it
+-- restored from, and the Dome restores before EVERY round -- so round 2 had
+-- nothing to restore and cut the team down from round 1's two. Fixed in
+-- Gen3Commands; this gives back what such a save still holds.
+--
+-- Two places in a save still carry copies of the player's own Pokemon: the
+-- stash (save.gen3PartyStash, SavePlayerParty's) and the Dome's entered three
+-- (gen3Frontier.dome.playerMons, InitDomeTrainers). Anything there that is in
+-- neither the party nor a box nor the stash is stranded: it goes back to the
+-- party when there is room and the save is not mid-challenge, else to the PC.
+-- Matched by personality, OT id and species -- a loaded save shares no table
+-- references. ONCE PER SAVE (gen3FrontierRecovery), so a Pokemon released or
+-- traded away later can never come back from an old copy.
+F.RECOVERY_VERSION = 1
+
+local function monKey(mon)
+  if type(mon) ~= "table" or not mon.species then return nil end
+  return ("%s:%s:%s"):format(tostring(mon.personality or "?"), tostring(mon.otId or "?"), tostring(mon.species))
+end
+
+function F.recoverStranded(save)
+  if type(save) ~= "table" then return 0 end
+  if (tonumber(save.gen3FrontierRecovery) or 0) >= F.RECOVERY_VERSION then return 0 end
+  save.gen3FrontierRecovery = F.RECOVERY_VERSION
+  local present = {}
+  local function mark(mon) local k = monKey(mon); if k then present[k] = true end end
+  for _, mon in pairs(save.party or {}) do mark(mon) end
+  for _, box in pairs(save.boxes or {}) do
+    if type(box) == "table" then for _, mon in pairs(box) do mark(mon) end end
+  end
+  local candidates = {}
+  for _, mon in pairs(save.gen3PartyStash or {}) do candidates[#candidates + 1] = mon end
+  local fr = save.gen3Frontier
+  local dome = type(fr) == "table" and fr.dome
+  for _, mon in pairs(type(dome) == "table" and dome.playerMons or {}) do candidates[#candidates + 1] = mon end
+  -- the stash itself is a place the party legitimately sits mid-challenge
+  for _, mon in pairs(save.gen3PartyStash or {}) do mark(mon) end
+  local stranded = {}
+  for _, mon in ipairs(candidates) do
+    local k = monKey(mon)
+    if k and not present[k] then
+      present[k] = true
+      stranded[#stranded + 1] = mon
+    end
+  end
+  if #stranded == 0 then return 0 end
+  local midChallenge = save.gen3ContinueAt ~= nil
+  save.party = save.party or {}
+  local Boxes = require("src.pokemon.Boxes")
+  local back, toPc = 0, 0
+  for _, mon in ipairs(stranded) do
+    if not midChallenge and #save.party < 6 then
+      save.party[#save.party + 1] = mon
+      back = back + 1
+    else
+      local boxes = Boxes.ensure(save)
+      local placed = false
+      for i = 1, Boxes.count() do
+        local slot = Boxes.firstFree(boxes[i])
+        if slot then boxes[i][slot] = mon; placed = true; break end
+      end
+      if placed then toPc = toPc + 1 end
+    end
+  end
+  require("src.core.Logger").info("gen3 frontier: returned %d stranded Pokemon (%d to the party, %d to the PC)",
+    back + toPc, back, toPc)
+  save.gen3FrontierRecovered = { party = back, pc = toPc }
+  return back + toPc
+end
+
 -- ...and on Continue (Game:restoreSave): stand there, once
 function F.applyContinue(save)
   local at = type(save) == "table" and save.gen3ContinueAt

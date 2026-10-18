@@ -66,6 +66,10 @@ local PAD_SHORT = {
   dpup = "D-UP", dpdown = "D-DN", dpleft = "D-LT", dpright = "D-RT",
   leftshoulder = "LB", rightshoulder = "RB",
   leftstick = "LS", rightstick = "RS", guide = "GUIDE",
+  triggerleft = "LT", triggerright = "RT",
+  ["rightx+"] = "RS-RT", ["rightx-"] = "RS-LT", ["righty+"] = "RS-DN", ["righty-"] = "RS-UP",
+  misc1 = "MISC", paddle1 = "P1", paddle2 = "P2", paddle3 = "P3", paddle4 = "P4",
+  touchpad = "TPAD",
 }
 local function shortName(name, shorts)
   local s = shorts[name]
@@ -94,7 +98,9 @@ function BindingsMenu.new(game)
   for _, def in ipairs(BUTTONS) do
     -- translated here, not in ROWS: that table is built at require
     -- time, before Strings.load has a catalog to look in
-    if not def.gen4 or GameVersion.isGen4() then
+    -- X and Y are shown for every game: a player laying out a controller
+    -- once wants to see the whole pad, and the Gen 4 games read them
+    if true then
       items[#items + 1] = { label = Strings(def.label),
                           right = boundRight(overlay, def), button = def }
     end

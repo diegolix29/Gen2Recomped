@@ -281,7 +281,10 @@ function Gen4PartyMenu:eligibility(slot)
   local sel = self.select
   local mon = self:party()[slot]
   if not (sel and mon) then return nil end
-  if sel.banlist and BANLIST[tonumber(mon.species) or -1] then return "banned" end
+  -- (a table is a facility's own list -- Black / White's Battle Subway reads
+  -- its regulation's, src/script/Gen5BattleSubway.lua)
+  local banned = type(sel.banlist) == "table" and sel.banlist or BANLIST
+  if sel.banlist and banned[tonumber(mon.species) or -1] then return "banned" end
   for _, s in ipairs(sel.order) do if s == slot then return "entered" end end
   if require('src.pokemon.Party').isEgg(mon) or (sel.maxLevel and (tonumber(mon.level) or 1) > sel.maxLevel) then return "banned" end
   -- PartyMenu_CheckBattleHallEligibility: a floor, not a cap (reqLevel 30)
@@ -528,7 +531,7 @@ function Gen4PartyMenu:actions()
     local seen={}
     for _,slot in ipairs(mon.moves or {}) do
       local id=(type(slot)=='table' and (slot.id or slot.move)) or slot
-      for _,name in ipairs(F.ORDER) do
+      for _,name in ipairs(F.order(self.game.data)) do
         if not seen[name] and (F.ids[name]==id or name==id) then
           rows[#rows+1]='field:'..name;seen[name]=true;break
         end
@@ -572,6 +575,13 @@ function Gen4PartyMenu:facingObject()
   local npc = ow:npcAtCell(x, y)
   local gfx = npc and tonumber(npc.graphicsId or (npc.def and npc.def.graphicsId))
   return npc, gfx
+end
+
+function Gen4PartyMenu:facingRaw()
+  local ow = self.game.overworld
+  if not (ow and ow.map and ow.map.cellBehaviour and ow.player) then return nil end
+  local x, y = ow.player:facingCell()
+  return ow.map:cellBehaviour(x, y)
 end
 
 function Gen4PartyMenu:facingBehaviour()
@@ -657,22 +667,41 @@ function Gen4PartyMenu:useFieldMove(mon,move)
   local save=self.game.save
   local function badge() return F.badgeHeld(self.game.data,save,move) end
   local partner=require('src.world.Gen4Follower').hasPartner(save)
+  local hgss=F.isHgss(self.game.data)
   if move=='MILK_DRINK' or move=='SOFTBOILED' then self.hpTransferMove=move; return self:startHpTransfer(mon) end
   if not ow then return self:fieldRefused('location') end
   -- CUT, ROCK SMASH, STRENGTH: the badge, then the object faced
   local obstacle=Gen4PartyMenu.OBSTACLE[move]
   if obstacle then
-    if F.badges[move] and not badge() then return self:fieldRefused('badge') end
+    if F.badgeTable(self.game.data)[move] and not badge() then return self:fieldRefused('badge') end
     if move=='ROCK_SMASH' and ow.player.surfing then return self:fieldRefused('location') end
+    -- HGSS FieldMove_CheckStrength: never on Ice Path B2F
+    if move=='STRENGTH' and hgss and ow.map and ow.map.id=='D39R0103' then return self:fieldRefused('location') end
     local npc,gfx=self:facingObject()
     if gfx~=obstacle then return self:fieldRefused('location') end
-    local entry=move=='CUT' and 8 or move=='ROCK_SMASH' and 9 or 10
-    return self:runFieldScript('field_moves',entry,npc)
+    local band,entry=F.menuScript(self.game.data,move)
+    return self:runFieldScript(band,entry,npc)
   end
   if move=='WATERFALL' then
+    -- HGSS FieldMove_CheckWaterfall asks for the surfing state first
+    if hgss and not ow.player.surfing then return self:fieldRefused('location') end
     if not badge() then return self:fieldRefused('badge') end
     if self:facingBehaviour()~='WATERFALL' then return self:fieldRefused('location') end
-    return self:runFieldScript('field_moves',13)
+    return self:runFieldScript(F.menuScript(self.game.data,move))
+  end
+  -- HGSS WHIRLPOOL (FieldMove_CheckWhirlpool): surfing, Glacier Badge, facing
+  -- behaviour 0x11 -> std_menu_whirlpool
+  if move=='WHIRLPOOL' then
+    if not ow.player.surfing then return self:fieldRefused('location') end
+    if not badge() then return self:fieldRefused('badge') end
+    if self:facingRaw()~=0x11 then return self:fieldRefused('location') end
+    return self:runFieldScript(F.menuScript(self.game.data,move))
+  end
+  -- HGSS HEADBUTT (FieldMove_CheckHeadbutt): a headbutt tile ahead (0x06) ->
+  -- std_menu_headbutt. The map-model tree test is not ported.
+  if move=='HEADBUTT' then
+    if self:facingRaw()~=0x06 then return self:fieldRefused('location') end
+    return self:runFieldScript(F.menuScript(self.game.data,move))
   end
   if move=='ROCK_CLIMB' then
     if not badge() then return self:fieldRefused('badge') end
@@ -682,7 +711,7 @@ function Gen4PartyMenu:useFieldMove(mon,move)
     local ew=(facing=='left' or facing=='right') and b=='ROCK_CLIMB_E_W'
     if not (ns or ew) then return self:fieldRefused('location') end
     if partner then return self:fieldRefused('partner') end
-    return self:runFieldScript('field_moves',11)
+    return self:runFieldScript(F.menuScript(self.game.data,move))
   end
   -- CHATTER records the player's voice as Chatot's cry (SCRIPT_ID(RECORD_
   -- CHATOT_CRY, 0) and the microphone). With no microphone the recording
@@ -698,7 +727,7 @@ function Gen4PartyMenu:useFieldMove(mon,move)
   if wm then
     if move=='DEFOG' and not badge() then return self:fieldRefused('badge') end
     if not F.weatherOffers(save,move) then return self:fieldRefused('location') end
-    return self:runFieldScript('field_moves',wm.entry)
+    return self:runFieldScript(F.menuScript(self.game.data,move))
   end
   -- FLY (src/world/Gen4Fly.lua): FieldMoves_CheckFly, then a destination
   if move=='FLY' then
@@ -742,8 +771,12 @@ function Gen4PartyMenu:useFieldMove(mon,move)
     return
   end
   local usable=true
-  if move=='DIG' then usable=ow.map.def.allowEscapeRope and ow:escapePoint()
-  elseif move=='TELEPORT' then usable=ow.map.def.allowFly and save.lastHeal
+  -- FieldMoves_CheckDig / _CheckTeleport (map_header.c): Dig needs a cave
+  -- (MAP_TYPE_CAVE 3), Teleport refuses a town (MAP_TYPE_TOWN_CITY 1); a cache
+  -- from before `mapType` was carried answers by the header flags alone
+  local mt=tonumber(ow.map.def.mapType)
+  if move=='DIG' then usable=ow.map.def.allowEscapeRope and (mt==nil or mt==3) and ow:escapePoint()
+  elseif move=='TELEPORT' then usable=ow.map.def.allowFly and mt~=1 and save.lastHeal
     -- PlayerInSafariZoneOrPalPark: no Teleport out of a Safari Game
     and not save.safari
   elseif move=='SWEET_SCENT' then
@@ -1214,7 +1247,7 @@ function Gen4PartyMenu:drawSubscreen()
   local okS, SS = pcall(require, "src.ui.SecondScreen")
   if not okS then return end
   local mode = SS.mode(self.game)
-  if not ((mode == "display" or mode == "inset") and not SS.stowed(self.game)) then return end
+  if not (require("src.ui.SecondScreen").separateMode(mode) and not SS.stowed(self.game)) then return end
   local back = self:img("party/subscreen")
   if not back then return end
   local party = self:party()

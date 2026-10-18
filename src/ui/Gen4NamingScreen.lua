@@ -672,7 +672,7 @@ function Gen4NamingScreen:drawPrompt()
   -- strip beside the icon, the only place this screen leaves for it.
   local ok, SS = pcall(require, "src.ui.SecondScreen")
   local mode = ok and SS.mode(self.game) or "off"
-  if (mode == "display" or mode == "inset") and not SS.stowed(self.game) then
+  if require("src.ui.SecondScreen").separateMode(mode) and not SS.stowed(self.game) then
     SS.draw(self.game, function()
       love.graphics.setColor(0, 0, 0, 1)
       love.graphics.rectangle("fill", 0, 0, W, H)

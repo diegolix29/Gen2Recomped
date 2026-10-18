@@ -74,11 +74,18 @@ end
 -- with the player's name in STRVAR 0 -- "Rowan's words echoed... <name>!
 -- There's a time and place for everything! But not now."
 G.BANK_COMMON_STRINGS, G.CANT_DO_THAT_RIGHT_NOW = 213, 36
+-- HGSS: ITEMUSEERROR_OAKSWORDS, msg_0040 entry 37 ("Oak's words echoed...")
+G.HGSS_BANK_COMMON, G.HGSS_OAKS_WORDS = 40, 37
 function G.rowanLine(data, save)
   local name = save and save.player and save.player.name or ""
   local Game = game()
   local T = require("src.import.Gen4Text")
   if Game then pcall(T.buffer, Game, name) end
+  local v = data and data.gen4_version
+  if v and v.family == "hgss" then
+    local oak = Game and T.resolve(data, G.HGSS_BANK_COMMON, G.HGSS_OAKS_WORDS, Game)
+    return oak or ("Oak's words echoed...\n%s! There's a time and\nplace for everything! But not now."):format(name)
+  end
   local line = Game and T.resolve(data, G.BANK_COMMON_STRINGS, G.CANT_DO_THAT_RIGHT_NOW, Game)
   return line or ("Rowan's words echoed...\n%s! There's a time and\nplace for everything! But not now."):format(name)
 end
@@ -91,7 +98,7 @@ end
 -- The engine's refusal is Gen 2's ("OAK: ...This isn't the time to use
 -- that!"), written at a dozen sites; on Platinum it is Rowan's line.
 function G.translateRefusal(data, save, msgs)
-  if not (isPlatinum(data) and type(msgs) == "table" and type(msgs[1]) == "string") then return msgs end
+  if not (data and data.isGen4Cache and type(msgs) == "table" and type(msgs[1]) == "string") then return msgs end
   if msgs[1]:find("time to use that", 1, true) then
     local out = { G.rowanLine(data, save) }
     for i = 2, #msgs do out[i] = msgs[i] end
@@ -115,7 +122,24 @@ function G.needsTarget(id, itemDef, data)
 end
 
 -- (kind, messages, extra), or nil to let ItemEffects carry on
+-- HEARTGOLD / SOULSILVER's own field-use rows (pokeheartgold
+-- src/field_use_item.c sItemFieldUseFuncs): Honey 14, the Apricorn Box 23,
+-- the Dowsing MCHN 26.
+function G.useHgss(data, save, id, itemDef, target, battle)
+  local n = G.numeric(id)
+  if not (n and itemDef) or battle then return nil end
+  local f = tonumber(itemDef.fieldUseFunc) or 0
+  if f == 14 then return "honey", nil, { item = n } end
+  if f == 23 then return "hgss_apricorn_box", nil, { item = n } end
+  if f == 26 then return "hgss_dowsing", nil, { item = n } end
+  return nil
+end
+
 function G.use(data, save, id, itemDef, target, battle)
+  local v = data and data.gen4_version
+  if data and data.isGen4Cache and v and v.family == "hgss" then
+    return G.useHgss(data, save, id, itemDef, target, battle)
+  end
   local n = G.numeric(id)
   if not (n and itemDef and isPlatinum(data)) or battle then return nil end
   local f = tonumber(itemDef.fieldUseFunc) or 0

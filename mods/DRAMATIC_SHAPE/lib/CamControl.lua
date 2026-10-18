@@ -197,9 +197,20 @@ end
 
 local installed = false
 
+-- (Rewrap: replaced by a later load in the same process, see lib/Rewrap.lua)
+local installSeams
+
 function CamControl.install()
   if installed then return end
   installed = true
+  V.require("Rewrap").install({
+    { require("src.core.Game"), "dramaticShapeCamControlHook",
+      { "wheelmoved", "gamepadpressed", "touchpressed", "touchmoved",
+        "touchreleased", "focus" } },
+  }, installSeams)
+end
+
+installSeams = function()
 
   local Game = require("src.core.Game")
 

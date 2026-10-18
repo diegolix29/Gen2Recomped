@@ -38441,3 +38441,38 @@ matrix cell, from `onStepComplete`. The town map shows the dots oldest to
 newest, one every 26 ticks.
 
 Check: `gen4_pc_town_map_bottom_check` (33).
+
+## In-game trade cutscene (trade sequence)
+
+`startnpctrade` (Oreburgh, Eterna, Snowpoint, Route 226) now plays the
+cartridge's trade sequence between the swap and the rest of the script, as
+FieldTask_ProcessNPCTrade does (swap first, then the application, then the
+field comes back).
+
+- **Art:** `src/import/Gen4TradeArt.lua`, written as `gen4_trade_art` by the
+  evolution-art stage (`RomExtractorGen4:poketchEvolutionArt`). Reads
+  `/graphic/demo_trade.narc` (NarcID 93): backdrop 21/22/23, the 1024x1024
+  affine tube / reveal maps 0 and 1 on tiles 2 with palette 3 (colours 16-47
+  chosen by time of day, sPaletteOffsets), the BG3 light rings 4/5 written as
+  one white mask per extended-palette colour index (PaletteShimmerEffect lights
+  them), the sky 15/16/17 (day / evening / night palettes), the wormhole
+  18/19/20, the ball flash / shadow / twinkle cells 7-10, the tube sparks
+  11-14 and the Poke Ball NSBMD 27 (packed through Gen4ModelPack, its NNS box
+  kept for the in-view test). Platform tilemaps: pl_batt_bg 262/263 (only
+  whether they mirror the picture is kept). The Wi-Fi sky (24-26) is not
+  written: NPC trades never ask for it.
+- **Screen:** `src/ui/Gen4TradeSequence.lua`, a frame-by-frame transcription
+  of `src/cutscenes/trade_sequence/*.c`: the seven phases of sTradePhaseTable,
+  their SysTasks (ball bounce, ball path / orbit / arrival / open, model and
+  brightness fades, BG scale/slide/scroll, shimmer sparks, MT19937-seeded tube
+  sparks), the 3D camera (Camera_InitWithTarget distance 300, half-FOV 4004 /
+  2002, perspective and orthographic, AdjustAngleAroundSelf swaps), both
+  display engines and GX_SetDispSelect, screen fades, text bank 350, SEs
+  SEQ_SE_DP_KOUKAN01..10 / KON, BGM SEQ_KOUKAN and fanfare SEQ_FANFA5.
+- **Approximations:** the Pokemon's sprite animation and per-species cry delay;
+  the box test is a frustum test of the model box; alpha-0 polygons
+  (wireframe on hardware) are not drawn; edge marking is a 1-px outline in
+  GX_RGB(4,4,4); fades are linear; on one screen the main engine is shown.
+- **Check:** `tools/gen4_trade_harness` (MODE=screen: the cutscene alone with
+  shots of both screens; MODE=overworld: through the overworld harness so a
+  trade script plays end to end), art decoded from the ROM in memory.

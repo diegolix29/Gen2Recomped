@@ -53,7 +53,7 @@ RomExtractorGen3.__index = RomExtractorGen3
 -- The progress denominator.  Kept honest with the two stage lists below: a
 -- mismatch does not break anything, it just makes the bar lie, which is the
 -- kind of small wrongness that survives for months.
-local STAGE_COUNT = 93
+local STAGE_COUNT = 94
 
 -- ---------------------------------------------------------------------------
 -- The stage tables below are keyed to Emerald's ROM.  A sibling cartridge
@@ -10985,7 +10985,11 @@ function RomExtractorGen3:tradeTable()
   local function readName(at)
     local text, used = self:readText(at, T.NAME_MAX)
     if not (text and used and used <= T.NAME_MAX) then return nil end
-    if text == "" or text:find("[^A-Za-z0-9 .'%-]") then return nil end
+    -- the cartridge's apostrophe is $B4, which the charmap spells as U+2019:
+    -- FireRed's CH'DING (the fifth record) has one, and refusing it broke the
+    -- run there and lost MIMIEN, ZYNX, MS. NIDO and CH'DING itself
+    local plain = text:gsub("\226\128\153", "'")
+    if plain == "" or plain:find("[^A-Za-z0-9 .'%-]") then return nil end
     return text
   end
   local function row(at)
@@ -58554,7 +58558,19 @@ RomExtractorGen3.ASSET_STAGES = {
   "extractBallAnims",
   "extractSummaryWindows",
   "extractSlotMachine",
+  "extractTradeScene",
 }
+
+-- STAGE: the in-game trade sequence's art -- the wireless GBA, the signal
+-- rings, the platform, the balls, the link mon and every palette and table
+-- DoTradeAnim_Wireless drives them with.  Its own module, because it is keyed
+-- by game code and checks each blob against the decomp's shape before it
+-- writes anything: see src/import/Gen3TradeArt.lua.  Writes the data module
+-- `gen3_trade_art` and assets/generated/trade/*.png.
+function RomExtractorGen3:extractTradeScene()
+  self:beginStage("Gen3 trade scene")
+  require("src.import.Gen3TradeArt").extract(self)
+end
 
 function RomExtractorGen3:run()
   for _, stage in ipairs(RomExtractorGen3.DATA_STAGES) do

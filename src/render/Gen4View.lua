@@ -356,6 +356,22 @@ function Gen4View:follow(x, z, facing, baseY)
              or self.yaw or 0
   kept.heading = self.yaw
   local rise = (self.orbiting and self.userRise) or 0
+  -- A SCRIPT'S CAMERA (HgssLegendCutscene): the cartridge's Camera_SetDistance
+  -- / SetAnglePos / OffsetLookAtPosAndTarget, in whatever mode the player
+  -- chose -- the target is the player plus the scene's offset and the eye sits
+  -- due south of it at the scene's angle, the way every Gen 4 field camera
+  -- does (yaw 0)
+  local scripted = Gen4View.scripted
+  if scripted then
+    local d = tonumber(scripted.distance) or 666.9
+    local e = rad(tonumber(scripted.pitch) or 45)
+    local o = scripted.offset or { 0, 0, 0 }
+    local tx, ty, tz = x + (o[1] or 0), baseY + (o[2] or 0), z + (o[3] or 0)
+    self.yaw = 0
+    self.x, self.y, self.z = tx, ty + sin(e) * d, tz + cos(e) * d
+    self.pitch = deg(e)
+    return
+  end
   if self.mode == "field3d" then
     -- WHERE THE CARTRIDGE PUTS IT: `Camera_AdjustPositionAroundTarget` swings
     -- the eye around the target at the row's own distance, at the angle the
@@ -483,6 +499,7 @@ function Gen4View:matrix(vw, vh)
   -- describes the cartridge's own field camera; first and third person are
   -- this port's cameras and are always perspective.
   local cfg = (self.mode == "field3d") and self.config or nil
+  if Gen4View.scripted then cfg = nil end -- a cutscene camera is perspective
   local proj
   if cfg and cfg.projection == "orthographic" then
     -- Dolly alone cannot magnify an orthographic map. Keep its visible box
@@ -491,8 +508,12 @@ function Gen4View:matrix(vw, vh)
                                   tonumber(cfg.near) or Gen4View.NEAR,
                                   tonumber(cfg.far) or Gen4View.FAR)
   else
+    -- a script's camera brings its own clip planes (Camera_SetPerspective-
+    -- ClippingPlane): past the far one the cartridge shows its backdrop
+    local sc = Gen4View.scripted
     proj = Gen4Model.perspective(rad(self:effectiveFovY(vh)), vw / vh,
-                                 Gen4View.NEAR, Gen4View.FAR)
+                                 (sc and tonumber(sc.near)) or Gen4View.NEAR,
+                                 (sc and tonumber(sc.far)) or Gen4View.FAR)
   end
   -- negate the clip-space y
   proj[5], proj[6], proj[7], proj[8] = -proj[5], -proj[6], -proj[7], -proj[8]
@@ -629,6 +650,9 @@ end
 -- The orthographic branch in `matrix` does the same thing by construction with
 -- `halfHeight = vh / 2`, so the two projections agree about scale.
 function Gen4View:effectiveFovY(vh)
+  -- a script's camera brings its own perspective angle (the half field)
+  local scripted = Gen4View.scripted
+  if scripted and tonumber(scripted.halfFov) then return 2 * scripted.halfFov end
   local cfg = self.config
   local d = cfg and tonumber(cfg.distance)
   if self.mode == "field3d" and d and d > 1e-6 then

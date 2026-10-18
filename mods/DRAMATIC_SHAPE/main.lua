@@ -208,6 +208,14 @@ function V.data(name)
   return value
 end
 
+-- ------- a previous load's engine wraps come off first
+--
+-- The launcher's live backdrop runs Game:load behind the menu, and Play runs
+-- it again in the same process, so every game is this mod's SECOND load at
+-- least. The engine's tables keep the last load's wraps; they are put back
+-- here, before anything below installs this load's (lib/Rewrap.lua).
+V.require("Rewrap").unwindAll()
+
 -- ------- pipelines
 
 local Perf = V.require("Perf")
@@ -1009,7 +1017,10 @@ end
 -- reimplementation drifting out of date in lib/VR.lua.
 VR.cycleVoxel = cycleVoxel
 
-do
+-- (Rewrap: unguarded, this stacked one more layer per load -- each older
+-- one still cycling its own dead copy of the rungs; see lib/Rewrap.lua)
+V.require("Rewrap").install({ { require("src.core.Game"),
+  "dramaticShapeKeysHook", { "keypressed" } } }, function()
   local Game = require("src.core.Game")
   local Pipelines = require("src.render.Pipelines")
   local inner = Game.keypressed
@@ -1076,7 +1087,7 @@ do
     end
     return inner(self, key)
   end
-end
+end)
 
 -- ------- the mode's rows, kept together
 --
@@ -1308,7 +1319,8 @@ end)
 -- wrapper now forwards every argument and returns every result.
 do
   local Map = require("src.world.Map")
-  if not Map.dramaticShapeBlockHook then
+  -- (Rewrap: replaced by a later load in the same process, see lib/Rewrap.lua)
+  V.require("Rewrap").install({ { Map, "dramaticShapeBlockHook", { "setBlock" } } }, function()
     local setBlock = Map.setBlock
     Map.setBlock = function(self, bx, by, ...)
       local before = self:blockAt(bx, by)
@@ -1327,7 +1339,7 @@ do
       return r1, r2, r3
     end
     Map.dramaticShapeBlockHook = true
-  end
+  end)
 end
 
 -- A reloaded map is rebuilt from scratch (warps that re-enter the same map,
@@ -1369,7 +1381,8 @@ end)
 -- instead of jumping to the top when the list below it shortens.
 do
   local OptionsMenu = require("src.ui.OptionsMenu")
-  if not OptionsMenu.dramaticShapeFullHook then
+  -- (Rewrap: replaced by a later load in the same process, see lib/Rewrap.lua)
+  V.require("Rewrap").install({ { OptionsMenu, "dramaticShapeFullHook", { "update" } } }, function()
     local Pipelines = require("src.render.Pipelines")
     local inner = OptionsMenu.update
 
@@ -1405,7 +1418,7 @@ do
     end
 
     OptionsMenu.dramaticShapeFullHook = true
-  end
+  end)
 end
 
 -- ------- battles on the map
@@ -1507,21 +1520,30 @@ do
     end)
     return (ok and yes) and true or false
   end
-  if not OverworldState.dramaticShapeSelectHook then
+  -- (Rewrap: replaced by a later load in the same process, see lib/Rewrap.lua)
+  V.require("Rewrap").install({ { OverworldState, "dramaticShapeSelectHook", { "handleInput" } } }, function()
     local inner = OverworldState.handleInput
     function OverworldState:handleInput(...)
       local Game = require("src.core.Game")
       local input = Game.input
-      if input and input.wasPressed and input:wasPressed("select") then
+      -- ON A DS CARTRIDGE "select" IS ALSO Y (Input alsoHeld: Y uses the
+      -- registered key item), and the shifts are SELECT too. A bare press of
+      -- either stepped OFF -> VOXEL 15 out of the first/third-person camera
+      -- with no R press ("randomly"). So on a DS game only B + a real SELECT
+      -- (Tab/Shift/the pad's Select) steps the ladder; Y stays the item's.
+      local GV = require("src.core.GameVersion")
+      local nds = GV.isNds and GV.isNds() or false
+      if input and input.wasPressed and input:wasPressed("select")
+         and not (nds and input:wasPressed("y")) then
         local held = input.isDown and input:isDown("b")
-        if held or not registeredItemOwnsSelect(Game) then
+        if held or (not nds and not registeredItemOwnsSelect(Game)) then
           if cycleVoxel(Game) then return end
         end
       end
       return inner(self, ...)
     end
     OverworldState.dramaticShapeSelectHook = true
-  end
+  end)
 end
 
 -- ------- the konami code, and everything it turns on
@@ -1548,14 +1570,15 @@ Horde.install()
 -- what the headset sees. Off-headset frames fall through untouched.
 do
   local Game = require("src.core.Game")
-  if not Game.dramaticShapeAnchorHold then
+  -- (Rewrap: replaced by a later load in the same process, see lib/Rewrap.lua)
+  V.require("Rewrap").install({ { Game, "dramaticShapeAnchorHold", { "uiAnchorsHeldInStack" } } }, function()
     local inner = Game.uiAnchorsHeldInStack
     function Game.uiAnchorsHeldInStack(stack)
       if VR.active() then return true end
       return inner(stack)
     end
     Game.dramaticShapeAnchorHold = true
-  end
+  end)
 end
 
 -- The overworld's own pushBattle is the choke point for a wild encounter or

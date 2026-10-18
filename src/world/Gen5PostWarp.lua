@@ -21,8 +21,11 @@ local function busy(ow)
 end
 
 function M.update(ow)
+  -- a field return lasts as long as the script that asked for it
+  if ow.gen5FieldReturn and not busy(ow) and not ow.gen5QueuedEntry then ow.gen5FieldReturn = nil end
   local q = ow.gen5QueuedEntry
   if not q then return end
+  if q.sameMap then ow.gen5FieldReturn = nil end
   local mapId = ow.map and ow.map.id
   if mapId == q.from and not q.sameMap then return end
   if busy(ow) then return end

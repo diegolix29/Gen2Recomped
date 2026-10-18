@@ -153,6 +153,9 @@ function Loader.new(opts)
     optionStatus = {}, imageCache = {},
     fs = (opts and opts.fs) or (love and love.filesystem),
     dev = dev,
+    -- the plain game: built-ins only, no mod discovered (the launcher's
+    -- backdrop -- see Game:load's `loadWithoutMods`)
+    noMods = (opts and opts.noMods) and true or nil,
   }, Loader)
   assert(self.fs, "Loader.new requires opts.fs when love is unavailable")
   for name, spec in pairs(Schemas.REGISTRIES) do

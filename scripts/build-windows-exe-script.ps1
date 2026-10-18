@@ -18,6 +18,12 @@ if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item $stage -ItemType Directory | Out-Null
 
 Copy-Item main.lua, conf.lua $stage
+# Keep local Windows packages consistent with CI/mobile payloads.
+if (Test-Path -LiteralPath "cloud_clients.lua") {
+    Copy-Item -LiteralPath "cloud_clients.lua" -Destination $stage
+} else {
+    Write-Warning "No cloud_clients.lua: cloud sign-in is unavailable in this package."
+}
 Copy-Item -Recurse src, data, assets $stage
 
 # Strip generated ROM caches
@@ -28,18 +34,31 @@ Remove-Item "$stage\assets\generated" -Recurse -Force -ErrorAction SilentlyConti
 New-Item "$stage\tools" -ItemType Directory | Out-Null
 Copy-Item -Recurse tools\save-editor "$stage\tools\"
 
-$manifests = @(
-    "rom_manifest.json",
-    "rom_manifest_blue.json",
-    "rom_manifest_yellow.json",
-    "rom_manifest_gold.json",
-    "rom_manifest_silver.json"
-    "rom_manifest_crystal.json"
-)
-foreach ($m in $manifests) {
-    $src = "tools\$m"
-    if (-not (Test-Path $src)) { throw "Missing $src" }
-    Copy-Item $src "$stage\tools\"
+Copy-Item -Recurse tools\map-editor "$stage\tools\"
+
+# Every ROM manifest in the tree (one per cartridge, Gen 1 to Gen 5), not a
+# hand-written list that stopped at Crystal
+$manifests = Get-ChildItem tools -Filter "rom_manifest*.json"
+if (-not $manifests) { throw "No tools\rom_manifest*.json found" }
+foreach ($m in $manifests) { Copy-Item $m.FullName "$stage\tools\" }
+
+# THE BUNDLED MODS (scripts\bundled_mods.txt) -- DRAMATIC SHAPES ships with
+# every release -- without their development material
+New-Item "$stage\mods" -ItemType Directory | Out-Null
+$bundled = Get-Content "scripts\bundled_mods.txt" |
+    ForEach-Object { ($_ -replace '#.*$', '').Trim() } | Where-Object { $_ }
+foreach ($mod in $bundled) {
+    $src = Join-Path "mods" $mod
+    if (-not (Test-Path (Join-Path $src "manifest.json"))) { throw "Missing bundled mod $src" }
+    $dst = Join-Path "$stage\mods" $mod
+    Copy-Item -Recurse $src $dst
+    foreach ($dev in @("tests", "tools", "oxr", ".git")) {
+        Remove-Item (Join-Path $dst $dev) -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Get-ChildItem $dst -Recurse -File -Force |
+        Where-Object { $_.Extension -eq ".zip" -or $_.Name -eq "CHANGELOG.md" -or $_.Name -like "*_PLAN.md" -or $_.Name -like ".git*" } |
+        Remove-Item -Force
+    Get-ChildItem $dst -Recurse -Directory -Filter "generated" | Remove-Item -Recurse -Force
 }
 
 $love = Join-Path $ProjectDir "game.love"

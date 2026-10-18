@@ -64,6 +64,18 @@ jobs:
           echo "Identities:"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
+      # Cloud-save sign-in credentials (Google Drive / OneDrive): scripts/build_ios.sh
+      # packs cloud_clients.lua into game.love when it exists. Without it the
+      # app says "not set up". Values come from the repository's secrets.
+      - name: Write cloud-save credentials
+        env:
+          GOOGLE_DESKTOP_CLIENT_ID: ${{ secrets.GOOGLE_DESKTOP_CLIENT_ID }}
+          GOOGLE_DESKTOP_CLIENT_SECRET: ${{ secrets.GOOGLE_DESKTOP_CLIENT_SECRET }}
+          GOOGLE_DEVICE_CLIENT_ID: ${{ secrets.GOOGLE_DEVICE_CLIENT_ID }}
+          GOOGLE_DEVICE_CLIENT_SECRET: ${{ secrets.GOOGLE_DEVICE_CLIENT_SECRET }}
+          MICROSOFT_CLIENT_ID: ${{ secrets.MICROSOFT_CLIENT_ID }}
+        run: bash scripts/write_cloud_clients.sh cloud_clients.lua
+
       - name: Build iOS
         env:
           DEVELOPMENT_TEAM: ${{ secrets.IOS_DEVELOPMENT_TEAM }}

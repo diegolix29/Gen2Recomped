@@ -214,6 +214,8 @@ end
 
 local function poseAt(ow, y)
   ow.dwPose = { y = y, nx = 0, ny = 1, nz = 0 }
+  -- held for the engine frames between the overlay's 30 a second
+  ow.dwRidePose = ow.dwPose
   local g = ground(ow)
   if g then g.surfaceBaseY = y end
 end
@@ -834,9 +836,26 @@ local function groupHidden(mask, g)
 end
 
 function P.refreshGhosts(ow, def, m)
+  -- SetPersistedHiddenGhostPropGroups: the floor's groups are kept in the
+  -- save while the player stays on it, so a game loaded there comes back with
+  -- the stepping stones it was saved with (InitActiveGhostPropManager reads
+  -- them when the persisted data is this floor's); a floor change starts over
+  -- from the header's defaults
+  local G = Game()
+  local save = G and G.save
   if ow.dwGhostFloor ~= def then
+    local kept = save and save.gen4DwGhosts
+    local fresh = ow.dwGhostFloor == nil
     ow.dwGhostFloor = def
-    ow.dwGhostHidden = bnot(tonumber(m.ghostDefaultVisible) or 0)
+    if fresh and kept and tonumber(kept.header) == tonumber(def.header) and kept.mask then
+      ow.dwGhostHidden = tonumber(kept.mask)
+    else
+      ow.dwGhostHidden = bnot(tonumber(m.ghostDefaultVisible) or 0)
+    end
+  end
+  local rec = save and save.gen4DwGhosts
+  if save and not (rec and rec.header == tonumber(def.header) and rec.mask == ow.dwGhostHidden) then
+    save.gen4DwGhosts = { header = tonumber(def.header), mask = ow.dwGhostHidden }
   end
   for _, live in ipairs(def.gen4DistGhosts or {}) do
     live.hidden = groupHidden(ow.dwGhostHidden, tonumber(live.group) or 0)

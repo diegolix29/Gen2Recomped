@@ -861,9 +861,21 @@ local G4_BRIDGE_OVER_WATER = { [0x73] = true, [0x78] = true, [0x7C] = true }
 Map.G4_SURFABLE, Map.G4_BRIDGE_OVER_WATER = G4_SURFABLE, G4_BRIDGE_OVER_WATER
 function Map:gen4WaterAt(cx, cy, forSurfer)
   local def = self.def
-  if not (def and def.generation == 4 and def.cameraFamily ~= "hgss" and self.cellBehaviour) then return false end
+  -- HEARTGOLD / SOULSILVER TOO: the same SURFABLE rows (pokeheartgold
+  -- metatile_behavior.c sMetatileBehaviorFlags: 0x10-0x15, 0x19, 0x2A, 0x50-
+  -- 0x53, the bridges 0x73/0x78/0x7C). Leaving HGSS out let the player walk
+  -- onto New Bark's sea and meet Route 27's grass Pokemon there.
+  if not (def and def.generation == 4 and self.cellBehaviour) then return false end
+  -- ...BUT NOT BLACK / WHITE, whose defs are generation 4 in shape and whose
+  -- behaviour numbers are their own (gen5WaterAt has BW's water). Read as
+  -- Platinum's, 0x13 (WATERFALL) and 0x51-0x53 walled off the floor in front
+  -- of Lenora's bookshelves (Z018 row 19), so the books could not be read.
+  if def.gen5 then return false end
   if not self:inBounds(cx, cy) then return false end
   local b = self:cellBehaviour(cx, cy)
+  -- ...except 0x22, which is Platinum's surfable row and an unnamed WALKABLE
+  -- one in HGSS (TILE_BEHAVIOR_34: the Safari Zone's areas, D45, D47)
+  if b == 0x22 and def.cameraFamily == "hgss" then return false end
   return G4_SURFABLE[b] or (forSurfer and G4_BRIDGE_OVER_WATER[b]) or false
 end
 
@@ -927,6 +939,8 @@ function Map:isGrassCell(cx, cy)
   -- animated grass tuft over the player's head for the whole step.  pokered
   -- only ever reads $52 from loaded map tiles, not the border filler.
   if not self:inBounds(cx, cy) then return false end
+  -- BLACK / WHITE: its own behaviour numbers (src/world/Gen5FieldRules.lua)
+  if self.def and self.def.gen5 then return require("src.world.Gen5FieldRules").isGrass(self, cx, cy) end
   return self.grassTiles[self:cellTile(cx, cy)] or false
 end
 
@@ -941,6 +955,8 @@ end
 --
 -- A tileset that does not name a wider set keeps the old answer exactly.
 function Map:isEncounterCell(cx, cy)
+  -- BLACK / WHITE: the tile's encounter bit (src/world/Gen5FieldRules.lua)
+  if self.def and self.def.gen5 then return require("src.world.Gen5FieldRules").isLandEncounter(self, cx, cy) end
   local wider = self.encounterTiles
   if not wider then return self:isGrassCell(cx, cy) end
   if not self:inBounds(cx, cy) then return false end
@@ -952,7 +968,7 @@ end
 -- is checked by the caller.
 function Map:isWaterCell(cx, cy)
   if self.def and self.def.gen5 then return self:gen5WaterAt(cx, cy) end
-  if self.def and self.def.generation == 4 and self.def.cameraFamily ~= "hgss" then
+  if self.def and self.def.generation == 4 then
     return self:gen4WaterAt(cx, cy, true)
   end
   -- A GEN 3 MAP SAYS "WATER" WITH ITS ELEVATION, not with a tile list.
@@ -1460,6 +1476,9 @@ function Map:gen4ArrivalWarpAt(cx, cy)
   if (self.def and self.def.generation) ~= 4 then return nil end
   local b = self:cellBehaviour(cx, cy)
   if b == nil then return nil end
+  -- HGSS's TILE_BEHAVIOR_LADDER_DOWN (0x3E) is the last arrival case of
+  -- pokeheartgold's Field_CheckTransition: the S.S. Aqua's 1F hatch to B1F
+  if b == 0x3E and self.def.cameraFamily == "hgss" then return true end
   return GEN4_ARRIVAL_WARPS[b] == true
 end
 
@@ -1508,6 +1527,8 @@ end
 
 function Map:gen4BikeSlopeAt(cx, cy)
   if (self.def and self.def.generation) ~= 4 then return false end
+  -- Platinum's mud slopes; HGSS leaves 0xD9/0xDA unnamed
+  if require("src.core.GameVersion").family() == "hgss" then return false end
   local b = self:cellBehaviour(cx, cy)
   return (b ~= nil and GEN4_BIKE_SLOPES[b]) == true
 end
@@ -1581,6 +1602,9 @@ function Map:isIceCell(cx, cy)
   if not self.tileset.behaviourBytes then return false end
   local b = self:cellBehaviour(cx, cy)
   if not b then return false end
+  -- PLATINUM AND HEARTGOLD / SOULSILVER: TILE_BEHAVIOR_ICE, 0x20 in both
+  -- (Snowpoint Gym, Mahogany Gym, the Ice Path, Seafoam Islands)
+  if self.def and self.def.generation == 4 then return b == 0x20 end
   for _, ice in ipairs(self.tileset.iceBehaviours or {}) do
     if ice == b then return true end
   end

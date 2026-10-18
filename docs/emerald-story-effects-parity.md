@@ -62,3 +62,81 @@ scripts waits on them; they run alongside the message that follows.
 This ranks the specials Emerald's scripts call that nothing handles: 88 left
 over 150 call sites, mostly the Battle Frontier, secret-base battles, TV,
 link play and records windows. Every script opcode Emerald uses is lowered.
+
+## In-game trades, Emerald and FireRed (`src/ui/Gen3TradeAnim.lua`)
+
+Special 257 (DoInGameTradeScene) used to swap the two Pokemon with nothing on
+screen. It now plays the cartridge's trade sequence, drawn from the player's
+own ROM, for Emerald's four trades and FireRed's nine (FireRed reaches the
+same specials through `specialRemap`).
+
+- **Which sequence:** `CB2_InitInGameTrade` (pokeemerald `src/trade.c`,
+  pokefirered `src/trade_scene.c`) zero-allocates the trade state and never
+  sets `isCableTrade`, so every in-game trade runs `DoTradeAnim_Wireless`:
+  the wireless-adapter GBA, the signal rings and the white crossing column,
+  not the cable sequence. The two games' state machines are the same code;
+  FireRed differs only in its text box art, its font metrics and where the
+  received Pokemon's cry is played.
+- **What is ported, state by state:** every case of `DoTradeAnim_Wireless`
+  with its own frame counts, positions and scroll values (the 180 px slide,
+  the 80-frame wait, `gbaScale` -0x34/+0x34 with `sXY = 0x8000 / gbaScale`
+  through `BgAffineSet`, `bg1vofs` 348 -> 316 -> 166 and back, the glow's
+  -2/+4 travel, the crossing at +-3 px, ...). Under it sits a small model of
+  the hardware the trade drives:
+  - palette RAM with palette.c's `BeginNormalPaletteFade` /
+    `UpdateNormalPaletteFade` (BG and OBJ halves on alternate frames,
+    deltaY `2 + |delay|`, the five finishing frames) and util.c's 5-bit
+    `BlendPalette`;
+  - sprite.c's frame and affine animation commands (`ANIMCMD_LOOP`'s jump
+    back, absolute vs relative affine frames, `affineAnimEnded`) and the
+    callbacks the trade installs: the bouncing ball (108-step velocity
+    table, the four bounce sounds), `CreateTradePokeballSprite` /
+    `CreatePokeballSpriteToReleaseMon` (`BATTLER_AFFINE_RETURN` and
+    `_EMERGE`, the `y2 = -data[1] >> 8` rise, the sine fly-out), the sixteen
+    open particles, the link-mon glow and the shadow's colour-4 cycle;
+  - BG0-BG2 composited per pixel in a shader with BG priority, WIN0 (the
+    crossing column) and `BLDALPHA(16, 4)` blending (the glow and GBA over the
+    signal rings);
+  - the four tasks: `Task_AnimateWirelessSignal` (the signal's palette walk),
+    `Task_Open/CloseCenterWhiteColumn`, and `LaunchBallFadeMonTask`.
+- **The swap is TradeMons:** it happens at `STATE_TRY_EVOLUTION`, after the
+  last A press, and the received Pokemon takes the traded one's party SLOT
+  (`SWAP(*playerMon, *partnerMon)`), not the end of the party. Friendship is
+  set to 70, the dex is told, the trade evolution runs before the field
+  returns, and `BufferInGameTradeMonName` leaves the received nickname and the
+  offered species name for the thank-you line. The field fades out (18
+  frames) before the scene and back in before the script continues
+  (`FieldCB_ContinueScriptHandleMusic`).
+- **The art comes from your ROM:** `src/import/Gen3TradeArt.lua`
+  (`RomExtractorGen3:extractTradeScene`) reads 31 blobs at addresses taken
+  from pret's `.sym` files for BPEE rev 0 and BPRE rev 0, keyed by game code
+  and revision, and verifies each one's shape before writing anything (LZ77
+  header and decompressed size, BGR555 words, tilemap tile/bank bounds, the
+  bounce table's range, the signal table's 0xFF sentinel, gSineTable at
+  0/64/128/192, the four sentences' placeholders, `gSpeciesInfo` being the
+  manifest's `gBaseStats`). Pictures are colour-INDEX PNGs under
+  `assets/generated/trade/`; palettes and tables go in the data module
+  `gen3_trade_art`. A cartridge the table does not name, or a blob that does
+  not verify, skips the stage and special 257 keeps the bare swap.
+  `tools/gen3_trade_art_check.py` compares all 27 asset blobs byte for byte
+  with the decomp's own `.bin`, `.pal` and `.png` sources (0 mismatches on
+  both ROMs). The Emerald and FireRed import markers were bumped so old
+  caches re-import once; `MODE=extract` in the harness adds the art to an
+  existing cache without one.
+- **Kept as the cartridge has it:** the in-game trade uses the wireless art
+  even with no adapter; the opened battle ball's third frame is blank
+  (`CreateTradePokeballSprite` loads `gBallSpriteSheets` directly, without
+  `LoadBallGfx`'s shared open frame); the GBA jumps from ~2x (the last affine
+  frame) to the 1x text-mode picture when the zoom-out ends; the Pokemon's
+  palette alternates between the ball colour and the white fade while both
+  `Task_FadeMon_ToNormal_Step` and the palette fade write it.
+- **Approximated:** the Pokemon pictures are the cache's colour front sprites,
+  so their palette blends are the same 5-bit formula applied per pixel in a
+  shader; Emerald's received-Pokemon front animation uses
+  `src/pokemon/MonAnim.lua`; the evolution scene inside the trade is the
+  port's `Gen3EvolutionState`, after which the trade scene (not the evolution
+  screen) fades out; `MUS_EVOLUTION` restarts after the `MUS_EVOLVED` fanfare
+  rather than resuming; sounds play by the decomp's song numbers.
+- **Checks:** `tools/gen3_trade_harness` (`MODE=extract|scene|script`;
+  pictures go to `G:/Gen2Recomped/scratch_claude/gen3trade`), and the in-game
+  trade block of `tests/gen3_specials_test.lua`.

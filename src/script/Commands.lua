@@ -169,7 +169,10 @@ local function gen4Markup(text, game)
   if type(text) ~= "string" or not text:find("{", 1, true) then return text end
   local slots = game and game.stringBuffers
   return (text:gsub("{(%u[%u_0-9]*)([^}]*)}", function(name, rest)
-    if name == "STRVAR_1" or name == "STRVAR_6" then
+    -- HGSS also fills 0x0300, 0x0400 and 0x3400 (MsgArray_ControlCodeIsStrVar,
+    -- string_control_code.c): 208 lines, the Groups' names among them
+    if name == "STRVAR_1" or name == "STRVAR_6" or name == "STRVAR_3" or name == "STRVAR_4"
+       or name == "STRVAR_34" then
       -- `<low> <param0> <param1>`: the middle one.
       local param0 = rest:match("^%s*%d+%s+(%d+)")
       local value = param0 and slots and slots[tonumber(param0) + 1]
@@ -186,6 +189,28 @@ local function gen4Markup(text, game)
       return param0 and "" or nil
     end
     if GEN4_DROP[name] then return "" end
+    -- BLACK AND WHITE (src/import/Gen5Text): a message's 0xF000 escapes come
+    -- through as {VARn} (0x01xx, argument slot n - 1) and {CMD xxxx args}.
+    -- 0x0200..0x0208 are NUMBERS from a slot (the first argument) -- "won
+    -- {CMD 0203 1} battles in a row"; everything else is formatting and
+    -- timing (0xFF00 colour, 0xBDxx alignment, 0xBE02 / 0xBE05 waits, 0xBE09
+    -- the speaker's name box) and is dropped. Reported in N's Castle as
+    -- "N: {C...": 4,269 strings carried one, printed brace and all, and
+    -- VAR4 and up (683 more) had nothing reading them.
+    local n = name:match("^VAR(%d+)$")
+    if n and rest == "" then
+      local value = slots and slots[tonumber(n)]
+      return type(value) == "string" and value or (value ~= nil and tostring(value) or "")
+    end
+    if name == "CMD" then
+      local cmd, slot = rest:match("^%s*(%x+)%s*(%d*)")
+      local code = cmd and tonumber(cmd, 16)
+      if code and code >= 0x0200 and code <= 0x02FF and slot ~= "" then
+        local value = slots and slots[tonumber(slot) + 1]
+        return value ~= nil and tostring(value) or ""
+      end
+      return ""
+    end
     return nil
   end))
 end
@@ -215,6 +240,15 @@ function Commands.show_text(ctx, textId, subs, extraOpts)
   local literal=false
   if not text and ctx.overworld then
     text = ctx.game.data:resolveText(ctx.overworld.map.def.label, textId)
+  end
+  if not text and type(textId) == "string" and textId:match("^TEXT_B%d+_%d+$") then
+    -- A GEN 4 LABEL WITH NO TEXT prints as the label itself; say which, once
+    Commands._missingLabels = Commands._missingLabels or {}
+    if not Commands._missingLabels[textId] then
+      Commands._missingLabels[textId] = true
+      require("src.core.Logger").warn("gen4 text: %s has no text (map %s) -- shown as its label", textId,
+        tostring(ctx.overworld and ctx.overworld.map and ctx.overworld.map.id))
+    end
   end
   if not text then
     -- LITERAL STRING FALLBACK for hand-ported scripts -- and for the map
@@ -609,6 +643,11 @@ function Commands.start_battle(ctx, kind, a, b, opts)
     -- BATTLE_TYPE_LEGENDARY, which only the three legendary specials set.
     -- The transition reads it (see OverworldState:pushBattleTransition).
     if opts and opts.legendary then battle.legendary = true end
+    -- Platinum's Encounter_NewFatefulVsSpeciesAtLevel: the wild Pokemon
+    -- carries the fateful-encounter mark (Shaymin, Darkrai)
+    if opts and opts.fateful and battle.enemy and battle.enemy.mon then
+      battle.enemy.mon.fatefulEncounter = true
+    end
   else
     battle = BattleState.newTrainer(ctx.game, a, b)
     -- the beaten trainer's own line, printed on the battle screen before
@@ -729,6 +768,12 @@ function Commands.start_battle(ctx, kind, a, b, opts)
     -- `reloadmapafterbattle` can tell that case from a real whiteout.
     ctx.lastBattleCanLose = battle.canLose and true or false
     ctx.lastCheck = result == "win"
+    -- THE FIELD COMES BACK BEFORE THE SCRIPT CARRIES ON (Gen 4): the map's
+    -- ON_LOAD / ON_RESUME scripts run now, as the cartridge's field init does
+    if ctx.overworld and ctx.overworld.gen4FieldResumed and not battle.g4FieldResumed then
+      battle.g4FieldResumed = true
+      pcall(ctx.overworld.gen4FieldResumed, ctx.overworld)
+    end
     if ctx.overworld then
       -- A map script often follows a trainer battle with its own text.
       -- Keep a level evolution behind that text: otherwise afterBattle

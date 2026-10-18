@@ -69,7 +69,12 @@ local function entityBlocks(e, cx, cy)
   -- footprintW x footprintH from its top-left cell)
   local fw, fh = e.def and e.def.footprintW, e.def and e.def.footprintH
   if fw and fh and (fw > 1 or fh > 1) then
-    return cx >= x and cx < x + fw and cy >= y and cy < y + fh
+    -- ...rising NORTH from its cell, not south: of Black's 18 blockers
+    -- taller than one, every one stands at the foot of an open passage
+    -- (y - h + 1 .. y all floor; y .. y + h - 1 mostly wall), and Lenora's
+    -- sliding bookcase (Z018, 4 x 4 at (11,10)) covers the stairs at (12,9)
+    -- behind it, not the floor in front of the last book
+    return cx >= x and cx < x + fw and cy <= y and cy > y - fh
   end
   if x == cx and y == cy then return true end
   if e.targetX == cx and e.targetY == cy then return true end

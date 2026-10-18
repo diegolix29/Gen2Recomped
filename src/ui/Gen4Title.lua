@@ -139,8 +139,8 @@ Gen4Title.showIntro = true
 
 function Gen4Title:uiSize()
   local mode=require('src.ui.SecondScreen').mode(self.game)
-  return (mode=='display' or mode=='inset') and W or W*2,
-         (mode=='display' or mode=='inset') and H or H*2
+  return require('src.ui.SecondScreen').separateMode(mode) and W or W*2,
+         require('src.ui.SecondScreen').separateMode(mode) and H or H*2
 end
 function Gen4Title:wantsFillScale() return true end
 function Gen4Title:wantsEdgeBleed() return false end
@@ -546,7 +546,7 @@ end
 function Gen4Title:draw()
   local SecondScreen = require("src.ui.SecondScreen")
   local mode = SecondScreen.mode(self.game)
-  local dual = mode == "display" or mode == "inset"
+  local dual = require("src.ui.SecondScreen").separateMode(mode)
   self.highResolution=not dual
   if not dual then love.graphics.push();love.graphics.scale(2,2) end
   self:drawPanel(not dual, not dual)

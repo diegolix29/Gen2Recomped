@@ -171,7 +171,9 @@ function Gen4Nsbmd.decodeDisplayList(data, at, size)
   local normalSet = false
   local u, v = 0, 0
   local r, g, b = 1, 1, 1
-  local matrix = 0
+  -- Before the display list's first MTX_RESTORE, the matrix is inherited
+  -- from SBC. Slot zero is a real register and cannot represent that state.
+  local matrix = nil
   local prim, run = nil, {}
 
   local function emit()
@@ -240,10 +242,11 @@ function Gen4Nsbmd.decodeDisplayList(data, at, size)
         y = s16(p1 % 65536) / FX16
         z = s16(math.floor(p1 / 65536)) / FX16
       elseif cmd == 0x28 then
-        -- A RELATIVE vertex, at an eighth of the usual fractional precision.
-        x = x + sN(bits(p1, 0, 10), 10) / (FX16 * 8)
-        y = y + sN(bits(p1, 10, 10), 10) / (FX16 * 8)
-        z = z + sN(bits(p1, 20, 10), 10) / (FX16 * 8)
+        -- The signed delta is added directly to the hardware's 4.12 vertex
+        -- registers. Dividing by another eight shrinks every edge in a run.
+        x = x + sN(bits(p1, 0, 10), 10) / FX16
+        y = y + sN(bits(p1, 10, 10), 10) / FX16
+        z = z + sN(bits(p1, 20, 10), 10) / FX16
       elseif cmd == 0x40 then
         prim, run = p1 % 4, {}
       elseif cmd == 0x41 then
@@ -353,6 +356,8 @@ function Gen4Nsbmd.renderCommands(data, at, limit)
     local n = SBC_OPERANDS[op]
     if op == 0x06 then
       n = 3 + (flags % 2) + (math.floor(flags / 2) % 2)
+    elseif op == 0x07 or op == 0x08 then
+      n = 1 + (flags % 2) + (math.floor(flags / 2) % 2)
     elseif op == 0x09 then
       -- SKINNING, and the only variable-width command here: a matrix id, a
       -- term count, and then three bytes per term.  Its width has to be read
@@ -422,6 +427,7 @@ local function modelHeader(data, at)
     numMaterials = u8(data, at + 0x18),
     numShapes = u8(data, at + 0x19),
     posScale = (u32(data, at + 0x1C) or FX16) / FX16,
+    scalingRule = u8(data, at + 0x15),
     counts = {
       vertices = u16(data, at + 0x24),
       polygons = u16(data, at + 0x26),
@@ -467,6 +473,7 @@ function Gen4Nsbmd.parse(data)
     local model = {
       name = entry.name,
       posScale = header.posScale,
+      scalingRule = header.scalingRule,
       bounds = header.bounds,
       counts = header.counts,
       bones = {}, materials = {}, shapes = {},
@@ -612,6 +619,23 @@ function Gen4Nsbmd.parse(data)
     -- than baked: see `poseCommands`.
     model.pose = Gen4Nsbmd.poseCommands(data, header.renderCommands,
                                         header.materials)
+    for _,op in ipairs(model.pose or {}) do if op.op=='mix' then
+      model.inverseBind={}
+      if header.matrices+header.numObjects*84>header.at+header.size then
+        return nil,'truncated model envelope matrices'
+      end
+      for node=0,header.numObjects-1 do
+        local raw={}
+        for k=0,11 do
+          local v=u32(data,header.matrices+node*84+k*4)
+          if v>=2147483648 then v=v-4294967296 end
+          raw[k+1]=v/4096
+        end
+        model.inverseBind[node+1]={raw[1],raw[4],raw[7],raw[10],raw[2],raw[5],raw[8],raw[11],
+          raw[3],raw[6],raw[9],raw[12],0,0,0,1}
+      end
+      break
+    end end
 
     local shapeDict = Gen4Nsbmd.dictionary(data, header.shapes)
     for _, shape in ipairs(shapeDict and shapeDict.entries or {}) do
@@ -871,20 +895,35 @@ function Gen4Nsbmd.poseCommands(data, at, limit)
     local n = SBC_OPERANDS[op]
     if op == 0x06 then
       n = 3 + (flags % 2) + (math.floor(flags / 2) % 2)
+    elseif op == 0x07 or op == 0x08 then
+      n = 1 + (flags % 2) + (math.floor(flags / 2) % 2)
     elseif op == 0x09 then
       n = 2 + (u8(data, pos + 1) or 0) * 3
     end
     if n == nil then return ops, byte end
     if op == 0x06 then
-      local entry = { op = "node", node = u8(data, pos) }
+      local entry = { op = "node", node = u8(data, pos),parent=u8(data,pos+1),scaleFlags=u8(data,pos+2) }
       local i = 3
       if flags % 2 == 1 then entry.store = u8(data, pos + i); i = i + 1 end
       if math.floor(flags / 2) % 2 == 1 then entry.restore = u8(data, pos + i) end
       ops[#ops + 1] = entry
+    elseif op == 0x07 or op == 0x08 then
+      local entry={op='billboard',node=u8(data,pos),yOnly=op==0x08}
+      local i=1
+      if flags%2==1 then entry.store=u8(data,pos+i);i=i+1 end
+      if math.floor(flags/2)%2==1 then entry.restore=u8(data,pos+i) end
+      ops[#ops+1]=entry
     elseif op == 0x03 then
       ops[#ops + 1] = { op = "matrix", slot = u8(data, pos) }
     elseif op == 0x05 then
       ops[#ops + 1] = { op = "shape", shape = u8(data, pos) }
+    elseif op == 0x09 then
+      local entry={op='mix',slot=u8(data,pos),weights={}}
+      for i=0,(u8(data,pos+1) or 0)-1 do
+        local at=pos+2+i*3
+        entry.weights[#entry.weights+1]={slot=u8(data,at),node=u8(data,at+1),weight=u8(data,at+2)}
+      end
+      ops[#ops+1]=entry
     end
     pos = pos + n
   end
@@ -897,8 +936,9 @@ end
 -- the model's own node transform for the rest pose and a joint animation's
 -- frame for a moving one -- which is the whole point of keeping the sequence:
 -- the two are the same walk over different numbers.
-function Gen4Nsbmd.pose(ops, matrixOf)
-  local out, stack = {}, {}
+function Gen4Nsbmd.pose(ops, matrixOf, inverseBind, scalingRule, billboardOf)
+  local out, stack, scales = {}, {}, {}
+  out.stacks={}
   local current = {
     1, 0, 0, 0,
     0, 1, 0, 0,
@@ -912,6 +952,19 @@ function Gen4Nsbmd.pose(ops, matrixOf)
       end
       local local4 = matrixOf(entry.node)
       if local4 then
+        -- Maya segment-scale compensation: translation inherits the
+        -- parent's scale, while the child rotation/scale axes do not.
+        local own={}
+        for col=0,2 do own[col+1]=math.sqrt(local4[col+1]^2+local4[col+5]^2+local4[col+9]^2) end
+        local parent=scales[entry.parent]
+        if scalingRule==1 and (entry.scaleFlags or 0)%2==1 and parent then
+          local compensated={};for i=1,16 do compensated[i]=local4[i] end
+          for row=0,2 do for col=0,2 do
+            if parent[row+1]~=0 then compensated[row*4+col+1]=local4[row*4+col+1]/parent[row+1] end
+          end end
+          local4=compensated
+        end
+        scales[entry.node]=own
         local product = {}
         for row = 0, 3 do
           for col = 0, 3 do
@@ -925,10 +978,33 @@ function Gen4Nsbmd.pose(ops, matrixOf)
         current = product
       end
       if entry.store then stack[entry.store] = current end
+    elseif entry.op == 'billboard' then
+      if entry.restore then current=stack[entry.restore] or current end
+      if billboardOf then current=billboardOf(current,entry.yOnly) or current end
+      if entry.store then stack[entry.store]=current end
     elseif entry.op == "matrix" then
       current = stack[entry.slot] or current
+    elseif entry.op == 'mix' and inverseBind then
+      local mixed={};for i=1,16 do mixed[i]=0 end
+      for _,part in ipairs(entry.weights) do
+        local a,b=stack[part.slot],inverseBind[part.node+1]
+        if a and b then
+          for row=0,3 do for col=0,3 do
+            local sum=0
+            for k=0,3 do sum=sum+a[row*4+k+1]*b[k*4+col+1] end
+            mixed[row*4+col+1]=mixed[row*4+col+1]+sum*part.weight/256
+          end end
+        end
+      end
+      mixed[16]=1;current=mixed;stack[entry.slot]=mixed
     elseif entry.op == "shape" then
       out[entry.shape] = current
+      -- SBC matrix slots are reusable registers. A display list restores
+      -- from the palette as it exists WHEN THIS SHAPE IS DRAWN, not from
+      -- the final palette after later bones have overwritten those slots.
+      local snapshot={}
+      for slot,matrix in pairs(stack) do snapshot[slot]=matrix end
+      out.stacks[entry.shape]=snapshot
     end
   end
   out.stack=stack

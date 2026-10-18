@@ -39,7 +39,13 @@ function Game:load()
   -- data exists, so mods can register or override the same definitions that
   -- the rest of the game consumes.  A broken mod is reported and skipped by
   -- the loader without preventing the base game from booting.
-  self.mods = ModLoader.new()
+  -- THE LAUNCHER'S BACKDROP LOADS THE PLAIN GAME (src/import/LauncherBackdrop
+  -- sets `loadWithoutMods` around its own Game:load). It boots the real game
+  -- behind the launcher, and with mods on that made every game the player
+  -- then pressed Play on the SECOND mod load in the process -- a mod that
+  -- wraps engine functions once behind an "already wrapped" flag kept the
+  -- dead first load's wraps (DRAMATIC_SHAPE's 3D battles drew a white screen).
+  self.mods = ModLoader.new(self.loadWithoutMods and { noMods = true } or nil)
   self.mods:load(Data)
   self.modStatus = self.mods:status()
   -- AND THE MAP EDITOR'S OVERLAY AGAIN, ON TOP OF THE MERGE.
@@ -443,6 +449,10 @@ Game.cameraLookDX = 0
 Game.cameraLookDY = 0
 
 local function lookPointerWanted(self)
+  -- never for the launcher's background game: it is a picture behind the
+  -- launcher, and capturing the pointer hid the launcher's mouse whenever the
+  -- player's camera was set to first or third person
+  if self.launcherPreview then return false end
   if not self:freeView() then return false end
   if (self.stack and self.stack:top()) ~= self.overworld then return false end
   if love.window and love.window.hasFocus then
@@ -534,7 +544,9 @@ end
 -- nothing and the camera would stop turning while the player is still asking it
 -- to.  An analog control that means "keep going" has to be read per frame.
 function Game:updateCameraStick(dt)
-  local view = self:freeView()
+  -- the launcher's background takes no look input (the right stick was
+  -- turning its camera while the player navigated the launcher)
+  local view = (not self.launcherPreview) and self:freeView() or nil
   if not view then
     if self.lookRelative then syncLookPointer(self, false) end
     Game.cameraLookDX = 0
@@ -930,7 +942,24 @@ function Game:draw()
     local okSS, SS = pcall(require, "src.ui.SecondScreen")
     if okSS and SS.mode and (SS.mode(self) == "display" or SS.combined(self))
        and not self.secondScreenDrawnThisFrame then
-      local okP, Poketch = pcall(require, "src.ui.Gen4Poketch")
+      local version = require("src.core.GameVersion").info()
+      local family = version and version.family
+      -- THE WATCH ONLY ONCE IT IS ON THE WRIST: Platinum's lower screen shows
+      -- the Pokétch after `enablepoketch` (Jubilife) and nothing before; Black
+      -- and White's is the C-Gear, not Platinum's watch (not built yet), so
+      -- theirs stays blank too
+      local poketchOn = require("src.pokemon.Gen4PoketchState").owned(self.save)
+      local panelModule = family == "hgss" and "src.ui.HgssFieldPanel"
+        or (family ~= "bw" and poketchOn and "src.ui.Gen4Poketch") or nil
+      local okP, Poketch = false, nil
+      if panelModule then okP, Poketch = pcall(require, panelModule) end
+      if not panelModule then
+        pcall(SS.draw, self, function()
+          love.graphics.setColor(0, 0, 0, 1)
+          love.graphics.rectangle("fill", 0, 0, 256, 192)
+          love.graphics.setColor(1, 1, 1, 1)
+        end)
+      end
       if okP and Poketch and Poketch.new then
         if not self.secondScreenOverworldPoketch then
           local okNew, p = pcall(Poketch.new, self, {})
@@ -1628,32 +1657,23 @@ end
 function Game:gamepadaxis(joystick, axis, value)
   -- past-deadzone only, so resting-stick drift can't hide the overlay
   if math.abs(value) > 0.5 then TouchControls:noteGamepad() end
-
-  -- Check hotkey bindings for stick directions
-  if math.abs(value) > 0.5 then
-    local hotkeyButton = nil
-    if axis == "leftx" then
-      hotkeyButton = value > 0 and "stickright" or "stickleft"
-    elseif axis == "lefty" then
-      hotkeyButton = value > 0 and "stickdown" or "stickup"
-    elseif axis == "rightx" then
-      hotkeyButton = value > 0 and "rightstickright" or "rightstickleft"
-    elseif axis == "righty" then
-      hotkeyButton = value > 0 and "rightstickdown" or "rightstickup"
-    elseif axis == "triggerleft" then
-      hotkeyButton = "lefttrigger"
-    elseif axis == "triggerright" then
-      hotkeyButton = "righttrigger"
-    end
-
-    if hotkeyButton then
-      local hotkeyAction = Input:hotkeyForPad(hotkeyButton)
-      if hotkeyAction and self:fireHotkey(hotkeyAction) then
-        return
+  -- the triggers and the right stick as bindable pseudo-buttons (Input
+  -- AXIS_BUTTONS): a press goes to BindingsMenu's capture when one is armed,
+  -- the same routing as a real pad button
+  local top = self.stack and self.stack:top()
+  for _, t in ipairs(Input:axisTransitions(axis, value)) do
+    local name, down = t[1], t[2]
+    if down then
+      if top and top.onGamepadPressed then
+        top:onGamepadPressed(name)
+      else
+        Input:padButton(name, true)
       end
+    else
+      Input:padButton(name, false)
+      if top and top.onGamepadReleased then top:onGamepadReleased(name) end
     end
   end
-
   Input:gamepadaxis(joystick, axis, value)
 end
 
@@ -2008,6 +2028,12 @@ function Game:restoreSave(loaded, recovered)
   -- SaveData.load and skip on the format guard
   local activeMods = self.modStatus and self.modStatus.loaded
   SaveData.runMigrations(loaded, self.mods and self.mods.migrations, activeMods)
+  -- a party set aside for a borrowed-team battle (src/pokemon/PartyAside.lua)
+  -- when the save was written: the battle is over, so it is the party again --
+  -- first, so validation and the OT stamp below see the real team
+  pcall(require("src.pokemon.PartyAside").onLoad, loaded)
+  -- what the Pokewalker sent home (src/pokewalker/WalkerInbox.lua)
+  pcall(require("src.pokewalker.WalkerInbox").apply, loaded, self.data)
   -- PR #60 taught future FireRed League wins to keep the cartridge-native
   -- FLAG_DEFEATED_* bits and the older port EVENT_BEAT_* names in sync.  Saves
   -- already partway through the Elite Four predate that bridge and may have
@@ -2071,6 +2097,10 @@ function Game:restoreSave(loaded, recovered)
   end
   -- ...and Emerald's: a SaveGameFrontier save continues in the lobby
   if require("src.core.GameVersion").get() == "emerald" then
+    -- Pokemon a Frontier challenge stranded before LoadPlayerParty kept its
+    -- stash (Gen3BattleFrontier.recoverStranded): once per save, before the
+    -- continue point is consumed so a mid-challenge save is recognised
+    pcall(require("src.script.Gen3BattleFrontier").recoverStranded, loaded)
     require("src.script.Gen3BattleFrontier").applyContinue(loaded)
   end
   -- rebuild the state stack from the save (and drop a fade the overworld

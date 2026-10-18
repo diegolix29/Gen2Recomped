@@ -988,8 +988,7 @@ GameVersion.VERSIONS = {
   -- builds both, and both dumps hash to what it builds. The Gen 4 extractor
   -- reads them through src/import/Gen4Versions.lua -- their own paths (almost
   -- everything under /a/x/y/z) and their own text banks over Platinum's.
-  -- Held at importable = false ("COMING SOON") until the overworld imports;
-  -- POKEPORT_UNLOCK=heartgold,soulsilver opens the import for development.
+  -- Public imports are enabled; the launcher labels these builds PRE-ALPHA.
   -- Two screens, Platinum's camera: both follow from generation 4 and
   -- `dualScreen`, the same as Platinum, with nothing version-specific added.
   heartgold = {
@@ -1004,9 +1003,9 @@ GameVersion.VERSIONS = {
     manifest = "tools/rom_manifest_heartgold.json",
     cachePrefix = "heartgold/",
     saveSuffix = "_heartgold",
-    importable = false,
+    importable = true,
     experimental = true,
-    experimentalLabel = "EARLY",
+    experimentalLabel = "PRE-ALPHA",
     hasRunning = true,
     dualScreen = true,
   },
@@ -1022,9 +1021,9 @@ GameVersion.VERSIONS = {
     manifest = "tools/rom_manifest_soulsilver.json",
     cachePrefix = "soulsilver/",
     saveSuffix = "_soulsilver",
-    importable = false,
+    importable = true,
     experimental = true,
-    experimentalLabel = "EARLY",
+    experimentalLabel = "PRE-ALPHA",
     hasRunning = true,
     dualScreen = true,
   },
@@ -1044,9 +1043,9 @@ GameVersion.VERSIONS = {
     manifest = "tools/rom_manifest_black.json",
     cachePrefix = "black/",
     saveSuffix = "_black",
-    importable = false,
+    importable = true,
     experimental = true,
-    experimentalLabel = "EARLY",
+    experimentalLabel = "PRE-ALPHA",
     hasRunning = true,
     dualScreen = true,
   },
@@ -1062,9 +1061,9 @@ GameVersion.VERSIONS = {
     manifest = "tools/rom_manifest_white.json",
     cachePrefix = "white/",
     saveSuffix = "_white",
-    importable = false,
+    importable = true,
     experimental = true,
-    experimentalLabel = "EARLY",
+    experimentalLabel = "PRE-ALPHA",
     hasRunning = true,
     dualScreen = true,
   },

@@ -576,7 +576,7 @@ function Act:draw()
   local page = choosing and (self.mode == "move" and "moves" or "judges") or "logo"
   local ok, SS = pcall(require, "src.ui.SecondScreen")
   local mode = ok and SS.mode(self.game) or "off"
-  if ok and (mode == "display" or mode == "inset") and not SS.stowed(self.game) then
+  if ok and require("src.ui.SecondScreen").separateMode(mode) and not SS.stowed(self.game) then
     SS.draw(self.game, function() self:drawBottom(page) end)
   elseif choosing then
     if ok and mode == "swap" then SS.draw(self.game, function() self:drawBottom(page) end)

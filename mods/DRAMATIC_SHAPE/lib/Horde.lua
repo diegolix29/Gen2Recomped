@@ -643,14 +643,15 @@ function Horde.install()
   -- self.engaging, which would also freeze the player's own input.
   do
     local OverworldState = require("src.world.OverworldController")
-    if not OverworldState.dramaticShapeHordeSight then
+    -- (Rewrap: replaced by a later load in the same process, see lib/Rewrap.lua)
+    V.require("Rewrap").install({ { OverworldState, "dramaticShapeHordeSight", { "checkTrainerSight" } } }, function()
       local inner = OverworldState.checkTrainerSight
       function OverworldState:checkTrainerSight(...)
         if Horde.active then return end
         return inner(self, ...)
       end
       OverworldState.dramaticShapeHordeSight = true
-    end
+    end)
   end
 
   -- THE BUTTONS THE WORLD MAY NOT HAVE. A, START, SELECT and B are the
@@ -671,7 +672,8 @@ function Horde.install()
   -- nothing downstream of it can revive one.
   do
     local OverworldState = require("src.world.OverworldController")
-    if not OverworldState.dramaticShapeHordeInput then
+    -- (Rewrap: replaced by a later load in the same process, see lib/Rewrap.lua)
+    V.require("Rewrap").install({ { OverworldState, "dramaticShapeHordeInput", { "handleInput" } } }, function()
       local inner = OverworldState.handleInput
       function OverworldState:handleInput(...)
         if Horde.active then
@@ -691,7 +693,7 @@ function Horde.install()
         return inner(self, ...)
       end
       OverworldState.dramaticShapeHordeInput = true
-    end
+    end)
   end
 
   -- the crowd follows the player through the door: a warp lands a new map

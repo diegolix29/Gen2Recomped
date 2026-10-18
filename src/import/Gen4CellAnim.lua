@@ -174,9 +174,10 @@ function Gen4CellAnim.parse(data, Gen4Graphics)
         return nil, ("frame %d of sequence %d ends %04X, not BEEF")
           :format(f, s, pad)
       end
-      -- Move effects use plain indices; the PC cursor's arrow animations
-      -- additionally carry signed translations. SRT remains unsupported.
-      if elementType ~= Gen4CellAnim.ELEMENT_INDEX and elementType ~= Gen4CellAnim.ELEMENT_TRANSLATE then
+      -- Oak's Marill reveal uses the same Nitro SRT result layout as BW's
+      -- cell animations: index, angle, fx32 scales, signed x/y translation.
+      if elementType ~= Gen4CellAnim.ELEMENT_INDEX and elementType ~= Gen4CellAnim.ELEMENT_TRANSLATE
+         and elementType ~= Gen4CellAnim.ELEMENT_SRT then
         return nil, ("sequence %d uses element type %d, which this port has "
                      .. "never seen in the cartridge"):format(s, elementType)
       end
@@ -186,6 +187,18 @@ function Gen4CellAnim.parse(data, Gen4Graphics)
           :format(f, s)
       end
       frames[f + 1] = { cell = cell, duration = duration }
+      if elementType == Gen4CellAnim.ELEMENT_SRT then
+        local at=resultBase+resultAt
+        local rotation,sx,sy=u16(d,at+2),u32(d,at+4),u32(d,at+8)
+        local x,y=u16(d,at+12),u16(d,at+14)
+        if not (rotation and sx and sy and x and y) then return nil,'truncated SRT animation result' end
+        local function signed(v,limit) return v>=limit/2 and v-limit or v end
+        local frame=frames[f+1]
+        frame.rotation=rotation/65536*math.pi*2
+        frame.scaleX=signed(sx,4294967296)/4096
+        frame.scaleY=signed(sy,4294967296)/4096
+        frame.x,frame.y=signed(x,65536),signed(y,65536)
+      end
       if elementType == Gen4CellAnim.ELEMENT_TRANSLATE then
         local x,y=u16(d,resultBase+resultAt+4),u16(d,resultBase+resultAt+6)
         if not (x and y) then return nil,'truncated translated animation result' end

@@ -81,6 +81,10 @@ local hgssPaths = {
   -- members per class (NCGR, NCLR, NCER, NANR, NCBR) -- Platinum's stride
   trainerFront = "/a/0/5/8",
   trainerBack = "/a/0/0/6",
+  -- the party icons: NARC_poketool_icongra_poke_icon, pl_poke_icon's shape
+  monIcons = Files.byName.poketool_icongra_poke_icon,
+  -- each species' battle-sprite frame script (NARC_ReadPokepicAnimScript)
+  pokeAnim = "/a/1/8/0",
 }
 
 -- /a/0/3/8 IS PLATINUM'S pl_winframe.narc WITH ONE MEMBER INSERTED: the same
@@ -111,9 +115,15 @@ V.OVERRIDES = {
     },
   },
 }
+-- SoulSilver shares every bank but the Pokedex's flavour text: ZUKAN_FLAVOR_GMM
+-- is msg_0803 on HeartGold and msg_0804 on SoulSilver (pokeheartgold
+-- src/application/pokedex/ov18_021E590C.c 9-13)
+local soulsilverBank = {}
+for k, v in pairs(V.OVERRIDES.heartgold.bank) do soulsilverBank[k] = v end
+soulsilverBank.dexEntry = 804
 V.OVERRIDES.soulsilver = {
   path = setmetatable({ encounters = Files.byName.fielddata_encountdata_s_enc_data }, { __index = hgssPaths }),
-  bank = V.OVERRIDES.heartgold.bank,
+  bank = soulsilverBank,
 }
 
 -- MEMBER NAMES for HGSS archives that the stages look members up by, where
@@ -131,7 +141,7 @@ V.MEMBER_NAMES = {
 
 -- the stages each family runs today (nil: every stage, the Platinum list)
 V.STAGES = {
-  hgss = { "text", "species", "moves", "items", "trainers", "gen4_trainer_messages", "encounters", "maps", "events", "regions", "tilesets", "constants", "overworld", "species_sprites", "trainer_sprites", "heights", "field", "scripts", "link", "terrain", "models", "frames", "fonts", "battle_graphics" },
+  hgss = { "text", "species", "moves", "items", "trainers", "gen4_trainer_messages", "encounters", "maps", "events", "regions", "tilesets", "constants", "overworld", "species_sprites", "trainer_sprites", "heights", "field", "scripts", "link", "terrain", "models", "frames", "fonts", "battle_graphics", "follow_mon", "hgss_screens", "battle_music" },
 }
 
 function V.family(version) return V.FAMILY[version] or "platinum" end

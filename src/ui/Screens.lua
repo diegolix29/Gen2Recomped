@@ -399,6 +399,27 @@ end
 -- The id a push should really open, and the arguments it should open with.
 -- Public so the suite can state the rule without driving a whole game.
 function Screens.resolveId(game, id, arg)
+  -- BLACK AND WHITE'S OWN SCREENS, ahead of everything (a Gen 5 cache is not
+  -- a Gen 4 one, so the table below would hand it the Game Boy's): so far the
+  -- evolution scene, positional like Platinum's
+  if id == "EvolutionState" then
+    local okV, V = pcall(require, "src.core.GameVersion")
+    if okV and V.isGen5 and V.isGen5() then
+      local screens = game and game.data and game.data.screens
+      if not (screens and screens[id]) then return "Gen5EvolutionState", arg end
+    end
+  end
+  -- HEARTGOLD / SOULSILVER'S SUMMARY takes every summary push, the move-
+  -- learning one (`choose`) included, which the Gen 4 alias below declines
+  if id == "SummaryMenu" and ((game and game.data) or {}).gen4_hgss_summary_art then
+    local screens = game.data.screens
+    if not (screens and screens[id]) then return "HgssSummaryMenu", arg end
+  end
+  -- ...and Black and White's (src/ui/Gen5SummaryMenu.lua)
+  if id == "SummaryMenu" and ((game and game.data) or {}).gen5_summary_art then
+    local screens = game.data.screens
+    if not (screens and screens[id]) then return "Gen5SummaryMenu", arg end
+  end
   -- Gen 4 first: a cache is one or the other, and asking in this order means
   -- the Gen 3 table never has to know that a fourth generation exists.
   local gen4 = GEN4_ALIASES[id]
@@ -408,6 +429,43 @@ function Screens.resolveId(game, id, arg)
       local okG4, moduleG4 = pcall(builtinFor, gen4.id)
       if okG4 and type(moduleG4) == "table"
          and type(moduleG4.new) == "function" then
+        -- HGSS's card is its own layout (src/ui/HgssTrainerCard.lua), known
+        -- by the art its import wrote
+        if gen4.id == "Gen4TrainerCard"
+           and ((game and game.data or {}).gen4_trainer_card_art or {}).hgss then
+          return "HgssTrainerCard", arg
+        end
+        if gen4.id == "Gen4TrainerCard"
+           and ((game and game.data or {}).gen4_trainer_card_art or {}).bw then
+          return "Gen5TrainerCard", arg
+        end
+        -- HGSS's field menu is the touch panel (src/ui/HgssStartMenu.lua)
+        if gen4.id == "Gen4StartMenu" and (game and game.data or {}).gen4_hgss_menu_art then
+          return "HgssStartMenu", arg
+        end
+        if gen4.id == "Gen4StartMenu" and (game and game.data or {}).gen5_menu_art then
+          return "Gen5StartMenu", arg
+        end
+        if gen4.id == "Gen4BagMenu" and (game and game.data or {}).gen4_hgss_bag_art then
+          return "HgssBagMenu", arg
+        end
+        if gen4.id == "Gen4BagMenu" and (game and game.data or {}).gen5_bag_art then
+          return "Gen5BagMenu", arg
+        end
+        -- the Pokedex and the PC, each routed once its art is in the cache
+        -- (src/ui/HgssPokedex.lua / Gen5Pokedex.lua / HgssBoxMenu.lua / Gen5BoxMenu.lua)
+        do
+          local data = (game and game.data) or {}
+          local own = {
+            Gen4Pokedex = data.gen4_hgss_dex_art and "HgssPokedex" or data.gen5_dex_art and "Gen5Pokedex",
+            Gen4BoxMenu = data.gen4_hgss_box_art and "HgssBoxMenu" or data.gen5_box_art and "Gen5BoxMenu",
+          }
+          local to = own[gen4.id]
+          if to and pcall(builtinFor, to) then return to, arg end
+        end
+        if gen4.id == "Gen4SummaryMenu" and (game and game.data or {}).gen4_hgss_summary_art then
+          return "HgssSummaryMenu", arg
+        end
         return gen4.id, arg
       end
     end

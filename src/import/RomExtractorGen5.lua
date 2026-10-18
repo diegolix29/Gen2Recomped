@@ -50,7 +50,7 @@ X.BANK = {
   item = 54, itemDescription = 53, nature = 24, typeName = 199, typeUpper = 287,
   trainer = 190, trainerClass = 191, mapLabel = 89, dexEntry = 235, dexCategory = 260,
 }
-X.STAGES = { "text", "species", "moves", "items", "trainers", "maps", "field", "constants", "encounters", "fonts", "scripts" }
+X.STAGES = { "text", "species", "moves", "items", "trainers", "maps", "field", "constants", "encounters", "fonts", "scripts", "species_sprites", "trainer_sprites", "audio" }
 X.ALL_STAGES = { "text", "species", "moves", "items", "trainers", "abilities", "encounters", "maps", "events",
   "scripts", "graphics", "fonts", "overworld", "species_sprites", "trainer_sprites", "cries", "models", "field" }
 X.SPECIES_COUNT = 649
@@ -226,6 +226,20 @@ function X:extractTrainers()
       out[id] = tr
     end
   end
+  -- THE BATTLE PICTURES (src/import/Gen5TrainerPics.lua), stamped as `pic`
+  -- on each row the way Platinum's trainer_sprites stage does
+  local okP, Pics = pcall(require, "src.import.Gen5TrainerPics")
+  if okP and self.rom then
+    local okB, index = pcall(function()
+      return Pics.build(self, out)
+    end)
+    if okB and index then
+      self:write("gen4_trainer_sprites", index)
+      self.trainerSpriteReport = index.counts
+      self._trainerBacks = index.backs
+    elseif not okB then print("Gen5TrainerPics failed: " .. tostring(index)) end
+  end
+  self._trainers = out
   self:write("trainers", out)
   -- WHAT EACH TRAINER SAYS: Platinum's two-file index in the same shape --
   -- /a/0/9/0 the flat { u16 trainer, u16 type } records (1,762, one per line
@@ -294,15 +308,21 @@ function X:extractField()
     -- spot from that zone's header (+0x24 / +0x2C, Gen5Maps' spawnX / Z) with
     -- facing 2 -- "left" in Gen 4's order (BW's own direction enum is not yet
     -- confirmed). The first blackout point is the floor below (zone 390's own
-    -- spot). BW's intro is not ported, so a new game opens in the room.
+    -- spot). The professor flow is not ported, so NEW GAME opens in the room.
     local room, below = out.zones and out.zones[391], out.zones and out.zones[390]
     local boot = room and {
       startMap = "Z391", startX = room.spawnX, startY = room.spawnZ, startFacing = "left",
       lastHeal = below and { map = "Z390", x = below.spawnX, y = below.spawnZ } or nil,
-      screens = { splash = "Gen4Intro", title = "Gen4Title", newGame = false, options = "Gen4Options" },
+      screens = { splash = "Gen5Intro", title = "Gen5Title", newGame = "Gen5JuniperIntro", options = "Gen4Options" },
     } or nil
     self:write("field", { source = "ROM:" .. tostring(self.version), boot = boot,
-      playerSprites = { walk = hero }, playerForms = { order = { "boy" }, boy = { label = "BOY", walk = hero } } })
+      playerSprites = { walk = hero }, playerForms = { order = { "boy", "girl" },
+        boy = { label = "BOY", walk = hero,
+          back = self._trainerBacks and self._trainerBacks[0] and self._trainerBacks[0].path,
+          bike = out.spriteTable[3] and ("SPRITE_G4_%03d"):format(out.spriteTable[3]) },
+        girl = { label = "GIRL", walk = out.spriteTable[4] and ("SPRITE_G4_%03d"):format(out.spriteTable[4]) or hero,
+          back = self._trainerBacks and self._trainerBacks[1] and self._trainerBacks[1].path,
+          bike = out.spriteTable[6] and ("SPRITE_G4_%03d"):format(out.spriteTable[6]) } } })
   end
   local Tileset = require("src.import.Gen4Tileset")
   self:write("map_tilesets", { [Tileset.PRIMARY_ID] = Tileset.primary() })
@@ -378,6 +398,9 @@ function X:extractConstants()
     -- 0x232's table: Nimbasa's park visitor, by season x 2 + badges
     constants.gen5ParkVisitors = derived and require("src.import.Gen5ScriptOps").handlerTable(self.rom, derived, 0x232, 16) or nil
   end
+  -- the in-game trades, /a/1/6/5 + system bank 35 (src/import/Gen5Trades.lua)
+  local okTrades, trades = pcall(require("src.import.Gen5Trades").build, self)
+  if okTrades then constants.gen5Trades = trades end
   self:write("constants", constants)
   return constants
 end
@@ -462,6 +485,52 @@ function X:extractFont()
   local def = { pages = { message = page }, charmap = F.charmap(font, 1), frame = "drawn",
                 source = ("ROM:%s /a/0/2/3[0] NFTR (%d glyphs, %dx%d)")
                   :format(tostring(self.version), font.numGlyphs, font.pixelWidth, font.pixelHeight) }
+  -- THE OTHER TWO FACES: /a/0/2/3 member 2 (11 x 13), what the battle prints
+  -- names in -- the "system" face Gen4Battle's boxes ask for -- and member 1
+  -- (10 x 10), the small one
+  def.faces = {}
+  for _, f in ipairs({ { 2, "system" }, { 1, "small" } }) do
+    local face = arc and F.parse(arc:get(f[1]))
+    local fsheet = face and F.sheet(face, { columns = 32 })
+    local fentry = fsheet and self:saveImage("font/font_" .. f[2] .. "_sheet", fsheet,
+      { glyphs = face.numGlyphs, glyphWidth = face.pixelWidth, glyphHeight = face.pixelHeight, columns = 32 })
+    if fentry then
+      local w = {}
+      for i = 0, face.numGlyphs - 1 do w[i + 1] = face.widths[i] end
+      def.faces[f[2]] = { image = fentry.path, base = 1, glyphsPerRow = 32,
+                          glyphWidth = face.pixelWidth, glyphHeight = face.pixelHeight,
+                          advance = face.maxWidth, widths = w, preTinted = true }
+    end
+  end
+  -- THE MESSAGE WINDOW: /a/0/0/5 tileset 10 is BW's 6 x 3 message-box frame,
+  -- eighteen tiles in the same row-major arrangement Platinum's DrawMessageBox
+  -- Frame reads (so Font's "gen4" layout draws it), once per palette 0-4 --
+  -- the light ones for the field, the dark ones the battle uses
+  do
+    local G = require("src.import.Gen4Graphics")
+    local fb = self.rom:read("/a/0/0/5")
+    local farc = fb and Narc.parse(fb)
+    local tiles = farc and G.tiles(farc:get(10))
+    if tiles then
+      local rows, count = {}, 0
+      for _, p in ipairs({ 3, 0, 1, 2, 4 }) do  -- white first: the field's
+        local pal = G.palette(farc:get(p))
+        if pal then
+          local cells = {}
+          for t = 0, 17 do cells[t + 1] = { tile = t, palette = 0 } end
+          local strip = G.compose({ width = 144, height = 8, cells = cells }, tiles, pal)
+          if strip then rows[#rows + 1] = strip.rgba; count = count + 1 end
+        end
+      end
+      local framed = count > 0 and self:saveImage("windows/dialogue",
+        { width = 144, height = 8 * count, rgba = table.concat(rows) })
+      if framed then
+        def.dialogueFrame = { image = framed.path, tiles = 18, count = count, layout = "gen4",
+                              fill = { 1, 1, 1 }, battleFrame = 5,
+                              source = "ROM:/a/0/0/5 tileset 10, palettes 3, 0, 1, 2, 4 (the battle's is 4)" }
+      end
+    end
+  end
   self:write("font", def)
   return def
 end
@@ -499,6 +568,95 @@ function X:extractScripts()
   return out
 end
 
+-- THE SOUND (src/import/Gen5Audio.lua): the SDAT copied into the cache and
+-- catalogued as Platinum's is, with each zone's music by season
+function X:extractAudio()
+  self:beginStage("audio")
+  local F = require("src.import.Gen5Field")
+  local raw = self.rom:read(F.PATH.zones)
+  local zarc = raw and require("src.import.NarcArchive").parse(raw)
+  local zones = zarc and require("src.import.Gen5Maps").zones(zarc:get(0)) or {}
+  local audio = require("src.import.Gen5Audio").build(self, zones)
+  if audio then self:write("audio", audio) end
+  -- the battle and eyes-meet themes by class (src/import/Gen4BattleMusic.lua)
+  local battle, eyes = require("src.import.Gen4BattleMusic").extract(self, "bw")
+  if battle then self:write("gen4_battle_music", battle) end
+  if eyes then self:write("gen4_trainer_music", eyes) end
+end
+
+-- THE BATTLE PICTURES (src/import/Gen5BattleSprites.lua): every species'
+-- front, back, shiny and female stills, stamped on its species row the way
+-- Platinum's are, then the species module written again with them
+function X:extractBattleSprites()
+  self:beginStage("species_sprites")
+  local index = require("src.import.Gen5BattleSprites").build(self)
+  -- the party icons ride in the same record, as Platinum's do (Gen5Icons)
+  index.icons = require("src.import.Gen5Icons").build(self)
+  self:write("gen4_species_sprites", index)
+  if self._pokemon then self:write("pokemon", self._pokemon) end
+  self.battleSpriteReport = index.counts
+  -- ...and the battle's own interface (src/import/Gen5BattleUi.lua)
+  local ui = require("src.import.Gen5BattleUi").build(self)
+  if ui then self:write("gen5_battle_ui", ui) end
+  -- ...and its 3D backdrops and platforms (src/import/Gen5BattleScene.lua)
+  local scene = require("src.import.Gen5BattleScene").build(self)
+  if scene then self:write("gen5_battle_scene", scene) end
+  -- ...and the evolution scene's (src/import/Gen5EvolutionArt.lua)
+  local evo = require("src.import.Gen5EvolutionArt").build(self)
+  if evo then self:write("gen5_evolution", evo) end
+  -- ...and the party screen's plates and backdrop, in Platinum's shape
+  -- (src/import/Gen5PartyArt.lua): the backdrop goes where Gen4PartyMenu
+  -- looks for it, `gen4_graphics.screens["party/menu"]`
+  local party = require("src.import.Gen5PartyArt").build(self)
+  if party then
+    local back = party.background
+    party.background = nil
+    self:write("gen4_party_art", party)
+    -- the party backdrop and the item icons (src/import/Gen5ItemIcons.lua)
+    local screens = require("src.import.Gen5ItemIcons").build(self) or {}
+    if back then screens["party/menu"] = back end
+    -- ...and the type and category badges (src/import/Gen5TypeIcons.lua)
+    local types = require("src.import.Gen5TypeIcons").build(self) or {}
+    self:write("gen4_graphics", { screens = screens, battleObjects = types })
+  end
+  -- ...and the trainer card (src/import/Gen5TrainerCardArt.lua), `bw = true`
+  local card = require("src.import.Gen5TrainerCardArt").build(self)
+  if card then self:write("gen4_trainer_card_art", card) end
+  -- ...and the field menu (src/import/Gen5MenuArt.lua)
+  local menu = require("src.import.Gen5MenuArt").build(self)
+  if menu then self:write("gen5_menu_art", menu) end
+  -- ...and the bag (src/import/Gen5BagArt.lua)
+  local bag = require("src.import.Gen5BagArt").build(self)
+  if bag then self:write("gen5_bag_art", bag) end
+  -- ...and the summary (src/import/Gen5SummaryArt.lua)
+  local summary = require("src.import.Gen5SummaryArt").build(self)
+  if summary then self:write("gen5_summary_art", summary) end
+  -- ...and the screens whose importers follow the same `build(x)` shape
+  -- (each optional until its module exists): the Pokedex, the PC
+  for _, entry in ipairs({ { "src.import.Gen5DexArt", "gen5_dex_art" },
+                           { "src.import.Gen5BoxArt", "gen5_box_art" },
+                           { "src.import.Gen5TradeArt", "gen5_trade_art" } }) do
+    local okM, M = pcall(require, entry[1])
+    if okM and type(M) == "table" and M.build then
+      local okB, built = pcall(M.build, self)
+      if okB and built then self:write(entry[2], built)
+      elseif not okB then print(("%s failed: %s"):format(entry[1], tostring(built))) end
+    end
+  end
+end
+
+-- the boot cards and title, the main menu and Juniper's speech (STAGE_ONLY
+-- can name this one)
+function X:extractBootScreens()
+  self:write("gen5_boot_art", require("src.import.Gen5BootArt").build(self))
+  self:write("gen5_main_menu_art", require("src.import.Gen5MainMenuArt").build(self))
+  self:write("gen5_juniper_art", require("src.import.Gen5JuniperArt").build(self))
+  -- ...and the opening movie between them (src/import/Gen5OpeningArt.lua)
+  local okO, opening = pcall(require("src.import.Gen5OpeningArt").build, self)
+  if okO and opening then self:write("gen5_opening", opening)
+  elseif not okO then print("Gen5OpeningArt failed: " .. tostring(opening)) end
+end
+
 function X:run()
   self:extractConstants()
   self:extractScripts()
@@ -511,6 +669,9 @@ function X:run()
   self:extractItems()
   self:extractTrainers()
   self:extractField()
+  self:extractAudio()
+  self:extractBattleSprites()
+  self:extractBootScreens()
   local skipped = {}
   for _, name in ipairs(X.ALL_STAGES) do
     local done = false

@@ -286,3 +286,126 @@ Consequences:
 - `touchPollable` (set once in `new`) gates all of it. Where `love.touch` is
   missing, every Android path is exactly what it was: act on press, never arm,
   no drag.
+
+## Sidebar layout
+
+The launcher opens in the sidebar layout (`src/import/LauncherSidebar.lua`,
+installed over `RomImporter` as a mixin). Settings -> LAYOUT switches back to
+the classic tab bar (`options.launcherClassic`).
+
+- **Top bar**: the colour strip, with the Gen 2 logo centred across the window.
+- **Rail**: News (the default), Games, Mods, Tools and Settings. The foot of
+  the rail holds the TiltRips code and DONATE.
+- **Games**: you pick a console, then a series (Pokemon / ROM hacks), then a
+  game. A console with nothing imported is greyed out and offers an import.
+  - The first page has a Continue card (the game whose save was written
+    last), then Favorites and Recent rows.
+  - The star on a tile marks it as a favourite (`options.launcherFavorites`;
+    `launcherRecent` holds the recent list).
+  - A game's page is the classic game panel. The header carries back,
+    FAVORITE, MUSIC and IMPORT ROMS.
+- **Mods**: search, a tag filter (taken from each mod's metadata) and a sort
+  order (`options.launcherModSort`).
+- **Tools**: Map Editor, Save Editor, Translate, Import / Export Save,
+  Import ROMs, Touch Controls and Scrape Game Art. You pick the tool, then
+  the game, then the slot where the tool needs one. The same tools are still
+  on each game's page.
+- **News**: `launcher_news.json` at the repo root on `main`, merged with the
+  GitHub releases. The result is cached in `launcher_news.lua` for 6 hours.
+  Format:
+  `{ "items": [ { "title": "...", "date": "YYYY-MM-DD", "body": "...", "url": "..." } ] }`
+
+### Background
+
+`src/import/LauncherBackdrop.lua` runs an imported game's real title / main
+menu behind the launcher. It mounts the version and calls `Game:load`, then
+draws the game under a scrim.
+
+The picture is fitted to the content area beside the rail and under the top
+bar, not to the whole window. For the length of the game's draw:
+
+- a bare `setCanvas()` binds a canvas the size of that area;
+- `getDimensions` and its relatives answer with the area's size;
+- `Renderer.splitViewport` is set to the area.
+
+The game therefore letterboxes into the canvas, and the canvas is drawn at
+the area's position.
+
+A DS game (generation 4 and later) shows the top screen only, whatever
+layout the player chose for play. On its title screen it shows the
+single-screen composition: the lower screen's Pokemon behind the logo.
+
+During the draw, and for the backdrop's game only:
+
+- `SecondScreen.mode` answers "swap" on Gen4Title / HgssTitle / Gen5Title;
+- everywhere else it answers "display", and `SecondScreen.draw` is a no-op,
+  so the intros and the opening movie draw only their top screen.
+
+What it shows is set by Settings -> BACKGROUND
+(`options.launcherBackground`):
+
+| Value | Shows |
+| --- | --- |
+| `game` (default) | the game being viewed, otherwise the last game played |
+| `last` | always the last game played |
+| a version id | that game |
+| `video` | a video the player chose, copied to `launcher_background.ogv` |
+| `off` | nothing |
+
+- It waits 0.45 s for the selection to settle before switching.
+- It gives up its mount (`Backdrop.stop`) before Play, an editor or an import.
+- A game that fails to boot is not retried.
+- The music follows Settings -> BACKGROUND MUSIC. The MUSIC button in the
+  header toggles it too.
+
+### Game art scraper
+
+`src/import/LauncherArt.lua` runs only on request: Settings -> SCRAPE ART &
+DESCRIPTIONS covers every imported game, and Tools -> Scrape Game Art covers
+one.
+
+- **Box art** comes from libretro-thumbnails `Named_Boxarts`. The imported
+  ROM's own file name is tried first, then known No-Intro titles. Aliases
+  there are git symlinks, which raw.github serves as the target's name; the
+  scraper follows one.
+- **The description** is the first two sentences of the Wikipedia REST
+  summary for the game.
+- Both are saved to the save folder as `launcher_art_<version>.png` and
+  `launcher_art_<version>.lua`.
+- They show on the game tiles and in an About card at the top of the game
+  page. ROM hacks are skipped.
+- The About card is drawn on every game page, with or without scraped art.
+  Its bottom right holds the game's one import button: "Import ROM", or
+  "Re-import ROM" once the game is imported. In the sidebar layout the ROM
+  card below is hidden once the ROM is in. It comes back for an import in
+  progress, a failed import, or a ROM that must be re-imported. The header
+  drops IMPORT ROMS (batch import) on game pages; it stays on the game lists
+  and under Tools.
+
+### Cloud saves (sync folder)
+
+`src/import/CloudSync.lua` syncs saves through a provider's local sync folder. It detects OneDrive, Google Drive for desktop, Dropbox and iCloud Drive, and you can pick any other folder.
+
+**Using it:**
+- Settings → CLOUD SAVES: choose the folder, BROWSE for another, or SYNC NOW.
+- Each save card has a **Sync** button.
+- Tools → Sync Saves syncs every imported game.
+
+**Layout:**
+- `<folder>/Gen2Recomp/saves/<version>/<device>-<slot>.lua`, with a `.info.lua` sidecar beside each save.
+- Cloud backups go in `backups/`.
+- Local state is kept in `cloud_sync.lua`; local backups go in `cloud_backups/`.
+
+**Rules:**
+- A slot's first sync never replaces anything. Its save is uploaded as a new entry, and any unlinked cloud entries come down as new slots.
+- After that, whichever side changed is copied to the other.
+- If both sides changed, the cloud copy is kept as a new local slot labelled "(cloud)".
+- Each side keeps two backups.
+
+**Checks:** `CLOUD=<scratch folder> love tools/cloud_sync_check` runs 15 checks.
+
+**Not done:** direct OAuth sign-in to Google Drive and OneDrive. It needs app client IDs. Android has no provider sync folder, so the phone needs that sign-in.
+
+### Settings page
+
+In the sidebar layout, the Settings page fills the whole content area and is drawn over the footer. While Settings is open, the live background is paused (`LauncherBackdrop.setPaused`): the game doesn't update, its music is suspended, and no switch happens. This is why stepping through the BACKGROUND list no longer boots a cartridge at each step. That list only offers games that are imported, importable, and haven't failed to boot.

@@ -375,6 +375,52 @@ function Input:joystickreleased(joystick, button)
   if btn then release(self, btn, "joy:" .. button) end
 end
 
+-- THE TRIGGERS AND THE RIGHT STICK AS BUTTONS, so CONTROLS can bind them.
+--
+-- Reported: players want to remap to every input their controller has. SDL
+-- reports ZL / ZR (LT / RT) and the right stick as AXES, never as buttons, so
+-- the capture never saw them. Each becomes a pseudo-button with a name of its
+-- own -- "triggerleft", "triggerright", "rightx+", "rightx-", "righty+",
+-- "righty-" -- pressed past STICK_ON and released under STICK_OFF, and
+-- bound like any pad button (padBindings[name]). Unbound by default, so a
+-- pad nobody remaps behaves exactly as before.
+Input.AXIS_BUTTONS = {
+  triggerleft = { "triggerleft" }, triggerright = { "triggerright" },
+  rightx = { "rightx-", "rightx+" }, righty = { "righty-", "righty+" },
+}
+
+-- axisTransitions(axis, value) -> { { name, down } ... }: the pseudo-buttons
+-- this axis event pressed or released
+function Input:axisTransitions(axis, value)
+  local names = Input.AXIS_BUTTONS[axis]
+  if not names then return {} end
+  self.axisHeld = self.axisHeld or {}
+  local out = {}
+  local function set(name, down)
+    if (self.axisHeld[name] or false) ~= down then
+      self.axisHeld[name] = down or nil
+      out[#out + 1] = { name, down }
+    end
+  end
+  if #names == 1 then
+    local v = value
+    if v > STICK_ON then set(names[1], true) elseif v < STICK_OFF then set(names[1], false) end
+  else
+    local neg, pos = names[1], names[2]
+    if value > STICK_ON then set(neg, false); set(pos, true)
+    elseif value < -STICK_ON then set(pos, false); set(neg, true)
+    elseif math.abs(value) < STICK_OFF then set(neg, false); set(pos, false) end
+  end
+  return out
+end
+
+-- a pseudo-button's press or release, through the pad map
+function Input:padButton(name, down)
+  local btn = self.padBindings and self.padBindings[name]
+  if not btn then return end
+  if down then press(self, btn, "pad:" .. name) else release(self, btn, "pad:" .. name) end
+end
+
 -- left stick treated as a continuous held direction, same 4-way rule as
 -- the touch swipe d-pad: whichever axis has the larger magnitude wins.
 function Input:gamepadaxis(joystick, axis, value)

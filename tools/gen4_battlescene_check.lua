@@ -834,8 +834,14 @@ else
      tostring(SS.stow(none, false)), "true")
 
   -- On a cartridge that HAS one, the default is up -- a DS's bottom screen is
-  -- on until you put it away.
-  local ds = { save = { options = { secondScreenMode = "swap" } },
+  -- on until you put it away -- EXCEPT single-screen play (SWAP), where a
+  -- full-window swap would hide the battle every time the menu came up, so
+  -- the menu starts as the strip (requested from play).
+  local single = { save = { options = { secondScreenMode = "swap" } },
+                   data = { isGen4Cache = true } }
+  ok(SS.stowed(single) == true, "single-screen play starts with the strip",
+     tostring(SS.stowed(single)), "true")
+  local ds = { save = { options = { secondScreenMode = "inset" } },
                data = { isGen4Cache = true } }
   ok(SS.stowed(ds) == false, "a second screen starts UP, not away",
      tostring(SS.stowed(ds)), "false")
@@ -925,7 +931,7 @@ local function battleWith(mode, stowed, art)
   return {
     phase = "menu",
     game = { save = { options = { secondScreenMode = mode,
-                                  secondScreenStowed = stowed or nil } },
+                                  secondScreenStowed = stowed } },
              data = { isGen4Cache = true,
                       gen4_graphics = layers and { subscreen =
                         { layers = layers } } or {} } },

@@ -91,11 +91,74 @@ function Gen4Daily.countdown(save, daysPassed)
   return left
 end
 
+-- THE 192 DAILY FLAGS, 0xAA0..0xB5F in both games (pokeplatinum
+-- DAILY_FLAGS_START..END, FieldSystem_ClearDailyFlags; pokeheartgold
+-- DAILY_FLAG_BASE / NUM_DAILY_FLAGS, ClearDailyFlags), wiped once when the
+-- day turns -- Kurt's FLAG_DAILY_KURT_MAKING_BALLS (0xAA2), the haircut, the
+-- Trainer House, the daily berries and gifts. Nothing cleared them before, so
+-- Kurt was "still making" Poke Balls forever.
+Gen4Daily.DAILY_FLAGS_START, Gen4Daily.NUM_DAILY_FLAGS = 0xAA0, 192
+function Gen4Daily.clearDailyFlags(save)
+  local flags = save and save.flags
+  if type(flags) ~= "table" then return end
+  for f = Gen4Daily.DAILY_FLAGS_START, Gen4Daily.DAILY_FLAGS_START + Gen4Daily.NUM_DAILY_FLAGS - 1 do
+    flags[("FLAG_G4_%04X"):format(f)] = nil
+  end
+end
+
+-- PLATINUM'S RE-HIDDEN ITEMS (FieldSystem_ClearDailyHiddenItemFlags): two
+-- random Iron Island Star Pieces and two random Floaroma Meadow Honeys come
+-- back, unless the player is standing in that room. Flags from
+-- generated/vars_flags.txt, headers from generated/map_headers.txt.
+Gen4Daily.IRON_ISLAND_HIDDEN = { { 291, 0x30E }, { 292, 0x30F }, { 293, 0x310 }, { 293, 0x311 } }
+Gen4Daily.FLOAROMA_MEADOW_HEADER = 256
+Gen4Daily.FLOAROMA_MEADOW_HIDDEN = { 0x314, 0x315, 0x3B5, 0x3B6, 0x3B7, 0x3B8 }
+function Gen4Daily.clearDailyHiddenItems(save, header, rng)
+  local flags = save and save.flags
+  if type(flags) ~= "table" then return end
+  rng = rng or (love and love.math and love.math.random) or math.random
+  local function clear(f) flags[("FLAG_G4_%04X"):format(f)] = nil end
+  for _ = 1, 2 do
+    local row = Gen4Daily.IRON_ISLAND_HIDDEN[rng(1, #Gen4Daily.IRON_ISLAND_HIDDEN)]
+    if header ~= row[1] then clear(row[2]) end
+  end
+  if header ~= Gen4Daily.FLOAROMA_MEADOW_HEADER then
+    for _ = 1, 2 do clear(Gen4Daily.FLOAROMA_MEADOW_HIDDEN[rng(1, #Gen4Daily.FLOAROMA_MEADOW_HIDDEN)]) end
+  end
+end
+
 function Gen4Daily.onDays(save, daysPassed)
+  -- the daily flags first, as both cartridges' daily handlers do
+  if (tonumber(daysPassed) or 0) > 0 then
+    pcall(Gen4Daily.clearDailyFlags, save)
+    local okV, GVd = pcall(require, "src.core.GameVersion")
+    if okV and GVd.family and GVd.family() == "platinum" then
+      local G = package.loaded["src.core.Game"]
+      local def = G and G.overworld and G.overworld.map and G.overworld.map.def
+      pcall(Gen4Daily.clearDailyHiddenItems, save, def and tonumber(def.header))
+    end
+  end
   -- `FieldSystem_HandleDailyEvents` order: the record-mixed RNG (and with it
   -- the day's swarm) before the News Press deadline.
   pcall(function() require("src.world.Gen4Swarms").onDays(save, daysPassed) end)
-  return Gen4Daily.countdown(save, daysPassed)
+  local left = Gen4Daily.countdown(save, daysPassed)
+  -- ...then Jubilife's lottery number (the record-mixed RNG times the LCRNG
+  -- multiplier plus 12345, SystemVars_SynchronizeJubilifeLotteryTrainerID)
+  -- and the day's random level -- Platinum's vars, so Platinum only
+  local okG, GV = pcall(require, "src.core.GameVersion")
+  local family = okG and GV.info and (GV.info() or {}).family or nil
+  local C = varStore()
+  if C and GV and GV.isGen4 and GV.isGen4() and family ~= "hgss" then
+    local rand = tonumber(save.gen4Swarm and save.gen4Swarm.rand) or 0
+    local lo = (rand * 0x4E6D) % 4294967296
+    local hi = ((rand * 0x41C6) % 65536) * 65536
+    -- the handlers live on the shared Commands table (Gen4Commands fills it)
+    local Cmd = require("src.script.Commands")
+    if Cmd.g4_lottery_set then Cmd.g4_lottery_set(save, (lo + hi + 12345) % 4294967296) end
+    local r = love and love.math and love.math.random(0, 97) or math.random(0, 97)
+    C.setVar(save, Cmd.VAR_DAILY_RANDOM_LEVEL or 0x4041, r + 2)
+  end
+  return left
 end
 
 function Gen4Daily.poll(save)

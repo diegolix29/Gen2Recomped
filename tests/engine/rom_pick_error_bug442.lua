@@ -88,8 +88,8 @@ do
   eq(ri.workState, "error", "an unreadable ROM pick lands on the error state")
   check(detail(ri):find("Could not read the picked file", 1, true),
     "the ROM notice names the unreadable pick")
-  check(detail(ri):find("/sdcard/pokeport/save", 1, true),
-    "the notice offers the save dir as the copy-it-yourself fallback")
+  check(detail(ri):find("Files app", 1, true) and detail(ri):find("BROWSE", 1, true),
+    "the notice points to the accessible system picker (Android/data is not browsable)")
   eq(love.filesystem.getInfo("pick_error.flag"), nil,
     "the flag is consumed, so refocusing does not re-report it")
 end

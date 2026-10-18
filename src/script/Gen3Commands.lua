@@ -3876,7 +3876,14 @@ Gen3Commands.SPECIALS[41] = function(ctx)
   local party = {}
   for i, mon in ipairs(stash) do party[i] = mon end
   save.party = party
-  save.gen3PartyStash = nil
+  -- THE STASH STAYS, as the cartridge's copy does: LoadPlayerParty only
+  -- copies saveblock + 0x238 back, it never clears it. The Battle Dome
+  -- leans on that -- every round runs LoadPlayerParty and then
+  -- ReduceDomePlayerPartyToSelectedMons, restoring the whole team before
+  -- cutting it to that round's two. Clearing it here made round 2's restore
+  -- a no-op, so round 2 cut from round 1's two and the third member -- and
+  -- everyone not entered -- was gone for good (reported from play). The next
+  -- SavePlayerParty overwrites it, exactly as on the cartridge.
 end
 
 -- ---------------------------------------------------------------------------
@@ -6578,23 +6585,110 @@ Gen3Commands.SPECIALS[256] = function(ctx)
   ctx.g3TradeMon, ctx.g3TradeSlot = mon, slot
 end
 
--- 257: DoInGameTradeScene -- the swap itself.  The mon you gave leaves the
--- party and the one you were given joins at the END of it, which is where
--- RemovePokemon and AddPartyMon put it on the cartridge, and the Pokedex is
--- told about the new one.
+-- 257: DoInGameTradeScene -- THE TRADE ITSELF, AND THE MINUTE OF ANIMATION
+-- AROUND IT.
+--
+-- pokeemerald trade.c (pokefirered trade_scene.c is the same):
+--
+--     DoInGameTradeScene   LockPlayerFieldControls; fade the field to black
+--     Task_InGameTrade     when the fade is done: CB2_InitInGameTrade, and
+--                          gFieldCallback = FieldCB_ContinueScriptHandleMusic
+--     CB2_InGameTrade      DoTradeAnim_Wireless, every frame, to the end
+--
+-- src/ui/Gen3TradeAnim.lua is that sequence, drawn from the cartridge's own
+-- art (src/import/Gen3TradeArt.lua).  The script is parked on the
+-- `waitstate` after this special until the screen hands back, and the fade
+-- back in is the waitstate's (restoreFade), as it is for every other special
+-- that leaves the field black.
+--
+-- THE SWAP IS TradeMons, AND IT HAPPENS LATE: at STATE_TRY_EVOLUTION, after
+-- the last A press, not before the scene.  It is a SWAP -- `SWAP(*playerMon,
+-- *partnerMon)` -- so the new Pokemon takes the old one's party slot.  This
+-- used to remove the old one and append the new one at the end, which is not
+-- what either cartridge does.  The received Pokemon's friendship is set to
+-- 70, the Pokedex is told (seen and caught), and then GetEvolutionTarget-
+-- Species(EVO_MODE_TRADE) runs the trade evolution -- Kadabra, Machoke and
+-- the rest evolve inside the trade, before the field comes back.
+-- BufferInGameTradeMonName leaves the received nickname in STR_VAR_1 and the
+-- offered species' name in STR_VAR_2 for the thank-you line.
 Gen3Commands.SPECIALS[257] = function(ctx)
   local mon, slot = ctx.g3TradeMon, ctx.g3TradeSlot
   local party = (ctx.save or {}).party
   ctx.g3TradeMon, ctx.g3TradeSlot = nil, nil
   if not (mon and slot and party and party[slot]) then return end
-  table.remove(party, slot)
-  party[#party + 1] = mon
-  local save = ctx.save
-  save.pokedex = save.pokedex or {}
-  save.pokedex.seen = save.pokedex.seen or {}
-  save.pokedex.owned = save.pokedex.owned or {}
-  save.pokedex.seen[mon.species] = true
-  save.pokedex.owned[mon.species] = true
+  local given = party[slot]
+  local game, runner = ctx.game, ctx.runner
+  local trade = tradeAt(ctx, getVar(ctx.save, 0x8004))
+
+  local function tradeMons()
+    party[slot] = mon
+    if not (mon.isEgg or mon.egg) then mon.happiness = 70 end
+    local save = ctx.save
+    save.pokedex = save.pokedex or {}
+    save.pokedex.seen = save.pokedex.seen or {}
+    save.pokedex.owned = save.pokedex.owned or {}
+    save.pokedex.seen[mon.species] = true
+    save.pokedex.owned[mon.species] = true
+    if game then
+      game.stringBuffers = game.stringBuffers or {}
+      game.stringBuffers[1] = mon.nickname or speciesName(ctx, mon.species)
+      game.stringBuffers[2] = speciesName(ctx, trade and trade.species
+                                                or mon.species)
+    end
+    -- the trade evolution, gated the way Evolution.pendingFor gates a link
+    -- trade's (held item, Everstone)
+    if not game then return nil end
+    local okE, Evolution = pcall(require, "src.pokemon.Evolution")
+    if not okE then return nil end
+    local okP, target, row = pcall(Evolution.pendingFor, game, mon,
+                                   { kind = "trade" })
+    if not (okP and target) then return nil end
+    return function(resume)
+      local okV = pcall(Evolution.evolve, game, mon, target, resume,
+                        "TRADE", row)
+      if not okV then resume() end
+    end
+  end
+
+  local okA, TradeAnim = pcall(require, "src.ui.Gen3TradeAnim")
+  if not (okA and TradeAnim and TradeAnim.art(game) and game.stack and runner
+          and love and love.graphics and love.graphics.newCanvas) then
+    -- no trade art in this cache (imported before the stage existed) or no
+    -- renderer: the swap without the scene, as this special always did
+    if not (okA and TradeAnim and TradeAnim.art(game)) then
+      Logger.warn("gen3 in-game trade: this cache has no gen3_trade_art -- "
+                    .. "re-import for the trade animation")
+    end
+    local evolve = tradeMons()
+    if evolve and runner then
+      evolve(function() runner:resume() end)
+      runner:yield()
+    end
+    return
+  end
+  -- DoInGameTradeScene's own fade: BeginNormalPaletteFade(PALETTES_ALL, 0,
+  -- 0, 16, RGB_BLACK) is eighteen frames to black
+  ctx.g3FadedOut = true
+  Commands.fade(ctx, "out", 18, "black")
+  local pushed = pcall(function()
+    game.stack:push(TradeAnim.new(game, {
+      trade = trade, given = given, received = mon, slot = slot,
+      onTrade = tradeMons,
+      onDone = function() runner:resume() end,
+    }))
+  end)
+  if pushed then
+    runner:yield()
+    -- ...AND THE FIELD COMES BACK BEFORE THE SCRIPT DOES.  gFieldCallback is
+    -- FieldCB_ContinueScriptHandleMusic, which fades the field in from black
+    -- and only then re-enables the script, so the thank-you line is spoken
+    -- over the room, not over black.  restoreFade's non-blocking ramp would
+    -- sit frozen under the message box (only the top state updates).
+    ctx.g3FadedOut = nil
+    Commands.fade(ctx, "in", 18, "black")
+  else
+    tradeMons()
+  end
 end
 
 -- ---------------------------------------------------------------------------

@@ -145,6 +145,7 @@ function F.playerSheets(spriteFor)
   for _, key in ipairs({ "boy", "girl" }) do
     local ids = F.PLAYER[key]
     local form = { label = ids.label }
+    form.back = ("assets/generated/gen4/battle/trainer_back/%03d.png"):format(key == "girl" and 1 or 0)
     for _, state in ipairs({ "walk", "bike", "surf", "fieldMove", "fishing" }) do
       form[state] = spriteFor(ids[state])
     end

@@ -31,6 +31,9 @@ local ROD = {                                                  -- GetRodEncounte
   old = { 60, 30, 5, 4, 1 },
   good = { 40, 40, 15, 4, 1 },
   super = { 40, 40, 15, 4, 1 },
+  -- HeartGold/SoulSilver: EncounterSlot_WildMonSlotRoll_Fishing is
+  -- 40/30/15/10/5 for every rod (pokeheartgold src/field/encounter_check.c)
+  hgss = { 40, 30, 15, 10, 5 },
 }
 Gen4WildLead.GROUND, Gen4WildLead.WATER, Gen4WildLead.ROD = GROUND, WATER, ROD
 
@@ -116,9 +119,16 @@ function Gen4WildLead.choose(data, save, slots, kind, rod, rng)
     local s = slots[index] or slots[1]
     level = tonumber(s.maxLevel or s.level) or 1
   else
+    if rod == "hgss" or rod == "uniform" then
+      -- HGSS chains the two checks with `!a && !b`: Magnet Pull is kept
+      index = typeSlot(lead, data, slots, "STEEL", "MAGNET_PULL", rng)
+        or typeSlot(lead, data, slots, "ELECTRIC", "STATIC", rng)
+        or (rod == "uniform" and rng(1, #slots)) or pick(ROD.hgss, rng)
+    else
     typeSlot(lead, data, slots, "STEEL", "MAGNET_PULL", rng)   -- spent, then lost
     index = typeSlot(lead, data, slots, "ELECTRIC", "STATIC", rng)
       or pick(kind == "rod" and (ROD[rod] or ROD.old) or WATER, rng)
+    end
     level = rangeLevel(lead, slots[index] or slots[1], rng)
   end
   local slot = slots[index] or slots[1]

@@ -54,6 +54,60 @@ function F.permissions(raw)
   return table.concat(out)
 end
 
+-- A GC CHUNK'S SECOND LAYER IS A SECOND FLOOR. Its 8-byte tiles have the
+-- first layer's shape (after the same 4-byte 32 x 32 header), and where the
+-- two differ the second is the deck over the first: Pinwheel Forest's bridge
+-- (Z155 (71..76, 50..53)) is river (0x3D) and bank wall in layer one and flat
+-- open ground at the approach's height in layer two. Read from layer one
+-- alone, the forest's north half -- the last grunt, the Dragon Skull -- could
+-- not be reached. The engine walks one grid, so a tile takes layer two's
+-- record where layer one is solid or water and layer two is open ground: the
+-- deck is walked, and the river under it is not surfed (not modelled).
+-- Drayden's gym keeps layer one (F.LAYERS_APART): its statues' walkways are
+-- opened and closed by the gym's own code.
+local BW_WATER = { [0x3D] = true, [0x3F] = true, [0x41] = true }
+F.LAYERS_APART = { [121] = true }
+function F.mergeLayers(raw, layer2)
+  if type(raw) ~= "string" or type(layer2) ~= "string"
+     or #raw < 4 + F.CHUNK * F.CHUNK * 8 or #layer2 < 4 + F.CHUNK * F.CHUNK * 8 then return raw end
+  local out, changed = { raw:sub(1, 4) }, 0
+  for t = 0, F.CHUNK * F.CHUNK - 1 do
+    local at = 4 + t * 8
+    local a, b = raw:sub(at + 1, at + 8), layer2:sub(at + 1, at + 8)
+    local aShut = a:byte(7) % 2 == 1 or BW_WATER[a:byte(5)]
+    local bOpen = b:byte(7) % 2 == 0 and not BW_WATER[b:byte(5)]
+    if aShut and bOpen and a ~= b then out[#out + 1] = b; changed = changed + 1 else out[#out + 1] = a end
+  end
+  out[#out + 1] = raw:sub(4 + F.CHUNK * F.CHUNK * 8 + 1)
+  return table.concat(out), changed
+end
+
+-- bigGrid(raw WB section) -> a whole map's grid for a chunk wider than 32
+-- (its header's width / height), or nil for an ordinary 32 x 32 one: the
+-- blocks in the shape the rails write (0xFF blocked), the behaviours, and the
+-- flat tiles' heights
+function F.bigGrid(raw)
+  if type(raw) ~= "string" or #raw < 4 then return nil end
+  local w = raw:byte(1) + raw:byte(2) * 256
+  local h = raw:byte(3) + raw:byte(4) * 256
+  if w == F.CHUNK and h == F.CHUNK then return nil end
+  if w < 1 or h < 1 or #raw < 4 + w * h * 8 then return nil end
+  local blocks, behav, heights = {}, {}, {}
+  for t = 0, w * h - 1 do
+    local at = 4 + t * 8
+    local blocked = raw:byte(at + 7) % 2 == 1
+    blocks[t + 1] = blocked and "\255\0" or "\0\0"
+    behav[t + 1] = string.char(raw:byte(at + 5))
+    if raw:byte(at + 1) == 0 and raw:byte(at + 2) == 0 then
+      local y = raw:byte(at + 3) + raw:byte(at + 4) * 256
+      if y >= 0x8000 then y = y - 0x10000 end
+      if y ~= 0 then heights[(t % w) .. "," .. math.floor(t / w)] = y end
+    end
+  end
+  return { width = w, height = h, blocks = table.concat(blocks), behaviorCells = table.concat(behav),
+           heights = heights }
+end
+
 -- HEIGHTS, from the same 8-byte tile records: bytes 0-1 are 0 on a flat
 -- tile, and then bytes 2-3 are its height in world units (16 to a tile),
 -- signed. Striaton's ground is 0 with ledges at 24; the Trio Badge gym's
@@ -265,9 +319,23 @@ function F.build(x, save)
   -- NG ("no grid") chunks: no permissions, and a model at posScale 512 --
   -- eight times a WB chunk's 64 -- so each spans 4,096 units, 256 tiles.
   -- A matrix made only of them is a RAIL map (Gen5Field's rails below).
-  local ngChunks = {}
+  local ngChunks, rawPerms = {}, {}
+  -- the chunks of Drayden's gym (zone 121), whose second layer is the
+  -- statues' walkways that Gen5DragonGym opens and closes: kept apart
+  -- (F.mergeLayers)
+  local gimmickChunks = {}
+  for id, z in pairs(zones) do
+    local m = F.LAYERS_APART[id] and M.matrix(mxArc:get(z.matrix)) or nil
+    for _, c in ipairs(m and m.chunks or {}) do gimmickChunks[c] = true end
+  end
   for c = 0, chunkArc.count - 1 do
     local chunk = M.chunk(chunkArc:get(c))
+    if chunk and chunk.kind == "GC" and chunk.layer2 and not gimmickChunks[c] then
+      local merged, n = F.mergeLayers(chunk.permissions, chunk.layer2)
+      chunk.permissions = merged
+      if n and n > 0 then report.gcDecks = (report.gcDecks or 0) + n end
+    end
+    if chunk and chunk.permissions then rawPerms[c] = chunk.permissions end
     local set = chunk and Nsbmd.parse(chunk.model)
     local model = set and set.models and set.models[1]
     local packed = model and Pack.pack(model)
@@ -494,6 +562,22 @@ function F.build(x, save)
         end
       end
       if n > 0 then def.gen4HeightEdits = edits end
+      -- A 64 x 64 CHUNK: the permission section's header is its width and
+      -- height (u16 each), 32 x 32 on every chunk but one -- chunk 120, the
+      -- Pokemon League's grounds (zone 136, a 1 x 1 matrix), which is 64 x 64.
+      -- Read as 32 x 32 the map ended at row 31 while its spawn (19, 49) and
+      -- the entrance trigger (31, 48) lie below, and the player stood off
+      -- the map unable to move. Its model spans 1,024 units: chunk scale 2.
+      if g4.width == 1 and g4.height == 1 then
+        local raw = rawPerms[g4.maps[1]]
+        local big = raw and F.bigGrid(raw)
+        if big then
+          def.width, def.height = big.width, big.height
+          def.blocks, def.behaviorCells = big.blocks, big.behaviorCells
+          def.gen4HeightEdits = next(big.heights) and big.heights or nil
+          def.gen5ChunkScale = big.width / F.CHUNK
+        end
+      end
       local outdoors = g4.headers ~= nil
       local kind, pack = F.packFor(z.area)
       terrainMaps[mapId] = { texture = z.area, area = z.area, areaLight = 0, outdoors = outdoors,
@@ -833,6 +917,7 @@ function F.build(x, save)
         if pt.x / 16 >= def.width or pt.z / 16 >= def.height then inside = false end
       end
       if inside then
+        local blocksBefore = def.blocks
         local lineOf, seen, chains, order = {}, {}, {}, {}
         for li, line in pairs(data.lines or {}) do
           lineOf[line.a] = lineOf[line.a] or {}; table.insert(lineOf[line.a], li)
@@ -895,6 +980,10 @@ function F.build(x, save)
         end
         if opened > 0 then def.blocks, def.behaviorCells = table.concat(blocks), table.concat(behav) end
         if #tracks > 0 then def.gen5RailTracks = tracks end
+        -- Opelucid Gym's dragons: which of these lines its switches shut
+        -- (Gen5DragonGym), and the heights the statues carry them at
+        local gym = require("src.world.Gen5DragonGym").import(def, data, rom, blocksBefore)
+        if gym then report.dragonGym = #gym.statues end
       end
     end
   end

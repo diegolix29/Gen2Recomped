@@ -16,16 +16,17 @@ local Gen4EvolutionArt = {}
 Gen4EvolutionArt.PATH = "/demo/shinka/data/particle/shinka_demo_particle.narc"
 Gen4EvolutionArt.MEMBER = 0
 
-local function file(rom)
-  local bytes = rom:read(Gen4EvolutionArt.PATH)
+Gen4EvolutionArt.HGSS = { particles="/a/1/1/9", background="/a/1/1/5", bottom="/a/2/3/7", bank=197 }
+local function file(rom, config)
+  local bytes = rom:read(config and config.particles or Gen4EvolutionArt.PATH)
   if not bytes then return nil end
   local narc = require("src.import.NarcArchive").parse(bytes)
   return narc and narc:get(Gen4EvolutionArt.MEMBER)
 end
 
-function Gen4EvolutionArt.images(rom)
+function Gen4EvolutionArt.images(rom, config)
   local P = require("src.import.Gen4Particle")
-  local data = file(rom)
+  local data = file(rom, config)
   local list = data and P.textures(data)
   if not list then return nil, "shinka particle file missing" end
   local out = {}
@@ -34,19 +35,40 @@ function Gen4EvolutionArt.images(rom)
   -- rows 0-1) -- the diploma naix order the decomp's names come from:
   -- sinnoh_document_NCGR, national_dex_document_NCGR, sinnoh_document_NSCR
   local G = require("src.import.Gen4Graphics")
-  local egg = Gen4EvolutionArt.egg(rom)
+  local egg = Gen4EvolutionArt.egg(rom, config)
   if egg then
     local sheet, map, pal = G.tiles(egg(0)), G.tilemap(egg(1)), G.palette(egg(8))
     if sheet and map and pal then out.background = G.compose(map, sheet, pal) end
+  end
+  if config and config.bottom then
+    local bytes=rom:read(config.bottom)
+    local arc=bytes and require("src.import.NarcArchive").parse(bytes)
+    if arc then
+      local pal=G.palette(arc:get(0));local extra=G.palette(arc:get(15))
+      -- Member 15's PMCP already places its colours in BG palette slot 9.
+      if pal and extra then for i=1,16 do pal[144+i]=extra[144+i] or extra[i]end end
+      local tiles,map=G.tiles(arc:get(16)),G.tilemap(arc:get(17))
+      if pal and tiles and map then
+        out.bottom=G.compose(map,tiles,pal)
+        -- BG palette colour zero is the screen's opaque backdrop, not a
+        -- transparent OBJ texel. The other images stay layered/translucent.
+        local backdrop=string.char(pal[1][1],pal[1][2],pal[1][3],255)
+        out.bottom.rgba=out.bottom.rgba:gsub("....",function(pixel)
+          return pixel:byte(4)==0 and backdrop or pixel
+        end)
+      end
+      local buttons,buttonMap=G.tiles(arc:get(1)),G.tilemap(arc:get(10))
+      if pal and buttons and buttonMap then out.moveButtons=G.compose(buttonMap,buttons,pal)end
+    end
   end
   return out
 end
 
 Gen4EvolutionArt.EGG_PATH = "/demo/egg/data/egg_data.narc"
 
-function Gen4EvolutionArt.egg(rom)
+function Gen4EvolutionArt.egg(rom, config)
   local G = require("src.import.Gen4Graphics")
-  local bytes = rom:read(Gen4EvolutionArt.EGG_PATH)
+  local bytes = rom:read(config and config.background or Gen4EvolutionArt.EGG_PATH)
   local narc = bytes and require("src.import.NarcArchive").parse(bytes)
   if not narc then return nil end
   return function(i)
@@ -56,11 +78,11 @@ function Gen4EvolutionArt.egg(rom)
   end
 end
 
-function Gen4EvolutionArt.data(rom)
-  local data = file(rom)
+function Gen4EvolutionArt.data(rom, config)
+  local data = file(rom, config)
   if not data then return nil end
   local emitters = require("src.import.Gen4Particle").emitters(data)
-  local out = { emitters = emitters, count = emitters and #emitters or 0 }
+  local out = { emitters = emitters, count = emitters and #emitters or 0, bank=config and config.bank or 368 }
   -- each texture's repeat/flip bits (SPLTextureParam: format 0-3, s 4-7,
   -- t 8-11, repeat 12-13, flip 14-15): a flipped repeat mirrors alternate
   -- copies, which is how a quarter-circle texture tiled 2x2 draws a ring
@@ -80,7 +102,7 @@ function Gen4EvolutionArt.data(rom)
   end
   -- the backdrop: main BG palette colour 0 (row 0 of member 8) shows outside
   -- window 0 while the scene letterboxes
-  local egg = Gen4EvolutionArt.egg(rom)
+  local egg = Gen4EvolutionArt.egg(rom, config)
   local pal = egg and require("src.import.Gen4Graphics").palette(egg(8))
   if pal and pal[1] then out.backdrop = { pal[1][1], pal[1][2], pal[1][3] } end
   return out

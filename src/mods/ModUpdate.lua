@@ -360,8 +360,6 @@ function ModUpdate.downloadZip(url, destName, expectBytes)
   return name
 end
 
--- ------- async release fetching for mods (HD sheet installer, etc.)
-
 -- Active release fetch jobs: handle -> { repo, modId, options, startedAt, done, releases, err }
 local releaseJobs = {}
 local nextReleaseHandle = 1

@@ -132,8 +132,41 @@ function Editor.draw()
 
   local pad = 18 * s
   local barH = 56 * s
+  -- THE CHROME STAYS OUT OF THE TOP CORNERS. L and R default there (where
+  -- the hardware shoulders are), and with the title on the left and Done on
+  -- the right a press on R closed the editor and L sat under the heading --
+  -- reported as L / R "not editable". Everything below is laid out in the
+  -- column between the two shoulders.
+  local Lay = TouchControls:layout()
+  local side = 0
+  for _, k in ipairs({ "l", "r" }) do
+    local z = Lay[k]
+    if z then
+      local reach = (k == "l") and (z.cx + z.w * 0.7 - ox) or (ox + ww - (z.cx - z.w * 0.7))
+      if z.cy - z.w * 0.7 < oy + 260 * s then side = math.max(side, reach) end
+    end
+  end
+  side = math.min(side, ww * 0.3)
+  -- ...and where the shoulders end: the cards below them take the full width
+  local shoulderBottom = oy
+  for _, k in ipairs({ "l", "r" }) do
+    local z = Lay[k]
+    if z then shoulderBottom = math.max(shoulderBottom, z.cy + z.w * 0.5) end
+  end
+  local colX, colW = ox + side, ww - 2 * side
   local btnH = 40 * s
   local btnW = 100 * s
+
+  -- Done / Reset
+  -- a narrow column (a phone held upright) puts Reset / Done on a row of
+  -- their own under the title instead of beside it
+  local titleW = Editor.fonts.title:getWidth("Touch Controls")
+  local narrow = colW < titleW + 2 * btnW + 4 * pad
+  if narrow then btnW = math.min(btnW, (colW - 2 * pad - 10 * s) / 2) end
+  local rowY = narrow and (oy + pad + barH) or (oy + pad + (barH - btnH) / 2)
+  local done = { x = colX + colW - pad - btnW, y = rowY, w = btnW, h = btnH }
+  local reset = { x = done.x - 10 * s - btnW, y = done.y, w = btnW, h = btnH }
+  if narrow then barH = barH + btnH + 8 * s end
 
   -- top bar (inside the safe area so it clears the notch / status bar)
   col(PAL.card, 0.92)
@@ -144,12 +177,10 @@ function Editor.draw()
 
   love.graphics.setFont(Editor.fonts.title)
   col(PAL.white)
-  love.graphics.print("Touch Controls", ox + pad, oy + pad + 4 * s)
+  -- shrunk to the column when it is narrower than the heading (portrait)
+  local tScale = math.min(1, (colW - 2 * pad) / math.max(1, titleW))
+  love.graphics.print("Touch Controls", colX + pad, oy + pad + 4 * s, 0, tScale, tScale)
 
-  -- Done / Reset
-  local done = { x = ox + ww - pad - btnW, y = oy + pad + (barH - btnH) / 2,
-                 w = btnW, h = btnH }
-  local reset = { x = done.x - 10 * s - btnW, y = done.y, w = btnW, h = btnH }
   Editor.rects.done, Editor.rects.reset = done, reset
 
   local function chromeBtn(r, label, fill)
@@ -169,7 +200,8 @@ function Editor.draw()
   -- enable toggle card
   local cardY = oy + barH + pad + 14 * s
   local cardH = 64 * s
-  local cardX, cardW = ox + pad, ww - 2 * pad
+  local cardX, cardW = colX + pad, colW - 2 * pad
+  if cardY >= shoulderBottom then cardX, cardW = ox + pad, ww - 2 * pad end
   col(PAL.card, 0.88)
   roundRect("fill", cardX, cardY, cardW, cardH, 12 * s)
   col(PAL.stroke, 0.4)
@@ -229,7 +261,7 @@ function Editor.draw()
   local hint = on
     and "Drag each button to reposition, -/+ to resize. Portrait and landscape are saved separately when you tap Done."
     or "Controls are hidden in-game. Enable them to show and edit the layout."
-  love.graphics.printf(hint, ox + pad, sizeY + cardH + 12 * s, ww - 2 * pad, "left")
+  love.graphics.printf(hint, cardX, sizeY + cardH + 12 * s, cardW, "left")
 
   -- the overlay itself (preview mode; dimmed when disabled)
   TouchControls:draw()

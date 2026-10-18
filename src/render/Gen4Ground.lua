@@ -265,7 +265,9 @@ function Gen4Ground.forMap(map, data)
   -- run at 1,823). The map sees a terrain record with that chunk size, and
   -- everything that reads chunkUnits / chunkTiles through self.terrain then
   -- places the chunks right.
-  if def and def.gen5NoGrid then
+  -- ...and the one grid map built from a 64 x 64 chunk, the Pokemon
+  -- League's grounds (Gen5Field.bigGrid: chunk scale 2)
+  if def and (def.gen5NoGrid or (def.gen5 and (def.gen5ChunkScale or 1) > 1)) then
     local k = def.gen5ChunkScale or 4
     terrain = setmetatable({ chunkUnits = (terrain.chunkUnits or 512) * k,
                              chunkTiles = (terrain.chunkTiles or 32) * k }, { __index = terrain })
@@ -321,6 +323,14 @@ function Gen4Ground.forMap(map, data)
     local Gen4HiddenPaths = require("src.world.Gen4HiddenPaths")
     self.grid, self.altitudes =
       Gen4HiddenPaths.grid(def.layout, self.grid, self.altitudes, save)
+    grid = self.grid
+  elseif def.cameraFamily == "hgss" and def.layout == 212 then
+    -- HGSS'S SAFARI ZONE: its six area cells hold the player's arrangement
+    -- (src/world/HgssSafariZone.lua, map_matrix.c PlaceSafariZoneAreas)
+    local okG, Game = pcall(require, "src.core.Game")
+    local save = okG and type(Game) == "table" and Game.save or nil
+    self.grid, self.altitudes =
+      require("src.world.HgssSafariZone").grid(def, self.grid, self.altitudes, save)
     grid = self.grid
   end
   self.set = set
@@ -427,6 +437,13 @@ function Gen4Ground.forMap(map, data)
   -- ...AND BY THE PROP MODEL THAT CLAIMS IT.  See the loop below.
   self.animsByProp = {}
   local field = ((data.gen4_models or {}).sets or {}).field
+  -- HGSS (Gen4HgssPropAnim): a room's props are claimed by their own list, and
+  -- the set names which members are script-owned and that names never join.
+  -- Absent from Platinum's cache, so its maps keep the door-id set and names.
+  local interiorField = ((data.gen4_models or {}).sets or {}).interiorField
+  if interiorField and interior and self.buildingSet == interior then field = interiorField end
+  self.scriptedMembers = field and field.scripted or nil
+  self.claimsOnly = field and field.claimsOnly or nil
   for _, record in ipairs((field or {}).animations or {}) do
     if record.name then
       local list = self.animsByName[record.name]
@@ -773,15 +790,24 @@ end
 -- origin.
 function Gen4Ground:oneShotPose(object, building)
   if not (object and building) then return nil end
+  -- no one-shot running: a prop whose joints loop on the clock (HGSS's
+  -- windmill, Gen4PropClock) -- nil, the rest pose, for every Platinum prop
   local slots = self.oneShots
-  if not slots then return nil end
+  if not slots then return self:clockPose(object, building) end
   local okO, OneShot = pcall(require, "src.world.Gen4PropOneShot")
   if not okO or not OneShot then return nil end
   local slot = OneShot.poseIn(slots, object)
-  if not slot then return nil end
+  if not slot then return self:clockPose(object, building) end
   local byJoint = self:jointMatricesAt(slot)
   if not byJoint then return nil end
   return building:posed(function(node) return byJoint[node] end)
+end
+
+-- The looping joint pose a prop wears on the frame clock (Gen4PropClock).
+function Gen4Ground:clockPose(object, building)
+  local okC, Clock = pcall(require, "src.render.Gen4PropClock")
+  if not (okC and Clock) then return nil end
+  return Clock.pose(self, object, building)
 end
 
 -- jointMatricesAt(slot) -> { [joint index] = 4x4 } | nil
@@ -835,9 +861,10 @@ function Gen4Ground:oneShotProps()
   if self.oneShotPropSet then return self.oneShotPropSet end
   local set = {}
   local models = (self.buildingSet or {}).models or {}
-  local oneShot = Gen4Ground.oneShotAnimations()
+  local oneShot = self.scriptedMembers or Gen4Ground.oneShotAnimations()
   for _, record in pairs(self.animsByMember or {}) do
-    if record.tracks and record.props then
+    -- (`bca`: an HGSS joint animation, decoded on first draw by Gen4PropClock)
+    if (record.tracks or record.bca) and record.props then
       for _, index in ipairs(record.props) do set[index] = true end
     end
     -- A TEXTURE-PATTERN ONE-SHOT IS STILL A ONE-SHOT, and `tracks` alone
@@ -1011,20 +1038,23 @@ function Gen4Ground:animationsFor(index, archive)
   local packed = set and set.models and set.models[index + 1]
   if not packed then return nil end
   local images = packed.patternImages
-  local oneShot = Gen4Ground.oneShotAnimations()
+  -- HGSS's own script-owned members (Gen4HgssPropAnim), not Platinum's door ids
+  local oneShot = self.scriptedMembers or Gen4Ground.oneShotAnimations()
+  local Clock = require("src.render.Gen4PropClock")
   local list, seen = nil, {}
   local function add(records)
     for _, record in ipairs(records or {}) do
       local scripted=record.member and oneShot[record.member]
       if record.member==32 and self.healScreenActive then scripted=false end
-      if not seen[record] and not scripted then
+      -- an HGSS time-of-day record is worn only in its own state
+      if not seen[record] and not scripted and Clock.wears(record, index) then
         seen[record] = true
         list = list or {}
         list[#list + 1] = record
       end
     end
   end
-  add(packed.name and self.animsByName[packed.name])
+  if not self.claimsOnly then add(packed.name and self.animsByName[packed.name]) end
   add(self.animsByProp and self.animsByProp[index])
   if not (list and Gen4TexAnim.animates(list, images)) then return nil end
   return list, images
@@ -1099,8 +1129,21 @@ function Gen4Ground:building(index, archive)
   local distProp = field and index >= 0x7C and index <= 0x94
   local model = Gen4Model.new({ name = (field and "fldeff%d" or "build%d"):format(index),
                                 posScale = packed.posScale, shapes = shapes,
-                                nodes = distProp and packed.nodes or nil,
-                                ops = distProp and packed.ops or nil,
+                                -- EVERY BUILDING KEEPS ITS NODES, not only the
+                                -- Distortion World's props. Reported from play:
+                                -- "in heartgold and soul silver the windmills
+                                -- dont have their fans at the top". New Bark's
+                                -- `wk_sp1` models the pole standing from the
+                                -- ground and the hub and sails around the
+                                -- ORIGIN, and its node `polySurface1` lifts them
+                                -- 80 units to the top of the pole (turned 40
+                                -- degrees). Drawn without nodes, the sails sat at
+                                -- the foot of the pole. A model whose nodes are
+                                -- all identity -- nearly every building -- poses
+                                -- to exactly what it drew before.
+                                nodes = packed.nodes, ops = packed.ops,
+                                inverseBind = packed.inverseBind,
+                                scalingRule = packed.scalingRule,
                                 -- The building set is SHARED between maps and
                                 -- this cache is not: `self.buildings` belongs
                                 -- to one ground, so a house in Twinleaf and
@@ -1281,6 +1324,11 @@ function Gen4Ground:setHealingBalls(count, visible)
     local path = '/fielddata/build_model/build_model.narc'
     local machine = A.find(path, 'pokecenter_healing_machine.nsbmd')
     local ball = A.find(path, 'pokecenter_healing_machine_mini_pokeball.nsbmd')
+    if self.def.cameraFamily == 'hgss' then
+      -- PokecenterAnimCreate/Run (HGSS overlay 2): prop 0x24 is the
+      -- machine, 0x6b is each ball, both from the indoor building set.
+      machine, ball = 0x24, 0x6b
+    end
     if machine and ball then
       for _, land in ipairs(self.grid.land or {}) do
         local record = self.terrain.chunks[land]
@@ -1288,8 +1336,10 @@ function Gen4Ground:setHealingBalls(count, visible)
           if object.model == machine then
             local props = {}
             for i = 1, math.min(6, count) do
-              props[i] = { model = ball, x = (object.x or 0) + ((i-1)%2 == 0 and -4.5 or 4.5),
-                y = (object.y or 0) + 12, z = (object.z or 0) + (math.floor((i-1)/2)-1)*4.5,
+              local dx = ((i-1)%2 == 0 and -4.5 or 4.5)
+              local dz = (math.floor((i-1)/2)-1)*4.5
+              props[i] = { model = ball, x = (object.x or 0) + dx,
+                y = (object.y or 0) + 12, z = (object.z or 0) + dz,
                 scaleX = 1, scaleY = 1, scaleZ = 1 }
             end
             self.healingProps = { [land] = props }
@@ -1355,6 +1405,8 @@ local function placement(object)
     0,  0,  0,  1,
   }
 end
+
+Gen4Ground.placement = placement
 
 -- The chunk store, opened once and read in ranges.
 --
@@ -1437,10 +1489,32 @@ function Gen4Ground:modelFor(land)
         -- correct shadows opaque on every existing cache.
         material = s.material,
         alpha = s.alpha,
+        -- THE CARTRIDGE'S OWN LIGHTING FLAG (Gen4ModelPack: no NORMAL in the
+        -- display list). On a cache that carries it, a shape without it is
+        -- LIT: Stark Mountain's floor (chunk 172, `criffp_lm52`) issues a
+        -- NORMAL before every vertex with light 0 on, yet its packed colours
+        -- run 0..255, and guessed "lightmapped" from them it drew as black
+        -- pits across the mountain. See Gen4Model's `lightKnown`.
+        unlit = s.unlit,
       }
     end
   end
   if #shapes == 0 then return nil end
+  -- whether this cache was written with the flag at all (any shape has it)
+  local terrain = self.terrain
+  if terrain.unlitKnown == nil then
+    local known = false
+    for _, c in pairs(terrain.chunks or {}) do
+      for _, sh in ipairs(type(c) == "table" and c.shapes or {}) do
+        if sh.unlit ~= nil then known = true; break end
+      end
+      if known then break end
+    end
+    rawset(terrain, "unlitKnown", known)
+  end
+  if terrain.unlitKnown then
+    for _, sh in ipairs(shapes) do sh.lightKnown = true end
+  end
   return Gen4Model.new({ name = ("chunk%d"):format(land),
                          posScale = record.posScale, shapes = shapes,
                          -- WHERE THE CHUNK'S SHAPES STAND.
@@ -1842,6 +1916,17 @@ function Gen4Ground:livePass(camX, camY, vw, vh, yCut)
   if pcy - 1 < y0 then y0 = pcy - 1 end
   if pcy + 1 > y1 then y1 = pcy + 1 end
 
+  -- THE DS'S DEPTH FOG (Gen4DepthFog). This pass's depth row is
+  -- -(sinP * y + cosP * (z - top - half)) / LIVE_DEPTH, a distance along the
+  -- camera's own axis, so the eye distance is the camera's at the feet plus
+  -- how far a fragment's row lies beyond theirs.
+  do
+    local datum = (spread and spread[2]) or 0
+    local cosP = self.heightScale or 0
+    local feetRel = feetZ - top - self.half
+    local dist = (self.camera and tonumber(self.camera.distance)) or 667
+    require("src.render.Gen4DepthFog").begin(self, 1, dist + sinP * datum + cosP * feetRel, LIVE_DEPTH)
+  end
   if self.drawAllChunks then x0, y0, x1, y1 = 0, 0, grid.width - 1, grid.height - 1 end
   for cy = y0, y1 do
     for cx = x0, x1 do
@@ -1973,6 +2058,7 @@ function Gen4Ground:livePass(camX, camY, vw, vh, yCut)
       Logger.warn("gen4 surf mount: %s", tostring(errM))
     end
   end
+  require("src.render.Gen4DepthFog").finish()
   return drawn
 end
 
@@ -2323,6 +2409,14 @@ function Gen4Ground:drawFree(vw, vh)
   local camCx = math.floor(view.x / px)
   local camCy = math.floor(view.z / px)
   local vp = view:matrix(tw, th)
+  -- THE DS'S DEPTH FOG (Gen4DepthFog), on this pass's own projection
+  do
+    local cfg = (view.mode == "field3d") and view.config or nil
+    local ortho = cfg and cfg.projection == "orthographic"
+    require("src.render.Gen4DepthFog").begin(self, ortho and 3 or 2,
+      ortho and (tonumber(cfg.near) or Gen4View.NEAR) or Gen4View.NEAR,
+      ortho and (tonumber(cfg.far) or Gen4View.FAR) or Gen4View.FAR)
+  end
 
   local g = love.graphics
   local previous = { g.getCanvas() }
@@ -2387,6 +2481,26 @@ function Gen4Ground:drawFree(vw, vh)
             end
           end
         end
+      end
+    end
+  end
+  -- THE DISTORTION WORLD'S NEXT FLOOR, drawn below this one (Gen4DistNeighbour)
+  if self.def and self.def.gen4DistWorld then
+    local okN, errN = pcall(function() require("src.render.Gen4DistNeighbour").draw(self, vp) end)
+    if not okN and not self.neighbourWarned then
+      self.neighbourWarned = true
+      Logger.warn("gen4 distortion world next floor: %s", tostring(errN))
+    end
+  end
+  -- HEARTGOLD / SOULSILVER'S LEGENDARY CUTSCENE (HgssLegendCutscene): the
+  -- bells, rings and waves the Kimono Girls' dance draws
+  do
+    local LC = package.loaded["src.world.HgssLegendCutscene"]
+    if LC and LC.state then
+      local okL, errL = pcall(LC.drawFree, self, vp)
+      if not okL and not self.legendWarned then
+        self.legendWarned = true
+        Logger.warn("hgss legend cutscene: %s", tostring(errL))
       end
     end
   end
@@ -2673,10 +2787,14 @@ function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw, depthLift, po
   -- drawing nothing is right: a character behind the camera painted in front of
   -- it is worse than one absent.
   if not sx then return true end
-  if depthLift and depthLift ~= 0 then
+  -- THE DEPTH IS THE BILLBOARD ORIGIN'S, six units toward the camera from the
+  -- tile centre (ov5_021EDEB4; see `beginSprites`) -- placed where it stands,
+  -- tested where the cartridge tests it
+  do
     local _, _, _, lifted = self.view3d:project(gx + (self.offsetX or 0),
-                                                footY + depthLift,
-                                                gz + (self.offsetY or 0), vw, vh)
+                                                footY + (depthLift or 0),
+                                                gz + Gen4Ground.BILLBOARD_Z_OFFSET
+                                                  + (self.offsetY or 0), vw, vh)
     depth = lifted or depth
   end
   local g = love.graphics
@@ -2757,6 +2875,140 @@ function Gen4Ground:withFreeDepth(depth, draw)
   local ok,err=pcall(draw)
   g.pop()
   if not ok then error(err,0) end
+end
+
+-- ---------------------------------------------------------------------------
+-- THE CARTRIDGE CAMERA'S CHARACTERS, IN THE WORLD'S DEPTH
+-- ---------------------------------------------------------------------------
+--
+-- Reported from play, for Platinum, HeartGold / SoulSilver and Black / White:
+-- *"the player and npcs are drawn on top of all objects even when they should
+-- be obscured by them"*. On the cartridge rung the live pass blits the world
+-- and the overworld then paints every character flat on top of it; only the
+-- canopy's height cut put anything back over them, so a sign, a fence or a
+-- table in front of a character never hid their legs.
+--
+-- WHAT THE CARTRIDGE DOES (pokeplatinum): every map object is a BILLBOARD
+-- (billboard.c, `Easy3D_DrawRenderObj`) of `generic_32x32.nsbmd` and its
+-- siblings, whose render commands are `node billboard(XY) shape` -- a FULL
+-- billboard, the quad turned to face the camera on both axes. Its vertices
+-- run x -16..16, y 0..32 from the origin, so the origin is the feet, and a
+-- quad square to the view has ONE depth across the whole sprite: the
+-- origin's. The origin is the object's position (the tile centre,
+-- MAP_OBJECT_COORD_CENTER_TO_FX32) plus its jump, sprite and terrain offsets
+-- (ov5_021ECDA0), then `z += FX32_ONE * 6` (ov5_021EDEB4) -- six units toward
+-- the camera. That quad goes through the same depth buffer as the map, so a
+-- prop nearer the eye than that point hides the character and one farther
+-- does not.
+--
+-- So: the live target's depth is still the world's after the blit, and the
+-- characters are drawn into that target -- colour cleared, depth KEPT -- at
+-- that one depth each, then composited back. `spriteDepth` is the live
+-- matrix's own depth row, so a character and the ground it stands on are in
+-- one space.
+--
+--     ground:beginSprites()          -- target re-bound, colour cleared
+--     ground:withSpriteDepth(e, fn)  -- once per character
+--     ground:endSprites()            -- unbound and composited
+--
+-- `false` from `beginSprites` (no live frame -- the baked fallback, a free
+-- camera, a failed target) leaves every character drawn exactly as before.
+Gen4Ground.BILLBOARD_Z_OFFSET = 6
+
+local function transformOf()
+  local g = love.graphics
+  local tx, ty = g.transformPoint(0, 0)
+  local ax = g.transformPoint(1, 0)
+  local _, by = g.transformPoint(0, 1)
+  return tx, ty, ax - tx, by - ty
+end
+
+function Gen4Ground:noteLiveFrame(camX, camY, lw, lh, painted)
+  if not (painted and painted > 0) then self.liveFrame = nil return end
+  local tx, ty, sx, sy = transformOf()
+  self.liveFrame = { camX = camX, camY = camY, w = lw, h = lh,
+                     tx = tx, ty = ty, sx = sx, sy = sy }
+  -- `spriteDepth` measures from the same top edge `livePass` placed against
+  self.worldTop = camY + (self.offsetY or 0)
+end
+
+function Gen4Ground:beginSprites()
+  local f = self.liveFrame
+  if not f or self.spritesOpen or Gen4Ground.freeOpen then return false end
+  if self:freeMode() then return false end
+  if not (self.liveColour and self.liveDepthBuf) then return false end
+  if self.liveW ~= f.w or self.liveH ~= f.h then return false end
+  if not (f.sx ~= 0 and f.sy ~= 0) then return false end
+  if not ensureDepthSprite() then return false end
+  local g = love.graphics
+  local previous = { g.getCanvas() }
+  -- ONE PLAIN CANVAS OR NOTHING, the rule `endFree` states: a binding made
+  -- with a depthstencil comes back as a table and cannot be restored
+  if type(previous[1]) == "table" then return false end
+  g.setCanvas({ self.liveColour, depthstencil = self.liveDepthBuf })
+  g.clear(0, 0, 0, 0, false, false)
+  -- the characters' own transform, relative to the one the world was blitted
+  -- through: the target holds the world in ITS pixels
+  local tx, ty, sx, sy = transformOf()
+  g.push()
+  g.origin()
+  g.translate((tx - f.tx) / f.sx, (ty - f.ty) / f.sy)
+  g.scale(sx / f.sx, sy / f.sy)
+  self.spritesOpen = { previous = previous[1] }
+  return true
+end
+
+-- the billboard origin's depth, for a character whose tile-space position is
+-- (px, py) map pixels and whose feet stand `lift` above the ground
+function Gen4Ground:billboardDepth(px, py, lift, oz)
+  local fx = (px or 0) + FEET_X
+  local fz = (py or 0) + FEET_X
+  local baseY = (self:groundY(fx, fz) or 0) + (lift or 0)
+  local worldZ = fz + Gen4Ground.BILLBOARD_Z_OFFSET + (oz or 0) + (self.offsetY or 0)
+  return self:spriteDepth(worldZ, baseY)
+end
+
+-- `writes` false for what lies ON the ground under a character (its shadow):
+-- tested, so a prop in front still hides it, but leaving no depth that would
+-- hide a character standing behind it
+function Gen4Ground:withSpriteDepth(depth, draw, writes)
+  if not (self.spritesOpen and depth) then return draw() end
+  local g = love.graphics
+  local sp = ensureDepthSprite()
+  local shader = g.getShader()
+  local mode, write = g.getDepthMode()
+  g.setShader(sp)
+  sp:send("spriteZ", depth)
+  g.setDepthMode("lequal", writes ~= false)
+  local ok, err = pcall(draw)
+  g.setDepthMode(mode, write)
+  g.setShader(shader)
+  if not ok then error(err, 0) end
+end
+
+function Gen4Ground:endSprites()
+  local open = self.spritesOpen
+  if not open then return false end
+  self.spritesOpen = nil
+  local g = love.graphics
+  g.pop()
+  g.setCanvas(open.previous or nil)
+  local f = self.liveFrame
+  g.push()
+  g.origin()
+  g.translate(f.tx, f.ty)
+  g.scale(f.sx, f.sy)
+  local mode, alpha = g.getBlendMode()
+  local r, gr, b, a = g.getColor()
+  g.setColor(1, 1, 1, 1)
+  -- drawn with "alpha" into a cleared target, so the target is premultiplied
+  g.setBlendMode("alpha", "premultiplied")
+  g.draw(self.liveColour, 0, 0)
+  g.setBlendMode(mode, alpha)
+  g.setColor(r, gr, b, a)
+  g.pop()
+  self.spritesComposited = true
+  return true
 end
 
 function Gen4Ground:beginWorld(camX, camY, vw, vh)
@@ -3284,6 +3536,7 @@ end
 -- have is a path that never reaches the close -- so a missed close costs one
 -- frame rather than the session.
 function Gen4Ground:endFree()
+  require("src.render.Gen4DepthFog").finish()
   if not Gen4Ground.freeOpen then return false end
   local g = love.graphics
   local previous = Gen4Ground.freePrevious
@@ -3376,6 +3629,16 @@ function Gen4Ground:drawCanopy(camX, camY, vw, vh)
   -- function has already done that, on every frame and in every mode, which
   -- is why this can be a plain `false`.
   if self.view3d and self.view3d:isFree() then return false end
+
+  -- THE CHARACTERS WERE DEPTH-TESTED AGAINST THE WORLD THIS FRAME
+  -- (`beginSprites`), so whatever stands in front of one has already hidden
+  -- it, and whatever is behind has not. The canopy below fakes that with a
+  -- height cut and would paint a treetop over a character standing in FRONT
+  -- of the tree -- with real occlusion it has nothing left to do.
+  if self.spritesComposited then
+    self.spritesComposited = nil
+    return true
+  end
 
   -- THE LIVE CANOPY, into the same target the ground pass used.
   --
@@ -3624,6 +3887,8 @@ function Gen4Ground:draw(camX, camY, vw, vh)
   -- instead of the screen.  That is a black frame that never recovers, so
   -- it gets a net rather than an argument that it cannot happen.
   if Gen4Ground.freeOpen then self:endFree() end
+  -- a frame's sprite depth is this frame's or none (see `beginSprites`)
+  self.liveFrame, self.spritesComposited = nil, nil
   if self.noDepth then return false end
   if self.tiltGeneration ~= Gen4Camera.generation then
     self:dropBakes()
@@ -3786,6 +4051,11 @@ function Gen4Ground:draw(camX, camY, vw, vh)
       g.setCanvas(previous[1] or nil)
       g.setColor(1, 1, 1, 1)
       g.draw(colour, 0, 0)
+      -- THE DEPTH BUFFER OUTLIVES THE BLIT: the characters are tested against
+      -- it (`beginSprites`), so what they need to land in the same pixels is
+      -- kept -- the origin the chunks were placed against and the transform
+      -- this blit went through
+      self:noteLiveFrame(camX, camY, lw, lh, painted)
       -- WHICH PATH DREW THIS FRAME, once per change.
       --
       -- The live pass and the baked one produce the same picture on flat
@@ -4200,7 +4470,20 @@ function Gen4Ground:clearCameraLine(v)
     local tx, ty = math.floor((sx - ox) / 16), math.floor((sz - oz) / 16)
     if tx ~= homeX or ty ~= homeY then
       local word = self:permissionWordAt(tx, ty)
-      if word and word >= 0x8000 and not Behaviors.isSurfable(word % 256) then
+      -- ...AND STANDS ON SOMETHING. A blocked cell with no ground under it is
+      -- the void past an edge, not a wall: reported from play in the
+      -- Distortion World, where third person "collides with the edge of the
+      -- islands and pushes in towards the character" and "locks to the width
+      -- of the walkable area" -- every cell off an island is blocked air.
+      local solid = word and word >= 0x8000 and not Behaviors.isSurfable(word % 256)
+      -- (the Distortion World's floors have height plates under every island
+      -- tile, so "no plate" there is exactly "air"; maps without plates, such
+      -- as Black and White's, keep the old rule)
+      if solid and self.def and self.def.gen4DistWorld and self.heightsAt then
+        local hs = self:heightsAt(tx, ty)
+        if not hs or #hs == 0 then solid = false end
+      end
+      if solid then
         local top = self:groundY(tx * 16 + 8, ty * 16 + 8) + Gen4Ground.CAMERA_OBSTACLE
         if sy < top then hit = d break end
       end

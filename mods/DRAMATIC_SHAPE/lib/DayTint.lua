@@ -132,7 +132,16 @@ function DayTint.paint(r, g, b)
   if shader and gfx.setShader then gfx.setShader(shader) end
 end
 
+-- (Rewrap: replaced by a later load in the same process, see lib/Rewrap.lua)
+local installSeams
+
 function DayTint.install()
+  V.require("Rewrap").install({
+    { require("src.render.Renderer"), "dramaticShapeTintHook", { "endFrame" } },
+  }, installSeams)
+end
+
+installSeams = function()
   local Renderer = require("src.render.Renderer")
   if Renderer.dramaticShapeTintHook then return end
   local inner = Renderer.endFrame

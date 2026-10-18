@@ -130,7 +130,9 @@ function Gen4TileScripts.fieldMoveRow(ow, behaviour, facing)
   local Game = package.loaded["src.core.Game"]
   local data, save = Game and Game.data, Game and Game.save
   if not (data and save) then return nil end
-  if data.gen4_version and data.gen4_version.family == "hgss" then return nil end
+  if data.gen4_version and data.gen4_version.family == "hgss" then
+    return Gen4TileScripts.hgssFieldMoveRow(ow, behaviour, facing, data, save)
+  end
   local ns = (facing == "up" or facing == "down") and behaviour == Gen4TileScripts.ROCK_CLIMB_N_S
   local ew = (facing == "left" or facing == "right") and behaviour == Gen4TileScripts.ROCK_CLIMB_E_W
   if ns or ew then
@@ -147,12 +149,62 @@ function Gen4TileScripts.fieldMoveRow(ow, behaviour, facing)
   return nil
 end
 
+-- HEARTGOLD / SOULSILVER'S OWN ROWS (field_control.c GetInteractedMetatileScript,
+-- after the table): std_field_* is SCRIPT 10000 + n in the `field_move` band.
+--
+--     TILE_BEHAVIOR_HEADBUTT (6)                         -> 14
+--     rock climb in the facing direction (0x4B / 0x4C)   -> 3
+--     not surfing: surfable ahead, the Fog Badge, a Surf user -> 4
+--     surfing: TILE_BEHAVIOR_WATERFALL (0x13)            -> 5
+--              TILE_BEHAVIOR_WHIRLPOOL (0x11)            -> 16
+--
+-- (The Waterfall and Whirlpool tests sit in the `else` of "not surfing", so
+-- they only answer a surfer -- the C's order, kept.)
+Gen4TileScripts.HGSS = { HEADBUTT = 0x06, WATERFALL = 0x13, WHIRLPOOL = 0x11, FOG_BADGE = 3 }
+
+function Gen4TileScripts.hgssFieldMoveRow(ow, behaviour, facing, data, save)
+  local H = Gen4TileScripts.HGSS
+  local function row(name, n) return { behaviour = name, band = "field_move", index = n } end
+  if behaviour == H.HEADBUTT then return row("HEADBUTT", 14) end
+  local ns = (facing == "up" or facing == "down") and behaviour == Gen4TileScripts.ROCK_CLIMB_N_S
+  local ew = (facing == "left" or facing == "right") and behaviour == Gen4TileScripts.ROCK_CLIMB_E_W
+  if ns or ew then return row("ROCK_CLIMB", 3) end
+  local p = ow and ow.player
+  if p and not p.surfing then
+    local Map = require("src.world.Map")
+    if Map.G4_SURFABLE[behaviour] then
+      local Badges = require("src.inventory.Badges")
+      local entry = (Badges.list(data) or {})[H.FOG_BADGE + 1]
+      local F = require("src.world.Gen4FieldMoves")
+      if entry and Badges.has(save, entry) and F.partyMember(data, save, "SURF") then
+        return row("WATER", 4)
+      end
+    end
+    return nil
+  end
+  if behaviour == H.WATERFALL then return row("WATERFALL", 5) end
+  if behaviour == H.WHIRLPOOL then return row("WHIRLPOOL", 16) end
+  return nil
+end
+
 -- The row for a behaviour byte, or nil.  `facing` is the player's, in this
 -- engine's words ("up" is DIR_NORTH).
 function Gen4TileScripts.rowFor(behaviour, facing)
   local row = index()[behaviour]
   if not row then return nil end
   if row.facing and row.facing ~= facing then return nil end
+  if require("src.core.GameVersion").info().family == "hgss" then
+    -- pokeheartgold constants/std_script.h: HGSS reorganized these bands.
+    local band, n = row.band, row.index
+    -- Waterfall is one of HGSS's own field-move rows (hgssFieldMoveRow: band
+    -- `field_move` 5, and only while surfing)
+    if row.behaviour == "WATERFALL" then return nil end
+    if row.behaviour == "PC" then n = 10
+    elseif row.behaviour == "BIKE_PARKING" then n = 20
+    elseif band == "bg_events" then band = "bookshelves"
+    elseif row.behaviour == "TV" then band = "tv" end
+    return { behaviour = row.behaviour, band = band, index = n, facing = row.facing }
+  end
   return row
 end
 

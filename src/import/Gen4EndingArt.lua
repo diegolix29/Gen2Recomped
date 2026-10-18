@@ -27,6 +27,7 @@
 local Gen4EndingArt = {}
 
 Gen4EndingArt.HOF = "/graphic/dendou_demo.narc"
+Gen4EndingArt.HOF_PC = "/graphic/dendou_pc.narc"
 Gen4EndingArt.CREDITS = "/graphic/ending.narc"
 Gen4EndingArt.MEMORIES = {
   lucas = { "route_201_starter", "rowans_lab", "pokemon_center", "valley_windworks", "route_210_psyduck",
@@ -82,6 +83,14 @@ function Gen4EndingArt.images(rom)
     out.hof_stage = backdrop(stage, pal and pal[1])
     out.hof_overlay = G.compose(hof.get(2, G.tilemap), tiles, pal)
     out.hof_party = backdrop(G.compose(hof.get(1, G.tilemap), tiles, pal), pal and pal[1])
+  end
+
+  -- THE PC'S HALL OF FAME BROWSER (src/applications/pc_hall_of_fame
+  -- display.c): dendou_pc.narc's tiles 1, tilemap 0, palette 2, on BG2
+  local pc = open(Gen4EndingArt.HOF_PC)
+  if pc then
+    local pal = pc.get(2, G.palette)
+    out.hof_pc = backdrop(G.compose(pc.get(0, G.tilemap), pc.get(1, G.tiles), pal), pal and pal[1])
   end
 
   -- THE CREDITS

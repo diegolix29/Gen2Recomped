@@ -288,3 +288,17 @@ only beside it, and that is a property of the built APK, not of this code. Item
 `love.system.mountDirectory` take a mount point and an append flag (a change in
 the Java bridge, which is not in this tree's reach) or to have the launcher
 offer the move automatically on Android.
+
+## Android: the storage grant is asked for again (2026-10-17)
+
+Players reported that GAME DATA FOLDER on Android "no longer asks for storage permission". The Lua path is intact. It was checked with the sidebar on a faked Android 1080x2340 launcher: Settings → LAUNCHER SETTINGS → CHOOSE STORAGE calls `love.system.pickFolder`, and a `picked_folder.txt` is applied. Two things were wrong around it.
+
+- **A competing permission prompt.** The sidebar launcher (565706a, `LauncherSidebar.lua` `RI.update`) pumped the Pokéwalker's step sensor every 60 s on every launch, whether or not the player had ever opened the Pokéwalker. On Android 10+ each pump is `GameActivity.syncHealthSteps`, which raises the ACTIVITY_RECOGNITION runtime prompt every time it is not granted.
+  - So a physical-activity prompt kept appearing in place of the storage one.
+  - On Android 10 and older, where storage is also a runtime prompt, a second in-flight request cancels it.
+  - The fix: the pump now runs only once `pokewalker.lua` exists, and never while a pick is pending or Settings is open.
+- **The grant was asked for only once.** Only `GameActivity.acceptPickedFolder` asked, at pick time. A chosen folder that later lost the grant (reinstall, revoked access, a cancelled prompt) fell back to the app folder in silence. The fix is `src/import/AndroidStorage.lua`, which is installed at `RomImporter.lua`'s tail. It uses the existing bridges `hasStorageAccess`, `requestStorageAccess` and `pathIsAppOwned`, none of which Lua called before:
+  - At launch, a stored folder that is unusable and needs the grant asks for it again.
+  - A failed folder change asks for it.
+  - On `love.focus(true)` with the grant in hand, the folder is applied again through `setDataDir`.
+  - Off Android, and on an APK without the bridges, it does nothing.

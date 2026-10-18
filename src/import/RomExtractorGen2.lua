@@ -14302,6 +14302,18 @@ function RomExtractorGen2:extractField()
   -- moveobject at the right NPC.  Absent, Crystal's 2 stands.
   local objectBase = self:layout("objectScriptBase", 0)
   if objectBase ~= 0 then src.objectScriptBase = objectBase end
+  -- GSC's own trade cinematic (engine/movie/trade_animation.asm): its tiles,
+  -- tilemaps, sprite-anim framesets and CGB palettes, for Gen2TradeAnim.
+  -- Absent (a hack without the vanilla blobs, or a failed read) the trade
+  -- keeps the Gen 1 movie, so this never fails the import.
+  local tradeOk, tradeArt = pcall(
+    require("src.import.Gen2TradeArt").extract, self)
+  if tradeOk then
+    src.gen2TradeAnim = tradeArt
+  else
+    Logger.warn("gen2 trade animation art not extracted: %s",
+                tostring(tradeArt))
+  end
   self:write("field", src)
   self:tick("Gen2 field", 1, 1)
 end

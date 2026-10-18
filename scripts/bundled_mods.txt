@@ -1,0 +1,7 @@
+# Mods every release package carries inside game.love, one folder under mods/
+# per line. Read by scripts/build.sh, scripts/build_android.sh,
+# scripts/build_ios.sh and scripts/build-windows-exe-script.ps1;
+# scripts/pack_love.sh stages the tracked mods/ tree and checks the same one.
+# A bundled mod's development material (tests/, tools/, oxr/, *.zip,
+# CHANGELOG.md, *_PLAN.md, .git) is never packed.
+DRAMATIC_SHAPE

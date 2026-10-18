@@ -181,3 +181,9 @@ mobile/ios/bundle_id.local
 # built by tools/translation/build_desktop.py. The release workflow builds it
 # fresh; scripts/build.sh only copies it into packages when present.
 /translation/
+
+# Cloud-save app credentials (src/cloud/CloudClients.lua reads this). The
+# Google client secret is not a password -- Google treats installed-app
+# secrets as public -- but GitHub's secret scanning flags it, so it is kept out
+# of the repository and injected into release builds instead.
+/cloud_clients.lua

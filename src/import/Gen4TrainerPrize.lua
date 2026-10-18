@@ -30,6 +30,32 @@ function Gen4TrainerPrize.parse(ov)
   return { byClass = byClass }
 end
 
+-- HEARTGOLD / SOULSILVER (pokeheartgold asm/overlay_12_battle_command.s,
+-- sPrizeMoneyTbl): 0x81 rows of u16 { class, multiplier } in overlay 12, found
+-- by its first eight (Ethan 0, Lyra 0, Youngster 4, Lass 4, Camper 4,
+-- Picnicker 4, Bug Catcher 4, Aroma Lady 8). CalcPrizeMoney is Platinum's
+-- formula; a class not listed falls back to row 2 (Youngster).
+Gen4TrainerPrize.HGSS_OVERLAY = 12
+Gen4TrainerPrize.HGSS_ROWS = 0x81
+function Gen4TrainerPrize.parseHgss(ov)
+  if type(ov) ~= "string" then return nil, "no overlay" end
+  local sig = {}
+  for c, m in ipairs({ 0, 0, 4, 4, 4, 4, 4, 8 }) do
+    sig[#sig + 1] = string.char(c - 1, 0, m, 0)
+  end
+  local at = ov:find(table.concat(sig), 1, true)
+  if not at then return nil, "sPrizeMoneyTbl not found in overlay 12" end
+  local byClass = {}
+  for r = 0, Gen4TrainerPrize.HGSS_ROWS - 1 do
+    local o = at + r * 4
+    local c1, c2, m1, m2 = ov:byte(o, o + 3)
+    if not m2 then break end
+    local class = c1 + c2 * 256
+    if byClass[class] == nil then byClass[class] = m1 + m2 * 256 end
+  end
+  return { byClass = byClass, default = byClass[2] }
+end
+
 function Gen4TrainerPrize.extract(rom)
   return Gen4TrainerPrize.parse(rom and rom:overlay(Gen4TrainerPrize.OVERLAY))
 end
@@ -38,7 +64,8 @@ end
 function Gen4TrainerPrize.prize(data, trainer, opts)
   opts = opts or {}
   local rec = data and data.gen4_trainer_prize
-  local mul = rec and rec.byClass and rec.byClass[tonumber(trainer and trainer.class)] or 0
+  local mul = rec and rec.byClass and rec.byClass[tonumber(trainer and trainer.class)]
+    or (rec and rec.default) or tonumber(trainer and trainer.moneyRate) or 0
   local party = trainer and (trainer.party or (trainer.parties and trainer.parties[1])) or {}
   local last = party[#party]
   local level = tonumber(last and last.level) or 0

@@ -63,4 +63,16 @@ function State.compatibility(data, a, b)
     daycare={breed={{mon=a},{mon=b}}}})
 end
 
+
+-- WHETHER THE PLAYER HAS THE WATCH: `enablepoketch` (Jubilife) sets it. A save
+-- from before that flag was kept still counts if an app was registered or a
+-- badge won -- the watch comes before the first gym.
+function State.owned(save)
+  local p = save and save.poketch
+  if p and p.enabled then return true end
+  if p and type(p.registered) == "table" and next(p.registered) ~= nil then return true end
+  for _, v in pairs((save and save.badges) or {}) do if v then return true end end
+  return false
+end
+
 return State

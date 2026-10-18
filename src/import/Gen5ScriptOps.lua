@@ -36,6 +36,8 @@ local Ops = {}
 
 Ops.TERMINATORS = { [0x02] = true, [0x05] = true, [0x1E] = true }
 Ops.JUMPS = { [0x04] = "call", [0x1E] = "jump", [0x1F] = "if" }
+-- widths measured by hand where the handler hides its reads (see `derive`)
+Ops.HAND_WIDTHS = { [0xB2] = 7, [0x137] = 2 }
 
 local function u16(s, o) return s:byte(o + 1) + s:byte(o + 2) * 256 end
 local function u32(s, o) return u16(s, o) + u16(s, o + 2) * 65536 end
@@ -269,7 +271,10 @@ function Ops.derive(rom, scriptArchive)
   -- 0x2159B10, a u8, and the result var through 0x2011330 -- seven bytes,
   -- not the six its own loads add up to. Six read the elevator askew from
   -- the next op on (`80 CC` for 0x1CC).
-  local HAND = { [0xB2] = 7 }
+  -- 0x137 <var> (the save, its answer in the var: ov10 0x02159A64 reads the
+  -- var deep in its save task) measured 0 and read the Battle Subway's
+  -- "Saving..." box askew: `37 01 29 80 A7 00 ...` is 0x137 0x8029, 0xA7.
+  local HAND = Ops.HAND_WIDTHS
   for op, w in pairs(HAND) do widths[op] = w end
   return { widths = widths, offset = bestK,
            table = { segment = tbl.seg.name, at = tbl.at, slots = tbl.n },

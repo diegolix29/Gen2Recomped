@@ -126,6 +126,27 @@ Gen4MoveAnim.OPCODES = {
 }
 Gen4MoveAnim.OPCODE_COUNT = 85
 
+-- HEARTGOLD AND SOULSILVER ADD THREE. Their command table (overlay 7,
+-- ov07_02234DE8, 88 thumb pointers) is Platinum's 85 in the same order plus
+-- three more, read from the handlers rather than guessed:
+--   85 ov07_0221D374  reads ONE word (its low byte is a frame count) and runs
+--                     a main-screen brightness transition 0 -> +16 (white)
+--                     over that many frames on BG2|BG3|OBJ|BD, then back
+--                     16 -> 0 over the same count; an anim task.
+--   86 ov07_0221ED94  `switchbg` with a third operand: bg id, mode|flags<<16
+--                     (as switchbg) and a direction (low half, 0-6) and amount
+--                     (high half) added to the switch's x/y offset bytes.
+--   87 ov07_0221D23C  reads one word; if bit 1 of the battle-anim context's
+--                     flag word (+0x118) is set, jumps by it, else falls
+--                     through. Used once, at the head of Baton Pass.
+-- Without these five HGSS programs (192 Zap Cannon, 224 Megahorn, 226 Baton
+-- Pass, 231 Iron Tail, 276 Superpower) failed to decode and played nothing.
+-- Platinum never emits them, so its closure is unchanged.
+Gen4MoveAnim.OPCODES[85] = "brightnessflash"
+Gen4MoveAnim.OPCODES[86] = "switchbgoffset"
+Gen4MoveAnim.OPCODES[87] = "jumpifanimflag"
+Gen4MoveAnim.HGSS_OPCODE_COUNT = 88
+
 -- How many OPERAND words follow each opcode. `Gen4MoveAnim.COUNTED` marks the
 -- three whose length is stated by one of their own operands; `COUNT_AT` says
 -- which one. A self-describing length is the friendliest kind of variable
@@ -164,6 +185,9 @@ Gen4MoveAnim.WIDTHS = {
   1, 8, 2, 3, 2, 2,
   COUNTED, 8, 1, 2, 3, 1,
   0,
+  -- HGSS only (see HGSS_OPCODE_COUNT): brightnessflash, switchbgoffset,
+  -- jumpifanimflag.
+  1, 3, 1,
 }
 
 -- ---------------------------------------------------------------------------

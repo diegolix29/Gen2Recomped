@@ -64,7 +64,10 @@ local BUTTONS = { "a", "b", "x", "y", "start", "select", "l", "r" }
 local CONTROLS = { "dpad", "a", "b", "x", "y", "start", "select", "l", "r" }
 
 local function buttonAvailable(self, btn)
-  if btn == 'x' or btn == 'y' then return GameVersion.isGen4() end
+  -- X and Y are Platinum / HGSS buttons in play, but the launcher's layout
+  -- editor (preview) shows them always: the layout it saves is shared by
+  -- every game, and the Gen 4 ones are where a player wants to place them
+  if btn == 'x' or btn == 'y' then return self.preview or GameVersion.isGen4() end
   return self.img and self.img[btn] ~= nil
 end
 
@@ -189,6 +192,10 @@ function TouchControls.defaultLayout(ww, wh, ox, oy, scale)
     l = { cx = ox + margin + lrW / 2, cy = oy + margin + lrW * 0.30, w = lrW },
     r = { cx = ox + ww - margin - lrW / 2, cy = oy + margin + lrW * 0.30, w = lrW },
   }
+  -- X and Y always have a place (the editor shows them for every game):
+  -- above A and to the left of B, out of the way of the A/B diagonal
+  layout.x = { cx = layout.a.cx, cy = layout.a.cy - abW * 1.2, w = abW * 0.8 }
+  layout.y = { cx = layout.b.cx - abW * 1.15, cy = layout.b.cy - abW * 0.6, w = abW * 0.8 }
   if GameVersion.isGen4() then
     local w = dpadW * 0.38
     local step = w * 1.1

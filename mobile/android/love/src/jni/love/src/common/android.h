@@ -127,6 +127,21 @@ bool mkdirsReal(const char *path);
 bool syncHealthSteps();
 
 /**
+ * Pokéwalker notifications (GameActivity.walkerNotify): `json` is one
+ * command -- {"post":{"title","text"}} shows a notification now,
+ * {"watch":{...}} stores step milestones and starts the background check,
+ * {"stop":true} cancels it. Returns whether the command was taken.
+ */
+bool walkerNotify(const char *json);
+
+/**
+ * One HTTP request for the cloud saves (GameActivity.httpRequest): `json` is
+ * {"method","url","headers":{...},"body"}; the answer is {"status","body"} or
+ * {"error"} as a JSON string ("" when the bridge itself is missing).
+ */
+std::string httpRequest(const char *json);
+
+/**
  * Full process relaunch (GameActivity.restartApp): schedules the app's
  * launch intent and kills the process, because the in-process
  * quit("restart") loop double-inits physfs and crashes (#575). On success

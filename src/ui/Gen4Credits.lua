@@ -373,7 +373,7 @@ function Credits:draw()
   g.setColor(1, 1, 1, 1)
   local ok, SS = pcall(require, "src.ui.SecondScreen")
   local mode = ok and SS.mode(self.game) or "off"
-  if (mode == "display" or mode == "inset") and not SS.stowed(self.game) then
+  if require("src.ui.SecondScreen").separateMode(mode) and not SS.stowed(self.game) then
     SS.draw(self.game, function()
       g.setColor(0, 0, 0, 1)
       g.rectangle("fill", 0, 0, 256, 192)

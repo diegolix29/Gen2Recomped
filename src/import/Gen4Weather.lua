@@ -567,9 +567,38 @@ Gen4Weather.YEARLY_DAYS =
 -- this table does not know. nil is deliberately not "CLEAR": a renderer that
 -- treats an unknown weather as clear cannot report it, and the six ids pret
 -- has not named would disappear into the 460 maps that really are clear.
+-- HEARTGOLD / SOULSILVER COUNT DIFFERENTLY (pokeheartgold
+-- include/constants/weather.h): 0 sunny, 1 RAIN (Platinum's 1 is cloudy),
+-- 2 heavy rain, 3 thunderstorm, 4 unnamed, 5 snow, 6 blizzard, 7 sandstorm,
+-- 8 diamond dust, 9 / 10 unnamed (mist?), 11 WEATHER_FLASH -- the dark caves'
+-- darkness that Flash lifts (field_move.c), Platinum's DARK_FLASH --, 12
+-- WEATHER_FLASH_2 (what FlashEffect switches to) and 13 WEATHER_LOW_LIGHT.
+-- Read through Platinum's names so the looks and the Flash / Defog rules
+-- stay one table. Without this Route 33 and Violet's rain read as CLOUDY and
+-- the nine dark caves (Dark Cave, Union Cave B2F, Mt. Mortar ...) as HAILING.
+Gen4Weather.HGSS_NAMES = {
+  [0] = "CLEAR", [1] = "RAINING", [2] = "HEAVY_RAIN", [3] = "THUNDERSTORM",
+  [5] = "SNOWING", [6] = "BLIZZARD", [7] = "SANDSTORM", [8] = "DIAMOND_DUST",
+  [11] = "DARK_FLASH", [12] = "FLASH_LIT", [13] = "LOW_LIGHT",
+}
+-- the HGSS-only names. The flash darkness is drawn by
+-- src/render/Gen4FlashDark (for DARK_FLASH, ahead of these looks); the lit
+-- cave and low light draw nothing
+Gen4Weather.LOOK.DIAMOND_DUST = nil
+Gen4Weather.LOOK.FLASH_LIT = false
+
+local function hgss()
+  local ok, GV = pcall(require, "src.core.GameVersion")
+  local info = ok and GV.info and GV.info()
+  return info and info.family == "hgss"
+end
+
 function Gen4Weather.nameFor(value)
   local n = tonumber(value)
-  return n and Gen4Weather.NAMES[math.floor(n)] or nil
+  if not n then return nil end
+  n = math.floor(n)
+  if hgss() then return Gen4Weather.HGSS_NAMES[n] end
+  return Gen4Weather.NAMES[n]
 end
 
 -- `FieldSystem_GetWeather`, ported line for line rather than simplified.

@@ -418,7 +418,7 @@ function Gen4Options:draw()
   g.setColor(1, 1, 1, 1)
   local okS, SS = pcall(require, "src.ui.SecondScreen")
   local mode = okS and SS.mode(self.game) or "off"
-  if bg and (mode == "display" or mode == "inset") and not SS.stowed(self.game) then
+  if bg and require("src.ui.SecondScreen").separateMode(mode) and not SS.stowed(self.game) then
     SS.draw(self.game, function() g.draw(bg, 0, 0) end)
   end
   Font.pushStyle(INK)

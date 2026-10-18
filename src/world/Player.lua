@@ -1037,6 +1037,13 @@ function Player:draw(camX, camY)
   -- the cartridge entirely and the import had never opened it.  It does now,
   -- and it comes with three frames: one for each way the blob turns.
   self:drawSurfBlob(px, py, camX, camY, facing)
+  -- Gen 4's rod pose: one texture of the fishing sheet, picked frame by frame
+  -- by src/world/Gen4FishingTask.lua
+  local g4f = self.gen4Fish
+  if g4f and g4f.sprite and g4f.sprite.drawFixedFrame then
+    g4f.sprite:drawFixedFrame(px, py, camX, camY, g4f.frame or 0)
+    return
+  end
   -- THE FIELD-MOVE POSE IS A SEQUENCE, not a facing.
   --
   -- Reported from play: "it seems like my players animation stops as he

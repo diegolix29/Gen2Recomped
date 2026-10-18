@@ -148,7 +148,7 @@ function Gen4Intro:draw()
   if self.frame>=COPYRIGHT_FRAMES and self:openingImage('first_top') then
     local S=require('src.ui.SecondScreen')
     local mode=S.mode(self.game)
-    local dual=mode=='display' or mode=='inset'
+    local dual=require('src.ui.SecondScreen').separateMode(mode)
     if (self.openingFrame or 0)>=508 and self:openingImage('sky') then
       local movie=require('src.ui.Gen4Opening')
       if dual then

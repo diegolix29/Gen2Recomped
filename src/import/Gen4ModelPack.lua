@@ -136,6 +136,7 @@ function Gen4ModelPack.pack(model)
   local out = {
     name = model.name,
     posScale = model.posScale,
+    scalingRule = model.scalingRule,
     bounds = model.bounds,
     shapes = {},
     -- WHERE EACH SHAPE STANDS, carried rather than baked.
@@ -148,6 +149,7 @@ function Gen4ModelPack.pack(model)
     -- own node, is what makes the case open.
     nodes = {},
     ops = model.pose,
+    inverseBind = model.inverseBind,
   }
 
   for _, bone in ipairs(model.bones or {}) do
@@ -160,8 +162,8 @@ function Gen4ModelPack.pack(model)
     local hasMatrices=false
 
     for _, v in ipairs(shape.vertices) do
-      matrixParts[#matrixParts+1]=char(v.matrix or 0)
-      if (v.matrix or 0)~=0 then hasMatrices=true end
+      matrixParts[#matrixParts+1]=char(v.matrix==nil and 255 or v.matrix)
+      if v.matrix~=nil then hasMatrices=true end
       vertexParts[#vertexParts + 1] = concat({
         s16(v.x * Gen4ModelPack.FX16),
         s16(v.y * Gen4ModelPack.FX16),
@@ -290,8 +292,9 @@ function Gen4ModelPack.unpack(shape)
       v = s16At(at + 8) / Gen4ModelPack.UV_UNITS,
       r = (r or 255) / 255, g = (g or 255) / 255, b = (b or 255) / 255,
       nx = s8At(at + 13), ny = s8At(at + 14), nz = s8At(at + 15),
-      matrix = shape.matrixSlots and shape.matrixSlots:byte(i+1) or 0,
+      matrix = shape.matrixSlots and shape.matrixSlots:byte(i+1) or nil,
     }
+    if vertices[i+1].matrix==255 then vertices[i+1].matrix=nil end
   end
 
   local index = shape.indices
@@ -332,7 +335,7 @@ function Gen4ModelPack.verify(model, packed)
     for k, v in ipairs(shape.vertices) do
       local w = vertices[k]
       if not w then return false, ("shape %q vertex %d lost"):format(shape.name, k) end
-      if (v.matrix or 0)~=w.matrix then return false,'vertex matrix slot lost' end
+      if v.matrix~=w.matrix then return false,'vertex matrix slot lost' end
       for _, axis in ipairs({ "x", "y", "z" }) do
         if math.abs(v[axis] - w[axis]) > tolerance then
           return false, ("shape %q vertex %d %s: %f in, %f out")

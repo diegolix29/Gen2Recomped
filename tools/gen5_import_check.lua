@@ -135,9 +135,14 @@ if b then
   local boot = b.field and b.field.boot
   local z391 = (b.gen5_zones or {})[391] or {}
   check(boot and boot.startMap == 'Z391' and boot.startX == 5 and boot.startY == 6 and z391.spawnX == 5
-    and boot.lastHeal and boot.lastHeal.map == 'Z390' and boot.screens and boot.screens.newGame == false,
+    and boot.lastHeal and boot.lastHeal.map == 'Z390' and boot.screens and boot.screens.newGame == 'Gen5JuniperIntro',
     ('new game: %s (%s,%s), first blackout %s'):format(tostring(boot and boot.startMap), tostring(boot and boot.startX),
       tostring(boot and boot.startY), tostring(boot and boot.lastHeal and boot.lastHeal.map)))
+  local forms=b.field and b.field.playerForms
+  check(forms and forms.girl and forms.girl.walk=='SPRITE_G4_009' and forms.boy.walk=='SPRITE_G4_006'
+    and forms.girl.bike=='SPRITE_G4_011', 'native male/female walking and bicycle forms')
+  check(b.gen5_juniper_art and b.gen5_juniper_art.text[6]:find('Welcome to the world',1,true),
+    'Juniper art and message bank are written with the import')
   -- placements' z is stored negated: Nuvema's living room (zone 390, land
   -- 504) has its floor at z -250..-72 and its 16 pieces inside it
   local liv = ((b.gen4_terrain or {}).chunks or {})[504]

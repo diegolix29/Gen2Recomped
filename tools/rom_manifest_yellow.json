@@ -26343,6 +26343,10 @@
       60,
       22555
     ],
+    "TileIDListPointerTable": [
+      30,
+      23622
+    ],
     "Tilesets": [
       3,
       17752
@@ -26371,6 +26375,10 @@
       28,
       20420
     ],
+    "TradeBubbleIconGFX": [
+      28,
+      23302
+    ],
     "TradeCenterOpponentText": [
       19,
       32451
@@ -26378,6 +26386,22 @@
     "TradeCenter_h": [
       19,
       32377
+    ],
+    "TradingAnimationGraphics": [
+      14,
+      27240
+    ],
+    "TradingAnimationGraphics2": [
+      14,
+      28024
+    ],
+    "TradingAnimationGraphics2End": [
+      14,
+      28088
+    ],
+    "TradingAnimationGraphicsEnd": [
+      14,
+      28024
     ],
     "TrainerAI": [
       14,

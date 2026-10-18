@@ -48,10 +48,60 @@ local function localSpot(data, mapId, x, y)
 end
 Gen4Fly.localSpot = localSpot
 
+-- HEARTGOLD / SOULSILVER keep the flag on the spawn row itself
+-- (pokeheartgold sSpawnMaps: bits 0-7 the flypoint flag index, bit 9
+-- "is a fly point"); FlypointFlagAction sets FLAG_SYS_FLYPOINT_PALLET (0x9B0)
+-- + index for the row whose fly map is entered and that is a fly point.
+-- A cache imported before the importer carried the two fields reads them from
+-- this copy of the cartridge's table, by row.
+Gen4Fly.HGSS_FLYPOINT_BASE = 0x9B0
+Gen4Fly.HGSS_ROWS = {
+  { 11, 1 }, { 12, 1 }, { 13, 1 }, { 14, 1 }, { 15, 1 }, { 16, 1 }, { 17, 1 }, { 18, 1 },
+  { 19, 1 }, { 20, 1 }, { 21, 1 }, { 22, 1 }, { 0, 1 }, { 1, 1 }, { 2, 1 }, { 3, 1 },
+  { 4, 1 }, { 5, 1 }, { 6, 1 }, { 7, 1 }, { 8, 1 }, { 9, 1 }, { 10, 1 }, { 30, 1 },
+  { 31, 1 }, { 35, 0 }, { 33, 0 }, { 27, 0 }, { 36, 0 }, { 37, 0 },
+}
+
+local function isHgss(data)
+  local v = data and data.gen4_version
+  if v and v.family then return v.family == "hgss" end
+  local ok, GV = pcall(require, "src.core.GameVersion")
+  return ok and GV.family and GV.family() == "hgss" or false
+end
+Gen4Fly.isHgss = isHgss
+
+-- flagIdx, isFlyPoint of an HGSS row
+function Gen4Fly.hgssRow(row)
+  if row.flagIdx ~= nil then return tonumber(row.flagIdx), row.isFlyPoint == true end
+  local fb = Gen4Fly.HGSS_ROWS[(tonumber(row.index) or -1) + 1]
+  if fb then return fb[1], fb[2] == 1 end
+  return nil, false
+end
+
+-- the save key of a row's unlock flag, either game
+function Gen4Fly.rowFlagKey(data, row)
+  if isHgss(data) then
+    local idx = Gen4Fly.hgssRow(row)
+    return idx and ("FLAG_G4_%04X"):format(Gen4Fly.HGSS_FLYPOINT_BASE + idx) or nil
+  end
+  return Gen4Fly.flagKey(row.firstArrival)
+end
+
 -- TryUnlockFlyLocationByMap: the FIRST row whose fly map is this header.
 function Gen4Fly.onEnter(data, save, header)
   header = tonumber(header)
   if not (header and type(save) == "table") then return nil end
+  if isHgss(data) then
+    for _, row in ipairs(rows(data)) do
+      local idx, fly = Gen4Fly.hgssRow(row)
+      if row.fly and tonumber(row.fly.header) == header and fly and idx then
+        save.flags = save.flags or {}
+        save.flags[Gen4Fly.rowFlagKey(data, row)] = true
+        return row
+      end
+    end
+    return nil
+  end
   for _, row in ipairs(rows(data)) do
     if row.fly and tonumber(row.fly.header) == header then
       if row.unlockOnMapEntry then
@@ -65,9 +115,15 @@ function Gen4Fly.onEnter(data, save, header)
   return nil
 end
 
-function Gen4Fly.unlocked(save, row)
+function Gen4Fly.unlocked(save, row, data)
   local flags = type(save) == "table" and save.flags
-  return type(flags) == "table" and flags[Gen4Fly.flagKey(row.firstArrival)] == true
+  if type(flags) ~= "table" then return false end
+  if isHgss(data) then
+    local idx, fly = Gen4Fly.hgssRow(row)
+    if not (idx and fly) then return false end
+    return flags[Gen4Fly.rowFlagKey(data, row)] == true
+  end
+  return flags[Gen4Fly.flagKey(row.firstArrival)] == true
 end
 
 -- The open destinations, one per fly map, in spawn-table order.
@@ -75,11 +131,11 @@ function Gen4Fly.destinations(data, save)
   local out, seen = {}, {}
   for _, row in ipairs(rows(data)) do
     local fly = row.fly
-    if fly and fly.map and not seen[fly.map] and Gen4Fly.unlocked(save, row) then
+    if fly and fly.map and not seen[fly.map] and Gen4Fly.unlocked(save, row, data) then
       seen[fly.map] = true
       local def = data.maps and data.maps[fly.map]
       local x, y = localSpot(data, fly.map, fly.x, fly.y)
-      out[#out + 1] = { map = fly.map, x = x, y = y,
+      out[#out + 1] = { map = fly.map, x = x, y = y, row = row,
                         label = (def and def.label) or fly.map }
     end
   end

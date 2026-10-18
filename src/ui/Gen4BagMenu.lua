@@ -792,7 +792,7 @@ function Gen4BagMenu:bottomShown()
   local okS, SS = pcall(require, "src.ui.SecondScreen")
   if not okS then return false end
   local mode = SS.mode(self.game)
-  return (mode == "display" or mode == "inset") and not SS.stowed(self.game), SS
+  return require("src.ui.SecondScreen").separateMode(mode) and not SS.stowed(self.game), SS
 end
 
 function Gen4BagMenu:bottomPoint(px, py)
@@ -1384,7 +1384,7 @@ function Gen4BagMenu:drawSubscreen()
   local okS, SS = pcall(require, "src.ui.SecondScreen")
   if not okS then return end
   local mode = SS.mode(self.game)
-  if not ((mode == "display" or mode == "inset") and not SS.stowed(self.game)) then return end
+  if not (require("src.ui.SecondScreen").separateMode(mode) and not SS.stowed(self.game)) then return end
   local borders = self:sprite("sub_borders")
   if not borders then return end
   local shown = self:shownPockets()

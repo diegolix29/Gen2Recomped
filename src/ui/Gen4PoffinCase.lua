@@ -381,7 +381,7 @@ function Case:draw()
   self:drawTop()
   local ok, SS = pcall(require, "src.ui.SecondScreen")
   local mode = ok and SS.mode(self.game) or "off"
-  if ok and (mode == "display" or mode == "inset") and not SS.stowed(self.game) then
+  if ok and require("src.ui.SecondScreen").separateMode(mode) and not SS.stowed(self.game) then
     SS.draw(self.game, function() self:drawBottom() end)
   end
   g.setColor(1, 1, 1, 1)

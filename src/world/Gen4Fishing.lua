@@ -91,6 +91,38 @@ function Gen4Fishing.feebasTiles(feebas, save)
   return out
 end
 
+function Gen4Fishing.isHgss()
+  local okG, GV = pcall(require, "src.core.GameVersion")
+  return okG and GV.family and GV.family() == "hgss" or false
+end
+
+-- HEARTGOLD / SOULSILVER'S BITE RATE (pokeheartgold src/field/encounter_check.c):
+--   * FieldSystem_GetFishingEncounterRate: with the walking Pokemon out, the
+--     first healthy party member's friendship adds 0/20/30/40/50
+--     (getFriendshipBoostToFishingBiteRate: <=99, <=149, <=199, <=249, more)
+--   * ApplyAbilityEffectToEncounterRate: Sticky Hold / Suction Cups DOUBLE it
+--     here (Platinum's `newEncRate * 2;` is the no-op; HGSS assigns), cap 100
+function Gen4Fishing.hgssRate(data, save, rate)
+  local Game = package.loaded["src.core.Game"]
+  local okF, F = pcall(require, "src.world.HgssFollowMon")
+  local ow = Game and Game.overworld
+  local okA, active = false, false
+  if okF and F and F.isActive and Game then okA, active = pcall(F.isActive, Game, ow) end
+  if okA and active then
+    local mon
+    for _, m in ipairs((save and save.party) or {}) do
+      if not (m.isEgg or m.egg) and (tonumber(m.hp) or 1) > 0 then mon = m break end
+    end
+    local f = tonumber(mon and mon.friendship) or 0
+    rate = rate + (f <= 99 and 0 or f <= 149 and 20 or f <= 199 and 30 or f <= 249 and 40 or 50)
+  end
+  local lead = require("src.world.Gen4WildLead").lead(data, save)
+  if not lead.egg and (lead.ability == "STICKY_HOLD" or lead.ability == "SUCTION_CUPS") then
+    rate = rate * 2
+  end
+  return math.min(100, rate)
+end
+
 -- roll(data, save, mapDef, mapId, rod, tx, tz, rng) -> { species, level } or nil
 function Gen4Fishing.roll(data, save, mapDef, mapId, rod, tx, tz, rng)
   rng = rng or love.math.random
@@ -98,7 +130,19 @@ function Gen4Fishing.roll(data, save, mapDef, mapId, rod, tx, tz, rng)
   local view = Encounter.forMap(data, mapDef, mapId, nil, save)
   local table_ = view and view[rod .. "Rod"]
   if not table_ or (tonumber(table_.rate) or 0) <= 0 then return nil end
-  if rng(0, 99) >= table_.rate then return nil end
+  local hgss = Gen4Fishing.isHgss()
+  local rate = tonumber(table_.rate)
+  if hgss then rate = Gen4Fishing.hgssRate(data, save, rate) end
+  if rng(0, 99) >= rate then return nil end
+  if hgss then
+    -- FieldSystem_GenerateSafariEncounter: any of the ten, evenly
+    if view.safariKey then
+      local slots = table_.slots or {}
+      if #slots == 0 then return nil end
+      return require("src.world.Gen4WildLead").choose(data, save, slots, "rod", "uniform", rng)
+    end
+    return require("src.world.Gen4WildLead").choose(data, save, table_.slots, "rod", "hgss", rng)
+  end
   local feebas = data and data.gen4_feebas
   if feebas and mapDef and mapDef.header == feebas.header
      and rng(0, 1) ~= 0                                  -- LCRNG_RandMod(2)

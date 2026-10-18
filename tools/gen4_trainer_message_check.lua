@@ -302,10 +302,10 @@ end
 -- here since pass 173, had never had a handler at all. See
 -- tools/gen4_underground_inventory_check.lua, which now sweeps every verb
 -- assigned that way.
-ok(#pendingRows == 5,
-   "%d `pending` row(s), expected exactly 5 (g4_common, g4_use_rock_climb, "
-   .. "g4_blackout_from_battle_2, g4_open_hall_of_fame and "
-   .. "g4_open_seal_capsule_editor): %s",
+-- (g4_open_hall_of_fame left the list in pass 34: src/ui/Gen4PcHallOfFame)
+ok(#pendingRows == 4,
+   "%d `pending` row(s), expected exactly 4 (g4_common, g4_use_rock_climb, "
+   .. "g4_blackout_from_battle_2 and g4_open_seal_capsule_editor): %s",
    #pendingRows, table.concat(pendingRows, ", "))
 io.write(("   %d distinct g4_ rows emitted by the VM\n"):format(emittedCount))
 ok(#unhandled == 0,

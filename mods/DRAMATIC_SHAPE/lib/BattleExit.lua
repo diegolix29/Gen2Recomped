@@ -159,8 +159,19 @@ end
 
 -- ------- engine seams
 --
--- Two wraps, each idempotent so a hot reload cannot stack them.
+-- Two wraps, each idempotent so a hot reload cannot stack them -- and each
+-- replaced by a later load in the same process (lib/Rewrap.lua), so the fade
+-- is this load's and not the first game's.
+local installSeams
+
 function BattleExit.install()
+  V.require("Rewrap").install({
+    { require("src.battle.BattleState"), "dramaticShapeExitHook", { "finish" } },
+    { require("src.render.Renderer"), "dramaticShapeExitHook", { "endFrame" } },
+  }, installSeams)
+end
+
+installSeams = function()
   local BattleState = require("src.battle.BattleState")
   if not BattleState.dramaticShapeExitHook then
     local inner = BattleState.finish

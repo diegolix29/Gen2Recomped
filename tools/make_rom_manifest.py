@@ -592,7 +592,14 @@ FIELD_ASSET_SYMBOLS = {
     "SlotMachineTiles1",
     "SlotMachineTiles2",
     "TheEndGfx",
+    "TileIDListPointerTable",
     "TownMapCursor",
+    # engine/movie/trade.asm (src/import/Gen1TradeArt.lua)
+    "TradeBubbleIconGFX",
+    "TradingAnimationGraphics",
+    "TradingAnimationGraphics2",
+    "TradingAnimationGraphics2End",
+    "TradingAnimationGraphicsEnd",
     "Version_GFX",
     "WorldMapTileGraphics",
 }

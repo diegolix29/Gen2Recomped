@@ -114,10 +114,15 @@ function Gen4StartMenu.new(game, opts)
   -- which the record marks hidden for the ordinary field, appears, and SAVE
   -- goes.
   self.safari = (game.save or {}).safari ~= nil
+  -- ...AND DURING HEARTGOLD / SOULSILVER'S BUG-CATCHING CONTEST (flag 0x996):
+  -- BAG and SAVE are off and RETIRE runs std 10404 (start_menu.c 220-315)
+  self.bugContest = require("src.world.HgssBugContest").running(game.save)
   for _, row in ipairs(source) do
     local hidden = row.hidden
     if self.safari then
       hidden = (row.id == "save" or row.id == "chat")
+    elseif self.bugContest then
+      hidden = (row.id == "save" or row.id == "chat" or row.id == "bag")
     end
     if not hidden and self:available(row.id) then
       self.rows[#self.rows + 1] = {
@@ -152,6 +157,29 @@ function Gen4StartMenu.new(game, opts)
     self.rows = kept
   end
 
+  -- a contest's RETIRE when the record behind this menu has no such row
+  -- (HeartGold / SoulSilver's cache carries no start-menu record)
+  if self.bugContest then
+    local has = false
+    for _, r in ipairs(self.rows) do if r.id == "retire" then has = true end end
+    if not has then
+      local text = (game.data or {}).text or {}
+      local label = text["TEXT_B0196_00008"] or "RETIRE"
+      table.insert(self.rows, math.max(1, #self.rows), { id = "retire", label = label })
+    end
+  end
+  -- MODS, the port's own row and not the cartridge's: the only way into the
+  -- mod manager once a game is running, on the same terms as the Game Boy and
+  -- GBA menus (src/ui/StartMenu.lua, Gen3StartMenu:buildRows) -- shown only
+  -- when at least one mod is installed, and placed before EXIT so the
+  -- cartridge's rows keep their order.  No icon: the panel draws the word.
+  local mods = Gen4StartMenu.modsRow(game)
+  if mods then
+    local at = #self.rows + 1
+    if self.rows[#self.rows] and self.rows[#self.rows].id == "exit" then at = #self.rows end
+    table.insert(self.rows, at, mods)
+  end
+  -- FieldSystem.menuCursorPos: the menu opens on the option it was left on
   self.index = 1
   for i, row in ipairs(self.rows) do
     if row.id == game.gen4StartMenuCursor then self.index = i end
@@ -169,6 +197,15 @@ function Gen4StartMenu.new(game, opts)
 end
 
 -- ------------------------------------------------------------------ rows --
+
+-- The MODS row, or nil when no mod is installed (a vanilla install's menu is
+-- the cartridge's and nothing else).  Shared with HgssStartMenu and
+-- Gen5StartMenu, which build their own row lists.
+function Gen4StartMenu.modsRow(game)
+  local status = game and game.modStatus
+  if not (status and #(status.available or {}) > 0) then return nil end
+  return { id = "mods", label = Strings("MODS") }
+end
 
 -- Whether a row belongs on the menu at all.  See the header: Platinum's own
 -- hide flags are not in this port's Gen 4 save, so these are the engine's
@@ -269,7 +306,18 @@ function Gen4StartMenu:select()
     end
     return
   end
+  if id == "mods" then
+    -- the manager goes ON TOP of the menu, as the Game Boy menu's does:
+    -- ManagerState pops itself when backed out of, which leaves the player
+    -- on this menu, on this row
+    return Screens.push(self.game, "ManagerState")
+  end
   self.game.stack:pop()
+  if id == "retire" and self.bugContest then
+    require("src.world.HgssBugContest").runStd(self.game.overworld, 10404)
+    if self.onCancel then self.onCancel() end
+    return
+  end
   if id == "retire" then
     -- `StartMenu_SelectRetire`: SCRIPT_ID(SAFARI_GAME, 21) -- "Would you like
     -- to retire from the Safari Game?" and, on yes, back to the gate
@@ -335,6 +383,15 @@ function Gen4StartMenu:update()
   if count == 0 then return self:close() end
   self.frame = (self.frame or 0) + 1
   local before = self.index
+  -- a tapped row (touchpressed below) is chosen as A on it would be
+  local tap = self.tapRow
+  self.tapRow = nil
+  if tap and self.rows[tap] then
+    self.index = tap
+    self.game.gen4StartMenuCursor = self.rows[tap].id
+    se(self, "SEQ_SE_DP_SELECT")
+    return self:select()
+  end
   -- StartMenu_Select -> Menu_ProcessInputWithSound(menu, SEQ_SE_DP_SELECT78)
   -- (start_menu.c:690, menu.c:120-156): A and the cancel keys play
   -- SE_CONFIRM_sseq_3, a cursor move that lands plays SELECT78
@@ -408,9 +465,55 @@ function Gen4StartMenu:drawIcon(row, selected, x, y)
   return true
 end
 
+-- The cartridge's geometry, made to FIT: seven rows at tile 1 end at tile 22,
+-- and an eighth (the port's MODS) would run off the 24-tile screen.  The
+-- panel first moves up toward tile 0, then -- only if that is not enough --
+-- the rows close up.  Seven rows get the cartridge's layout untouched.
+function Gen4StartMenu:fittedLayout()
+  local L = self.layout
+  local rows = math.max(1, #self.rows)
+  local tileY = math.floor(L.panelY / 8)
+  local over = tileY + rows * L.rowTiles - 24
+  if over <= 0 then return L end
+  local F = {}
+  for k, v in pairs(L) do F[k] = v end
+  local up = math.min(over, tileY)
+  tileY = tileY - up
+  F.panelY = L.panelY - up * 8
+  F.firstY = L.firstY - up * 8
+  if tileY + rows * L.rowTiles > 24 then
+    F.rowTiles = math.max(2, math.floor((24 - tileY) / rows))
+    F.pitch = F.rowTiles * 8
+    F.firstY = F.panelY + math.floor(F.pitch / 2)
+  end
+  return F
+end
+
+-- Touch: a tap on a row picks it.  Only a tap that lands on a row is claimed,
+-- so the on-screen pad keeps every other touch.
+function Gen4StartMenu:touchpressed(_, px, py)
+  local x, y
+  -- the same test draw() uses to put the panel on the second screen
+  local onSecond = self:style() == "bottom" and SecondScreen.mode(self.game) ~= "off"
+  if onSecond and SecondScreen.toLocal then
+    x, y = SecondScreen.toLocal(self.game, px, py)
+  else
+    local rect = require("src.render.Renderer").uiPresentation
+    x, y = px, py
+    if rect then x, y = (px - rect.x) / rect.scaleX, (py - rect.y) / rect.scaleY end
+  end
+  if not x then return false end
+  local L = self:fittedLayout()
+  if x < L.panelX or x >= L.panelX + L.panelW then return false end
+  local i = math.floor((y - L.panelY - 4) / L.pitch) + 1
+  if y < L.panelY or i < 1 or i > #self.rows then return false end
+  self.tapRow = i
+  return true
+end
+
 function Gen4StartMenu:drawPanel()
   local g = love.graphics
-  local L = self.layout
+  local L = self:fittedLayout()
   local rows = #self.rows
   local h = rows * L.pitch + 8
 

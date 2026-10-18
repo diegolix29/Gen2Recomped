@@ -180,7 +180,7 @@ function Feed:draw()
   -- the bottom screen, when there is a second one
   local ok, SS = pcall(require, "src.ui.SecondScreen")
   local mode = ok and SS.mode(self.game) or "off"
-  if (mode == "display" or mode == "inset") and not SS.stowed(self.game) then
+  if require("src.ui.SecondScreen").separateMode(mode) and not SS.stowed(self.game) then
     SS.draw(self.game, function()
       local b = self:art("feed_bottom")
       if b then g.draw(b, 0, 0) end

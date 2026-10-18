@@ -87,7 +87,9 @@ function BugContest.state(save) return state(save) end
 -- never entered the park behaves exactly as it did before.
 function BugContest.active(save)
   local s = state(save)
-  return (s and s.active) == true
+  -- HeartGold / SoulSilver's run shares the table (the battle reads its
+  -- balls and catch there) but not these field hooks: src/world/HgssBugContest
+  return (s and s.active) == true and not s.hgss
 end
 
 -- Whether the save is carrying a finished run whose prize has not been

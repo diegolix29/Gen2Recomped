@@ -62,7 +62,8 @@ local TEXT = {
 
 function State.text(game, role, one, two)
   local t = TEXT[role]
-  local s = (((game.data or {}).text or {})[("TEXT_B0368_%05d"):format(t[1])]) or t[2]
+  local bank=((game.data or {}).gen4_evolution_ink or {}).bank or 368
+  local s = (((game.data or {}).text or {})[("TEXT_B%04d_%05d"):format(bank,t[1])]) or t[2]
   local function safe(v) return (tostring(v or ""):gsub("%%", "%%%%")) end
   s = s:gsub("{STRVAR_1 1,? ?0,? ?0}", safe(one)):gsub("{STRVAR_1 1,? ?1,? ?0}", safe(two))
   s = s:gsub("{WAIT %d+}", ""):gsub("{[^}]*}", ""):gsub("[\r\011]", "")
@@ -94,7 +95,7 @@ function State.new(game, mon, species, onDone, via, evo)
     local r = art[('particle_%d'):format(i)]
     if r then self.particleArt[i + 1] = r end
   end
-  local blank = (((game.data.gen4_graphics or {}).screens) or {})['poketch/unavailable']
+  local blank = art.bottom or (((game.data.gen4_graphics or {}).screens) or {})['poketch/unavailable']
   self.bottom = image(type(blank) == 'table' and blank.path or blank)
   self.systems = {}
   self.scale = { 256, 0 }

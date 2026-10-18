@@ -40,6 +40,10 @@ L.ALIASES = {
   [0x74] = { "faceplayer", "" },
   [0x32] = { "waitabpress", "" }, [0x3E] = { "closemessage", "" }, [0x3F] = { "closemessage", "" },
   [0x3D] = { "message", "bbwww", { 3 } }, [0x3C] = { "message", "bbwwww", { 3 } },
+  -- 0x0CC <dest>: the running script's text bank into a var (ov10
+  -- 0x0215AADC: *var = ctx+0x18, the bank 0x0215A760 loaded) -- what an
+  -- NPC hands the shared item-gift script (2800) so it speaks their lines
+  [0x0CC] = { "bwstorecurrentbank", "w" },
   [0xA6] = { "playse", "w" },
   [0x23] = { "setflag", "w" }, [0x24] = { "clearflag", "w" },
   -- 0x25 <flag, dest>: the flag's state into a var (the handler reads the
@@ -236,6 +240,14 @@ L.ALIASES = {
   -- scripts branch `if (var == 21)`
   [0x068] = { "getplayermappos", "ww" },
   [0x0E0] = { "bwgetversion", "w" },
+  -- THE IN-GAME TRADES (src/import/Gen5Trades.lua, handlers in ov21):
+  --   0x1BF <dest, trade, slot>  0 ok / 1 an Egg / 2 not the species asked
+  --         for / 3 not the gender asked for (0x021B647C)
+  --   0x1BE <trade, slot>        build theirs, play the demo, swap in place
+  --   0x120 <slot, index>        the Pokemon given away, kept in the save for
+  --         the NPC's later battle (Nacrene 0, Driftveil 1)
+  [0x1BF] = { "bwnpctradecheck", "www" }, [0x1BE] = { "bwnpctrade", "ww" },
+  [0x120] = { "bwkeeptradedmon", "ww" },
   -- 0x056 <slot, type>: a type's name into a buffer, byte first like 0x057 --
   -- the Striaton leaders' "the partner you first chose was {VAR1} type"
   [0x056] = { "buffertypename", "bw" },
@@ -356,11 +368,55 @@ L.ALIASES = {
   [0x021] = { "bwqueueentry", "w" },
   -- RELIC CASTLE'S QUICKSAND (the pits' coord scripts, members 320..328 and
   -- 370): 0x0C1 <zone, x, z> is the fall -- a warp with no facing, only the
-  -- castle's pits use it; and 0x0D8 <value, var> stores IsTMHM(value)
-  -- (handler 0x21AF6C5 -> 0x2021288: item 328..425 or 618..620), which on
-  -- B3F's pit picks between its two landing tiles
+  -- castle's pits use it; and 0x0D8 <n, var> stores whether condition n of
+  -- a ten-row table holds (handler 0x215AEB9 -> 0x2159F54; the table at
+  -- 0x2170FB0 in overlay 10, rows { ?, n, var 0x4031 + n, value }) -- on
+  -- B3F's pit it picks between the two landing tiles, in the player's room
+  -- between the Wii's two lines
   [0x0C1] = { "warp", "www", { 1, 1, 2, 3 } },
-  [0x0D8] = { "bwistmhm", "ww" },
+  -- THE EVENT POKEMON CHECKS: 0x220 <species, 0, slotVar, resultVar> asks
+  -- whether a distributed (fateful-encounter) Pokemon of that species is in
+  -- the party -- Castelia's Zorua scene asks for Celebi (member 94), Lostlorn
+  -- Forest's Zoroark for Entei, Raikou and Suicune (member 770)
+  [0x220] = { "bwpartyhaseventmon", "wwww" },
+  -- OPELUCID GYM (overlay 46, Gen5DragonGym): 0x196 lists the dragons'
+  -- lines as the save says, 0x19A <statue, side> flips a switch, 0x199
+  -- <statue> settles the head and its lines; 0x197 <statue, side> and 0x198
+  -- <n> are the switch's and the player's animations
+  -- THE ELITE FOUR'S LIFTS (zones 140-143, gimmick 0x2C): 0x1A2 <n>, run by
+  -- the entry floor's platform trigger at (15, 25), starts overlay task n - 1
+  -- that raises the platform into the member's floor above -- the rows
+  -- between are solid and the upper floor stands 0x33 up. The overlay is
+  -- not decoded; the ride is a lift up the player's column (Gen4Commands)
+  [0x1A2] = { "bwe4lift", "w" },
+  [0x196] = { "bwdragoninit", "" }, [0x19A] = { "bwdragonflip", "ww" },
+  [0x199] = { "bwdragonsettle", "w" }, [0x197] = { "noop", "ww" }, [0x198] = { "noop", "w" },
+  [0x0D8] = { "bwcondition", "ww" },
+  -- 0x121 <var, 5>: how many of the party can battle (not an egg, not
+  -- fainted) -- the legendary's "able to battle" test in N's Castle (Z278,
+  -- M0556 S1A78: none able and the dragon only stares), beside 0x103's count
+  [0x121] = { "bwpartyable", "ww", { 1 } },
+  -- 0x245 <mode, var>: N's Castle's dragon joining the party (Z278, M0556
+  -- S187F): mode 0 answers whether the party has room, mode 1 adds the
+  -- version's dragon -- Reshiram on Black, Zekrom on White, level 50 -- and
+  -- a full party first sends one to the PC (S19BA)
+  [0x245] = { "bwlegend", "ww" },
+  -- THE SCRIPTED WILD BATTLES (17 of them -- N's Castle's dragon, the
+  -- legendaries): 0x178 <species, level, flags var> starts it, 0x17B <var>
+  -- answers 1 when the battle ended without a loss (caught, knocked out or
+  -- fled -- N's Castle reads the catch only then), 0x17C <var> whether it got
+  -- away uncaught (N's Castle sets 0x133 when it was caught and removes the
+  -- dragon), and 0x17A <n> closes the battle's field effect. 0x013 <var,
+  -- value> adds to a var -- the battle's flag word, 0x100 | 1 | 0x10.
+  [0x178] = { "startwildbattle", "www", { 1, 2 } },
+  [0x17B] = { "bwbattleok", "w" },
+  [0x17C] = { "checkdidnotcapture", "w" },
+  [0x17A] = { "noop", "w" },
+  [0x013] = { "addvar", "ww" },
+  -- 0x156 <kind>: THE GAME CLEAR. Kind 0 closes N's Castle (Z278, the last
+  -- row before 0x40B6 = 6): the ending plays and the game goes on in the
+  -- player's room; kind 1 is the Champion's room after Alder (Z145)
+  [0x156] = { "bwgameclear", "w" },
   -- Clay's lifts: 0x190 <lift> moves lift n to its other height (the panel
   -- script flips the lift's flag 0x0A + n after), carrying the player when
   -- standing on it (Gen5DriftveilGym); 0x191 <n> / 0x1B5 the arrival lift
@@ -426,6 +482,20 @@ L.ALIASES = {
   [0x088] = { "gettrainermessagetypes", "www" },
   [0x087] = { "printtrainerdialogue", "www", { 1, 2 } },
   [0x066] = { "bwobjectmovement", "ww" }, [0x073] = { "noop", "ww" },
+  -- THE BATTLE SUBWAY (src/script/Gen5BattleSubway.lua): 0x15A <function,
+  -- a, b, dest> is the facility's switch (ov21 0x021CA5C4: a raw u16, two
+  -- var-or-values, a var); 0x157 / 0x158 <kind, mode> / 0x159 clear, make
+  -- and free the challenge's work (ov21 0x021C9924 / 0x021C9934 /
+  -- 0x021C9B24); 0x1BA <regulation, dest> the party-or-Battle-Box check;
+  -- 0x067 <object, x var, z var> an object's tile; 0x0D3 <var> the zone
+  -- (ov10 0x0215AD38); 0x137 <var> the save under "Saving...", its answer; 0x13B <var> whether
+  -- wireless play is on (0 here: the Wi-Fi branches say so); 0x13C / 0x1F0
+  -- <kind, var> close the field windows / count a game record
+  [0x15A] = { "bwsubway", "wwww" },
+  [0x157] = { "bwsubwayinit", "" }, [0x158] = { "bwsubwaycreate", "ww" }, [0x159] = { "bwsubwayfree", "" },
+  [0x1BA] = { "bwteamsource", "ww" }, [0x067] = { "bwobjectpos", "www" },
+  [0x0D3] = { "getcurrentmapid", "w" }, [0x137] = { "bwsavegame", "w" },
+  [0x13B] = { "bwwirelessoff", "w" }, [0x13C] = { "noop", "" }, [0x1F0] = { "noop", "ww" },
 }
 
 -- THE STACK FORM. Most of BW's conditional jumps are an expression on the
@@ -534,6 +604,20 @@ function L.rewriteStack(decoded)
     local j = k and decoded[k]
     if node and emit(node, j.target, false, true, chain, j.at + 2 + j.width) then
       for _, ins in ipairs(chain) do out[#out + 1] = ins end
+      i = k + 1
+    elseif node then
+      -- AN EXPRESSION THE JUMPING CODE CANNOT SPELL (an OR of ANDs jumping on
+      -- false, a nested sum of conditions): kept as the cartridge's own stack
+      -- program, postfix, as (kind, value) pairs -- 1 const, 2 var, 3 flag,
+      -- 4 operator -- and evaluated when it runs (g4_bw_eval)
+      local program = {}
+      local function post(n)
+        if n.kind == "op" then post(n.a); post(n.b); program[#program + 1] = 4; program[#program + 1] = n.op
+        else program[#program + 1] = (n.kind == "const" and 1) or (n.kind == "var" and 2) or 3
+             program[#program + 1] = n.value end
+      end
+      post(node)
+      out[#out + 1] = { at = a.at, op = 0x1F, name = "bwevalgoto", args = program, target = j.target }
       i = k + 1
     else
       out[#out + 1] = L.name(a)
@@ -715,6 +799,21 @@ function L.name(ins)
   local name = alias[1]
   if name == "setvar" then name = L.setvarName(args[2]) end
   if name == "message" and (args[1] or 0) >= 0x4000 then name = "messagevar" end
+  -- 0x3D / 0x3C OPEN WITH A BANK SELECTOR, a u16 the two leading "bytes" make
+  -- up: 0x0400 is the script's own bank; anything else names one -- a var
+  -- when >= 0x4000 (the shared item-gift script prints from 0x8006, which its
+  -- caller filled with its own bank through 0x0CC), else the bank itself
+  if (ins.op == 0x3D or ins.op == 0x3C) and name:sub(1, 7) == "message" then
+    local bank = (ins.operands:byte(1) or 0) + (ins.operands:byte(2) or 0) * 256
+    if os.getenv and os.getenv("BWBANKSTAT") then
+      L.bankStat = L.bankStat or {}
+      if not L.bankStat[bank] then print(("[bwbank] selector 0x%04X first at op 0x%X"):format(bank, ins.op)) end
+      L.bankStat[bank] = (L.bankStat[bank] or 0) + 1
+    end
+    if bank ~= 0x0400 then
+      return { at = ins.at, op = ins.op, name = "messagefrombank", args = { bank, args[1] }, target = ins.target }
+    end
+  end
   return { at = ins.at, op = ins.op, name = name, args = args, target = ins.target }
 end
 

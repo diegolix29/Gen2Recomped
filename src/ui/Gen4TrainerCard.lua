@@ -1079,7 +1079,7 @@ function Gen4TrainerCard:subscreenShown()
   local okS, SS = pcall(require, "src.ui.SecondScreen")
   if not okS or type(SS) ~= "table" or not SS.mode then return false end
   local mode = SS.mode(self.game)
-  return (mode == "display" or mode == "inset") and not SS.stowed(self.game), SS
+  return require("src.ui.SecondScreen").separateMode(mode) and not SS.stowed(self.game), SS
 end
 
 function Gen4TrainerCard:draw()

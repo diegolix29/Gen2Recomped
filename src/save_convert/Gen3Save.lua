@@ -137,6 +137,7 @@ function Gen3Save.setLayout(layout, orders, fields, gameVersion)
   Gen3Save.layout = layout
   Gen3Save.substructOrders = orders
   Gen3Save.fields = fields
+  Gen3Save.gameVersion = gameVersion
   if gameVersion == "firered" then
     Gen3Save.defaultMetGame = Gen3Save.MET_GAME_FIRE_RED
   elseif gameVersion == "leafgreen" then
@@ -1446,11 +1447,58 @@ end
 -- Apply a decoded-and-edited save table back onto the blocks it came from.
 -- Only fields this project models are touched; everything else is left exactly
 -- as the cartridge wrote it.
+-- Emerald: a non-zero encryption key, re-encrypting what the old one sealed
+-- (money, coins, berry powder, the game stats and every bag count) so nothing
+-- reads differently; FRLG: unkFlag1 at 0xAC. Returns the new block1, block2.
+function Gen3Save.markVersion(b1, b2)
+  local f = need("a write")
+  local s1, s2 = f.saveBlock1, f.saveBlock2
+  local version = Gen3Save.gameVersion
+  if version == "firered" or version == "leafgreen" then
+    if u8(b2, 0xAC) == 0 then b2 = put(b2, 0xAC, b8(1)) end
+    return b1, b2
+  end
+  if version ~= "emerald" or not (s2 and s2.encryptionKey == 0xAC) then return b1, b2 end
+  local old = Gen3Save.encryptionKey(b2)
+  if old ~= 0 then return b1, b2 end
+  local new = 0
+  while new == 0 do
+    new = (love and love.math and love.math.random or math.random)(0, 65535) * 65536
+          + (love and love.math and love.math.random or math.random)(0, 65535)
+  end
+  local function re32(b, at) return put(b, at, b32(xorU32(xorU32(u32(b, at), old), new))) end
+  local function re16(b, at) return put(b, at, b16(xorU32(xorU32(u16(b, at), old), new) % 65536)) end
+  if s1.money then b1 = re32(b1, s1.money) end
+  if s1.coins then b1 = re16(b1, s1.coins) end
+  if s2.berryPowder then b2 = re32(b2, s2.berryPowder) end
+  if s1.gameStats and s1.gameStatCount then
+    for i = 0, math.floor(s1.gameStatCount) - 1 do b1 = re32(b1, s1.gameStats + i * 4) end
+  end
+  local bag = f.bag
+  if bag and bag.pockets and bag.capacities then
+    for p, at in ipairs(bag.pockets) do
+      for slot = 0, (bag.capacities[p] or 0) - 1 do
+        b1 = re16(b1, at + slot * bag.itemSlotSize + 2)
+      end
+    end
+  end
+  b2 = put(b2, s2.encryptionKey, b32(new))
+  return b1, b2
+end
+
 function Gen3Save.applyBlocks(blocks, save, cw)
   local f = need("a write")
   local b1, b2 = blocks.block1, blocks.block2
-  local key = Gen3Save.encryptionKey(b2)
   local s1, s2 = f.saveBlock1, f.saveBlock2
+  -- WHICH GAME THE FILE SAYS IT IS, the way PKHeX (and every save tool after
+  -- it) tells: the u32 at SaveBlock2 + 0xAC. Ruby/Sapphire leave it 0;
+  -- FireRed/LeafGreen keep `unkFlag1` there, which NewGameInitData sets TRUE;
+  -- Emerald keeps its encryption key there, which MoveSaveBlocks_ResetHeap
+  -- rerolls to a random value on every load -- so a real Emerald save never
+  -- has 0 there. A save this port built from blank had 0, and PKHeX opened
+  -- the export as Ruby/Sapphire (reported from play).
+  b1, b2 = Gen3Save.markVersion(b1, b2)
+  local key = Gen3Save.encryptionKey(b2)
 
   if save.money then b1 = put(b1, s1.money, b32(xorU32(save.money, key))) end
   if save.coins then

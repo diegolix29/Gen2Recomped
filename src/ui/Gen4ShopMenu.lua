@@ -76,8 +76,20 @@ function Shop:sgbPalettes() return {require('src.render.PaletteFX').trueColorZon
 --             canAdd(id, qty), add(id, qty), fullMessage, ownedLabel }
 -- a bank 543 line, its {STRVAR_1 kind slot pad} slots filled by slot
 function Shop:line(n, fallback, ...)
-  T.buffer(self.game, ...)
-  local text = T.resolve(self.game.data, Shop.TEXT, n, self.game)
+  local info=require('src.core.GameVersion').info()
+  local hgss=info and info.family=='hgss'
+  local bank=hgss and 435 or Shop.TEXT
+  local args={...}
+  if hgss then
+    -- HGSS overlay 31 uses bank 435, with different entry numbers.
+    local entries={[1]=1,[2]=6,[3]=11,[4]=12,[5]=14,[6]=15,[7]=16,[8]=17,[9]=18,
+      [10]=20,[15]=42,[18]=30,[19]=31,[20]=36,[22]=38}
+    if not entries[n] then return fallback end
+    if n==5 then args={args[1],args[3]} end
+    n=entries[n]
+  end
+  T.buffer(self.game, unpack(args))
+  local text = T.resolve(self.game.data, bank, n, self.game)
   -- a mid-line scroll (\v) or clear (\f) becomes a line break in this box
   if text then text = text:gsub("[\v\f]+", "\n") end
   return text or fallback
@@ -85,7 +97,9 @@ end
 -- a bank 7 (bag) line, the same way
 function Shop:bagLine(n, fallback, ...)
   T.buffer(self.game, ...)
-  local text = T.resolve(self.game.data, Shop.BAG_TEXT, n, self.game)
+  local info=require('src.core.GameVersion').info()
+  local hgss=info and info.family=='hgss'
+  local text = T.resolve(self.game.data, hgss and 10 or Shop.BAG_TEXT, hgss and n+2 or n, self.game)
   if text then text = text:gsub("[\v\f]+", "\n") end
   return text or fallback
 end
@@ -99,6 +113,12 @@ function Shop.new(game, stock, onQuit, goods, opts)
     frontier = opts and opts.frontier or nil,
     mode = 'menu', cursor = 1, scroll = 0, camStep = 0, camAcc = 0, yesNo = 1 }, Shop)
   self.message = self:line(0, 'Welcome!\nHow may I serve you?')
+  local info=require('src.core.GameVersion').info()
+  if info and info.family=='hgss' then
+    -- HGSS's field script already asks BUY / SELL / SEE YA. MartBuy
+    -- launches the purchase list directly, not a second context menu.
+    self.direct=true;self.mode='buy';self.message=nil
+  end
   -- Shop_GetCameraPosDest: ten steps, eight when the player faces west
   local ow = game.overworld
   local facing = ow and ow.player and ow.player.facing
@@ -212,6 +232,7 @@ function Shop:back(silent)
     self.message = nil
     if self.transaction == 'sell' then return self:openBag() end
   else
+    if self.direct then return self:finish() end
     self.mode, self.cursor, self.scroll, self.transaction = 'menu', 1, 0, nil
     self.message = self:line(2, 'Is there anything else I may do\nfor you?')
   end
@@ -299,6 +320,16 @@ function Shop:choose()
   if self.max < 1 then self.message = self:poorLine(); return end
   se(self, "SEQ_SE_DP_SELECT")
   self.item, self.transaction, self.qty, self.mode = id, 'buy', 1, 'quantity'
+  -- ONE AT A TIME (MART_TYPE_DECOR): no dial -- the room check first, then
+  -- straight to the price (Shop_SelectBuyMenu -> Shop_ShowPurchaseMessage)
+  if self.goods and self.goods.single then
+    if not self.goods.canAdd(id, 1) then
+      self.mode, self.item = 'buy', nil
+      self.message = self.goods.fullMessage or 'There is no more room.'
+      return
+    end
+    return self:choose()
+  end
   if self.frontier then
     self.message = self:line(33, (def.name or '') .. '? OK.\nHow many would you like?', def.name)
   else
@@ -315,7 +346,8 @@ function Shop:transact()
     elseif self.goods then
       self.goods.add(self.item, self.qty)
       se(self, "SEQ_SE_DP_REGI")
-      self:pay(cost); self.message = 'Thank you!'
+      self:pay(cost)
+      self.message = self.goods.thanks and self.goods.thanks(self.item) or 'Thank you!'
     elseif not Bag.add(save, self.item, self.qty, self.game.data) then self.message = self:line(7, 'Your Bag is full.')
     else self:pay(cost)
       -- the till (Shop_SelectConfirmPurchase, on YES)

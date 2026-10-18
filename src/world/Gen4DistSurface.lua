@@ -123,8 +123,28 @@ local function mapHeight(ow)
     end
     ow.dwMapY = best
   elseif ow.dwMapY == nil then
-    local ok2, h = pcall(g.groundY, g, p.cellX * 16 + 8, p.cellY * 16 + 8)
-    ow.dwMapY = ok2 and tonumber(h) or 0
+    -- ARRIVING ON A TILE WITH NO PLATE (1F's portal, where Spear Pillar's
+    -- warp lands: the floor is drawn but its height plate is not there) takes
+    -- the nearest plated tile's height rather than the map's zero, which
+    -- stood the player a tile down inside the floor
+    local found
+    for r = 1, 4 do
+      for dz = -r, r do
+        for dx = -r, r do
+          if not found and math.max(math.abs(dx), math.abs(dz)) == r then
+            local ok3, l3 = pcall(g.heightsAtPixel, g, (p.cellX + dx) * 16 + 8, (p.cellY + dz) * 16 + 8)
+            if ok3 and type(l3) == "table" and #l3 > 0 then found = l3[1] end
+          end
+        end
+      end
+      if found then break end
+    end
+    if found then
+      ow.dwMapY = found
+    else
+      local ok2, h = pcall(g.groundY, g, p.cellX * 16 + 8, p.cellY * 16 + 8)
+      ow.dwMapY = ok2 and tonumber(h) or 0
+    end
   end
   return ow.dwMapY
 end
@@ -258,6 +278,19 @@ end
 
 local function setPose(ow, m)
   local st, a = ow.dwSurface, ow.dwAnim
+  -- A LIFT RIDE OWNS THE POSE. Reported from play: "when riding it, the
+  -- camera flickers between 2 different positions, per frame (I'm running
+  -- 60fps)". The ride steps on the cartridge's 30 frames a second and set
+  -- the pose on those; the frames between recomputed it from the ground,
+  -- so the player and the camera following him alternated between the
+  -- lift's height and the floor's every frame.
+  if (ow.dwRide or ow.dwArrive) and ow.dwRidePose then
+    ow.dwPose = ow.dwRidePose
+    local g = groundOf(ow)
+    if g then g.surfaceBaseY = ow.dwRidePose.y end
+    return
+  end
+  ow.dwRidePose = nil
   if not (st or a) then
     local y = mapHeight(ow)
     local carry = ow.dwCarry

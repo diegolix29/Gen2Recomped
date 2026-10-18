@@ -514,7 +514,17 @@ function Gen4Camera.mode()
   -- its camera turns (src/world/Gen4DistSurface.lua) -- from the map's own
   -- pitch, which is what `cartridge` asks for.
   if Gen4Camera.forceField3d then return "field3d" end
+  -- a script's cutscene camera (HgssLegendCutscene) needs the real 3D view;
+  -- its own switch, since Gen4DistSurface rewrites `forceField3d` each frame
+  if Gen4Camera.cutsceneField3d then return "field3d" end
   return nil
+end
+function Gen4Camera.setCutsceneField3d(on)
+  on = on and true or nil
+  if on ~= Gen4Camera.cutsceneField3d then
+    Gen4Camera.cutsceneField3d = on
+    Gen4Camera.generation = (Gen4Camera.generation or 0) + 1
+  end
 end
 
 -- Set by src/world/Gen4DistSurface.lua while a Distortion World floor is up.

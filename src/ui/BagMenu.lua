@@ -332,6 +332,17 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
     local function bikeAllowed()
       if not (ow and ow:bikeAllowed(ow.map.id)) then return false end
       local p = ow.player
+      -- GEN 4: CanUseBicycle (pokeplatinum item_use_functions.c) /
+      -- ItemCheckUseFunc_Bicycle (pokeheartgold field_use_item.c): no partner,
+      -- no Rocket disguise, not standing in very tall grass or mud
+      if ow.map.def and ow.map.def.generation == 4 and p then
+        if require("src.world.Gen4Follower").hasPartner(game.save) then return false end
+        if game.save.hgssRocketCostume then return false end
+        local b = ow.map.cellBehaviour and ow.map:cellBehaviour(p.cellX, p.cellY)
+        local name = b and require("src.import.Gen4Behaviors").name(b)
+        if name == "VERY_TALL_GRASS" or name == "MUD" or name == "MUD_DEEP"
+           or name == "MUD_WITH_GRASS" or name == "MUD_DEEP_WITH_GRASS" then return false end
+      end
       return not (p and (p.surfing or (ow.map.runningBlockedAt
         and ow.map:runningBlockedAt(p.cellX, p.cellY))))
     end
@@ -355,6 +366,9 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
       if not require("src.core.GameVersion").isGen4() then
         showMessages(game, { Strings("%s got on\nthe BICYCLE!", save_name(game)) })
       end
+    elseif require("src.core.GameVersion").isGen4() then
+      -- Rowan's / Oak's words (ITEM_USE_CANNOT_USE_GENERIC / _OAKSWORDS)
+      showMessages(game, { require("src.inventory.Gen4ItemUse").rowanLine(game.data, game.save) })
     else
       showMessages(game, { Strings("No cycling\nallowed here.") })
     end
@@ -557,7 +571,19 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
     local ow = game.overworld
     local gen3 = require("src.core.GameVersion").isGen3()
     local allowed
-    if gen3 then
+    local gen4 = ow and ow.map and ow.map.def and ow.map.def.generation == 4
+    if gen4 then
+      -- CanUseEscapeRope (pokeplatinum item_use_functions.c; pokeheartgold
+      -- field_use_item.c ItemCheckUseFunc_EscapeRope): a cave map whose header
+      -- allows the rope, no partner, and (HGSS) no Rocket disguise; the warp
+      -- is the recorded exit (FieldOverworldState_GetExitLocation)
+      local def = ow.map.def
+      local mt = tonumber(def.mapType)
+      allowed = def.allowEscapeRope == true and (mt == nil or mt == 3)
+        and not require("src.world.Gen4Follower").hasPartner(game.save)
+        and not game.save.hgssRocketCostume
+        and ow.escapePoint and ow:escapePoint() and true or false
+    elseif gen3 then
       allowed = ow and ow.map and ow.map.def and ow.map.def.allowEscaping == true
     else
       allowed = ow and (ESCAPE_ROPE_TILESETS[ow.map.def.tileset]
@@ -570,7 +596,7 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
     -- dig warp is a "can't use that here", not a silent teleport somewhere
     -- else.
     local gen2 = require("src.core.GameVersion").generation() == 2
-    local escapePoint = (gen2 or gen3) and ow and ow.escapePoint and ow:escapePoint()
+    local escapePoint = (gen2 or gen3 or gen4) and ow and ow.escapePoint and ow:escapePoint()
     if (gen2 or gen3) and allowed and not escapePoint then allowed = false end
 
     if allowed and ow.map.id ~= "AGATHAS_ROOM" then
@@ -587,6 +613,8 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
       -- generation's business: Gen 1 the last Pokémon Center town door like
       -- Fly (#196), Gen 2 the recorded entrance.
       ow:beginTeleportOut(nil, { escape = escapePoint and true or nil })
+    elseif gen4 then
+      showMessages(game, { require("src.inventory.Gen4ItemUse").rowanLine(game.data, game.save) })
     else
       showMessages(game, { Strings(
         "OAK: %s!\nThis isn't the\ntime to use that!",
@@ -1207,6 +1235,9 @@ function BagMenu.canRegister(game, id)
     end)
     return (ok and yes) and true or false
   end
+  -- GEN 4: the item record's own canRegister bit (Gen4Items, the packed
+  -- ITEM_PARAM_CAN_REGISTER), which is what Gen4BagMenu offers REGISTER by
+  if data.isGen4Cache and def.canRegister ~= nil then return def.canRegister and true or false end
   return def.registerable and true or false
 end
 

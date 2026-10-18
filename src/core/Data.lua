@@ -165,10 +165,12 @@ local GEN4_MODULES = {
 local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
                         "gen4_naming", "gen4_dex", "gen4_models",
                         "gen4_terrain", "gen4_distortion_world",
-                        "gen4_weather_sys", "gen4_mail_gra",
-                        "gen4_species_sprites",
+                        "gen4_weather_sys", "gen4_mail_gra", "gen4_voltorb_flip", "gen4_follow_mon", "gen5_battle_ui", "gen5_battle_scene", "gen5_evolution", "gen4_hgss_menu_art", "gen4_hgss_bag_art", "gen4_hgss_summary_art", "gen5_menu_art", "gen5_bag_art", "gen5_summary_art", "gen4_hgss_dex_art", "gen4_hgss_box_art", "gen5_dex_art", "gen5_box_art", "gen4_hgss_pokegear_art", "gen4_legend_art", "gen4_hgss_safari", "gen4_alph_puzzle", "gen4_hgss_field_moves", "gen4_hgss_certificates",
+                        "gen4_species_sprites", "gen4_hgss_starter_art", "gen4_hgss_oak_art", "gen4_hgss_boot_art", "gen4_hgss_title_art", "gen5_boot_art", "gen5_main_menu_art", "gen5_juniper_art", "gen5_opening",
                         "gen4_move_anims", "gen4_particles",
                         "gen4_cellactors",
+                        -- HGSS scripted Pokegear calls (Gen4HgssPhoneCall)
+                        "gen4_hgss_phone_call",
                         -- the name -> archive member hop for `var_0`..`var_f`;
                         -- see the paragraph above for what its absence cost
                         "gen4_overworld",
@@ -231,6 +233,7 @@ local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
                         "gen4_berry_flavors",
                         -- each trainer class's eyes-meet theme (Gen4TrainerMusic).
                         "gen4_trainer_music",
+                        "gen4_battle_music",
                         -- contest_data.narc: contestants, judges, dress-ups, themes.
                         "gen4_contest", "gen4_contest_art", "gen4_dressup", "gen4_journal_art",
                         -- the Battle Tower's trainers and Pokemon sets (Gen4BattleTowerData).
@@ -276,6 +279,11 @@ local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
                         -- (Gen4EvolutionArt).
                         "gen4_poketch_art", "gen4_poketch_ink",
                         "gen4_evolution_art", "gen4_evolution_ink",
+                        -- the in-game trade cutscene's backgrounds, sprites and
+                        -- Poke Ball (Gen4TradeArt; Platinum and HGSS alike).
+                        "gen4_trade_art",
+                        -- Black / White's NPC trade demo (Gen5TradeArt)
+                        "gen5_trade_art",
                         -- the field start menu's icons in both palettes and
                         -- their swell/wiggle animations (Gen4StartMenuArt).
                         "gen4_start_menu_art", "gen4_start_menu_ink",
@@ -347,7 +355,10 @@ local OPTIONAL = { "audio", "palettes", "icons", "unown_puzzle", "unown_dex",
                    "battle_anims", "map_layouts", "map_tilesets",
                    "map_scripts", "scenes", "save_layout", "songs",
                    -- the Battle Frontier trainers' easy chat lines (Emerald)
-                   "gen3_frontier_speech" }
+                   "gen3_frontier_speech",
+                   -- the in-game trade sequence's art and tables
+                   -- (Emerald/FireRed, src/import/Gen3TradeArt.lua)
+                   "gen3_trade_art" }
 
 -- Vanilla defaults for rules exposed through the constants registry.  A
 -- value has to exist before a mod can patch it; each one matches the
@@ -1507,7 +1518,10 @@ function Data:seedDefaults()
               slot.moves = (#real > 0) and real or nil
             end
             if slot.dvs == nil and slot.ivScale ~= nil then
-              local iv = math.floor((tonumber(slot.ivScale) or 0) * 31 / 255)
+              -- ONE BYTE: a cache that read it as a u16 carries the gender /
+              -- ability override above it (370 of HeartGold's 1,776 party
+              -- members), so only the low byte is the scale
+              local iv = math.floor(((tonumber(slot.ivScale) or 0) % 256) * 31 / 255)
               slot.dvs = { hp = iv, attack = iv, defense = iv,
                            speed = iv, spatk = iv, spdef = iv,
                            -- the Gen 1/2 formula reads one `special`; harmless
@@ -2183,6 +2197,15 @@ function Data:applyMapEditorOverlay(why)
 end
 
 function Data:load()
+  -- THE KEYS THIS TABLE HAD BEFORE ANY GAME WAS LOADED INTO IT, recorded once.
+  -- `unloadGenerated` strips everything else, so the next game starts from
+  -- them. See the comment there for why `_pristineKeys` could not do this.
+  if not rawget(self, "_bootKeys") then
+    local keys = {}
+    for key in pairs(self) do keys[key] = true end
+    keys._bootKeys = true
+    self._bootKeys = keys
+  end
   local dir = os.getenv("POKEPORT_DATA_DIR")
   local required, isGen3Cache, isGen4Cache = requiredModules(dir)
   self.isGen3Cache = isGen3Cache
@@ -2489,6 +2512,23 @@ end
 --     those modules to a subsequent Play (see CacheFs.unmountVersion, which
 --     clears the matching read-path overlay).
 function Data:unloadGenerated()
+  -- THE LAST GAME'S DATA, ALL OF IT. `_pristineKeys` is taken at the END of a
+  -- load, so it holds that game's own modules and only a mod's additions were
+  -- ever stripped here. Data:load assigns what the NEXT game has and clears the
+  -- shared optional list, but a Gen 4 / Gen 5 game's own modules
+  -- (gen4_hgss_menu_art, gen4_main_menu_art, gen4_start_menu_art, ...) are read
+  -- in a branch a Gen 2 or Gen 3 load never enters -- so after exiting
+  -- HeartGold to the launcher, Crystal booted with HeartGold's menu art on its
+  -- table, and every screen that asks "is there Gen 4 art here?" drew the wrong
+  -- game's: "i loaded crystal and i see emeralds main menu", "gen2 is loading
+  -- the start menu for gen4". tools/version_switch_check reproduces it. Back to
+  -- the keys the table had before its first load.
+  local boot = rawget(self, "_bootKeys")
+  if boot then
+    for key in pairs(self) do
+      if not boot[key] then self[key] = nil end
+    end
+  end
   local pristine = self._pristineKeys
   if pristine then
     for key in pairs(self) do
@@ -2502,8 +2542,14 @@ function Data:unloadGenerated()
   -- and on every version switch.  A module left in package.loaded is the
   -- other half of that bug: the next Play would be served the PREVIOUS game's
   -- tables, which is exactly what this function exists to prevent.
+  -- ...AND THE GEN 4 / GEN 5 ONES, MARKER INCLUDED. requiredModules decides
+  -- the generation by whether `gen4_map_headers` loads, through `require` --
+  -- so with Platinum's (or HeartGold's, or Black's) still in package.loaded a
+  -- Gen 2 game picked next was read as a Gen 4 cache and refused to boot for
+  -- want of map_layouts. Reported from play on Prism after a Gen 4 session.
+  local extra = { "gen4_map_headers", "gen5_version", "gen4_version" }
   for _, list in ipairs({ SHARED_MODULES, CLASSIC_MODULES, GEN3_MODULES,
-                          OPTIONAL }) do
+                          GEN4_MODULES, GEN4_PREFIXED, OPTIONAL, extra }) do
     for _, name in ipairs(list) do
       package.loaded["data.generated." .. name] = nil
     end

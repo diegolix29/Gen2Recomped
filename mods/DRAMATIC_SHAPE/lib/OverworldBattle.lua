@@ -2312,8 +2312,25 @@ end
 -- ------- engine seams
 --
 -- Four wraps, each idempotent so a hot reload cannot stack them.
+--
+-- ...and each REPLACED by a later load in the same process (a game picked
+-- from the launcher after EXIT GAME): see lib/Rewrap.lua. The flags alone
+-- left the first load's wrappers in charge, which is every later game's 3D
+-- battle drawing as the plain white screen.
+local installSeams
 
 function OverworldBattle.install()
+  V.require("Rewrap").install({
+    { require("src.world.OverworldController"), "dramaticShapeBattleHook",
+      { "pushBattle" } },
+    { require("src.battle.BattleState"), "dramaticShapeBattleHook",
+      { "resolveBattleScale", "picImage", "backPlacement", "frontPlacement",
+        "draw", "drawPicsLayer", "drawTextArea", "drawAnimLayer",
+        "drawZonePass", "drawHUDs" } },
+  }, installSeams)
+end
+
+installSeams = function()
   local OverworldState = require("src.world.OverworldController")
   if not OverworldState.dramaticShapeBattleHook then
     local inner = OverworldState.pushBattle

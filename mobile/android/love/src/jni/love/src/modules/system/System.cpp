@@ -280,6 +280,26 @@ bool System::mkdirs(const char *path) const
 #endif
 }
 
+std::string System::httpRequest(const char *json) const
+{
+#ifdef LOVE_ANDROID
+	return love::android::httpRequest(json);
+#else
+	LOVE_UNUSED(json);
+	return std::string();
+#endif
+}
+
+bool System::walkerNotify(const char *json) const
+{
+#ifdef LOVE_ANDROID
+	return love::android::walkerNotify(json);
+#else
+	LOVE_UNUSED(json);
+	return false;
+#endif
+}
+
 bool System::syncHealthSteps() const
 {
 #ifdef LOVE_ANDROID

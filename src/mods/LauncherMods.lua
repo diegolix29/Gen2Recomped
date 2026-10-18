@@ -907,6 +907,7 @@ function LauncherMods.adoptStrays() return scanStrays(true) end
 -- file, and a failed copy rolls its partial tree back.  A dropped file outside
 -- the save dir is staged into a save-dir temp first, because
 -- love.filesystem.mount only reaches a save-directory-relative path.
+-- Repeated imports receive numbered ids (<id>-1, <id>-2, ...).
 -- opts.replace = true uninstalls an existing same-id mod first (updates /
 -- rollbacks).  opts.expectId, when set, refuses a zip whose manifest id differs.
 -- Returns true, id, installedVersion  |  nil, errString.  The version is the
@@ -955,7 +956,7 @@ end
 -- ALREADY-INSTALLED IS NOT A FAILURE HERE.  A mass import is nearly always
 -- "give me everything in this folder", and half of it being present already is
 -- the normal case rather than a mistake, so those are counted separately and
--- reported as skipped.  `opts.replace` turns them into reinstalls for a caller
+-- retained as numbered copies. `opts.replace` turns them into reinstalls for a caller
 -- that means it.
 --
 -- Returns { installed = {names}, skipped = {names}, failed = {{name, err}} }.
@@ -1128,35 +1129,50 @@ function LauncherMods._installZipInner(source, opts)
       :format(manifest.id, opts.expectId)
   end
 
-  -- ...AND IT REPLACES THE COPY THAT IS ACTUALLY THERE.
-  --
-  -- Same mismatch uninstall had (see folderFor): the id and the folder are two
-  -- names, and asking for "mods/<id>" misses a mod whose folder is called
-  -- something else.  Installing over one then reported it as NOT already
-  -- installed and copied a second tree beside it -- two folders declaring one
-  -- id, which discover() resolves by taking whichever it reaches first and the
-  -- loader reports as a duplicate.  An update would have done worse: it would
-  -- have removed a folder that was not there and left the old version loading.
-  -- ...and "already installed" means a tree that DECLARES THIS ID, not a
-  -- folder that happens to share its name.  See folderFor: on Windows
-  -- `mods/Dramatic_shape` and `mods/DRAMATIC_SHAPE` are one directory, so an
-  -- unrelated mod was being told it was already here and could not be
-  -- installed at all.  A name that is taken by somebody else simply gets a
-  -- different one (freeInstallPath).
+  -- Ordinary imports keep independent copies. Both the directory AND the
+  -- manifest id must be unique: changing only a folder leaves Loader ignoring
+  -- it as a duplicate. Explicit updates still replace their selected copy.
+  local sourceId = manifest.id
+  local cloneNumber
+  if opts.installId then
+    if not opts.replace or type(opts.installId) ~= "string"
+        or not opts.installId:match("^[%w_%-]+$") then
+      cleanup(); return nil, "invalid mod update target"
+    end
+    local target = LauncherMods.folderFor(opts.installId)
+    local targetRaw = target and fs.read(target .. "/manifest.json")
+    local previous = targetRaw and decodeManifest(targetRaw, target)
+    if not previous or previous.raw.install_source_id ~= sourceId then
+      cleanup(); return nil, "mod update does not match the installed copy"
+    end
+    manifest.id = opts.installId
+    cloneNumber = manifest.id:match("%-(%d+)$")
+  elseif not opts.replace and LauncherMods.folderFor(manifest.id) then
+    for n = 1, 9999 do
+      local candidate = sourceId .. "-" .. n
+      if not fs.getInfo("mods/" .. candidate) and not LauncherMods.folderFor(candidate) then
+        manifest.id, cloneNumber = candidate, n
+        break
+      end
+    end
+    if not cloneNumber then cleanup(); return nil, "no free mod copy id" end
+  end
+  local installedRaw
+  if cloneNumber then
+    local Json = require("src.link.Json")
+    local data = Json.decode(raw)
+    data.id = manifest.id
+    data.install_source_id = manifest.raw.install_source_id or sourceId
+    data.name = (data.name or sourceId) .. " (copy " .. cloneNumber .. ")"
+    installedRaw = Json.encode(data)
+  end
   local dest = LauncherMods.folderFor(manifest.id)
   if not dest then
     local free, freeErr = freeInstallPath(fs, manifest.id)
-    if not free then
-      cleanup()
-      return nil, freeErr
-    end
+    if not free then cleanup(); return nil, freeErr end
     dest = free
   end
   if fs.getInfo(dest) then
-    if not opts.replace then
-      cleanup()
-      return nil, "a mod named '" .. manifest.id .. "' is already installed"
-    end
     -- ...AND AN UPDATE MUST NOT SHADOW A WORKING TREE.
     --
     -- The same folder the delete refuses to remove (see checkoutAt): if the
@@ -1194,6 +1210,9 @@ function LauncherMods._installZipInner(source, opts)
   local savedPrefix = CacheFs.prefix
   CacheFs.prefix = ""
   local copied, copyErr = copyTree(root, dest)
+  if copied and installedRaw then
+    copied, copyErr = CacheFs.write(dest .. "/manifest.json", installedRaw)
+  end
   if not copied then removeTree(dest) end
   CacheFs.prefix = savedPrefix
   if not copied then
@@ -1220,6 +1239,14 @@ function LauncherMods._installZipInner(source, opts)
   end
 
   cleanup()
+  if cloneNumber and not opts.replace then
+    -- A second renderer must not become active just because it was imported.
+    -- Each copy has its own normal launcher toggle from here on.
+    local options = SaveData.loadOptions() or {}
+    options.mods = options.mods or {}
+    options.mods[manifest.id] = false
+    SaveData.saveOptions(options)
+  end
   return true, manifest.id, manifest.version
 end
 
@@ -1240,8 +1267,13 @@ function LauncherMods.installFromRelease(modId, release)
     local localPath, dlErr = ModUpdate.downloadZip(release.zip.url, tmpName,
       release.zip.size)
     if not localPath then return nil, dlErr end
+    local folder = LauncherMods.folderFor(modId)
+    local installedRaw = folder and love.filesystem.read(folder .. "/manifest.json")
+    local current = installedRaw and decodeManifest(installedRaw, folder)
+    local sourceId = current and current.raw.install_source_id
     local installed, res, version = LauncherMods.installZip(localPath, {
-      replace = true, expectId = modId,
+      replace = true, expectId = sourceId or modId,
+      installId = sourceId and modId or nil,
     })
     pcall(love.filesystem.remove, localPath)
     if not installed then return nil, res end

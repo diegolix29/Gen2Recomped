@@ -594,7 +594,16 @@ end
 -- and nothing else. Every gate ABOVE the call (scripted moves, trainer
 -- engagement, transitions, anything on the stack) still applies to the
 -- free walk, because the wrap sits below them all.
+-- (Rewrap: replaced by a later load in the same process, see lib/Rewrap.lua)
+local installSeams
+
 function FreeMove.install()
+  V.require("Rewrap").install({
+    { require("src.world.OverworldController"), "dramaticShapeFreeMoveHook", { "handleInput" } },
+  }, installSeams)
+end
+
+installSeams = function()
   local OverworldState = require("src.world.OverworldController")
   if OverworldState.dramaticShapeFreeMoveHook then return end
   local inner = OverworldState.handleInput
