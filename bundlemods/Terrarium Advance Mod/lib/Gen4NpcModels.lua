@@ -37,20 +37,30 @@
 -- WHO GETS ONE
 --
 --   Any entity whose sheet carries the importer's `facings` for all four sides
---   (every Platinum walker: people, and the Pokemon walkers like Pikachu).
---   Not the player (PlayerModel owns that; `includePlayer` opts in), not
---   followers or wild roamers (they have their own paths), not anything with a
---   fixed frame, not props: a ball, a boulder or a berry tree has no sides.
+--   (every Platinum walker: people, and the Pokemon walkers like Pikachu), and
+--   the PLAYER (`includePlayer`, on by default) in whatever sheet it is wearing:
+--   walking, running (a `fullCycle` sheet), bike, surf. PlayerModel still wins
+--   when a character model is loaded, and the player stays a flat sprite in
+--   first person and while free-flying. Not followers or wild roamers (they have
+--   their own paths), not anything with a fixed frame or a recoloured sprite,
+--   not props: a ball, a boulder or a berry tree has no sides.
+--
+--   THE PLAYER'S POSE HAS SIDE EFFECTS. Player:pose() advances the surf bob,
+--   the spinner-tile spin and the acro hop clocks every time it is called, so
+--   it is called at most once per frame, and only when a body is really drawn
+--   (which also replaces the engine's skipped 2D draw). Which sheet is active is
+--   PREDICTED from the player's flags (the same order pose() uses) so that
+--   `wants` and a refused sheet never call it.
 
 local V = ...
 
 local Npc = {
   MAX_CELL = 64,        -- px: bigger cells are not people
   PAD = 4,              -- px of colour grown past each silhouette
-  MAX_BODIES = 120,     -- cached bodies before the least recently used go
+  MAX_BODIES = 96,      -- cached bodies before the least recently used go (~330 KB each)
   TURN_RATE = 14,       -- rad/s a body turns toward its facing
   STEP_SECONDS = 0.004, -- slice of one build step
-  FILTER = "nearest",   -- "nearest" keeps the pixel art crisp, "linear" softens it
+  FILTER = "linear",    -- the atlas is baked smooth at 4x, so linear; "nearest" = hard texels
   includePlayer = true,
   solid = {},           -- SpriteSolid option overrides, e.g. { ss = 2 }
   stats = { builds = 0, failed = 0, drawn = 0, sheets = 0 },
@@ -91,10 +101,14 @@ function Npc.sync(value) if Npc.setting and Npc.setting.sync then Npc.setting:sy
 
 -- ------------------------------------------------------------- records --
 
-local recs = setmetatable({}, { __mode = "k" })   -- sprite def -> record
+-- sprite def -> record. STRONG on purpose: it used to be weak-keyed, and when the
+-- collector dropped a def its bodies vanished from here but not from the body
+-- count, which then stayed over the cap forever and evicted every body the
+-- moment it finished (NPCs never appeared again). Defs live as long as the game
+-- data does, and the LRU cap below is what bounds memory.
+local recs = {}
 local queue = {}                                   -- pending sheets and bodies
 local frameNo = 0
-local bodyCount = 0
 local reported = {}
 
 local DIRS = { "down", "up", "left", "right" }
@@ -103,7 +117,7 @@ local DIRS = { "down", "up", "left", "right" }
 local function candidate(sprite)
   local def = sprite and sprite.def
   if type(def) ~= "table" or type(def.facings) ~= "table" then return false end
-  if def.fullCycle or def.big or sprite.big or sprite.mirrorHalf then return false end
+  if def.big or sprite.big or sprite.mirrorHalf then return false end
   local cw, ch = tonumber(sprite.tileW), tonumber(sprite.tileH)
   if not (cw and ch) or cw < 8 or ch < 8 or cw > Npc.MAX_CELL or ch > Npc.MAX_CELL then
     return false
@@ -127,25 +141,44 @@ local function recOf(sprite)
   return rec
 end
 
--- Which of a sheet's three poses the sprite shows. Mirrors
--- SpriteRenderer.facingFrames: stand unless stepping, and the second step
--- only when the entity's step flip is set.
-local function slotOf(def, phase, flip)
-  local cyc = def.facings.down
-  if def.walker and phase == 1 then
-    if flip then return cyc[3] and 3 or (cyc[2] and 2 or 1) end
-    return cyc[2] and 2 or 1
-  end
-  return 1
-end
-
-local function framesFor(def, slot)
+-- The frame each side shows, exactly as SpriteRenderer.facingFrames picks it:
+-- a full-cycle sheet (the run cycle) indexes each side's cycle by phase; any
+-- other walker stands unless stepping, and takes the second step only when the
+-- entity's step flip is set. One entry per side, so a body is keyed by the four.
+local function framesFor(def, phase, flip)
   local fr = {}
   for _, d in ipairs(DIRS) do
     local c = def.facings[d]
-    fr[d] = c[slot] or c[2] or c[1]
+    if def.fullCycle then
+      fr[d] = c[(math.floor(tonumber(phase) or 0) % #c) + 1]
+    elseif def.walker and phase == 1 then
+      if flip then fr[d] = c[3] or c[2] or c[1] else fr[d] = c[2] or c[1] end
+    else
+      fr[d] = c[1]
+    end
   end
   return fr
+end
+
+-- Which sheet the entity is showing, WITHOUT calling pose() (see header). The
+-- order is Player:pose()'s; an entity with none of those fields (an NPC) just
+-- has its sprite.
+local function predictSprite(e)
+  if not (e.bikeSprite or e.surfSprite or e.runSprite or e.fieldMoveSprite
+          or e.underwaterSprite) then
+    return e.sprite
+  end
+  if e.fieldMove and e.fieldMoveSprite then return e.fieldMoveSprite end
+  if e.fishing and e.sprite then return e.sprite end
+  if e.underwaterSprite and type(e.isUnderwater) == "function" then
+    local ok, under = pcall(e.isUnderwater, e)
+    if ok and under then return e.underwaterSprite end
+  end
+  if e.surfing and e.surfingPikachu and e.surfPikachuSprite then return e.surfPikachuSprite end
+  if e.surfing and e.surfSprite then return e.surfSprite end
+  if e.onBike and e.bikeSprite then return e.bikeSprite end
+  if e.running and e.runSprite then return e.runSprite end
+  return e.sprite
 end
 
 -- --------------------------------------------------------- sheet / pad --
@@ -219,24 +252,31 @@ local function release(body)
   body.mesh, body.image = nil, nil
 end
 
--- drop the least recently used finished bodies past the cap
+-- Drop the least recently used finished bodies past the cap. The count is taken
+-- by looking, never kept in a counter that could drift. A body drawn this frame
+-- or the last is never dropped: if everything is in use the cache simply runs
+-- over the cap rather than thrash (build, evict, rebuild...).
 local function evict()
-  if bodyCount <= Npc.MAX_BODIES then return end
   local pending = {}
   for _, it in ipairs(queue) do if it.body then pending[it.body] = true end end
-  local list = {}
+  local list, live = {}, 0
   for _, rec in pairs(recs) do
     for key, body in pairs(rec.bodies) do
-      if body.mesh and not pending[body] then list[#list + 1] = { rec, key, body } end
+      if body.mesh then
+        live = live + 1
+        if not pending[body] and body.used < frameNo - 1 then
+          list[#list + 1] = { rec, key, body }
+        end
+      end
     end
   end
+  if live <= Npc.MAX_BODIES then return end
   table.sort(list, function(a, b) return a[3].used < b[3].used end)
   local i = 1
-  while bodyCount > Npc.MAX_BODIES and list[i] do
-    local rec, key, body = list[i][1], list[i][2], list[i][3]
-    release(body)
-    rec.bodies[key] = nil
-    bodyCount = bodyCount - 1
+  while live > Npc.MAX_BODIES and list[i] do
+    release(list[i][3])
+    list[i][1].bodies[list[i][2]] = nil
+    live = live - 1
     i = i + 1
   end
 end
@@ -272,7 +312,6 @@ local function finish(item)
   end
   body.mesh, body.image = mesh, image
   body.height, body.tris = r.height, r.triangleCount
-  bodyCount = bodyCount + 1
   Npc.stats.builds = Npc.stats.builds + 1
   evict()
 end
@@ -310,7 +349,7 @@ end
 
 -- ----------------------------------------------------------------- API --
 
--- Cheap enough to ask for every entity every frame.
+-- Cheap enough to ask for every entity every frame, and never calls pose().
 function Npc.wants(e, state)
   if not Npc.enabled() then return false end
   if type(e) ~= "table" or e.hidden or e.fixedFrame then return false end
@@ -318,7 +357,14 @@ function Npc.wants(e, state)
      or e.roamer or e.overworldWildSpawn or e.species then
     return false
   end
-  local rec = recOf(e.sprite)
+  if state and e == state.player then
+    if not Npc.includePlayer then return false end
+    -- free flying carries the player's own mount model at altitude
+    if (tonumber(e.freeFlyAlt) or 0) > 0 then return false end
+  end
+  local sprite = predictSprite(e)
+  if sprite and sprite.palColors then return false end   -- recoloured: keep the card
+  local rec = recOf(sprite)
   return rec ~= nil and rec.ok == true and rec.state ~= "failed"
 end
 
@@ -331,9 +377,14 @@ end
 
 local turns = setmetatable({}, { __mode = "k" })   -- entity -> { yaw, t }
 
-local function yawFor(e, facing)
+local function yawFor(e, facing, isPlayer)
   local Cam = lazy("Gen4ActorCam")
   local target = Cam and Cam.worldYaw(facing) or 0
+  -- in third person the walk is camera-relative and the body has a real heading
+  -- (the same one PlayerModel turns by); the four compass facings are the grid's
+  if isPlayer and Cam and Cam.freeRoam and Cam.freeRoam() and Cam.modelYaw then
+    target = Cam.modelYaw() or target
+  end
   local now = clock()
   local st = turns[e]
   if not st or now - st.t > 0.5 then
@@ -351,8 +402,10 @@ end
 -- was actually drawn; false leaves the flat sprite to draw as before.
 function Npc.drawPose(p, ground)
   local e = p and p.entity
-  if not Npc.wants(e, nil) then return false end
-  local rec = recOf(e.sprite)
+  if not e then return false end
+  if not Npc.wants(e, p.isPlayer and { player = e } or nil) then return false end
+  local predicted = predictSprite(e)
+  local rec = recOf(predicted)
   if not (rec and rec.ok) then return false end
   if rec.state == nil then
     rec.state = "loading"
@@ -361,13 +414,27 @@ function Npc.drawPose(p, ground)
   end
   if rec.state ~= "ready" then return false end
 
-  local phase, flip = p.phase, p.flip
+  -- Everything the 2D draw would have read from pose(): the sheet, the walk
+  -- phase, and any visual offset (hop / spin height, stairs and ship slides).
+  -- It is the ONE call this frame (see header).
+  local sprite, phase, flip = predicted, p.phase, p.flip
+  local offX, offZ, lift = 0, 0, 0
   if type(e.pose) == "function" then
-    local ok, _, _, _, _, ph, fl = pcall(e.pose, e)
-    if ok then phase, flip = ph, fl end
+    local ok, s1, x1, y1, _, ph, fl = pcall(e.pose, e)
+    if ok and s1 then
+      sprite, phase, flip = s1, ph, fl
+      if x1 and e.px then offX = x1 - e.px end
+      if y1 and e.py then
+        local dy = y1 - e.py
+        if e.stairExit then offZ = dy elseif dy < 0 then lift = -dy end
+      end
+    end
   end
-  local slot = slotOf(rec.def, phase, flip)
-  local frames = framesFor(rec.def, slot)
+  if sprite ~= predicted then               -- the prediction was wrong: check again
+    rec = recOf(sprite)
+    if not (rec and rec.ok and rec.state == "ready") or sprite.palColors then return false end
+  end
+  local frames = framesFor(rec.def, phase, flip)
   local key = frames.down .. "," .. frames.up .. "," .. frames.left .. "," .. frames.right
   local body = rec.bodies[key]
   if not body then
@@ -379,8 +446,8 @@ function Npc.drawPose(p, ground)
 
   local Voxel3D, Mat4 = lazy("Voxel3D"), lazy("Mat4")
   if not (Voxel3D and Mat4) then return false end
-  local yaw = yawFor(e, p.facing)
-  local m = Mat4.translate((p.px or 0) + 8, p.gh or 0, (p.py or 0) + 8)
+  local yaw = yawFor(e, p.facing, p.isPlayer)
+  local m = Mat4.translate((p.px or 0) + 8 + offX, (p.gh or 0) + lift, (p.py or 0) + 8 + offZ)
   if yaw ~= 0 then m = Mat4.mul(m, Mat4.rotateY(yaw)) end
   local ok = pcall(Voxel3D.draw, body.mesh, body.image, m)
   if ok then Npc.stats.drawn = Npc.stats.drawn + 1 end
@@ -395,7 +462,6 @@ function Npc.invalidate()
   end
   for k in pairs(recs) do recs[k] = nil end
   for i = #queue, 1, -1 do queue[i] = nil end
-  bodyCount = 0
   reported = {}
 end
 
@@ -408,7 +474,7 @@ function Npc.install()
 end
 
 -- test / diagnostics
-Npc._recOf, Npc._slotOf, Npc._queue = recOf, slotOf, queue
+Npc._recOf, Npc._framesFor, Npc._predictSprite, Npc._queue = recOf, framesFor, predictSprite, queue
 function Npc.pending() return #queue end
 
 return Npc

@@ -546,7 +546,7 @@ end
 function Bridge.invalidateAll()
   local S = sun()
   if S then pcall(S.invalidate) end
-  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass", "Gen4NpcModels", "Gen4Glass", "Gen4Lamps", "Gen4Light", "Gen4Haze","Gen4Glow" }) do
+  for _, name in ipairs({ "Gen4Sand", "Gen4Lawn", "Gen4Bump", "Gen4Rocks", "Gen4Fence", "Gen4Flowers", "Gen4Trees", "Gen4Water", "Gen4Grass", "Gen4NpcModels", "Gen4Glass", "Gen4Lamps", "Gen4Light", "Gen4Haze", "Gen4Glow", "Gen4Tint" }) do
     local ok, mod = pcall(V.require, name)
     if ok and type(mod) == "table" and type(mod.invalidate) == "function" then
       local okI, err = pcall(mod.invalidate)
