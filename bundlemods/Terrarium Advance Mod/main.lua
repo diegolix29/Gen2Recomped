@@ -243,9 +243,10 @@ if Gen4Bridge.isGen4() and Gen4Bridge.install() then
   pcall(function() V.require("Gen4Spawn").install() end)
   -- Gen 4 World Host: draws roamers, followers, and actors in native 3D world
   pcall(function() Gen4WorldHost.install() end)
-  -- NPC sprites -> smooth 3D bodies (Gen4NpcModels), drawn by Gen4WorldHost
-  pcall(function() Gen4NpcModels.install() end)
 end
+-- NPC sprites -> smooth 3D bodies (Gen4NpcModels). Gen 4: drawn by
+-- Gen4WorldHost. Gen 1-3: drawn by VoxelScene's character pass.
+pcall(function() Gen4NpcModels.install() end)
 -- Battle UI hiding system for all generations
 local BattleBoxXY = V.require("BattleBoxXY")
 
@@ -973,14 +974,16 @@ local SETTINGS = {
     when = function() return Gen4Bridge.isGen4() end,
     full = true, cat = "perf" },
   { Gen4NpcModels.setting,
-    "Platinum's people as smooth 3D bodies. Each NPC is rebuilt from the four "
-    .. "real sides of its own sprite sheet (south, north, west, east) into a "
-    .. "closed, rounded mesh that wears that art, turns to face where it looks "
-    .. "and walks with the sheet's own step frames. Bodies are built a few "
-    .. "milliseconds a frame; until one is ready the flat sprite keeps drawing. "
-    .. "Needs the third / first person or a CAM TILT camera (the default "
-    .. "cartridge camera stays flat). OFF restores the flat cards.",
-    when = function() return Gen4Bridge.isGen4() end,
+    "People as smooth 3D bodies, in every generation. Each NPC is rebuilt "
+    .. "from the sides of its own sprite sheet (Platinum: south, north, west, "
+    .. "east; Gen 1-3: front, back and profile, with the right side mirrored "
+    .. "from the left) into a closed, rounded mesh that wears that art, turns "
+    .. "to face where it looks and walks with the sheet's own step frames. "
+    .. "Bodies are built a few milliseconds a frame; until one is ready the "
+    .. "flat sprite keeps drawing. On Gen 1-3 it shows in the 3D diorama "
+    .. "(VOXEL on); on Platinum it needs the third / first person or a CAM "
+    .. "TILT camera (the default cartridge camera stays flat). OFF restores "
+    .. "the flat cards.",
     full = true, cat = "world" },
   { Grass3D.simpleMeshes,
     "Simplified meshes for roads, ground and decorative grass. ON uses "

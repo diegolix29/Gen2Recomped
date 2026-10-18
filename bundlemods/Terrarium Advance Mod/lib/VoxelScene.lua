@@ -52,6 +52,13 @@ local DrawDistance = V.require("DrawDistance")
 local PlayerModel = V.require("PlayerModel")
 local StadiumFollower = V.require("StadiumFollower")
 local StadiumWilds = V.require("StadiumWilds")
+-- NPCs as smooth 3D bodies built from their own sprite sheet (the Gen 4 NPC
+-- feature, now serving the Gen 1-3 diorama too). Optional: without it every
+-- character stays the flat card it always was.
+local NpcModels = (function()
+  local ok, m = pcall(V.require, "Gen4NpcModels")
+  return (ok and type(m) == "table") and m or nil
+end)()
 local PaletteFX = require("src.render.PaletteFX")
 local Map = require("src.world.Map")
 
@@ -1039,6 +1046,51 @@ local function billboardPull()
   return VoxelScene.pull(math.max(leanAngle(), 0.05))
 end
 
+-- ------- NPCs as bodies (lib/Gen4NpcModels.lua)
+--
+-- The image a card of this pose is textured with: the live sheet, or the SGB
+-- palette bake of it. A body is built from (and so coloured like) exactly
+-- this, which is why the card's own texture rule is repeated here instead of
+-- asking the body for its own.
+local function npcTexture(p)
+  local def = p.sprite.def
+  local tex = cardTexture(p.sprite, def)
+  if p.colors and not def.trueColor and not def.hdImage then
+    tex = TerrainAtlas.forSprite(def.image, p.colors) or tex
+  end
+  return tex
+end
+
+-- Draw this pose as a body instead of the flat card. True only when a body
+-- was drawn; every other answer -- the setting off, a prop, a Pokemon with
+-- its own overlay, a body still building, anything throwing -- leaves the
+-- card to draw, so nobody ever vanishes. Upright and unleaned: a body needs
+-- no tipping back to read face-on, it is the thing the lean was faking.
+-- Named functions through pcall, not a closure per card per frame.
+local function npcBodyDraw(p)
+  if not NpcModels.classicWants(p) then return false end
+  return NpcModels.drawClassic(p, npcTexture(p), billboardPull()) == true
+end
+
+local function tryNpcBody(p, hdDef)
+  if not NpcModels or hdDef or p.hdDef then return false end
+  local ok, drew = pcall(npcBodyDraw, p)
+  return ok and drew == true
+end
+
+-- The same body, into the sun's map. Asked before the card is, so a body that
+-- is drawn throws its own shadow and a card that is drawn throws the card's.
+local function npcBodyCast(p)
+  if not NpcModels.classicWants(p) then return false end
+  return NpcModels.castClassic(p, npcTexture(p), ShadowMap) == true
+end
+
+local function castNpcBody(p, hdDef)
+  if not NpcModels or hdDef or p.hdDef then return false end
+  local ok, drew = pcall(npcBodyCast, p)
+  return ok and drew == true
+end
+
 -- An authored FIGURE's card -- a person the tileset draws INTO a piece of
 -- furniture, cut out by the profile's mask (Structures.buildFigures). It is
 -- a sprite, so it gets the sprite treatment: the mesh arrives in its own
@@ -1307,7 +1359,7 @@ local function drawCast(state, posed, me, atlasFor, yaw)
           drawEntity(p.sprite, p.px, p.py, facing, p.phase, p.flip, p.gh,
                      p.colors, p.lift, p.waterline, p.isPlayer, yaw, hdDef)
         end
-      else
+      elseif not tryNpcBody(p, hdDef) then
         drawEntity(p.sprite, p.px, p.py, facing, p.phase, p.flip, p.gh,
                    p.colors, p.lift, p.waterline, p.isPlayer, yaw, hdDef)
       end
@@ -1787,6 +1839,9 @@ local function shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh, box,
   -- a staged fight's pics move every frame the animation does, and the sun
   -- has to follow them (VR frames only)
   put(battleToken or false)
+  -- a body finishing (or the NPC 3D row flipping) changes what casts: the
+  -- shadow of a person who has just become a body has to be redrawn from it
+  put(NpcModels and NpcModels.revision() or 0)
   put(terrain)
   for i = 1, #nbMesh do put(nbMesh[i]) end
   for _, p in ipairs(posed) do
@@ -1891,20 +1946,24 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
   for _, p in ipairs(posed) do
     if castsInto(box, p) then
       sunCards = sunCards + 1
-      local def = bindHdOverworld(p, viewFacing(p), state) or p.hdDef or p.sprite.def
-      -- viewFacing, exactly as the camera draw picks it (see viewFacing for
-      -- why the two passes must agree): in first person the sun's card
-      -- swaps frame as the eye circles, which costs a redraw the signature
-      -- already charges for (FirstPerson.signature) and keeps a card from
-      -- fringing against a mirror-flipped record of itself
-      local frame, mirror = frameFor(def, viewFacing(p), p.phase, p.flip, yaw)
-      local mesh = SpriteBillboards.shadowQuad(def, frame, p.waterline or 0)
-      if mesh then
-        local texWidth, texHeight, worldWidth, worldHeight = SpriteBillboards.getSpriteDimensions(def, frame)
-        ShadowMap.draw(mesh, cardTexture(p.sprite, def),
-                       ShadowMap.snug(
-                         Voxel3D.casterMatrix(p.px, p.py, p.gh + (p.lift or 0),
-                                              mirror, worldWidth, worldHeight)))
+      local hdDef = bindHdOverworld(p, viewFacing(p), state)
+      -- a person drawn as a body casts the body's own shadow, not the card's
+      if not castNpcBody(p, hdDef) then
+        local def = hdDef or p.hdDef or p.sprite.def
+        -- viewFacing, exactly as the camera draw picks it (see viewFacing for
+        -- why the two passes must agree): in first person the sun's card
+        -- swaps frame as the eye circles, which costs a redraw the signature
+        -- already charges for (FirstPerson.signature) and keeps a card from
+        -- fringing against a mirror-flipped record of itself
+        local frame, mirror = frameFor(def, viewFacing(p), p.phase, p.flip, yaw)
+        local mesh = SpriteBillboards.shadowQuad(def, frame, p.waterline or 0)
+        if mesh then
+          local texWidth, texHeight, worldWidth, worldHeight = SpriteBillboards.getSpriteDimensions(def, frame)
+          ShadowMap.draw(mesh, cardTexture(p.sprite, def),
+                         ShadowMap.snug(
+                           Voxel3D.casterMatrix(p.px, p.py, p.gh + (p.lift or 0),
+                                                mirror, worldWidth, worldHeight)))
+        end
       end
     else
       sunSkipped = sunSkipped + 1
@@ -2099,6 +2158,11 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   local _p = phase('poses (all of it: pose, sprite, ground)')
   local posed, me = posesOf(state, spriteColors)
   if _p then _p() end
+
+  -- NPC bodies are built here, a few ms a frame, ahead of every canvas the
+  -- frame binds (the sheet read-back of a palette-baked sprite needs none to
+  -- be bound). Never inside a draw: a body still building draws as its card.
+  if NpcModels and NpcModels.pump then pcall(NpcModels.pump) end
 
   -- The first-person rig, built (or blended) for this frame and handed to
   -- Voxel3D BEFORE either pass runs: the sun's box is fitted around this

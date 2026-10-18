@@ -20,6 +20,29 @@
 --   Gen4WorldHost.overlay3D       calls `Npc.pump()` once a frame: that is the
 --                                 only place meshes are built.
 --
+-- GEN 1-3 (the voxel diorama) USE THE SAME BODY BUILDER
+--
+--   Their world is VoxelScene's, and their sheets are the classic six-frame
+--   strip (down, up, left standing; the same three mid-step) with NO `facings`:
+--   "right" is the left picture mirrored. The four sides are ASSEMBLED from the
+--   strip, through the same STAND / WALK tables SpriteRenderer (and
+--   VoxelScene.frameFor) use: front = down, back = up, left = left, right =
+--   left mirrored. A down/up step the 2D game draws flipped is a body of its
+--   own, so the legs still swap.
+--
+--   VoxelScene.drawCast           asks `Npc.drawClassic(pose, tex, pull)`
+--   VoxelScene.castShadows        asks `Npc.castClassic(pose, tex, ShadowMap)`
+--   VoxelScene.render             calls `Npc.pump()` once a frame
+--
+--   `tex` is the image the card would be textured with. The body's colour is
+--   read from it: the plain sheet from the asset store when that is what it is,
+--   otherwise one read-back of the live (RED++ / SGB palette-baked) picture, so
+--   a body is never a different colour from the sprite it replaces. While a
+--   pose is still building the sheet's finished stand body stands in, so a
+--   walker never flickers back to a flat card. Props (one-frame sheets),
+--   followers, roamers, HD Pokemon cards and waterline-cut swimmers keep their
+--   cards.
+--
 -- WHAT IS BUILT, AND WHEN
 --
 --   One body per (sheet, pose): the stand frame and the two step frames, each
@@ -63,11 +86,16 @@ local Npc = {
   FILTER = "linear",    -- the atlas is baked smooth at 4x, so linear; "nearest" = hard texels
   includePlayer = true,
   solid = {},           -- SpriteSolid option overrides, e.g. { ss = 2 }
+  FRAME_SECONDS = 0.006,-- Gen 1-3: build time per frame (Gen 4 uses Gen4Budget)
+  -- Gen 1-3 art is 16 px: sample the field twice per pixel so a 10 px body is
+  -- not a blob. Cells bigger than SMALL_CELL use `solid`.
+  classicSolid = { ss = 2 },
+  SMALL_CELL = 24,
   stats = { builds = 0, failed = 0, drawn = 0, sheets = 0 },
 }
 
 Npc.KEY = "gen4Npc3d"
-Npc.LABEL = "G4 NPC 3D"
+Npc.LABEL = "NPC 3D"
 
 local okS, ModSetting = pcall(function() return V.require("ModSetting") end)
 if okS and type(ModSetting) == "table" and ModSetting.new then
@@ -107,9 +135,15 @@ function Npc.sync(value) if Npc.setting and Npc.setting.sync then Npc.setting:sy
 -- moment it finished (NPCs never appeared again). Defs live as long as the game
 -- data does, and the LRU cap below is what bounds memory.
 local recs = {}
+-- Gen 1-3: live sheet image -> record. Keyed by the IMAGE (not the def) so the
+-- same sheet under two palettes (neighbouring maps) is two records, never a
+-- thrash. Weak: a record's bodies are counted by looking (see evict), so a
+-- dropped one cannot leave the count over the cap.
+local crecs = setmetatable({}, { __mode = "k" })
 local queue = {}                                   -- pending sheets and bodies
 local frameNo = 0
 local reported = {}
+local revision = 0        -- bumps whenever what a body draws could have changed
 
 local DIRS = { "down", "up", "left", "right" }
 
@@ -135,7 +169,7 @@ local function recOf(sprite)
   local rec = recs[def]
   if rec == nil then
     local ok, cw, ch = candidate(sprite)
-    rec = { ok = ok, cw = cw, ch = ch, def = def, bodies = {}, state = nil }
+    rec = { kind = "facings", ok = ok, cw = cw, ch = ch, def = def, bodies = {}, state = nil }
     recs[def] = rec
   end
   return rec
@@ -181,6 +215,44 @@ local function predictSprite(e)
   return e.sprite
 end
 
+-- ------------------------------------------------------ Gen 1-3 frames --
+
+-- The engine's own tables when it has them, the classic strip otherwise.
+local STAND_FALLBACK = { down = 0, up = 1, left = 2, right = 2 }
+local WALK_FALLBACK = { down = 3, up = 4, left = 5, right = 5 }
+local srStand, srWalk
+
+local function strip()
+  if not srStand then
+    local ok, SR = pcall(require, "src.render.SpriteRenderer")
+    if ok and type(SR) == "table" and type(SR.STAND) == "table" and type(SR.WALK) == "table" then
+      srStand, srWalk = SR.STAND, SR.WALK
+    else
+      return STAND_FALLBACK, WALK_FALLBACK
+    end
+  end
+  return srStand, srWalk
+end
+
+-- The strip frames a pose shows, and whether the down/up pictures are
+-- mirrored: exactly VoxelScene.frameFor (the step frames only for a walker
+-- mid-step; the mirror whenever a step is flipped).
+local function classicFrames(def, frames, phase, flip)
+  local STAND, WALK = strip()
+  local walking = def.walker and phase == 1
+  local function pick(facing)
+    local i = walking and WALK[facing] or STAND[facing]
+    if type(i) ~= "number" or i < 0 or i >= frames then i = STAND[facing] end
+    if type(i) ~= "number" or i < 0 or i >= frames then i = 0 end
+    return i
+  end
+  return pick("down"), pick("up"), pick("left"), (phase == 1 and flip) and true or false
+end
+
+local function classicKey(d, u, l, m)
+  return d .. "," .. u .. "," .. l .. (m and "m" or "")
+end
+
 -- --------------------------------------------------------- sheet / pad --
 
 local function readRGBA(data)
@@ -202,6 +274,55 @@ local function readRGBA(data)
   return table.concat(out), w, h
 end
 
+-- The pixels of a live picture exactly as it is on the GPU: draw it 1:1 into a
+-- scratch canvas with the "replace" blend (a straight copy, alpha included) and
+-- read the canvas back. Graphics state is saved and restored around it; the
+-- caller is the start of a frame, with no scene canvas bound.
+local function readbackRGBA(img)
+  local g = love and love.graphics
+  if not (g and g.newCanvas and g.push and g.pop) then return nil, "no graphics" end
+  local w, h = img:getDimensions()
+  local okC, canvas = pcall(g.newCanvas, w, h, { dpiscale = 1 })
+  if not (okC and canvas) then okC, canvas = pcall(g.newCanvas, w, h) end
+  if not (okC and canvas) then return nil, "no scratch canvas" end
+  g.push("all")
+  local okD, err = pcall(function()
+    pcall(g.reset)
+    g.setCanvas(canvas)
+    g.clear(0, 0, 0, 0)
+    g.setShader()
+    g.setBlendMode("replace")
+    g.setColor(1, 1, 1, 1)
+    g.origin()
+    g.draw(img, 0, 0)
+  end)
+  g.pop()
+  if not okD then
+    pcall(canvas.release, canvas)
+    return nil, tostring(err)
+  end
+  local okI, data = pcall(canvas.newImageData, canvas)
+  pcall(canvas.release, canvas)
+  if not (okI and data) then return nil, "read-back failed" end
+  local rgba, rw, rh = readRGBA(data)
+  if rw ~= w or rh ~= h then return nil, ("read-back is %dx%d, picture is %dx%d"):format(rw, rh, w, h) end
+  return rgba, rw, rh
+end
+
+-- The pixels behind `tex`: the asset store's own copy when `tex` IS the plain
+-- sheet (no GPU work), a read-back of the live picture otherwise (a palette bake).
+local function imageRGBA(tex, def)
+  local okA, Assets = pcall(require, "src.render.Assets")
+  if okA and Assets and Assets.image and Assets.imageData and type(def.image) == "string" then
+    local okI, plain = pcall(Assets.image, def.image)
+    if okI and plain == tex then
+      local okD, data = pcall(Assets.imageData, def.image)
+      if okD and data then return readRGBA(data) end
+    end
+  end
+  return readbackRGBA(tex)
+end
+
 -- Read the sheet and keep two copies of its pixels: the raw one for the
 -- silhouettes, and a colour-padded one (colour grown a few px past every
 -- silhouette, inside its own cell) for the bodies to sample, because a body is
@@ -210,17 +331,26 @@ end
 local function loadSheet(rec)
   local Solid = lazy("SpriteSolid")
   if not Solid then return false, "SpriteSolid did not load" end
-  local okA, Assets = pcall(require, "src.render.Assets")
-  if not (okA and Assets and Assets.imageData) then return false, "no Assets.imageData" end
-  local okD, data = pcall(Assets.imageData, rec.def.image)
-  if not (okD and data) then return false, "could not read " .. tostring(rec.def.image) end
-  local rgba, w, h = readRGBA(data)
-  if w ~= rec.cw then return false, ("sheet is %d wide, cells are %d"):format(w, rec.cw) end
-  local need = 0
-  for _, d in ipairs(DIRS) do
-    for _, f in ipairs(rec.def.facings[d]) do need = math.max(need, f + 1) end
+  local rgba, w, h
+  if rec.kind == "classic" then
+    rgba, w, h = imageRGBA(rec.img, rec.def)
+    if not rgba then return false, tostring(w or "could not read the sheet") end
+    if w ~= rec.cw or h ~= rec.ch * rec.frames then
+      return false, ("sheet is %dx%d, expected %dx%d"):format(w, h, rec.cw, rec.ch * rec.frames)
+    end
+  else
+    local okA, Assets = pcall(require, "src.render.Assets")
+    if not (okA and Assets and Assets.imageData) then return false, "no Assets.imageData" end
+    local okD, data = pcall(Assets.imageData, rec.def.image)
+    if not (okD and data) then return false, "could not read " .. tostring(rec.def.image) end
+    rgba, w, h = readRGBA(data)
+    if w ~= rec.cw then return false, ("sheet is %d wide, cells are %d"):format(w, rec.cw) end
+    local need = 0
+    for _, d in ipairs(DIRS) do
+      for _, f in ipairs(rec.def.facings[d]) do need = math.max(need, f + 1) end
+    end
+    if h < need * rec.ch then return false, ("sheet is %d tall, poses need %d"):format(h, need * rec.ch) end
   end
-  if h < need * rec.ch then return false, ("sheet is %d tall, poses need %d"):format(h, need * rec.ch) end
   rec.rgba, rec.imgW, rec.imgH = rgba, w, h
   rec.padded = Solid.padRGBA(rgba, w, h, rec.cw, rec.ch, Npc.PAD)
   Npc.stats.sheets = Npc.stats.sheets + 1
@@ -246,6 +376,55 @@ local function startBody(rec, key, frames)
   queue[#queue + 1] = { kind = "body", rec = rec, key = key, body = body }
 end
 
+-- One cell of a sheet (frame `frame`), as raw RGBA rows, optionally mirrored.
+local function cellBytes(str, imgW, cw, ch, frame, mirror)
+  local rows = {}
+  local y0 = frame * ch
+  for y = 0, ch - 1 do
+    local at = (y0 + y) * imgW * 4 + 1
+    local row = str:sub(at, at + cw * 4 - 1)
+    if mirror then
+      local px = {}
+      for x = cw - 1, 0, -1 do px[#px + 1] = row:sub(x * 4 + 1, x * 4 + 4) end
+      row = table.concat(px)
+    end
+    rows[#rows + 1] = row
+  end
+  return table.concat(rows)
+end
+
+-- Gen 1-3: a four-cell sheet of our own (front, back, left, right = left
+-- mirrored) for SpriteSolid to build from. Run by the pump, not in a draw.
+local function makeClassicJob(rec, spec)
+  local Solid = lazy("SpriteSolid")
+  local W, H = rec.cw, rec.ch
+  local order = {
+    { "front", spec.d, spec.m }, { "back", spec.u, spec.m },
+    { "left", spec.l, false },   { "right", spec.l, true },
+  }
+  local raw, pad, views, cellY = {}, {}, {}, {}
+  for i, o in ipairs(order) do
+    raw[i] = cellBytes(rec.rgba, W, W, H, o[2], o[3])
+    pad[i] = cellBytes(rec.padded, W, W, H, o[2], o[3])
+  end
+  local rawAll, padAll = table.concat(raw), table.concat(pad)
+  for i, o in ipairs(order) do
+    views[o[1]] = Solid.maskFromRGBA(rawAll, W, 4 * H, 0, (i - 1) * H, W, H)
+    cellY[o[1]] = (i - 1) * H
+  end
+  local layout = { imgW = W, imgH = 4 * H, cellW = W, cellH = H,
+                   cellX = 0, cellY = cellY, src = padAll }
+  local solid = rec.cw <= Npc.SMALL_CELL and Npc.classicSolid or Npc.solid
+  return Solid.newJob(views, layout, solid, clock)
+end
+
+local function startClassicBody(rec, key, spec)
+  local body = { used = frameNo, spec = spec }     -- the job is made by the pump
+  rec.bodies[key] = body
+  queue[#queue + 1] = { kind = "body", rec = rec, key = key, body = body }
+  return body
+end
+
 local function release(body)
   if body.mesh and body.mesh.release then pcall(body.mesh.release, body.mesh) end
   if body.image and body.image.release then pcall(body.image.release, body.image) end
@@ -260,7 +439,7 @@ local function evict()
   local pending = {}
   for _, it in ipairs(queue) do if it.body then pending[it.body] = true end end
   local list, live = {}, 0
-  for _, rec in pairs(recs) do
+  local function scan(rec)
     for key, body in pairs(rec.bodies) do
       if body.mesh then
         live = live + 1
@@ -270,6 +449,8 @@ local function evict()
       end
     end
   end
+  for _, rec in pairs(recs) do scan(rec) end
+  for _, rec in pairs(crecs) do scan(rec) end
   if live <= Npc.MAX_BODIES then return end
   table.sort(list, function(a, b) return a[3].used < b[3].used end)
   local i = 1
@@ -277,6 +458,7 @@ local function evict()
     release(list[i][3])
     list[i][1].bodies[list[i][2]] = nil
     live = live - 1
+    revision = revision + 1
     i = i + 1
   end
 end
@@ -284,7 +466,7 @@ end
 local function finish(item)
   local body = item.body
   local job = body.job
-  body.job = nil
+  body.job, body.spec = nil, nil
   local r = job.result
   if job.failed or not r then
     body.failed = job.failed or job.reason or "no result"
@@ -313,31 +495,72 @@ local function finish(item)
   body.mesh, body.image = mesh, image
   body.height, body.tris = r.height, r.triangleCount
   Npc.stats.builds = Npc.stats.builds + 1
+  revision = revision + 1
   evict()
 end
 
 -- Spend this frame's share of the build budget. Called once per frame.
+-- A sheet has just loaded (Gen 1-3): queue the three poses a walker can show,
+-- the stand pose first, so a person is a body at rest before one in motion.
+local function preloadClassic(rec)
+  for _, ph in ipairs({ { 0, false }, { 1, false }, { 1, true } }) do
+    local d, u, l, m = classicFrames(rec.def, rec.frames, ph[1], ph[2])
+    local key = classicKey(d, u, l, m)
+    if not rec.bodies[key] then startClassicBody(rec, key, { d = d, u = u, l = l, m = m }) end
+    if ph[1] == 0 then rec.standKey = key end
+  end
+end
+
+local function isGen4()
+  local B = lazy("Gen4Bridge")
+  return B and B.isGen4 and B.isGen4() or false
+end
+
 function Npc.pump()
   frameNo = frameNo + 1
   if #queue == 0 then return end
-  local Budget = lazy("Gen4Budget")
+  -- Gen 4 shares Gen4Budget with its other effects (the bridge closes each
+  -- frame's budget). Nothing closes it on Gen 1-3, so those keep their own.
+  local Budget = isGen4() and lazy("Gen4Budget") or nil
+  local frameStart = clock()
   local steps = 0
   while #queue > 0 and steps < 8 do
-    if Budget and not Budget.allow(true) then break end
+    if Budget then
+      if not Budget.allow(true) then break end
+    elseif steps > 0 and clock() - frameStart > Npc.FRAME_SECONDS then
+      break
+    end
     local item = queue[1]
     local t0 = clock()
     if item.kind == "sheet" then
       table.remove(queue, 1)
       local ok, why = loadSheet(item.rec)
+      item.rec.img = nil          -- the picture is not kept: its pixels are
       item.rec.state = ok and "ready" or "failed"
       if not ok then
         item.rec.ok = false
         Npc.stats.failed = Npc.stats.failed + 1
         local id = tostring(item.rec.def.id or item.rec.def.image)
         if not reported[id] then reported[id] = true; log("%s: %s", id, tostring(why)) end
+      elseif item.rec.kind == "classic" then
+        preloadClassic(item.rec)
       end
     else
-      if item.body.job:step(Npc.STEP_SECONDS) then
+      local body = item.body
+      if not body.job and not body.failed then
+        local okJ, job = pcall(makeClassicJob, item.rec, body.spec)
+        if okJ then
+          body.job = job
+        else
+          body.failed = tostring(job)
+          Npc.stats.failed = Npc.stats.failed + 1
+          local id = tostring(item.rec.def.id or item.rec.def.image)
+          if not reported[id] then reported[id] = true; log("%s: %s", id, body.failed) end
+        end
+      end
+      if body.failed then
+        table.remove(queue, 1)
+      elseif body.job:step(Npc.STEP_SECONDS) then
         table.remove(queue, 1)
         finish(item)
       end
@@ -454,18 +677,178 @@ function Npc.drawPose(p, ground)
   return ok
 end
 
+-- ------------------------------------------------------------ Gen 1-3 API --
+
+local function worldYaw(facing)
+  local Cam = lazy("Gen4ActorCam")
+  if Cam and Cam.worldYaw then return Cam.worldYaw(facing) end
+  facing = type(facing) == "string" and string.lower(facing) or facing
+  if facing == "right" then return math.pi / 2 end
+  if facing == "up" then return math.pi end
+  if facing == "left" then return -math.pi / 2 end
+  return 0
+end
+
+-- Runaway guard: records are keyed by the live picture, so a sheet handed back
+-- as a NEW image every frame would be a new record (and new builds) every
+-- frame. Past FUSE_LIMIT new records in FUSE_WINDOW seconds the Gen 1-3 path
+-- rests for FUSE_REST seconds and the cards draw.
+local FUSE_WINDOW, FUSE_LIMIT, FUSE_REST = 2.0, 60, 30.0
+local fuseStart, fuseCount, offUntil = 0, 0, 0
+
+local function fuseTrips(now)
+  if now - fuseStart > FUSE_WINDOW then fuseStart, fuseCount = now, 0 end
+  fuseCount = fuseCount + 1
+  if fuseCount > FUSE_LIMIT then
+    offUntil = now + FUSE_REST
+    fuseStart, fuseCount = now, 0
+    log("sheets keep changing under the bodies; NPC 3D rests for %d s", FUSE_REST)
+    return true
+  end
+  return false
+end
+
+local function classicRec(def, tex)
+  local rec = crecs[tex]
+  if rec then return rec end
+  if fuseTrips(clock()) then return nil end
+  rec = { kind = "classic", def = def, img = tex, bodies = {}, ok = false, state = nil }
+  local frames = tonumber(def.frames) or 1
+  local okD, iw, ih = pcall(tex.getDimensions, tex)
+  if okD and frames > 1 and iw and ih and ih % frames == 0 then
+    local cw, ch = iw, ih / frames
+    if cw >= 8 and ch >= 8 and cw <= Npc.MAX_CELL and ch <= Npc.MAX_CELL then
+      rec.ok, rec.cw, rec.ch, rec.frames = true, cw, ch, frames
+    end
+  end
+  if not rec.ok then rec.img = nil end
+  crecs[tex] = rec
+  return rec
+end
+
+-- Is this posed entity one for a Gen 1-3 body? Cheap enough for every card
+-- every frame; the setting is the first thing it looks at.
+function Npc.classicWants(p)
+  if not Npc.enabled() then return false end
+  if clock() < offUntil then return false end
+  if type(p) ~= "table" then return false end
+  local sprite, e = p.sprite, p.entity
+  if type(sprite) ~= "table" or type(e) ~= "table" then return false end
+  local def = sprite.def
+  if type(def) ~= "table" or def.facings then return false end     -- Gen 4 has its own path
+  if (tonumber(def.frames) or 1) <= 1 then return false end        -- a prop
+  if def.hdImage or def.hdDex or def.dsSpecies or def.hdFrameW or def.hdFrameH then return false end
+  if e.hidden or e.fixedFrame then return false end
+  if p.isFollower or e.isFollower or e.wildsFollower or e._wildsFollowerSpecies
+     or e.roamer or e.overworldWildSpawn or e.species or e.stadiumModel then
+    return false
+  end
+  if p.isPlayer and not Npc.includePlayer then return false end
+  if (p.waterline or 0) > 0 then return false end
+  return true
+end
+
+-- The body this pose wears, or nil. While the exact pose is still building the
+-- sheet's finished stand body stands in.
+local function classicBody(p, tex)
+  local def = p.sprite.def
+  local rec = classicRec(def, tex)
+  if not (rec and rec.ok) then return nil end
+  if rec.state == nil then
+    if #queue > 64 then return nil end          -- never let a crowd flood the queue
+    rec.state = "loading"
+    queue[#queue + 1] = { kind = "sheet", rec = rec }
+    return nil
+  end
+  if rec.state ~= "ready" then return nil end
+
+  local d, u, l, m = classicFrames(def, rec.frames, p.phase, p.flip)
+  local key = classicKey(d, u, l, m)
+  local body = rec.bodies[key]
+  if not body then body = startClassicBody(rec, key, { d = d, u = u, l = l, m = m }) end
+  body.used = frameNo
+  if body.mesh and body.image then return body, rec end
+  local stand = rec.standKey and rec.bodies[rec.standKey]
+  if stand and stand.mesh and stand.image then
+    stand.used = frameNo
+    return stand, rec
+  end
+  for _, b in pairs(rec.bodies) do
+    if b.mesh and b.image then b.used = frameNo; return b, rec end
+  end
+  return nil
+end
+
+-- Where the body stands: the middle of the cell the card is centred on, at the
+-- entity's ground height (plus any hop), turned to its facing and scaled the
+-- way the card is (def.scale / def.heightScale).
+local function classicMatrix(p, rec, yaw)
+  local Mat4 = lazy("Mat4")
+  if not Mat4 then return nil end
+  local def = rec.def
+  local sc = tonumber(def.scale) or 1
+  local hs = tonumber(def.heightScale) or sc
+  local half = rec.cw * sc / 2
+  local m = Mat4.translate((p.px or 0) + half, (p.gh or 0) + (p.lift or 0), (p.py or 0) + half)
+  if yaw ~= 0 then m = Mat4.mul(m, Mat4.rotateY(yaw)) end
+  if sc ~= 1 or hs ~= 1 then m = Mat4.mul(m, Mat4.scale(sc, hs, sc)) end
+  return m
+end
+
+-- Draw one posed entity as a body. `tex` is the image its card would wear
+-- (palette bake and all), `pull` the camera-ward depth bias the card gets.
+-- True only when a body was drawn; false leaves the card.
+function Npc.drawClassic(p, tex, pull)
+  if not tex then return false end
+  local body, rec = classicBody(p, tex)
+  if not body then return false end
+  local Voxel3D = lazy("Voxel3D")
+  if not Voxel3D then return false end
+  local m = classicMatrix(p, rec, yawFor(p.entity, p.facing, false))
+  if not m then return false end
+  local ok = pcall(Voxel3D.draw, body.mesh, body.image, m, pull or 0)
+  if ok then Npc.stats.drawn = Npc.stats.drawn + 1 end
+  return ok
+end
+
+-- The same body into the sun's map, at the yaw it is GOING to (not the eased
+-- one), so a turn leaves no stale shadow: the shadow map is only redrawn when
+-- a pose changes.
+function Npc.castClassic(p, tex, ShadowMap)
+  if not (tex and ShadowMap and ShadowMap.draw) then return false end
+  local body, rec = classicBody(p, tex)
+  if not body then return false end
+  local m = classicMatrix(p, rec, worldYaw(p.facing))
+  if not m then return false end
+  return pcall(ShadowMap.draw, body.mesh, body.image, m)
+end
+
+-- Changes whenever what a body draws could differ (a body finished, was
+-- evicted, the sheets were dropped, the setting flipped): part of the sun
+-- pass's stamp, so a shadow is redrawn from the body the moment there is one.
+function Npc.revision()
+  return revision * 2 + (Npc.enabled() and 1 or 0)
+end
+
 -- Drop every mesh, sheet and queued job (graphics reset, mod reload, cache
 -- reset). Bodies rebuild on demand.
 function Npc.invalidate()
   for _, rec in pairs(recs) do
     for _, body in pairs(rec.bodies) do release(body) end
   end
+  for _, rec in pairs(crecs) do
+    for _, body in pairs(rec.bodies) do release(body) end
+  end
   for k in pairs(recs) do recs[k] = nil end
+  for k in pairs(crecs) do crecs[k] = nil end
   for i = #queue, 1, -1 do queue[i] = nil end
   reported = {}
+  revision = revision + 1
 end
 
 function Npc.install()
+  if Npc.installed then return true end
+  Npc.installed = true
   local okA, Assets = pcall(require, "src.render.Assets")
   if okA and Assets and type(Assets.register) == "function" then
     pcall(Assets.register, Npc.invalidate)   -- a mod swapping a sheet rebuilds its body
@@ -475,6 +858,8 @@ end
 
 -- test / diagnostics
 Npc._recOf, Npc._framesFor, Npc._predictSprite, Npc._queue = recOf, framesFor, predictSprite, queue
+Npc._classicFrames, Npc._classicKey, Npc._cellBytes = classicFrames, classicKey, cellBytes
+Npc._makeClassicJob = makeClassicJob
 function Npc.pending() return #queue end
 
 return Npc
