@@ -365,6 +365,21 @@ local function spriteDex(sprite)
   local base = image:gsub("\\", "/"):match("([^/]+)$") or image
   base = base:gsub("%.[^%.]+$", "")
   base = base:gsub("^[Ss][Pp][Rr][Ii][Tt][Ee][_-]", "")
+  -- A BARE NUMBER IS A SHEET INDEX, NOT A SPECIES.
+  --
+  -- HeartGold / SoulSilver files every overworld sheet under its archive
+  -- member NUMBER (overworld/045.png, or sprite_045 when the member has no
+  -- name), because their members carry no names to join on. speciesDex()
+  -- accepts plain numbers, so without this guard every NPC whose sheet
+  -- number fell in 1..386 was read as that National Dex number and drawn as
+  -- a Colosseum Pokemon model -- people standing in town as Cloyster,
+  -- Scyther and so on. Platinum names its sheets (youngster, lass, ...) and
+  -- never hit it. Explicit follower_/pokepc_ prefixes below are unaffected:
+  -- those ARE species-specific by contract.
+  if base:match("^%d+$") then
+    spriteCache[image] = false
+    return nil
+  end
   -- Followers EX / PokePC sheets use follower_<SPECIES>.png.  Several flight
   -- mods temporarily leave only this sprite identity on the entity, so accept
   -- it as an explicit species-specific filename instead of falling back to 2D.
