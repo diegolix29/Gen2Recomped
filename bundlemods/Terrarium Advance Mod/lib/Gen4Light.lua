@@ -37,16 +37,24 @@
 --
 -- Everything is pcall-guarded. If the shader does not compile, `ok` stays
 -- false and Gen4Tint keeps painting its old screen-space discs.
+
+-- PERFORMANCE / BRIGHTNESS NOTES
 --
--- COST / BRIGHTNESS KNOBS (live):
---   PANE_LIMIT, WALL_LIGHTS   how many window / wall sources are lit (cost)
---   PANE_STRENGTH             how bright a window's light is
---   POST_LIMIT, POST_STRENGTH the same for street posts
---   WALLS = false             no wall pass at all (the cheapest setting)
---   GROUND = false            no road pools at all
--- The meshes the wall pass draws come from Gen4Glass.wallPieces(); since
--- Gen4Glass version 2 they hold only the triangles that carry a pane, so the
--- per-pixel light loop no longer runs over roofs and blank side walls.
+--   * Window pools were the heavy part: each lit pane got a 192 unit sheet
+--     (~2000 triangles at CELL 12) and up to 8 of them overlapped, each running
+--     the light loop per pixel. Their output was then boosted by 1/tint, so
+--     overlaps saturated into one big bright patch. Now: fewer panes
+--     (PANE_LIMIT), a smaller reach (Gen4Glass.SCREEN_RADIUS), a coarser sheet
+--     (CELL 16), a per-kind output ceiling (PANE_CAP / WALL_CAP, the `cap`
+--     uniform) and sheets for lights that are off screen are skipped.
+--   * The wall pass only draws a building when a light's reach really touches
+--     its bounding box (it used a loose whole-land test).
+--   * Gen4Glass.screenLights is cached, so asking for it is no longer a
+--     rebuild-and-sort of every pane of every land.
+--
+-- TUNING (all live): lower PANE_STRENGTH / PANE_CAP / WALL_CAP for dimmer
+-- windows; POST_* for street lamps. Gen4Glass.SCREEN_RADIUS/SCREEN_POWER
+-- control the size and strength of the window sources themselves.
 
 local V = ...
 local Voxel3D = V.require("Voxel3D")
@@ -69,17 +77,15 @@ local Light = {
   WALLS = true,            -- light the building walls
 
   POST_LIMIT = 8,          -- street posts lit per frame (nearest first)
-  PANE_LIMIT = 4,          -- lit windows (nearest first). Was 8: each one is a
-                           -- ground sheet drawn with the full light shader.
-  WALL_LIGHTS = 4,         -- sources a wall may take, nearest to the camera of
-                           -- posts AND panes together (was the first 8 of the
-                           -- list, i.e. posts first). The shader loops over
-                           -- this many lights per wall pixel, so it is the cost
-                           -- knob for the wall pass (1..8).
+  PANE_LIMIT = 4,          -- lit windows (nearest first)
+  WALL_LIGHTS = 8,         -- the shader's array size: sources a wall may take
   POST_STRENGTH = 1.0,
-  PANE_STRENGTH = 0.55,    -- how bright a window's light is (was 0.8)
+  PANE_STRENGTH = 0.6,
+  POST_CAP = 1.0,          -- output ceiling after the tint multiply, 0..1 (1 = the old behaviour)
+  PANE_CAP = 0.55,         -- ...for a window's pool on the road
+  WALL_CAP = 0.60,         -- ...for the wall pass
 
-  CELL = 12,               -- ground sheet quad edge, map px
+  CELL = 16,               -- ground sheet quad edge, map px (one tile)
   LIFT = 0.6,              -- sheet float above the ground (z-fight guard)
   MAX_STEP = 8,            -- a quad whose corners differ more is a cliff: skipped
   SHEETS_PER_FRAME = 3,
@@ -125,6 +131,7 @@ local SHADER = [[
   uniform highp vec4 lc[8];      // rgb = colour * power, a = softening (height^2)
   uniform highp float count;
   uniform highp vec3 comp;       // 1 / the hour's tint, so the later multiply cancels
+  uniform highp float cap;       // ceiling on the result, 0..1 (windows are not street lamps)
 
   vec4 effect(vec4 color, Image tex, vec2 tc, vec2 sc) {
     vec3 acc = vec3(0.0);
@@ -148,7 +155,7 @@ local SHADER = [[
     float m = max(o.r, max(o.g, o.b));
     if (m > 1.0) o /= m;                      // keep the lamp's hue under the tint
     if (m <= 0.004) discard;
-    return vec4(o, 1.0);
+    return vec4(o * cap, 1.0);
   }
 #endif
 ]]
@@ -403,12 +410,24 @@ function Light.draw(scene)
       pcall(sh.send, sh, "offset", { 0, 0, 0 })
       pcall(sh.send, sh, "pull", 0)
       local budget = { left = Light.SHEETS_PER_FRAME }
+      local seen = scene.sphereVisible
       for _, l in ipairs(lights) do
-        local sheet = sheetFor(ground, l, budget)
-        if sheet and sheet.mesh and sheet.count > 0 then
-          -- the sheet is lit from this light alone, at its real height
-          sendLights(sh, { l }, lamp)
-          g.draw(sheet.mesh)
+        -- a pool wholly off screen costs a build and a draw for nothing
+        local show = true
+        if seen then
+          local floor = l.floor or l.y or 0
+          local top = l.y or floor
+          show = seen(l.x, (floor + top) * 0.5, l.z,
+                      l.radius * 1.1 + math.abs(top - floor) * 0.5)
+        end
+        if show then
+          local sheet = sheetFor(ground, l, budget)
+          if sheet and sheet.mesh and sheet.count > 0 then
+            -- the sheet is lit from this light alone, at its real height
+            sendLights(sh, { l }, lamp)
+            pcall(sh.send, sh, "cap", (l.kind == "pane") and Light.PANE_CAP or Light.POST_CAP)
+            g.draw(sheet.mesh)
+          end
         end
       end
     end
@@ -419,23 +438,27 @@ function Light.draw(scene)
       local pieces = Glass and Glass.wallPieces and Glass.wallPieces() or nil
       if pieces and #pieces > 0 then
         local near = {}
-        do
-          local byDistance = {}
-          for i = 1, #lights do byDistance[i] = lights[i] end
-          table.sort(byDistance, function(a, b) return (a.d2 or 0) < (b.d2 or 0) end)
-          for i = 1, math.min(#byDistance, Light.WALL_LIGHTS, MAXL) do near[i] = byDistance[i] end
-        end
+        for i = 1, math.min(#lights, Light.WALL_LIGHTS) do near[i] = lights[i] end
         sendLights(sh, near, lamp)
         pcall(sh.send, sh, "pull", Light.WALL_PULL)
+        pcall(sh.send, sh, "cap", Light.WALL_CAP)
         local reach = (ground.chunkPx or 512) * 0.75
         local visible = scene.sphereVisible
         local radius = (ground.chunkPx or 512) * 0.72 + 80
         for _, p in ipairs(pieces) do
           local hit = false
           for _, l in ipairs(near) do
-            local dx, dz = p.x - l.x, p.z - l.z
-            local rr = l.radius + reach
-            if dx * dx + dz * dz <= rr * rr then hit = true; break end
+            if p.minx then
+              -- the light's reach is a ground distance: test it against the
+              -- piece's own footprint, not its whole land
+              local dx = math.max(p.minx - l.x, 0, l.x - p.maxx)
+              local dz = math.max(p.minz - l.z, 0, l.z - p.maxz)
+              if dx * dx + dz * dz <= l.radius * l.radius then hit = true; break end
+            else
+              local dx, dz = p.x - l.x, p.z - l.z
+              local rr = l.radius + reach
+              if dx * dx + dz * dz <= rr * rr then hit = true; break end
+            end
           end
           if hit and ((not visible) or visible(p.x, 0, p.z, radius)) then
             pcall(sh.send, sh, "offset", { p.x, 0, p.z })
