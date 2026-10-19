@@ -94,6 +94,13 @@ function Gen4Battle.battlerPos(battle, slot)
       local sx, sy = V.standPoint(slot == 0 and "player" or "enemy")
       if sx then return { x = math.floor(sx + 0.5), y = math.floor(sy + 0.5) - 48 } end
     end
+  elseif slot and slot >= 2 and slot <= 5 then
+    -- ...and a double's four at the cartridge's doubles homes
+    -- (src/battle/Gen5BattleLayout.lua)
+    local okL, L = pcall(require, "src.battle.Gen5BattleLayout")
+    local sx, sy = nil, nil
+    if okL then sx, sy = L.stand(battle, slot) end
+    if sx then return { x = math.floor(sx + 0.5), y = math.floor(sy + 0.5) - 48 } end
   end
   local p = Gen4Battle.BATTLER_POS[slot]
   if not p then return nil end
@@ -574,7 +581,8 @@ function Gen4Battle.spriteYOffset(battle, battler)
     if okG5 and G5.active(battle) then
       local mon = battler and battler.mon
       local data = battle.data or (battle.game and battle.game.data) or {}
-      local rec = mon and ((data.gen4_species_sprites or {}).species or {})[tonumber(mon.species)]
+      -- (the species it SHOWS: a Transformed battler stands on the copy's feet)
+      local rec = mon and ((data.gen4_species_sprites or {}).species or {})[tonumber(battler.species or mon.species)]
       local feet = rec and rec.feet and rec.feet[battler == battle.player and "back" or "front"]
       return feet and (96 - feet) or 0
     end end
@@ -678,7 +686,10 @@ function Gen4Battle.battlerHidden(battle, battler)
   -- been sent out yet", and the Gen 3 path already honours it -- this one did
   -- not, so Sinnoh drew the Pokemon through the whole intro and, once the
   -- trainer was drawn too, drew BOTH at once standing in the same place.
-  if battle and battle.showPlayerBack and battler and battler == battle.player then
+  -- (a double's right flank too: both come out of their balls together)
+  local pos = battler and tonumber(battler.position)
+  if battle and battle.showPlayerBack and battler
+     and (battler == battle.player or (pos and pos % 2 == 0 and battle.isDouble and battle:isDouble())) then
     return true
   end
   -- ...AND THE FOE'S, while its trainer stands on the platform or the ball is
@@ -687,6 +698,10 @@ function Gen4Battle.battlerHidden(battle, battler)
   -- battle opened with the Pokemon already out and no trainer at all.
   if battle and battler and battler == battle.enemy
      and (battle.showEnemyTrainer or battle.enemySendingOut or battle.enemyHidden) then
+    return true
+  end
+  if battle and battler and pos and pos % 2 == 1 and battle.isDouble and battle:isDouble()
+     and (battle.showEnemyTrainer or battle.enemySendingOut) then
     return true
   end
 
@@ -699,7 +714,7 @@ function Gen4Battle.battlerHidden(battle, battler)
   end
   local player = battle and battle.gen4AnimPlaying and battle.gen4Anim
   if not (player and player.monHidden and battler) then return false end
-  local got, hidden = pcall(player.monHidden, player, battler == battle.player)
+  local got, hidden = pcall(player.monHidden, player, battler == battle.player, battler)
   return got and hidden == true
 end
 
@@ -888,11 +903,12 @@ function Gen4Battle.drawBattlers(battle)
           else
             -- BLACK AND WHITE: a billboard in the 3D field, its feet on the
             -- platform's projected centre and sized by its depth
-            local okV, V = pcall(require, "src.render.Gen5BattleSceneView")
-            local sx, sy
-            if okV and V.available(battle) then sx, sy = V.standPoint(row.side) end
-            if sx and (row.slot == 0 or row.slot == 1) then
-              local k = V.depthScale(row.side)
+            -- (a double's four at the cartridge's doubles homes,
+            -- src/battle/Gen5BattleLayout.lua)
+            local okL, L = pcall(require, "src.battle.Gen5BattleLayout")
+            local sx, sy, k
+            if okL then sx, sy, k = L.stand(battle, row.slot) end
+            if sx then
               local feet = 96 - Gen4Battle.spriteYOffset(battle, battler)
               battle:drawBattlerPic(battler, math.floor(sx - pic:getWidth() * k / 2 + 0.5),
                                     math.floor(sy - feet * k + 0.5), k)
@@ -1067,8 +1083,45 @@ function Gen4Battle.drawEffectBackground(battle)
   end
   if not (player and player.bgLayerState) then return false end
   local got, st = pcall(player.bgLayerState, player)
+  -- WINDOW 0 WITH NO SWITCH UP (Fake Out): the layer it narrows is the
+  -- backdrop itself, and outside it the screen falls to the backdrop
+  -- colour the base fade is taking to white -- drawn as that fade's colour
+  if got and st and st.window and not st.id then
+    local r, gg, b, a = 1, 1, 1, 0
+    if player.groupTint then
+      local okT, tr, tg, tb, ta = pcall(player.groupTint, player, "base")
+      if okT and ta then r, gg, b, a = tr, tg, tb, ta end
+    end
+    if a > 0 then
+      local g = love.graphics
+      local W = Gen4Battle.width(battle)
+      local x1, x2 = st.window[1] or 0, st.window[2] or W
+      g.setColor(r, gg, b, a)
+      g.rectangle("fill", 0, 0, math.max(0, x1), Gen4Battle.HEIGHT)
+      g.rectangle("fill", x2, 0, math.max(0, W - x2), Gen4Battle.HEIGHT)
+      g.setColor(1, 1, 1, 1)
+    end
+    return a > 0
+  end
   if not (got and st and st.id) then return false end
 
+  local g = love.graphics
+  -- WINDOW 0 (FakeOutCurtain): the layer shows only between two columns
+  if st.window then
+    local x1, x2 = st.window[1] or 0, st.window[2] or Gen4Battle.width(battle)
+    local ax, ay = g.transformPoint(x1, 0)
+    local bx, by = g.transformPoint(x2, Gen4Battle.HEIGHT)
+    local psx, psy, psw, psh = g.getScissor()
+    g.intersectScissor(math.floor(ax), math.floor(ay), math.max(0, math.floor(bx - ax)), math.max(0, math.floor(by - ay)))
+    st.window = nil
+    local okDraw, drewWin = pcall(Gen4Battle.drawEffectBackgroundState, battle, st)
+    if psx then g.setScissor(psx, psy, psw, psh) else g.setScissor() end
+    return okDraw and drewWin or false
+  end
+  return Gen4Battle.drawEffectBackgroundState(battle, st)
+end
+
+function Gen4Battle.drawEffectBackgroundState(battle, st)
   local g = love.graphics
   local drew = false
 
@@ -1100,6 +1153,31 @@ function Gen4Battle.drawEffectBackground(battle)
     g.setColor(k, k, k, 1)
   else
     g.setColor(1, 1, 1, 1)
+  end
+  -- ScrollSwitchedBg (Whirlpool, Nightmare, Water Pulse, HGSS Psychic): the
+  -- hardware's per-scanline horizontal offset, one row of the picture a line
+  if st.rows then
+    local sw = Gen4Battle.width(battle)
+    local baseX = (st.offsetX or 0) - (st.scrollX or 0)
+    local quad = love.graphics.newQuad(0, 0, w, 1, w, h)
+    for y = 0, Gen4Battle.HEIGHT - 1 do
+      local rx = baseX + (st.rows[y] or 0)
+      local sy = ((st.offsetY or 0) + y) % h
+      quad:setViewport(0, sy, w, 1, w, h)
+      local ox = -(rx % w)
+      g.draw(art, quad, ox, y)
+      if ox + w < sw then g.draw(art, quad, ox + w, y) end
+    end
+    quad:release()
+    if st.blend then g.setBlendMode("alpha", "alphamultiply") end
+    g.setColor(1, 1, 1, 1)
+    local tint = st.tint
+    if tint and tint[4] and tint[4] > 0 and row and row.opaque then
+      g.setColor(tint[1] or 0, tint[2] or 0, tint[3] or 0, tint[4])
+      g.rectangle("fill", 0, 0, sw, Gen4Battle.HEIGHT)
+      g.setColor(1, 1, 1, 1)
+    end
+    return true
   end
   -- THE LAYER WRAPS, because the hardware's offset registers do: a background is a
   -- torus and a scroll of 300 shows the left of the picture again. Two draws a axis
@@ -3307,12 +3385,18 @@ function Gen4Battle.drawThrownBall(battle)
   if hideNativeScene(battle) then return false end
   local anim = battle and battle.gen4Ball
   if not (anim and anim.visible) then return false end
+  -- Black and White's capture effect draws itself (src/battle/Gen5BallAnim.lua)
+  if anim.gen5 and anim.draw then return anim:draw(battle) end
   local Gen4BattleRT = require("src.battle.Gen4Battle")
   local name = anim.ball
   local gfx = graphics(battle)
   local key = Gen4BattleRT.ballThrowFrame(name, anim.cell or 0)
   local row = gfx and gfx.battleObjects and gfx.battleObjects[key]
   if not row then
+    -- Black and White keep the thrown ball as particle art, not OBJ cells
+    -- (src/battle/Gen5BallArt.lua)
+    local okB, Gen5BallArt = pcall(require, "src.battle.Gen5BallArt")
+    if okB and Gen5BallArt.draw(battle, anim) then return true end
     -- SAID ONCE, because a ball that silently does not draw is exactly the
     -- failure this whole item started as.
     if not battle.saidBallMissing then
@@ -3887,6 +3971,12 @@ function Gen4Battle.bagScreenId(battle)
   if not (battle and battle.gen4Layout and battle:gen4Layout()) then return nil end
   local data = battle.data or (battle.game and battle.game.data)
   if data and data.screens and data.screens.BagMenu then return nil end
+  -- BLACK AND WHITE: their own four-pocket battle bag (src/ui/Gen5BattleBag.lua)
+  -- on the touch screen, wherever that screen is shown
+  if battle.bw then
+    local okB5, B5 = pcall(require, "src.ui.Gen5BattleBag")
+    if okB5 and B5.available(data) then return "Gen5BattleBag" end
+  end
   if not bottomScreenUp(battle.game) then return nil end
   local ok, B = pcall(require, "src.ui.Gen4BattleBag")
   if ok and B.available(data) then return "Gen4BattleBag" end
@@ -3933,6 +4023,8 @@ end
 -- of the field, the battlers and their effects -- not of the boxes or text
 function Gen4Battle.pushMoveCamera(battle)
   local player = battle and battle.gen4AnimPlaying and battle.gen4Anim
+  -- (or Black and White's capture effect, which moves the camera too)
+  if not player and battle and battle.gen4Ball and battle.gen4Ball.gen5 then player = battle.gen4Ball end
   if not (player and player.screenTransform) then return false end
   local okT, k, tx, ty = pcall(player.screenTransform, player, battle)
   if not (okT and k) then return false end

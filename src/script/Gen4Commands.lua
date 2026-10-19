@@ -2258,6 +2258,17 @@ function Commands.g4_move(ctx, id, steps)
     return
   end
 
+  -- BLACK AND WHITE play their own action table (src/import/Gen5Movement.lua)
+  -- through their own executor: speeds, locked facing, jumps, marking time
+  if ow.map and ow.map.def and ow.map.def.gen5 then
+    local G5 = require("src.script.Gen5MoveExec")
+    local dx, dy = G5.net(steps)
+    Logger.debug("g5 move: %s id %s from (%s,%s) -- %d step(s), net (%+d,%+d)",
+                 tostring(ow.map.id), tostring(id), tostring(entity.cellX),
+                 tostring(entity.cellY), #steps, dx, dy)
+    return G5.run(ctx, entity, id, steps)
+  end
+
   -- WHERE THIS WALK STARTS, WHICH IS THE HALF A LOG NEVER SHOWS.
   --
   -- A scripted walk that ends somewhere wrong has two possible causes and they
@@ -2318,6 +2329,7 @@ function Commands.g4_move(ctx, id, steps)
   local function finish()
     if finished then return end
     finished = true
+    if entity ~= ow.player then entity.scriptStepLen = nil end
     ctx.g4Moving = math.max(0, (ctx.g4Moving or 1) - 1)
     -- The join, if a `waitmovement` is already parked on it.
     if ctx.g4Moving == 0 and ctx.g4MoveJoin then
@@ -2342,6 +2354,13 @@ function Commands.g4_move(ctx, id, steps)
       -- as well as a direction and the table carries it now; without it a
       -- scene written in WALK_FAST played at a stroll, which is the same fault
       -- Gen 3 had before `MOVE_SPEED` was read.
+      --
+      -- ...AND FOR PEOPLE TOO. `scriptMove` stamps the rate on
+      -- `stepFramesCur`, which only Player reads; an NPC walks on
+      -- `scriptStepLen` (NPC:update), so every Sinnoh / Johto NPC strolled
+      -- through a WALK_FAST rush at 16 ticks a tile. Set per step, cleared
+      -- on a normal step and when the list ends (Gen4MoveExec.stepLen).
+      require("src.script.Gen4MoveExec").setStep(entity, ow, action.rate)
       ow:scriptMove(entity, action.dir, (action.tiles or 1) * count,
                     nextStep, nil, action.rate)
     elseif action.kind == "face" then
@@ -2358,7 +2377,9 @@ function Commands.g4_move(ctx, id, steps)
       ow:scriptPause(entity, math.max(1, math.floor(
         (entity.stepFrames or 16) * (action.rate or 1) * count + 0.5)), nextStep)
     elseif action.kind == "wait" then
-      ow:scriptPause(entity, (action.frames or 1) * count, nextStep)
+      -- FIELD FRAMES, not engine ticks: the field runs at 30 a second, so
+      -- WAIT_8 is 16 ticks here (Gen4MoveExec.waitTicks)
+      ow:scriptPause(entity, require("src.script.Gen4MoveExec").waitTicks(action.frames, count), nextStep)
     elseif action.kind == "hide" then
       entity.hidden = true
       return nextStep()
@@ -3190,6 +3211,8 @@ function Commands.g4_bw_catching_tutorial(ctx)
   local battle = require("src.battle.BattleState").newWild(demoGame, 504, 2)
   if battle.enemy and battle.enemy.mon then withMoves(battle.enemy.mon, { 33, 43 }) end
   battle:makeDudeDemo(save.player.name)
+  -- Juniper's own back pic out of /a/0/7/3, not Gen 1's old man
+  battle.demoBackPath = require("src.battle.CatchTutorialDemo").bwThrowerBack(game.data)
   battle.demoBallCount = "x20"
   battle.onFinish = function()
     if ctx.runner then ctx.runner:resume() end
@@ -5052,6 +5075,12 @@ function Commands.g4_set_flag_var(ctx, operand)
   ctx.save.flags[('FLAG_G4_%04X'):format(getVar(ctx.save,operand))] = true
 end
 
+-- BLACK / WHITE's checkflag on a var (0x8002 / 0x8022: the hidden items'
+-- and the gift scripts' "is this one already taken"): the flag the var names
+function Commands.g4_bw_check_flag_var(ctx, operand)
+  Commands.g4_check_flag(ctx, ('FLAG_G4_%04X'):format(getVar(ctx.save, operand) or 0))
+end
+
 function Commands.g4_clear_flag_var(ctx, operand)
   ctx.save.flags = ctx.save.flags or {}
   ctx.save.flags[('FLAG_G4_%04X'):format(getVar(ctx.save,operand))] = nil
@@ -6105,8 +6134,18 @@ end
 -- to zero and writes ONE after the effect finishes. Roark polls it every
 -- frame after removing the rock. Until the native effect is implemented,
 -- report completion immediately; leaving zero strands that polling loop.
-function Commands.g4_destroy_obstacle_anim(ctx, _, destVar)
-  if destVar then setVar(ctx.save, destVar, 1) end
+function Commands.g4_destroy_obstacle_anim(ctx, kind, destVar)
+  -- HGSS ScrCmd_560 (ov02_0224E074): the var is zeroed, the obstacle's 3D
+  -- animation plays (src/world/Gen4FieldFx.lua) and its task writes 1 when it
+  -- ends; with no art in this cache the var is written at once, as before
+  local save = ctx.save
+  if destVar then setVar(save, destVar, 0) end
+  local okFx, started = pcall(function()
+    return require("src.world.Gen4FieldFx").start(ctx.overworld, valueOf(ctx, kind), function()
+      if destVar then setVar(save, destVar, 1) end
+    end)
+  end)
+  if not (okFx and started) and destVar then setVar(save, destVar, 1) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -6542,6 +6581,12 @@ function Commands.g4_hm_cut_in(ctx, slot)
                  index)
     return
   end
+  -- PLATINUM: its own cut-in, HMCutIn_StartTask (src/world/Gen4HMCutIn.lua),
+  -- when this cache carries field_cutin's art (gen4_pt_field_fx)
+  if require("src.import.Gen4ScriptBands").family ~= "hgss"
+     and require("src.world.Gen4HMCutIn").show(game, mon, nil) then
+    return
+  end
   local Gen3FieldMove = require("src.world.Gen3FieldMove")
   Gen3FieldMove.show(game, mon, nil)
 end
@@ -6563,10 +6608,27 @@ Commands.meta.g4_hm_cut_in = { foreground = true, blocking = true }
 -- That is why this is a separate, smaller path rather than a call into the two
 -- inline mounts in `OverworldController` (one around a textbox, one on a
 -- force-surf tile): those are the same STATE reached through a different beat.
-function Commands.g4_use_surf(ctx)
+-- PLATINUM'S MON-RIDE CUT-IN: FieldTask_UseSurf / _UseWaterfall start with
+-- NewMonRideCutIn (MonRideTask_Init sets playCutIn TRUE), the HMCutIn task the
+-- field-move scripts' PlayHMCutIn plays (src/world/Gen4HMCutIn.lua); the task
+-- goes on when it is finished. True when the cut-in is up and `again` will run
+-- the command once more after it.
+local function ptRideCutInFirst(ctx, slot, again)
+  if ctx.__afterRideCutIn then return false end
+  if require("src.import.Gen4ScriptBands").family == "hgss" then return false end
+  local index = math.floor(tonumber(valueOf(ctx, slot)) or 0)
+  local mon = ((ctx.save and ctx.save.party) or {})[index + 1]
+  if not (mon and ctx.game) then return false end
+  local copy = setmetatable({ __afterRideCutIn = true }, { __index = ctx })
+  local ok, shown = pcall(require("src.world.Gen4HMCutIn").show, ctx.game, mon, function() again(copy, slot) end)
+  return ok and shown or false
+end
+
+function Commands.g4_use_surf(ctx, slot)
   local ow = ctx.overworld
   local p = ow and ow.player
   if not p then return end
+  if ptRideCutInFirst(ctx, slot, Commands.g4_use_surf) then return end
   -- on a Distortion World surface the water ahead is the platform's own
   if ow.dwSurface then
     require("src.world.Gen4DistSurface").surfMount(ow)
@@ -6638,10 +6700,18 @@ local function gen4Climb(ctx, isClimb)
   return true
 end
 
-function Commands.g4_use_waterfall(ctx)
+function Commands.g4_use_waterfall(ctx, slot)
   local ow = ctx.overworld
   local p = ow and ow.player
   if not (ow and p) then return end
+  if ptRideCutInFirst(ctx, slot, Commands.g4_use_waterfall) then return end
+  -- HEARTGOLD / SOULSILVER: CallFieldTask_Waterfall -- the HM cut-in, then a
+  -- two-tile ride up the fall (src/world/Gen4WaterfallRide.lua)
+  if require("src.import.Gen4ScriptBands").family == "hgss" then
+    local index = math.floor(tonumber(valueOf(ctx, slot)) or 0)
+    local mon = ((ctx.save and ctx.save.party) or {})[index + 1]
+    if require("src.world.Gen4WaterfallRide").start(ow, p.facing, mon) then return end
+  end
   if gen4Climb(ctx, function(b) return b == 0x13 end) then return end
   if ow.tryWaterfallOW then
     local handled = ow:tryWaterfallOW()
@@ -6660,7 +6730,16 @@ end
 -- exactly this -- "decoded and lowered, the thing it drives is not built" --
 -- and a second hand-rolled copy of its say-once logic would be this port's
 -- favourite fault in miniature.
-function Commands.g4_use_rock_climb(ctx)
+function Commands.g4_use_rock_climb(ctx, slot)
+  -- PLATINUM: FieldTask_UseRockClimb -- the cut-in, the `rock_ride` mount, the
+  -- hop on, the fast climb, the hop off and the debris (Gen4RockClimbRide)
+  local RC = require("src.world.Gen4RockClimbRide")
+  local ow = ctx.overworld
+  if RC.platinum() and ow and ow.player then
+    local index = math.floor(tonumber(valueOf(ctx, slot)) or 0)
+    local mon = ((ctx.save and ctx.save.party) or {})[index + 1]
+    if RC.start(ow, ow.player.facing, mon) then return end
+  end
   local ok = gen4Climb(ctx, function(b, dir)
     if dir == "up" or dir == "down" then return b == 0x4B end
     return b == 0x4C
@@ -7418,6 +7497,25 @@ end
 -- Nothing a player sees changes: the trigger this gates is a no-op in this port
 -- (see Gen4ScriptVM, and Gen4PlatformLifts for why all nine rooms are walkable
 -- without their lift). What changes is that the var is written.
+-- `triggerplatformlift` -- PlatformLift_Trigger: the slab and the player on it
+-- ride to the other floor (src/world/Gen4PlatformLiftRide.lua); a League lift
+-- at the top stays there.
+function Commands.g4_platform_lift_ride(ctx)
+  local ow = ctx.overworld
+  local def = ow and ow.map and ow.map.def
+  local data = (ctx.game and ctx.game.data) or (package.loaded["src.core.Game"] or {}).data
+  local step = def and require("src.world.Gen4PlatformLiftRide").trigger(def, data)
+  if not step then return end
+  local runner = ctx.runner
+  if not runner then
+    repeat until step()
+    return
+  end
+  runner.waitingCheck = step
+  runner:yield()
+end
+Commands.meta.g4_platform_lift_ride = { blocking = true }
+
 function Commands.g4_platform_lift_bottom(ctx, destVar)
   local Lifts = require("src.import.Gen4PlatformLifts")
   local ow = ctx.overworld
@@ -7536,7 +7634,19 @@ function Commands.g4_map_feature_init(ctx, which, operand)
   if which == "eterna" then return M.initForEternaGym(save) end
   if which == "villa" then return M.initForVilla(save) end
   if which == "distortion" then return M.initForDistortionWorld(save) end
-  if which == "platformlift" then return M.initForPlatformLift(save) end
+  if which == "platformlift" then
+    -- ...and the slab put at the floor the player came in on
+    -- (src/world/Gen4PlatformLiftRide.lua)
+    local ow = ctx.overworld
+    local p = ow and ow.player
+    local def = ow and ow.map and ow.map.def
+    if def then
+      local _, pz = toMatrix(ctx, p and p.cellX, p and p.cellY)
+      require("src.world.Gen4PlatformLiftRide").place(def, (ctx.game and ctx.game.data)
+        or (package.loaded["src.core.Game"] or {}).data, pz)
+    end
+    return M.initForPlatformLift(save)
+  end
   if which == "greatmarsh" then return M.initForGreatMarsh(save) end
   if which == "sunyshore" then
     -- THE ONLY ONE WITH AN OPERAND, and it needs the player's z as well:
@@ -8683,12 +8793,13 @@ function Commands.g4_hgss_headbutt(ctx, destVar)
   local kind = Gen4Commands.headbuttTreeType(rec, tid, gx, gy)
   if kind < 0 then return end
   local slots = (kind == 0 and rec.common) or (kind == 1 and rec.rare) or rec.secretSlots
-  local slot = slots and slots[headbuttSlot()]
-  if not (slot and (slot.species or 0) > 0) then return end
-  local level = rollLevel(slot)
-  if repelled(ctx, level) then return end
+  -- FieldSystem_PerformHeadbuttEncounterCheck -> GenerateRegularEncounter:
+  -- the lead's Magnet Pull / Static slot, its level roll, Keen Eye /
+  -- Intimidate -- and NOT Repel (isRepel is set only by the step check)
+  local enc = require("src.script.Gen4FieldEncounters").headbutt(ctx, slots, headbuttSlot, rollLevel)
+  if not enc then return end
   setVar(ctx.save, destVar, 1)
-  Commands.start_battle(ctx, "wild", slot.species, level)
+  Commands.start_battle(ctx, "wild", enc.species, enc.level)
 end
 Commands.meta.g4_hgss_headbutt = { foreground = true, blocking = true }
 
@@ -8727,15 +8838,15 @@ function Commands.g4_hgss_rock_smash(ctx, followUsed, foundVar, itemVar)
   -- the encounter (FieldSystem_PerformRockSmashEncounterCheck)
   local enc = data and data.encounters and def and data.encounters[def.encounters]
   local rs = enc and enc.rockSmash
-  local rate = rs and tonumber(rs.rate) or 0
+  -- ApplyAbilityEffectToEncounterRate on the rate, then the regular
+  -- generator (lead abilities; Repel does not apply)
+  local FE = require("src.script.Gen4FieldEncounters")
+  local rate = FE.rockSmashRate(ctx, rs and tonumber(rs.rate) or 0)
   if rate > 0 and lcrng(100) < rate then
-    local slot = rs.slots and rs.slots[(lcrng(100) >= 80) and 2 or 1]
-    if slot and (slot.species or 0) > 0 then
-      local level = rollLevel(slot)
-      if not repelled(ctx, level) then
-        Commands.start_battle(ctx, "wild", slot.species, level)
-        return
-      end
+    local smash = FE.rockSmash(ctx, rs.slots, rollLevel)
+    if smash then
+      Commands.start_battle(ctx, "wild", smash.species, smash.level)
+      return
     end
   end
   -- the item (CheckRockSmashItemDrop / Task_GetRockSmashItem)
@@ -8884,7 +8995,14 @@ function Commands.g4_buffer_type_name(ctx, slot, typeVar)
   local t = math.floor(valueOf(ctx, typeVar))
   local Gen4Text = require("src.import.Gen4Text")
   local data = ctx.game and ctx.game.data
-  local text = data and data.text and data.text[Gen4Text.label(624, t)]
+  -- HeartGold / SoulSilver keep the type names in their own bank (735,
+  -- Gen4Versions' typeName); their bank 624 is an NPC's dialogue
+  local bank = 624
+  if require("src.import.Gen4ScriptBands").family == "hgss" then
+    local okV, V = pcall(require, "src.import.Gen4Versions")
+    bank = okV and V.OVERRIDES.heartgold.bank.typeName or 735
+  end
+  local text = data and data.text and data.text[Gen4Text.label(bank, t)]
   -- Black / White: the constants stage's own type names (Gen 5's order)
   if require("src.import.Gen4ScriptBands").family == "bw" then
     local types = data and data.constants and data.constants.types
@@ -10383,7 +10501,7 @@ function Commands.g4_mystery_gift_phrase(ctx, destVar, w1, w2, w3, w4)
   if want then
     local w = {}
     for i, x in ipairs({ w1, w2, w3, w4 }) do w[i] = EasyChat.toString(data, valueOf(ctx, x)) end
-    ok = (w[1] .. " " .. w[2] .. "\n" .. w[3] .. " " .. w[4]) == want
+    ok = (w[1] .. " " .. w[2] .. "\n" .. w[3] .. " " .. w[4]) == want  -- strings: comparing phrases
   end
   setVar(ctx.save, destVar, ok and 1 or 0)
 end

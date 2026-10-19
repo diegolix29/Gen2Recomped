@@ -509,6 +509,18 @@ L.ALIASES = {
   -- 0x0BF <zone, x, z, dir>: the lobby's walk onto the field (ov21
   -- 0x021AFE64 -> 0x02185050, 0x0BE's shape) -- Z079 `0BF 82 9 61 0`
   [0x0BF] = { "warp", "wwww", { 1, 1, 2, 3, 4 } },
+  -- THE POKEMON MUSICAL (src/script/Gen5Musical.lua, ov10 scrcmd_musical.c
+  -- 0x0215D34C..0x0215DB38): 0x167 <slot var, u8 mode> the show (2 the
+  -- photo), 0x168 <slot var> Dress Up alone, 0x169 <u8 fn, arg, dest> the
+  -- queries, 0x16A <fan, u8 kind, dest>, 0x16B <fn, a, b, dest> the event's
+  -- work, 0x16C <prop> a prop given, 0x16D <fan> its gift handed over, 0x16E
+  -- <result, slot> choose the Pokemon, 0x05D <u8 kind, u8 buffer, value> a
+  -- Musical word
+  [0x167] = { "bwmusicalshow", "wb" }, [0x168] = { "bwmusicaldressup", "w" },
+  [0x169] = { "bwmusicalquery", "bww" }, [0x16A] = { "bwmusicalfan", "wbw" },
+  [0x16B] = { "bwmusicalevent", "wwww" }, [0x16C] = { "bwmusicaladdprop", "w" },
+  [0x16D] = { "bwmusicalfandone", "w" }, [0x16E] = { "bwmusicalpick", "ww" },
+  [0x05D] = { "bwmusicalword", "bbw" },
 }
 
 -- THE STACK FORM. Most of BW's conditional jumps are an expression on the

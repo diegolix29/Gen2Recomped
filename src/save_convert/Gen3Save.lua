@@ -1433,7 +1433,11 @@ function Gen3Save.buildBoxMon(mon, cw, owner)
         or string.rep("\255", Gen3Save.OT_NAME_LENGTH))
     .. b8(math.floor(tonumber(mon.gen3Markings) or 0))
     .. b16(0) .. b16(0)
-    .. string.rep("\0", Gen3Save.SECURE_SIZE)
+    -- THE SECURE HALF STARTS AS ENCRYPTED ZEROS: patchBoxMon decrypts before
+    -- it writes, and raw zero bytes decrypt to the key itself -- so every
+    -- field a build does not set (the ribbon word and its fateful bit, an
+    -- empty move slot, no held item) came out as personality ^ trainer id.
+    .. string.rep(b32(xorU32(personality, otId)), Gen3Save.SECURE_SIZE / 4)
 
   local changes = boxChanges(mon, cw)
   for k, v in pairs(boxOrigins(mon, cw)) do changes[k] = v end

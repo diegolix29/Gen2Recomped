@@ -91,7 +91,7 @@ function Title:scene()
   if not self.colour then
     self.colour=g.newCanvas(256,192);self.depth=g.newCanvas(256,192,{format='depth24'})
   end
-  local old={g.getCanvas()}
+  -- pop restores the bound canvas, depth set included
   g.push('all');g.setCanvas({self.colour,depthstencil=self.depth});g.clear(0,0,0,0,true,true)
   g.origin();g.setScissor();g.setColor(1,1,1,1)
   local eye=self.camera.eye
@@ -108,7 +108,7 @@ function Title:scene()
     actor.model:draw(vp,pose,require('src.render.Gen4TexAnim').materials(actor.materials,self.frame,actor.images))
   end
   Model.depthFog=fog
-  g.setCanvas(old[1] and old or nil);g.pop()
+  g.pop()
   return self.colour
 end
 function Title:panel(sub)

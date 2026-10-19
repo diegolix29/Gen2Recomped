@@ -165,6 +165,11 @@ do
   files["save.lua"] = "junk("
   files["save.lua.tmp"] = "junk("
   files["save.lua.bak"] = "junk("
+  -- ...including the stamped snapshots (SaveSafety), which otherwise keep the
+  -- save recoverable after .tmp and .bak are both gone
+  for name in pairs(files) do
+    if name:find("^save%.lua%.bak%-") then files[name] = "junk(" end
+  end
   check(SaveData.load() == nil, "unrecoverable save returns nil")
 
   love.filesystem = realFS

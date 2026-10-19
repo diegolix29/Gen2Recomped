@@ -53,9 +53,21 @@ Gen4FishingTask.POSE = {
   left = { 15, 1, 2, 3 }, right = { 4, 5, 6, 7 },
 }
 
+-- Black / White's rod sheet (Gen5PlayerForms): four a facing, right mirrored
+Gen4FishingTask.BW_POSE = {
+  up = { 0, 1, 2, 3 }, down = { 4, 5, 6, 7 },
+  left = { 8, 9, 10, 11 }, right = { 8, 9, 10, 11 },
+}
+local function poseTable()
+  return require("src.core.GameVersion").isGen5() and Gen4FishingTask.BW_POSE or Gen4FishingTask.POSE
+end
+
 local MESSAGES = {
   platinum = { bank = 213, nibble = 54, away = 55, early = 56, landed = 57 },
   hgss = { bank = 40, nibble = 49, away = 50, early = 51, landed = 52 },
+  -- Black / White: story bank 263 (3 landed, 4 nibble, 5 too quickly, and
+  -- 6 "Reeled it in too late!" where the DS games before said it got away)
+  bw = { bank = 263, nibble = 4, away = 6, early = 5, landed = 3 },
 }
 local FALLBACK = {
   nibble = "Not even a nibble...", away = "The Pok\195\169mon got away...",
@@ -70,7 +82,8 @@ local function isHgss()
 end
 
 function Gen4FishingTask.message(game, key)
-  local m = MESSAGES[isHgss() and "hgss" or "platinum"]
+  local GV = require("src.core.GameVersion")
+  local m = MESSAGES[GV.isGen5() and "bw" or isHgss() and "hgss" or "platinum"]
   local ok, T = pcall(require, "src.import.Gen4Text")
   local text = ok and T.resolve and T.resolve(game.data, m.bank, m[key], game)
   if type(text) == "string" and text ~= "" then
@@ -149,10 +162,16 @@ function Gen4FishingTask.start(ow, rod, enc, opts)
     local sheet = p.gen4FishSheets[key]
     if not sheet then
       sheet = SpriteRenderer.new(def, "player")
+      -- Black / White's 64 x 64 rod frames stand the rider where the 32 x 32
+      -- walk frames do: the body is centred in the bigger frame
+      if require("src.core.GameVersion").isGen5() and sheet.tileH == 64 then
+        sheet.offsetY = sheet.offsetY - 16
+      end
       p.gen4FishSheets[key] = sheet
       pcall(function() require("src.render.PlayerPalette").apply(sheet, game.data, game.save) end)
     end
-    p.gen4Fish = { sprite = sheet, frame = Gen4FishingTask.POSE[p.facing or "down"][1] }
+    p.gen4Fish = { sprite = sheet, frame = poseTable()[p.facing or "down"][1],
+                   flip = require("src.core.GameVersion").isGen5() and p.facing == "right" or nil }
   end
   game.stack:push(self)
   return self
@@ -161,7 +180,7 @@ end
 function Gen4FishingTask:pose(step)
   local p = self.ow.player
   if not (p and p.gen4Fish) then return end
-  local cycle = Gen4FishingTask.POSE[p.facing or "down"] or Gen4FishingTask.POSE.down
+  local cycle = poseTable()[p.facing or "down"] or poseTable().down
   p.gen4Fish.frame = cycle[math.max(1, math.min(4, step))]
 end
 
@@ -181,6 +200,9 @@ end
 
 function Gen4FishingTask:putAway(caught)
   self:clearBubble()
+  if require("src.core.GameVersion").isGen5() then
+    require("src.world.Gen5FishingLure").reel(self.ow, caught)
+  end
   self.caught = caught
   self.state, self.counter = "putAway", 0
 end
@@ -189,19 +211,30 @@ function Gen4FishingTask:frame(pressedA)
   local st = self.state
   if st == "cast" then
     self.counter = self.counter + 1
-    if self.counter == 10 then sound(self.game, "SEQ_SE_DP_FW104") end
+    if self.counter == 10 then sound(self.game, require("src.core.GameVersion").isGen5() and "SEQ_SE_FLD_19" or "SEQ_SE_DP_FW104") end
     self:pose(1 + math.floor(self.counter / 8))
     if self.counter < 34 then return end
     self:pose(4)
     self.counter = 0
+    -- BLACK / WHITE: the lure lands on the water (src/world/Gen5FishingLure.lua)
+    local bw = require("src.core.GameVersion").isGen5()
+    if bw then require("src.world.Gen5FishingLure").cast(self.ow) end
     if self.enc then
       self.delay = ((self.rng(0, 65535) % 4) + 1) * 30
       self.hook = Gen4FishingTask.hookWindow(self.game, self.ow, self.rod)
+      -- ...and waits rand(90) + 30 frames, the hook open 30 (ov21 0x21C5DF4)
+      if bw then self.delay, self.hook = self.rng(0, 89) + 30, 30 end
       self.state = "waitFish"
     else
       self.counter = 30 * 4
       self.state = "waitNoFish"
     end
+    -- SAME FRAME: FishingTask_CastRod returns TRUE, so SetFishWait /
+    -- WaitForFish (or the no-fish pair) run in the cast's last frame --
+    -- that frame already counts down and already reads A (pokeplatinum
+    -- src/overlay005/fishing.c; HGSS ov01_021FC814 / _021FC84C /
+    -- _021FC9DC all return 1). Platinum / HGSS only; BW keeps its own.
+    if not bw then return self:frame(pressedA) end
   elseif st == "waitFish" then
     self.delay = self.delay - 1
     if pressedA then return self:early() end
@@ -210,8 +243,12 @@ function Gen4FishingTask:frame(pressedA)
     local frames = require("src.import.Gen4Emotes").FRAMES
     self.bubble = { npc = owner, frames = 9999, totalFrames = frames, bubble = 1, age = 0 }
     self.ow.emote = self.bubble
-    sound(self.game, "SEQ_SE_DP_DECIDE")
+    sound(self.game, require("src.core.GameVersion").isGen5() and "SEQ_SE_FLD_07" or "SEQ_SE_DP_DECIDE")
     self.state, self.counter = "checkReel", 0
+    -- ...and WaitForFish returns TRUE on the bite (HGSS ov01_021FC88C), so
+    -- CheckForReelInFish spends its first frame of the window here: A is
+    -- taken on N-1 frames after the "!", not N
+    if not require("src.core.GameVersion").isGen5() then return self:frame(false) end
   elseif st == "checkReel" then
     self.hook = self.hook - 1
     self.counter = self.counter + 1
@@ -223,6 +260,7 @@ function Gen4FishingTask:frame(pressedA)
     end
     if pressedA then
       self:clearBubble()
+      if require("src.core.GameVersion").isGen5() then require("src.world.Gen5FishingLure").remove(self.ow) end
       self.state, self.counter = "reel", 0
       return
     end

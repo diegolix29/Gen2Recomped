@@ -21,6 +21,8 @@ local Events = require("src.mods.Events")
 local Hooks = require("src.mods.Hooks")
 local ModStorage = require("src.mods.Storage")
 local Runtime = require("src.mods.Runtime")
+local ModGens = require("src.mods.ModGens")
+local ModSeams = require("src.mods.ModSeams")
 -- Module-name aliases for mods written against the Gold port's per-generation
 -- layout (src.world.gen2.Player and friends).  Installed here because this is
 -- the module that loads mods: the searcher has to be in place before the
@@ -240,6 +242,59 @@ function Loader:_discover()
       if okRoot then confine = root end
     end
   end
+  -- EVERY COPY, THEN ONE PER ID (src/mods/ModCopies.lua).  This used to keep
+  -- whichever folder getDirectoryItems listed first and file the others as
+  -- "duplicate mod id" errors -- so which version ran depended on directory
+  -- order, an older copy could win over the update next to it, and the same
+  -- folder name in the save directory and the game folder loaded as one mod
+  -- stitched together from both.  A dev-linked mod dir (ln -s) reports type
+  -- "symlink" and is scanned like a directory.
+  local ModCopies = require("src.mods.ModCopies")
+  local fs = self.fs
+  local scan = ModCopies.scan(fs, {
+    root = roots[1],
+    decode = function(raw, path)
+      local data, decodeErr = Json.decode(raw)
+      if not data then return nil, decodeErr end
+      local ok, manifest = pcall(Manifest.validate, data, path)
+      if not ok then return nil, manifest end
+      return manifest
+    end,
+    -- with a chosen game-data folder only it and the game's own source
+    -- count, decided per copy so a stale save-directory copy in front of
+    -- the chosen folder's cannot hide it
+    allowReal = confine and require("src.mods.ModCopies").confinedTo(confine) or nil,
+    -- peeking inside a zip needs the real filesystem
+    peekZip = (love and love.filesystem and fs == love.filesystem) and nil or false,
+  })
+  for id, copy in pairs(scan.winners) do
+    self.mods[id] = { manifest = copy.manifest, path = copy.path,
+                      home = copy.home, where = copy.where }
+  end
+  self.ignoredCopies = {}
+  for _, row in ipairs(scan.ignored) do
+    local c, w = row.copy, row.winner
+    self.ignoredCopies[#self.ignoredCopies + 1] = {
+      id = c.id, version = c.version, path = c.where or c.path, home = c.home,
+      winner = w.where or w.path, winnerVersion = w.version, reason = row.reason,
+    }
+    Logger.info("mod %s: loading %s %s from %s; ignoring the copy at %s -- %s",
+      tostring(c.id), tostring(w.version), w.home or "?", tostring(w.where or w.path),
+      tostring(c.where or c.path), tostring(row.reason))
+  end
+  self.zipNotes = {}
+  for _, z in ipairs(scan.zips) do
+    self.zipNotes[#self.zipNotes + 1] = z
+    if z.status == "newer" or z.status == "not_installed" then
+      Logger.warn("mods: %s", z.note)
+    else
+      Logger.info("mods: %s", z.note)
+    end
+  end
+  for _, note in ipairs(scan.notes) do Logger.warn("mods: %s", note) end
+  for _, bad in ipairs(scan.invalid) do
+    Logger.warn("mod %s ignored: %s", bad.path, tostring(bad.err))
+  end
 
   for _, root in ipairs(roots) do
     -- Check if directory exists and is listable
@@ -393,7 +448,9 @@ function Loader:_fail(mod, state, reason)
 end
 
 local function isActive(mod)
-  return mod.enabled and not mod.failed
+  -- a superseded mod keeps the player's flag and simply does not run: another
+  -- enabled copy of the same mod does (src/mods/ModCopies.lua)
+  return mod.enabled and not mod.failed and not mod.superseded
 end
 
 function Loader:_exists(path)
@@ -445,6 +502,9 @@ function Loader:_enforceDependencies()
           reason = ("dependency %s is disabled"):format(spec.id)
         elseif dep.failed then
           reason = ("dependency %s failed to load"):format(spec.id)
+        elseif dep.superseded then
+          reason = ("dependency %s is not loaded: %s"):format(spec.id,
+            tostring(dep.supersededBy))
         elseif spec.range
             and not Semver.satisfies(dep.manifest.version, spec.range) then
           reason = ("needs %s@%s, found %s")
@@ -947,7 +1007,15 @@ function Loader:_api(mod)
   -- from one call so the pair is built the same way for every mod; see
   -- src/mods/ImportAccess.lua for why neither is a second implementation.
   api.imports, api.cache = ImportAccess.new(mod.manifest, loader.fs,
-    function(rel) return loader.fs.read(mod.path .. "/" .. rel) end)
+    function(rel)
+      local data = loader.fs.read(mod.path .. "/" .. rel)
+      -- a copy read through its own mount (ModCopies) still finds a base
+      -- file the player imported into the folder under its logical name
+      if data == nil and mod.manifest.path and mod.manifest.path ~= mod.path then
+        data = loader.fs.read(mod.manifest.path .. "/" .. rel)
+      end
+      return data
+    end)
   -- mod.world / mod.game / mod.storage all materialize on first touch, for
   -- the same reason: a headless load must not drag the world stack in, and
   -- the Game the facade acts on is still being wired when the entry chunk
@@ -1128,6 +1196,11 @@ local function stampAudioOwners(data, name, registry)
 end
 
 function Loader:load(data)
+  -- A SECOND LOAD IN ONE PROCESS STARTS FROM THE ENGINE, NOT FROM THE LAST
+  -- LOAD'S MODS.  EXIT GAME -> launcher -> Play runs every mod's main.lua
+  -- again (and the launcher backdrop boots the plain game in between); the
+  -- wraps and flags the previous load put on engine tables come off first.
+  ModSeams.unwindAll()
   self.baseData = data
   -- every registry folds against the pristine view of its Data target;
   -- resolution is lazy so optional namespaces may appear later
@@ -1160,6 +1233,46 @@ function Loader:load(data)
     mod.enabled = not self.disabled[id]
     mod.state = mod.enabled and "pending" or "disabled"
   end
+  -- ONE ENABLED COPY PER MOD.  Two ids can be one mod: a launcher copy
+  -- (install_source_id), a rename (previous_ids), a fork that kept the
+  -- parent's old id (ModCopies.ALIASES).  Both enabled used to mean both
+  -- entry chunks ran -- two sets of wraps, two sets of option rows, and the
+  -- second one failing half-way on a registry collision with its residue
+  -- left on the engine.  The better copy runs; the other is reported.
+  do
+    local ok, losers = pcall(require("src.mods.ModCopies").supersede, self.mods,
+      function(id, mod) return mod.enabled end)
+    for _, row in ipairs(ok and losers or {}) do
+      local mod = self.mods[row.id]
+      mod.superseded = true
+      mod.supersededBy = row.winner
+      mod.state = "superseded"
+      mod.failure = ("not loaded: %s"):format(row.reason)
+      Logger.warn("mod %s %s is not loaded -- %s; switch that one off to use "
+        .. "this one", row.id, tostring(mod.manifest.version), row.reason)
+    end
+  end
+  -- the two lifecycle events mods do their late installs in are journaled
+  -- like an entry chunk (Terrarium reinstalls its whole Colosseum runtime on
+  -- mods.loaded; DRAMATIC_SHAPE wires its battle seams on game.ready)
+  do
+    local events = self.events
+    local emit0 = events.emit
+    local LIFECYCLE = { ["mods.loaded"] = true, ["game.ready"] = true }
+    events.emit = function(bus, name, payload)
+      if not LIFECYCLE[name] then return emit0(bus, name, payload) end
+      local token = ModSeams.open("lifecycle:" .. tostring(name))
+      local ok, err = pcall(emit0, bus, name, payload)
+      ModSeams.close(token)
+      if not ok then error(err, 0) end
+    end
+  end
+  -- `require("mods.<id>...")` reads the copy chosen above, under one name
+  pcall(function()
+    local ModCopies = require("src.mods.ModCopies")
+    ModCopies.setActive(self.mods)
+    ModCopies.installSearcher()
+  end)
   -- engine call sites reach these buses -- and this error feed, for failures
   -- that only surface at play time -- through Runtime from here on
   Runtime.install(self.events, self.hooks, self.errors)
@@ -1174,9 +1287,17 @@ function Loader:load(data)
       self.journal = {}
       -- the dev tripwire attributes requires to whoever is running
       Runtime.currentMod = modId
+      -- what the entry chunk does to the engine's own tables is journaled,
+      -- so a failed chunk leaves none of it behind and the next load in this
+      -- process starts from the engine as it was (src/mods/ModSeams.lua)
+      local seams = ModSeams.open(modId)
       local success, err = pcall(self._loadMod, self, mod)
+      ModSeams.close(seams)
       Runtime.currentMod = nil
-      if not success then self:_rollback(modId) end
+      if not success then
+        self:_rollback(modId)
+        ModSeams.unwindOwner(modId)
+      end
       self.journal = nil
       if success then
         mod.state = "loaded"
@@ -1341,7 +1462,28 @@ function Loader:status()
   table.sort(available, function(a, b) return a.id < b.id end)
   table.sort(loaded, function(a, b) return a.id < b.id end)
   return { available = available, loaded = loaded, errors = self.errors,
-    order = self.order }
+    order = self.order,
+    -- the copies that were found and NOT loaded, and why (ModCopies): an
+    -- older version beside a newer one, the other home's copy, a zip
+    ignored = self.ignoredCopies or {}, zips = self.zipNotes or {} }
+end
+
+-- BACK TO THE LAUNCHER WITH NOTHING OF THE LAST GAME'S MODS STILL RUNNING.
+--
+-- main.lua's returnToLauncher lets go of the Game and raises the launcher in
+-- the same process.  The mods' wraps on engine tables, their globals and
+-- preload entries, their listeners on the live buses and their asset search
+-- path were all still in place: the launcher (and the plain-game backdrop it
+-- boots) ran on a modded engine whose mod instance nothing drives any more,
+-- and the next Play loaded every mod on top of what the last one left.
+function Loader.teardown()
+  local undone = select(1, ModSeams.unwindAll())
+  pcall(function()
+    Runtime.install(Events.new(), Hooks.new(), nil)
+    Runtime.currentMod = nil
+  end)
+  pcall(function() Assets.installLoader(nil) end)
+  return undone
 end
 
 return Loader

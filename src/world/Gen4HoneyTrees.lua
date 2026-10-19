@@ -81,4 +81,68 @@ function H.facingTree(ground,fx,fy)
  end
  return false
 end
+-- THE SHAKING TREE (pokeplatinum honey_tree.c DoTreeShakingAnimation): a tree
+-- that can hold a Pokemon (six hours after slathering) and rolled 1..3 shakes
+-- wears the honey_tree prop's map-prop animation `shakes - 1`
+-- (GetShakingValue: 3 -> 2, 2 -> 1, 1 -> 0, 0 none), added LOOPING
+-- (MapPropAnimationManager_AddAnimationToRenderObj(.., shakeValue, 1, ..)).
+-- Its three animations are bm_anime members 1..3 (`treeeff01`..`03`, 25
+-- frames), claimed by build_model 26 `treeeff` -- the cache's own join. Played
+-- here as a one-shot slot (Gen4PropOneShot) under its own tag, restarted at
+-- its end; HoneyTree_StopShaking is the slot going when the tree empties.
+H.MODEL,H.SHAKE_TAG,H.FIRST_ANIM=26,'honeyTreeShake',1
+function H.shakeValue(shakes)
+ shakes=tonumber(shakes) or 0
+ if shakes>=1 and shakes<=3 then return shakes-1 end
+end
+-- the honey_tree prop on THIS map's own chunks (MapPropManager_FindLoadedPropByModelID
+-- in the map's quadrant), not the next map's
+local function treeObject(ground,map)
+ if ground.honeyTreeObject~=nil then return ground.honeyTreeObject or nil end
+ local found=false
+ local grid,terrain=ground.grid,ground.terrain
+ local chunk=ground.chunkPx or 512
+ if grid and grid.land and terrain and map then
+  local x0=math.floor((ground.offsetX or 0)/chunk)
+  local y0=math.floor((ground.offsetY or 0)/chunk)
+  local x1=math.floor(((ground.offsetX or 0)+(map.widthCells or 0)*16-1)/chunk)
+  local y1=math.floor(((ground.offsetY or 0)+(map.heightCells or 0)*16-1)/chunk)
+  for cy=y0,y1 do for cx=x0,x1 do
+   local land=not found and cx>=0 and cy>=0 and cx<grid.width and grid.land[cy*grid.width+cx+1]
+   local record=land and terrain.chunks and terrain.chunks[land]
+   for _,object in ipairs(record and record.objects or {}) do
+    if object.model==H.MODEL and not object.archive then found=object break end
+   end
+  end end
+ end
+ ground.honeyTreeObject=found
+ return found or nil
+end
+function H.shakeTick(ow,now)
+ local G=package.loaded['src.core.Game']
+ local save=G and G.save
+ local def=ow and ow.map and ow.map.def
+ local id=def and H.treeId(def.header)
+ local slots=ow and ow.gen4OneShots
+ local function stop() if slots then slots[H.SHAKE_TAG]=nil end end
+ if not (save and id) then stop() return end
+ local tree=state(save).trees[id]
+ local value=tree and H.status(save,id,now)==3 and H.shakeValue(tree.shakes)
+ local ground=ow.map.renderer and ow.map.renderer.gen4Ground
+ local object=value and ground and treeObject(ground,ow.map)
+ if not object then stop() return end
+ ow.gen4OneShots=ow.gen4OneShots or {}
+ slots=ow.gen4OneShots
+ local anim=H.FIRST_ANIM+value
+ local slot=slots[H.SHAKE_TAG]
+ local record=ground.animsByMember and ground.animsByMember[anim]
+ local frames=record and tonumber(record.frames) or 25
+ if not slot or slot.animation~=anim or slot.object~=object then
+  slot={tag=H.SHAKE_TAG,model=H.MODEL,object=object,animation=anim,frames=frames,frame=0,ticks=0}
+  slots[H.SHAKE_TAG]=slot
+ end
+ -- its own clock, one frame a field frame (two engine ticks), looping
+ slot.ticks=(slot.ticks or 0)+1
+ slot.frame=math.floor(slot.ticks/2)%slot.frames
+end
 return H

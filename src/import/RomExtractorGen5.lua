@@ -626,6 +626,10 @@ function X:extractBattleSprites()
   -- ...and the battle's own interface (src/import/Gen5BattleUi.lua)
   local ui = require("src.import.Gen5BattleUi").build(self)
   if ui then self:write("gen5_battle_ui", ui) end
+  -- ...and its four-pocket bag on the touch screen (src/import/Gen5BattleBagArt.lua)
+  local okBag, battleBag = pcall(require("src.import.Gen5BattleBagArt").build, self)
+  if okBag and battleBag then self:write("gen5_battle_bag", battleBag)
+  elseif not okBag then print("Gen5BattleBagArt failed: " .. tostring(battleBag)) end
   -- ...and its 3D backdrops and platforms (src/import/Gen5BattleScene.lua)
   local scene = require("src.import.Gen5BattleScene").build(self)
   if scene then self:write("gen5_battle_scene", scene) end
@@ -687,6 +691,21 @@ function X:extractBootScreens()
   local okS, starter = pcall(require("src.import.Gen5StarterArt").build, self)
   if okS and starter then self:write("gen5_starter_art", starter)
   elseif not okS then print("Gen5StarterArt failed: " .. tostring(starter)) end
+  -- ...and the naming keyboard (src/import/Gen5NamingArt.lua, overlay 194)
+  local okN, naming = pcall(require("src.import.Gen5NamingArt").build, self)
+  if okN and naming then self:write("gen5_naming_art", naming)
+  elseif not okN then print("Gen5NamingArt failed: " .. tostring(naming)) end
+end
+
+-- THE MOVE ANIMATIONS (src/import/Gen5MoveAnimData.lua): the effect VM's
+-- programs, the SPA particles they load and their BG3 pictures (STAGE_ONLY
+-- can name this one: extractMoveAnims)
+function X:extractMoveAnims()
+  local okM, anims, particles = pcall(require("src.import.Gen5MoveAnimData").build, self)
+  if okM and anims then
+    self:write("gen5_move_anims", anims)
+    if particles then self:write("gen5_particles", particles) end
+  elseif not okM then print("Gen5MoveAnimData failed: " .. tostring(anims)) end
 end
 
 function X:run()
@@ -704,6 +723,7 @@ function X:run()
   self:extractAudio()
   self:extractBattleSprites()
   self:extractBootScreens()
+  self:extractMoveAnims()
   local skipped = {}
   for _, name in ipairs(X.ALL_STAGES) do
     local done = false

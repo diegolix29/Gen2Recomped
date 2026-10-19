@@ -1,7 +1,7 @@
 package.path='./?.lua;'..package.path
 local checks=0;local function check(v,label) assert(v,label);checks=checks+1 end
 package.loaded['src.core.Logger']={debug=function() end,warn=function() end,info=function() end}
-package.loaded['src.render.Assets']={resolve=function(path) return path end}
+package.loaded['src.render.Assets']={resolve=function(path) return path end,register=function() end}
 package.loaded['src.core.Music']={duckForCry=function() end}
 local made=0;local cached
 local function source()

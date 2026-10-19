@@ -593,6 +593,236 @@ function BattleArena.levelled(map, arena, g)
   return ((hi or 0) - (lo or 0)) <= BattleArena.LEVEL_EPS
 end
 
+-- ------- THE FIGHT HAPPENS WHERE IT STARTED
+--
+-- Reported from play: *"its too spaced out, many times the pokemon ends up in
+-- the bushes or out of view ... shrink [it] so that it takes place within a 4
+-- to 6 tile area where the encounter takes place, and always place them
+-- inside a walkable area"*.
+--
+-- The authored spot and the map-wide search below both answer "the best
+-- clearing on this map", which on a grass route is the bare path -- often a
+-- dozen cells from the step the fight came from, and behind whatever stands
+-- between there and the long lens nine tiles further back.  So before either
+-- is asked, the patch the encounter happened on is: the player's own Pokemon
+-- on the player's cell or within two of it, the foe three cells away along the
+-- player's FACING -- a quarter turn either way, then turned round, when the
+-- facing has no room -- and every cell under them and between them one the
+-- player could stand on.  The whole stage is then at most four cells from
+-- where the player is standing.
+--
+-- It is shot through the SHORT lens (BattleCam.RIGS.wide) rather than the
+-- long one: the long lens's seat is nine tiles back, which is outside any
+-- local patch and through whatever stands round it, while the short one sits
+-- about three tiles off -- and it frames the pair a little over half a tile
+-- tall each, which is the smaller pair the report asked for.  Both rigs are
+-- solved against the same four screen anchors, so the HUDs, the pins and the
+-- move animations land exactly where they always did.
+--
+-- Passes, in order, each over every candidate (cheapest wins, cost = how far
+-- the stage had to turn or step off the player's cell):
+--   1. no tall grass anywhere in it, one floor, both mons proved visible;
+--   2. no tall grass, visible;
+--   3. tall grass round them but not on the two mon cells, visible;
+--   4. grass allowed (a field is a field), visible;
+--   5. grass allowed, unproved -- still beats staging it a route away.
+-- The wide shape (a one-cell apron each side) before the narrow one within
+-- each pass.  Only when no pass finds anything -- a one-cell dead end, a
+-- doorway, a ledge -- does the old map-wide answer get asked.
+BattleArena.LOCAL_REACH = 2        -- cells the near mon may stand off the player
+BattleArena.LOCAL_CAM = "wide"     -- the lens a local stage is shot through
+BattleArena.LOCAL_TURN_COST = { 0, 1.2, 1.2, 2.6 }
+
+-- Each local shape, as cells relative to the near mon in its own frame:
+-- `a` along the stage (toward the foe), `l` across it (to the right).
+local LOCAL_SHAPES = {
+  { id = "wide", w = 3, h = 6, gap = 3, alongMin = -1, alongMax = 4, lat = 1 },
+  { id = "narrow", w = 1, h = 4, gap = 3, alongMin = 0, alongMax = 3, lat = 0 },
+}
+
+local LOCAL_PASSES = {
+  { grass = "none",  level = true,  clear = true },
+  { grass = "none",  level = false, clear = true },
+  { grass = "apron", level = false, clear = true },
+  { grass = "any",   level = false, clear = true },
+  { grass = "any",   level = false, clear = false },
+}
+
+local QUARTER = { up = 0, right = 1, down = 2, left = 3 }
+
+-- (open, grass) for one cell: open is the walk test the player answers to
+-- (openCell's, without its grass veto), water only where `water` allows it.
+--
+-- Grass is what the MESHER stands up as tufts, which is two different tests:
+-- `isGrassCell` on Kanto and Johto, and the cartridge's behaviour byte on a
+-- Gen 3 map (Structures.buildGen3Grass: Emerald, FireRed and LeafGreen stand
+-- their grass up as sprite cards that bury a mon to the shoulders) -- so ask
+-- both, the Gen 3 one through the same metatile -> attributes -> grass_kind
+-- lookup the mesher uses.
+local function gen3Grass(map)
+  local okG, Gen3 = pcall(V.require, "Gen3")
+  if not (okG and Gen3 and Gen3.mapIsGen3) then return nil end
+  local okM, is3 = pcall(Gen3.mapIsGen3, map)
+  if not (okM and is3) then return nil end
+  local okC, ctx = pcall(Gen3.forMap, map)
+  local okS, spec = pcall(Gen3.spec)
+  local kinds = okS and spec and spec.grass_kind
+  if not (okC and ctx and ctx.metatileAt and ctx.attributes and kinds) then return nil end
+  return function(cx, cy)
+    local okT, m = pcall(ctx.metatileAt, cx, cy)
+    if not okT or type(m) ~= "number" then return false end
+    local okA, at = pcall(ctx.attributes, m)
+    if not okA or type(at) ~= "number" then return false end
+    return kinds[at] ~= nil
+  end
+end
+
+local function localCell(map, cx, cy, water, g3grass)
+  if not map:inBounds(cx, cy) then return false end
+  if map:warpAtCell(cx, cy) then return false end
+  if map:isWarpTileCell(cx, cy) then return false end
+  local grass = ((map.isGrassCell and map:isGrassCell(cx, cy))
+                or (g3grass and g3grass(cx, cy))) and true or false
+  if waterCell(map, cx, cy) then return (water and true) or false, false end
+  if map:isWalkableCell(cx, cy) then return true, grass end
+  return (water and map:isWaterCell(cx, cy)) and true or false, false
+end
+
+-- the forward and right unit steps for `q` quarter turns clockwise from north
+local function frame(q)
+  q = q % 4
+  local fx, fy = 0, -1
+  for _ = 1, q do fx, fy = -fy, fx end
+  return fx, fy, -fy, fx
+end
+
+local function placeLocal(shape, q, px, py)
+  local fx, fy, rx, ry = frame(q)
+  local ex, ey = px + fx * shape.gap, py + fy * shape.gap
+  local x0, y0, x1, y1 = math.huge, math.huge, -math.huge, -math.huge
+  for a = shape.alongMin, shape.alongMax do
+    for l = -shape.lat, shape.lat do
+      local cx, cy = px + fx * a + rx * l, py + fy * a + ry * l
+      if cx < x0 then x0 = cx end
+      if cy < y0 then y0 = cy end
+      if cx > x1 then x1 = cx end
+      if cy > y1 then y1 = cy end
+    end
+  end
+  local arena = {
+    shape = shape.id, x = x0, y = y0, w = x1 - x0 + 1, h = y1 - y0 + 1,
+    enemyCell = { ex, ey }, playerCell = { px, py },
+    enemy = { ex * CELL + CELL / 2, ey * CELL + CELL / 2 },
+    player = { px * CELL + CELL / 2, py * CELL + CELL / 2 },
+    -- the turn BattleCam.rig swings the whole shot by (0 = foe to the north)
+    yaw = (q % 4) * math.pi / 2, quarter = q % 4, near = true,
+  }
+  arena.mid = { (arena.enemy[1] + arena.player[1]) / 2,
+                (arena.enemy[2] + arena.player[2]) / 2 }
+  return arena
+end
+
+-- The local arena of a given shape and turn with its near mon on (px, py),
+-- whatever the ground says -- the authoring tool's handle, as `at` is.
+function BattleArena.placeLocal(shapeId, q, px, py)
+  for _, s in ipairs(LOCAL_SHAPES) do
+    if s.id == shapeId then return placeLocal(s, q, px, py) end
+  end
+  return nil
+end
+
+-- findLocal(map, fromX, fromY, facing, surfing, fishing) -> arena or nil
+function BattleArena.findLocal(map, fromX, fromY, facing, surfing, fishing)
+  if not (map and map.widthCells and fromX and fromY) then return nil end
+  local q0 = QUARTER[facing] or 0
+  local memo = {}
+  local g3grass = gen3Grass(map)
+  local function cell(cx, cy, water)
+    local k = ((cy + 64) * 4096 + (cx + 64)) * 2 + (water and 1 or 0)
+    local v = memo[k]
+    if v == nil then
+      local ok, grass = localCell(map, cx, cy, water, g3grass)
+      v = ok and (grass and 2 or 1) or 0
+      memo[k] = v
+    end
+    return v
+  end
+  local stage
+  local function stageFor()
+    if not stage then stage = stageGrid(map) end
+    return stage
+  end
+  local R = BattleArena.LOCAL_REACH
+  local TURNS = { 0, 1, 3, 2 }
+  -- the near mon's cell has to be one the player could WALK to from here --
+  -- not the far side of a wall, a ledge or a counter (the stage footprint
+  -- is open end to end, so the foe is then reachable through it)
+  local reach = { [fromY * 65536 + fromX] = true }
+  do
+    local q, head = { { fromX, fromY } }, 1
+    local steps = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }
+    while head <= #q do
+      local c = q[head]; head = head + 1
+      for _, d in ipairs(steps) do
+        local nx, ny = c[1] + d[1], c[2] + d[2]
+        local k = ny * 65536 + nx
+        if not reach[k] and math.abs(nx - fromX) <= R + 1
+           and math.abs(ny - fromY) <= R + 1
+           and cell(nx, ny, surfing or fishing) ~= 0 then
+          reach[k] = true
+          q[#q + 1] = { nx, ny }
+        end
+      end
+    end
+  end
+  for _, pass in ipairs(LOCAL_PASSES) do
+    for _, shape in ipairs(LOCAL_SHAPES) do
+      local best, bestCost
+      for turn = 1, 4 do
+        local q = q0 + TURNS[turn]
+        local fx, fy, rx, ry = frame(q)
+        for b = 0, -R, -1 do
+          for l = -R, R do
+            local px, py = fromX + fx * b + rx * l, fromY + fy * b + ry * l
+            local cost = BattleArena.LOCAL_TURN_COST[turn]
+                         + math.abs(b) * 0.9 + math.abs(l) * 1.1
+            if reach[py * 65536 + px] and (not bestCost or cost < bestCost) then
+              -- every cell of the footprint: the near mon may stand on water
+              -- only when surfing; the foe, and the water between, also when
+              -- it was fished out of it
+              local ok = true
+              for a = shape.alongMin, shape.alongMax do
+                for lat = -shape.lat, shape.lat do
+                  local cx, cy = px + fx * a + rx * lat, py + fy * a + ry * lat
+                  local monCell = lat == 0 and (a == 0 or a == shape.gap)
+                  local water = surfing or (fishing and a > 0)
+                  local v = cell(cx, cy, water)
+                  if v == 0 then ok = false
+                  elseif v == 2 then
+                    if pass.grass == "none" then ok = false
+                    elseif pass.grass == "apron" and monCell then ok = false end
+                  end
+                  if not ok then break end
+                end
+                if not ok then break end
+              end
+              if ok then
+                local cand = placeLocal(shape, q, px, py)
+                cand.cam = BattleArena.LOCAL_CAM
+                if pass.level then ok = BattleArena.levelled(map, cand, stageFor()) end
+                if ok and pass.clear then ok = BattleArena.clearance(map, cand, stageFor()) end
+                if ok then best, bestCost = cand, cost end
+              end
+            end
+          end
+        end
+      end
+      if best then return best end
+    end
+  end
+  return nil
+end
+
 -- The nearest arena to (fromX, fromY) -- the player's cell -- or nil when
 -- the map has room for neither shape.
 --
@@ -603,11 +833,20 @@ end
 -- Both shapes are searched over the whole map before the next one is tried:
 -- a wide arena on the far side of a route still beats a narrow one
 -- underfoot, because the wide one is the shot this mode is framed for.
-function BattleArena.find(map, fromX, fromY, surfing)
+function BattleArena.find(map, fromX, fromY, surfing, facing, fishing)
   if not (map and map.widthCells) then return nil end
 
-  -- the authored spot wins outright when the map has one and it still holds
   local pick = authoredFor(map.id)
+  -- an authored REFUSAL (below) outranks even the local stage: it says the
+  -- map has nowhere a fight can be seen at all
+  if pick == false then return nil end
+
+  -- the patch the encounter happened on, first (see findLocal)
+  local okL, near = pcall(BattleArena.findLocal, map, fromX, fromY, facing,
+                          surfing, fishing)
+  if okL and near then near.map = map; return near end
+
+  -- the authored spot wins outright when the map has one and it still holds
   -- `false` is an authored REFUSAL: a map looked at and found to have nowhere
   -- a fight can be seen, with no other floor to borrow. Declining is the
   -- honest answer -- the battle draws on the plain screen -- and it has to be
