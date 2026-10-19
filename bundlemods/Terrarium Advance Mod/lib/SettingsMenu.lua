@@ -112,7 +112,21 @@ SettingsMenu.CATEGORIES = {
   { id = "freefly", label = "FREE FLY..",
     help = "Party Pokemon that know FLY can carry you freely over overworld terrain. "
       .. "Configure altitude, speed, encounters, and gate behavior." },
+  -- An ACTION category: it holds no ModSetting rows of its own. An A press opens
+  -- the Colosseum battle menu (BattleSettings) -- the same screen the START
+  -- menu's TERRARIUM BATTLES / BATTLE row opens. Because it has no rows,
+  -- the "empty category is not offered" rule below would hide it forever, so
+  -- `action` exempts it and `available` decides instead: it shows exactly
+  -- when the Colosseum runtime loaded and the START menu row exists too.
   { id = "terrariumBattles", label = "TERRARIUM BATTLES..",
+    action = true,
+    summary = function() return "OPEN" end,
+    available = function()
+      local exports = V.mod and V.mod.exports
+      local BS = exports and exports.BattleSettings
+      return type(BS) == "table"
+        and (type(BS.openFromSettings) == "function" or type(BS.open) == "function")
+    end,
     help = "Colosseum-style 3D battles, realtime mode, trainer models, arena selection, "
       .. "and encounter configuration for wild/trainer/gym battles." },
 }
@@ -253,7 +267,12 @@ function SettingsMenu.rows(catId, game)
       -- An EMPTY category is not offered. This is the whole of what makes
       -- 3D WORLD disappear under FULL and VR disappear off Windows: no
       -- special case, just nothing left inside to open.
-      if kids[1] then
+      local offeredCat = kids[1] ~= nil
+      if not offeredCat and cat.action and cat.available then
+        local okAvail, avail = pcall(cat.available)
+        offeredCat = okAvail and avail == true
+      end
+      if offeredCat then
         local countFunc = function()
           return ("%d SETTINGS"):format(#SettingsMenu.rows(cat.id, game))
         end
@@ -276,14 +295,20 @@ function SettingsMenu.rows(catId, game)
           label = cat.label,
           value = valueFunc,
           activate = function(g)
-            -- Special case for terrariumBattles: open BattleSettings directly
+            -- Special case for terrariumBattles: open the battle menu directly.
+            --
+            -- Uses the LIVE module main.lua installed (mod.exports), NOT
+            -- V.require("BattleSettings"): that would compile a second, never-
+            -- installed copy whose mod/ArenaCatalog/Music upvalues are all nil.
+            -- openFromSettings makes BACK/B return to THIS screen instead of
+            -- reopening the START menu.
             if cat.id == "terrariumBattles" then
-              local ok, BattleSettings = pcall(V.require, "BattleSettings")
-              if ok and BattleSettings and type(BattleSettings.open) == "function" then
+              local exports = V.mod and V.mod.exports
+              local BattleSettings = exports and exports.BattleSettings
+              if BattleSettings and type(BattleSettings.openFromSettings) == "function" then
+                BattleSettings.openFromSettings(g)
+              elseif BattleSettings and type(BattleSettings.open) == "function" then
                 BattleSettings.open(g)
-              else
-                -- Fallback to regular category menu
-                g.stack:push(SettingsMenu.new(g, cat.id))
               end
             else
               g.stack:push(SettingsMenu.new(g, cat.id))

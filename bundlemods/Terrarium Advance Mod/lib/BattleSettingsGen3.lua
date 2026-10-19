@@ -71,7 +71,11 @@ local function prefs(game)
 end
 
 -- Builds the Colosseum battle-settings Menu instance but does NOT push it.
-local function buildBattleMenu(game)
+local function buildBattleMenu(game, opts)
+  -- opts.fromSettings: opened from the mod's SETTINGS screen. Menu pops itself
+  -- on BACK / B *before* running the callbacks below, so the extra pop the
+  -- START-menu path does would also close the settings screen underneath.
+  local fromSettings = opts and opts.fromSettings == true
   if modRef and modRef.log then modRef.log:info("Building Gen3 battle settings menu") end
 
   local ok,Menu=pcall(require,"src.ui.Menu")
@@ -251,6 +255,7 @@ local function buildBattleMenu(game)
     actorScaleToggle,
     {label="BACK",onSelect=function()
       if modRef and modRef.log then modRef.log:info("BACK selected in Gen3 battle settings") end
+      if fromSettings then return end
       if game.stack and type(game.stack.pop)=="function" then
         game.stack:pop()
       end
@@ -260,6 +265,7 @@ local function buildBattleMenu(game)
   local ok2, menu = pcall(function()
     return Menu.new(game,mainRows,{tx=1,ty=2,tw=24,maxVisible=10,onCancel=function()
       if modRef and modRef.log then modRef.log:info("CANCEL in Gen3 battle settings") end
+      if fromSettings then return end
       if game.stack and type(game.stack.pop)=="function" then
         game.stack:pop()
       end
@@ -282,8 +288,8 @@ local function buildBattleMenu(game)
 end
 
 -- Pushes the battle-settings menu directly.
-local function openBattleMenu(game)
-  local menu = buildBattleMenu(game)
+local function openBattleMenu(game, opts)
+  local menu = buildBattleMenu(game, opts)
   if not menu then return end
   local ok, err = pcall(function() game.stack:push(menu) end)
   if not ok then
@@ -374,6 +380,10 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
   installed = success
   return success
 end
+
+-- Entry points for the mod's SETTINGS screen (lib/SettingsMenu.lua).
+function S.open(game) openBattleMenu(game) end
+function S.openFromSettings(game) openBattleMenu(game, { fromSettings = true }) end
 
 function S.prefs(game) return prefs(game) end
 function S.cameraEnabled(game) return prefs(game or (modRef and modRef.game)).cameraEnabled~=false end

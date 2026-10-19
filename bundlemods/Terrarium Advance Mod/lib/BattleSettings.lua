@@ -120,6 +120,10 @@ local function onStack(stack,state)
   return false
 end
 local function reopen(game,id,parent)
+  -- id==false: opened from the mod's own SETTINGS screen. Menu has already
+  -- popped itself, which lands back on that screen, so there is nothing to
+  -- reopen (and pushing the START menu here would stack it on top).
+  if id==false then return end
   local ok,Screens=pcall(require,"src.ui.Screens")
   if ok and Screens and game and game.stack then
     id=id or startMenuId()
@@ -621,6 +625,11 @@ end
 
 function S.open(game)
   openBattleMenu(game, startMenuId(), nil)
+end
+
+-- Entry point for the mod's SETTINGS screen (lib/SettingsMenu.lua).
+function S.openFromSettings(game)
+  openBattleMenu(game, false, nil)
 end
 
 function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trainerRoster,compat,audioFidelity)
