@@ -218,7 +218,7 @@ end
 
 function Loader:_discover()
   if not self.fs.getDirectoryItems then return end
-  
+
   -- POKEPORT_NO_MODS=1: a verification run against the plain game, without
   -- touching the user's saved enable flags
   if os.getenv("POKEPORT_NO_MODS") == "1" then return end
