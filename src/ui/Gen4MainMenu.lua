@@ -233,7 +233,9 @@ function Gen4MainMenu:hasPokedex()
   -- HeartGold / SoulSilver: the cartridge's FLAG_GOT_POKEDEX (Flags.hasPokedex),
   -- not "anything seen" -- the starter is seen a route before Oak's gift
   local v = require("src.core.GameVersion").get()
-  if v == "heartgold" or v == "soulsilver" then
+  -- Black / White: system flag 0x962 too (ov88 0x021BAEF4 asks it for the
+  -- CONTINUE panel's Pokedex line)
+  if v == "heartgold" or v == "soulsilver" or v == "black" or v == "white" then
     return require("src.script.Flags").hasPokedex(self.save)
   end
   local dex = self.save and self.save.pokedex

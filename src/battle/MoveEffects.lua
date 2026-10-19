@@ -378,6 +378,10 @@ MoveEffects.primary = {
     if GameVersion.get() ~= "firered" then
       user.sprite = battle:speciesSprite(target.mon.species, user.isPlayer)
                     or user.sprite
+      -- Black / White draw a live animation over `sprite`, so their picture
+      -- is swapped there too (src/battle/Gen5Transform.lua)
+      local okT, T = pcall(require, "src.battle.Gen5Transform")
+      if okT then T.apply(battle, user, target) end
     end
     user.curStats = {
       hp = user.mon.stats.hp, -- HP is kept

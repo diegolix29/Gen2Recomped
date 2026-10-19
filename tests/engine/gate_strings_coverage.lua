@@ -43,6 +43,13 @@ local ALLOWED = {
   { pattern = "Logger%.", why = "a log line, never drawn" },
   { pattern = '== "\\v"', why = "comparing against a marker, not printing it" },
   { pattern = "txBuf", why = "newline-delimited wire framing, not text" },
+  { pattern = '"%^[^"]*%$"',
+    why = "an anchored Lua pattern (\"^...$\") recognising engine English so "
+      .. "ROM text can replace it (Gen5BattleText); it is matched, never drawn" },
+  -- The escape hatch for the odd non-prose line the shapes above miss: a
+  -- trailing `-- strings: <reason>` comment.  The reason is mandatory and
+  -- reviewable in the diff; never put one on a line that also draws prose.
+  { pattern = "%-%- strings: %S", why = "a line marked not-prose, reason inline" },
 }
 
 -- Whole files inside a watched directory that are exempt, with the reason.

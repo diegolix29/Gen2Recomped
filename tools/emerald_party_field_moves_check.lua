@@ -64,7 +64,14 @@ for _,move in ipairs({'CUT','ROCK_SMASH'}) do
   ow.npcByIndex=function(_,index) if index==obj.index then return npc end end
   menu:useFieldMove(mon,move)
   T.check(menu.closed and ow.queued,'party dispatches '..move)
-  T.eq(ow.queued[1][5][1],'g3_field_effect','party callback skips interaction used-message '..move)
+  -- FldEff_UseCutOnTree / _UseRockSmash count GAME_STAT_USED_CUT / _ROCK_SMASH
+  -- first (Gen3PartyFieldMoves.program), so the tail starts one row later
+  local first=ow.queued[1][5]
+  if first and first[1]=='g3_game_stat' then
+    T.eq(first[2],move=='CUT' and 18 or 19,'party callback counts the game stat for '..move)
+    first=ow.queued[1][6]
+  end
+  T.eq(first and first[1],'g3_field_effect','party callback skips interaction used-message '..move)
   run(g,ow,ow.queued[1],ow.queued[2])
   T.eq(selected,mon,'selected party member performs '..move)
   T.check(not ow.g3Locked,'control released after '..move)

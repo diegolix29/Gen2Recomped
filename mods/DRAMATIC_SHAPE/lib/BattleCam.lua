@@ -521,7 +521,14 @@ function BattleCam.rig(arena, groundY, canonical)
   -- arena's own axis, and the room the player has is all on the far side of
   -- that -- out toward square-on. (orbitRange measures exactly that room.)
   local steer = steered and -BattleCam.orbit * BattleCam.orbitRange(arena) or 0
-  local yaw = steer + (fixed and 0
+  -- ...and which way the ARENA runs. A stage laid along the player's facing
+  -- (BattleArena.findLocal) can point any of the four ways; `arena.yaw` is
+  -- the turn from the authored north-south shape (0 = foe to the north,
+  -- a quarter turn = foe to the east, clockwise), and the whole rig -- eye,
+  -- aim and the drift about them -- turns with it, so the composition on
+  -- screen is the same whichever way the ground made it run.
+  local base = (arena and tonumber(arena.yaw)) or 0
+  local yaw = base + steer + (fixed and 0
               or BattleCam.PAN_YAW * phase(BattleCam.t, BattleCam.PAN_PERIOD))
   local c, s = math.cos(yaw), math.sin(yaw)
   -- the breath scales the whole offset, height included, so the eye moves
@@ -533,7 +540,8 @@ function BattleCam.rig(arena, groundY, canonical)
   local dz = (R.side * s + R.back * c) * k
 
   local eye = { mx + dx, groundY + R.height * k, mz + dz }
-  local focus = { mx + R.lookX, groundY + R.lookY, mz }
+  local focus = { mx + R.lookX * math.cos(base), groundY + R.lookY,
+                  mz + R.lookX * math.sin(base) }
 
   -- and the climb: the eye swung UP about the focus, at a constant radius.
   -- About the focus so the aim stays nailed to the two mons and only the

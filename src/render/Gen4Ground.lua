@@ -248,6 +248,12 @@ function Gen4Ground.forMap(map, data)
   local record = terrain.maps
     and (terrain.maps[def.sourceId or def.id] or terrain.maps[def.id])
   local set = record and terrain.sets and terrain.sets[record.texture]
+  -- BLACK / WHITE: the season's set, the area's record + season
+  -- (src/render/Gen5Seasons.lua)
+  if set and def.gen5 then
+    local S = require("src.render.Gen5Seasons")
+    set = S.setFor(terrain, record, S.current()) or set
+  end
   if not set then
     -- The mesh without its textures is a grey solid, which is worse than the
     -- stand-in it would be replacing.
@@ -941,7 +947,10 @@ end
 function Gen4Ground:propMaterials(object, frame)
   if not object then return nil end
   local records, images = self:animationsFor(object.model, object.archive)
-  local mats = records and Gen4TexAnim.materials(records, frame, images) or nil
+  -- `frame` is the engine clock; the cartridge steps a prop's texture
+  -- animation once per FIELD frame (30 Hz), see Gen4PropClock.fieldFrame
+  local mats = records and Gen4TexAnim.materials(records,
+    require("src.render.Gen4PropClock").fieldFrame(frame), images) or nil
   if object.archive == "fldeff" then return mats end
   local slots = self.oneShots
   if not slots then return mats end
@@ -2053,6 +2062,16 @@ function Gen4Ground:livePass(camX, camY, vw, vh, yCut)
       end
     end
   end
+  -- HGSS'S OBSTACLE ANIMATIONS (Gen4FieldFx: Cut, Rock Smash, Headbutt)
+  if not yCut then
+    local okF, errF = pcall(function()
+      require("src.world.Gen4FieldFx").drawLive(self, left, top, vw, vh)
+    end)
+    if not okF and not self.fieldFxWarned then
+      self.fieldFxWarned = true
+      Logger.warn("gen4 field fx: %s", tostring(errF))
+    end
+  end
   -- PLATINUM'S SURF MOUNT (Gen4SurfMount), in with the ground and under the
   -- sprites -- not in the canopy pass, which paints over them
   if not yCut then
@@ -2509,6 +2528,14 @@ function Gen4Ground:drawFree(vw, vh)
         self.legendWarned = true
         Logger.warn("hgss legend cutscene: %s", tostring(errL))
       end
+    end
+  end
+  -- HGSS'S OBSTACLE ANIMATIONS (Gen4FieldFx), with the world's depth
+  do
+    local okF, errF = pcall(function() require("src.world.Gen4FieldFx").drawFree(self, vp) end)
+    if not okF and not self.fieldFxWarned then
+      self.fieldFxWarned = true
+      Logger.warn("gen4 field fx: %s", tostring(errF))
     end
   end
   -- PLATINUM'S SURF MOUNT (Gen4SurfMount), with the world's depth

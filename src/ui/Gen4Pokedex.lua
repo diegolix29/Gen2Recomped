@@ -1065,9 +1065,9 @@ function Gen4Pokedex:drawListBottom()
   local wheel=self:screenArt('dex/list_wheel')
   if wheel then
     if not self.wheelCanvas then self.wheelCanvas=g.newCanvas(W,H,{dpiscale=1});self.wheelCanvas:setFilter('nearest','nearest') end
-    local previous=g.getCanvas();g.push('all');g.setCanvas(self.wheelCanvas);g.origin();g.setScissor();g.clear(0,0,0,0)
+    g.push('all');g.setCanvas(self.wheelCanvas);g.origin();g.setScissor();g.clear(0,0,0,0)
     g.draw(wheel,248,104,self.wheelRotation or 0,1,1,128,104)
-    g.setCanvas(previous);g.pop();g.draw(self.wheelCanvas,0,0)
+    g.pop();g.draw(self.wheelCanvas,0,0)  -- pop restores the canvas (depth set included)
   end
   local bg=self:screenArt('dex/list_panel_'..mode);if bg then g.draw(bg,0,0) end
   local words=(self.art or {}).words or {}

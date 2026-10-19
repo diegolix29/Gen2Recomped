@@ -9,7 +9,8 @@ love = love or {}
 love.math = love.math or { random = math.random }
 package.loaded['src.core.Sound'] = { play = function() end }
 package.loaded['src.core.GameVersion'] = { isGen4 = function() return true end, isGen2 = function() return false end,
-  isGen3 = function() return false end, isYellow = function() return false end, get = function() return 'platinum' end }
+  isGen3 = function() return false end, isYellow = function() return false end, get = function() return 'platinum' end,
+  info = function() return { family = 'platinum', generation = 4 } end }
 local PASS, FAIL = 0, 0
 local function check(c, l) if c then PASS = PASS + 1 else FAIL = FAIL + 1 print('FAIL: ' .. l) end end
 local dir = (arg and arg[1] or ''):gsub('[/\\]$', '')

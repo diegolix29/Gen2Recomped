@@ -128,8 +128,12 @@ function M.programs(rom)
   return out, n
 end
 
--- Every SPA a program names, plus the type-remapped neighbours of the six ids
--- PARTICLE_LOAD offsets by a type (3, 29, 46-49 + 1..25; 0x021FE38C).
+-- Every SPA a program names, plus the remapped neighbours of the six ids
+-- PARTICLE_LOAD offsets (0x021FE38C): 3 and 29 by a value 0..24 (a type),
+-- 46-49 by a BALL -- (ball - 1) * 4, the four files each of the 25 balls
+-- has (46 + 4k: the send-out burst, 47 + 4k: the ball, 48 + 4k: the eight
+-- spin frames, 49 + 4k: the ball at rest and opening), 46..145.
+M.BALLS = 25
 function M.particleIds(programs, spaCount)
   local want = {}
   for _, prog in pairs(programs) do
@@ -137,8 +141,11 @@ function M.particleIds(programs, spaCount)
       if ins[1] == 6 then want[ins[2]] = true end
     end
   end
-  for _, base in ipairs({ 3, 29, 46, 47, 48, 49 }) do
+  for _, base in ipairs({ 3, 29 }) do
     for k = 0, 25 do want[base + k] = true end
+  end
+  for _, base in ipairs({ 46, 47, 48, 49 }) do
+    for k = 0, M.BALLS - 1 do want[base + 4 * k] = true end
   end
   local list = {}
   for id in pairs(want) do
@@ -183,6 +190,49 @@ function M.composeBackground(arc, id)
   return G.compose(map, sheet, palette)
 end
 
+-- THE BALL AS A 2D OBJECT (the effect VM's OBJ_CREATE_BALL, op 69,
+-- 0x021FC148): once a Pokemon is inside, the capture effect swaps the
+-- particle ball for an OBJ out of /a/0/9/5 -- one cell bank (129: 17 cells of
+-- 32 x 32 from (-16, -16): 0 the ball facing the camera, 1-7 the spin, 10
+-- open, 11-13 tilted left, 14-16 right) and one animation bank (130: 0 still,
+-- 1-3 the three rocks, 4 the spin) shared by all, and for ball b (1..16, the
+-- Dream Ball's 25 drawn as 17) its pixels 129 + 2b and palette 130 + 2b.
+M.BALL_OBJ_CELLS, M.BALL_OBJ_ANIM, M.BALL_OBJ_COUNT = 129, 130, 17
+function M.ballObjects(arc, save)
+  if not arc then return nil end
+  local G = require("src.import.Gen4Graphics")
+  local Cells = require("src.import.Gen4Cells")
+  local Anim = require("src.import.Gen4CellAnim")
+  local function member(i)
+    local b = arc:get(i)
+    if b and G.isCompressed(b) then b = G.decompress(b) end
+    return b
+  end
+  local bank = Cells.parse(member(M.BALL_OBJ_CELLS), G)
+  local anim = Anim.parse(member(M.BALL_OBJ_ANIM), G)
+  if not (bank and anim) then return nil end
+  local out = { sequences = {}, balls = {}, origin = { -16, -16 } }
+  for s, seq in ipairs(anim.sequences) do
+    local frames = {}
+    for i, f in ipairs(seq.frames) do frames[i] = { cell = f.cell, duration = f.duration } end
+    out.sequences[s - 1] = frames
+  end
+  for b = 1, M.BALL_OBJ_COUNT do
+    local sheet = G.tiles(member(M.BALL_OBJ_CELLS + 2 * b))
+    local pal = G.palette(member(M.BALL_OBJ_ANIM + 2 * b))
+    if sheet and pal then
+      local cells = {}
+      for c, cell in ipairs(bank.cells) do
+        local pic = Cells.assemble(cell, sheet, pal, bank, G)
+        local saved = pic and save(("battle5/ball_obj_%02d_%02d"):format(b, c - 1), pic, {})
+        if saved then cells[c - 1] = saved end
+      end
+      out.balls[b] = cells
+    end
+  end
+  return out
+end
+
 -- The work both routes share. `save(name, image, extra)` -> entry or nil.
 local function collect(rom, save, progress)
   local programs, count = M.programs(rom)
@@ -223,8 +273,10 @@ local function collect(rom, save, progress)
       if saved then bgs[id] = saved end
     end
   end
+  local okO, ballObj = pcall(M.ballObjects, bgArc, save)
   return {
     programs = programs, count = count, backgrounds = bgs,
+    ballObj = okO and ballObj or nil,
     source = "ROM:" .. M.PROGRAMS .. " + " .. M.SHARED .. " (BW effect VM)",
   }, fx
 end

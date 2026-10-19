@@ -26,6 +26,7 @@
 -- are; the intro's slide is a straight 42-frame move.
 
 local Assets = require("src.render.Assets")
+local Strings = require("src.core.Strings")
 local Logger = require("src.core.Logger")
 
 local Screen = {}
@@ -60,13 +61,13 @@ local function cry(self, mon)
 end
 
 local FALLBACK = {
-  [129] = "Sending {VAR1} to {VAR2}.\nGood-bye, {VAR1}!",
-  [156] = "{VAR1} sent over\n{VAR2}.",
+  [129] = Strings.source("Sending {VAR1} to {VAR2}.\nGood-bye, {VAR1}!"),
+  [156] = Strings.source("{VAR1} sent over\n{VAR2}."),
   [49] = "Take good care of {VAR2}!",
 }
 function Screen.text(data, bank, index, one, two)
   local key = ("TEXT_G5S_%04d_%05d"):format(bank or 159, index)
-  local s = ((data or {}).text or {})[key] or FALLBACK[index] or ""
+  local s = ((data or {}).text or {})[key] or Strings(FALLBACK[index] or "")
   local function safe(v) return (tostring(v or ""):gsub("%%", "%%%%")) end
   s = s:gsub("{VAR1}", safe(one)):gsub("{VAR2}", safe(two))
   return (s:gsub("{[^}]*}", ""))
@@ -130,7 +131,8 @@ function Screen:render3D(frame)
   if not m then return end
   if not self.colour then self.colour, self.depth = Model.newTarget(W, H) end
   if not self.colour then return end
-  local old = { g.getCanvas() }
+  -- push("all") saves and restores the bound canvas: handing getCanvas()'s
+  -- answer back to setCanvas crashed when a mod had a depth set bound
   g.push("all")
   g.setCanvas({ self.colour, depthstencil = self.depth })
   g.clear(0, 0, 0, 0, true, true)
@@ -162,7 +164,6 @@ function Screen:render3D(frame)
   local ok, err = pcall(m.draw, m, vp, pose, mats)
   if not ok then Logger.warn("bw trade: scene draw failed: %s", tostring(err)) end
   Model.depthFog = fog
-  g.setCanvas(old[1] and old or nil)
   g.pop()
 end
 

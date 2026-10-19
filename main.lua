@@ -421,6 +421,10 @@ local function returnToLauncher()
   pcall(function() require("src.ui.LauncherSecondScreen").forget() end)
   autopilot, driverCo = nil, nil
   Game = nil
+  -- The game's mods come off the engine before the launcher (and the plain-
+  -- game backdrop it boots) runs on it, and before the next Play loads them
+  -- again in this same process (src/mods/Loader.lua Loader.teardown).
+  pcall(function() require("src.mods.Loader").teardown() end)
   openLauncher(false)
 end
 
@@ -997,6 +1001,12 @@ function love.mousereleased(x, y, button, istouch)
     if Game and button == 1 then pcall(function() Game:touchreleased("mouse", x, y) end) end
     return
   end
+  -- the press and the drag of an interactive lower screen (Pokétch, PC box,
+  -- touch menus) reach Game:touchpressed / touchmoved above; the release has to
+  -- as well, or a desktop click never lets go of what it pressed
+  if Game and button == 1 and not istouch and Game.hasPointerScreen and Game:hasPointerScreen() then
+    pcall(function() Game:touchreleased("mouse", x, y) end)
+  end
   if Game and Game.mousereleased and not istouch then
     Game:mousereleased(x, y, button, istouch)
   end
@@ -1196,6 +1206,12 @@ function love.quit()
     return true
   end
   walkerTick("quit")
+  -- let go of the "save open in a running game" markers (SaveData.closeOpen),
+  -- so the launcher's Pokewalker in a later run is not told to wait
+  pcall(function()
+    local SD = package.loaded["src.core.SaveData"]
+    if SD and SD.closeOpen then SD.closeOpen() end
+  end)
   -- Marks the trace as an orderly shutdown.  A trace that ends mid-boot with
   -- no "clean exit" and no crash.txt beside it is the signature of a native
   -- abort rather than a Lua error -- which is exactly the distinction that is

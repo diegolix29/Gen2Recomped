@@ -111,6 +111,13 @@ function M.chunk(bytes)
   -- buildings (u32 count + 16 each). Read as WB, every tile fell back to
   -- "blocked" and the player could not take a step.
   if kind == "GC" then out.permissions, out.layer2, out.buildings = sections[2], sections[3], sections[4] end
+  -- "RD" chunks (Black City's and White Forest's eight, 228..235): three
+  -- sections like WB, but 24 bytes a permission tile, the WB record last
+  -- (src/import/Gen5DynamicCity.lua, which also lays their pieces over them)
+  if kind == "RD" then
+    out.permissions = require("src.import.Gen5DynamicCity").rdPermissions(sections[2])
+    out.buildings, out.rd = sections[3], true
+  end
   return out
 end
 

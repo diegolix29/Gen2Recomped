@@ -3,7 +3,8 @@ love={math={random=math.random},graphics={}}
 package.loaded['src.render.Assets']={image=function() return nil end,register=function() end}
 package.loaded['src.render.Font']={width=function(s) return #s*6 end,draw=function() end}
 package.loaded['src.core.GameVersion']={generation=function() return 4 end,
- get=function() return 'platinum' end,isGen2=function() return false end,isGen3=function() return false end}
+ get=function() return 'platinum' end,isGen2=function() return false end,isGen3=function() return false end,
+ info=function() return {family='platinum',generation=4} end}
 package.loaded['src.core.FrameProfile']={section=function() return function() end end,frame=function() end}
 package.loaded['src.ui.SaveCompanion']={tick=function() end}
 local overlay=0
@@ -19,7 +20,7 @@ local Watch=require('src.ui.Gen4Poketch')
 local apps={{name='Counter'},{name='Memo Pad'},{name='Coin Toss'}}
 local top={}
 local game=setmetatable({data={isGen4Cache=true,gen4_menus={poketch={apps=apps}}},
- save={options={secondScreenMode='display'},inventory={}},stack={top=function() return top end}}, {__index=Game})
+ save={options={secondScreenMode='display'},inventory={},poketch={enabled=true}},stack={top=function() return top end}}, {__index=Game})
 game._draw=function(self) self.secondScreenDrawnThisFrame=false end
 -- Exercise the real fallback owner selection without a graphics device.
 SS.draw=function(g,body) g.secondScreenDrawnThisFrame=true;body() end

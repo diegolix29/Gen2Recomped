@@ -142,7 +142,9 @@ function BattleDOF.apply(canvas, focusY, band, range)
   range = range or BattleDOF.RANGE
 
   local prevBlend, prevAlpha = love.graphics.getBlendMode()
-  local prevCanvas = love.graphics.getCanvas()
+  -- push("all")/pop restores the bound canvas: setCanvas(getCanvas()) drops
+  -- (or chokes on) the depth set the scene canvas is bound with
+  love.graphics.push("all")
 
   -- the scene canvas filters nearest for its 1:1 blit; the taps need linear,
   -- restored below so the composite sees what it expects
@@ -168,11 +170,7 @@ function BattleDOF.apply(canvas, focusY, band, range)
     love.graphics.draw(a)
   end)
 
-  if prevCanvas then
-    love.graphics.setCanvas(prevCanvas)
-  else
-    love.graphics.setCanvas()
-  end
+  love.graphics.pop()
   love.graphics.setShader()
   love.graphics.setBlendMode(prevBlend or "alpha", prevAlpha)
   canvas:setFilter("nearest", "nearest")

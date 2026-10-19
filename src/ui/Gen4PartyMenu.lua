@@ -569,6 +569,12 @@ function Gen4PartyMenu:bankLine(n)
   return (type(text) == 'string' and text ~= '') and text or Strings(FIELD_ERROR_TEXT[n] or "")
 end
 function Gen4PartyMenu:fieldRefused(why)
+  -- HGSS FIELD_MOVE_RESPONSE_NOT_NOW (the Rocket disguise): msg_0300_00181
+  if why == 'notnow' then
+    local line = require('src.inventory.Gen4FieldChecks').partyNotNow(self.game.data)
+    self.game.stack:push(require('src.render.TextBox').new(self.game, line))
+    return
+  end
   local n = Gen4PartyMenu.FIELD_ERROR[why] or 104
   self.game.stack:push(require('src.render.TextBox').new(self.game, self:bankLine(n)))
 end
@@ -678,13 +684,16 @@ function Gen4PartyMenu:useFieldMove(mon,move)
   local function badge() return F.badgeHeld(self.game.data,save,move) end
   local partner=require('src.world.Gen4Follower').hasPartner(save)
   local hgss=F.isHgss(self.game.data)
+  -- HGSS: Fly, Surf, Rock Climb, Teleport and Dig answer NOT_NOW in the
+  -- Rocket disguise, after their partner check (src/inventory/Gen4FieldChecks.lua)
+  local costume=require('src.inventory.Gen4FieldChecks').inCostume(self.game.data,save)
   if move=='MILK_DRINK' or move=='SOFTBOILED' then self.hpTransferMove=move; return self:startHpTransfer(mon) end
   if not ow then return self:fieldRefused('location') end
   -- CUT, ROCK SMASH, STRENGTH: the badge, then the object faced
   local obstacle=Gen4PartyMenu.OBSTACLE[move]
   if obstacle then
     if F.badgeTable(self.game.data)[move] and not badge() then return self:fieldRefused('badge') end
-    if move=='ROCK_SMASH' and ow.player.surfing then return self:fieldRefused('location') end
+    if move=='ROCK_SMASH' and ow.player.surfing and not hgss then return self:fieldRefused('location') end
     -- HGSS FieldMove_CheckStrength: never on Ice Path B2F
     if move=='STRENGTH' and hgss and ow.map and ow.map.id=='D39R0103' then return self:fieldRefused('location') end
     local npc,gfx=self:facingObject()
@@ -708,9 +717,10 @@ function Gen4PartyMenu:useFieldMove(mon,move)
     return self:runFieldScript(F.menuScript(self.game.data,move))
   end
   -- HGSS HEADBUTT (FieldMove_CheckHeadbutt): a headbutt tile ahead (0x06) ->
-  -- std_menu_headbutt. The map-model tree test is not ported.
+  -- std_menu_headbutt.
   if move=='HEADBUTT' then
-    if self:facingRaw()~=0x06 then return self:fieldRefused('location') end
+    -- ...or a tree of the border forest (land 0xD0, src/world/HgssHeadbuttTrees.lua)
+    if self:facingRaw()~=0x06 and not require('src.world.HgssHeadbuttTrees').facingTree(ow) then return self:fieldRefused('location') end
     return self:runFieldScript(F.menuScript(self.game.data,move))
   end
   if move=='ROCK_CLIMB' then
@@ -721,6 +731,7 @@ function Gen4PartyMenu:useFieldMove(mon,move)
     local ew=(facing=='left' or facing=='right') and b=='ROCK_CLIMB_E_W'
     if not (ns or ew) then return self:fieldRefused('location') end
     if partner then return self:fieldRefused('partner') end
+    if costume then return self:fieldRefused('notnow') end
     return self:runFieldScript(F.menuScript(self.game.data,move))
   end
   -- CHATTER records the player's voice as Chatot's cry (SCRIPT_ID(RECORD_
@@ -734,6 +745,8 @@ function Gen4PartyMenu:useFieldMove(mon,move)
   -- FLASH AND DEFOG: offered by the weather (FieldMoves_SetUsableMoves), run
   -- through `scripts_field_moves.s` entries 15 and 14
   local wm=F.WEATHER_MOVES[move]
+  -- HGSS: Flash at the Ruins of Alph's southeast chamber wall (CheckUseFlashInAlphChamber)
+  if move=='FLASH' and hgss and require('src.world.HgssAlphChambers').flash(self.game, self.index-1, function() self:close() end) then return end
   if wm then
     if move=='DEFOG' and not badge() then return self:fieldRefused('badge') end
     if not F.weatherOffers(save,move) then return self:fieldRefused('location') end
@@ -743,6 +756,7 @@ function Gen4PartyMenu:useFieldMove(mon,move)
   if move=='FLY' then
     if not badge() then return self:fieldRefused('badge') end
     if partner then return self:fieldRefused('partner') end
+    if costume then return self:fieldRefused('notnow') end
     local Fly=require('src.world.Gen4Fly')
     local ok=Fly.check(self.game.data,save,ow.map and ow.map.def)
     local dests=ok and Fly.destinations(self.game.data,save) or {}
@@ -770,6 +784,7 @@ function Gen4PartyMenu:useFieldMove(mon,move)
     if not badge() then return self:fieldRefused('badge') end
     if ow.player.surfing then return self:fieldRefused('surfing') end
     if partner then return self:fieldRefused('partner') end
+    if costume then return self:fieldRefused('notnow') end
     if ow:useSurfFieldMove()~='ok' then return self:fieldRefused('location') end
     -- PLATINUM: FieldMoves_UseSurfFromMenu (field_moves 12) -- the message,
     -- then UseSurf, which hops onto the water (Gen4Commands.g4_use_surf)
@@ -790,10 +805,13 @@ function Gen4PartyMenu:useFieldMove(mon,move)
     -- PlayerInSafariZoneOrPalPark: no Teleport out of a Safari Game
     and not save.safari
   elseif move=='SWEET_SCENT' then
-    local enc=require('src.world.Encounter').forMap(self.game.data,ow.map.def,ow.map.id)
-    usable=enc and (ow.player.surfing and enc.water or enc.grass)
+    -- FieldMove_CheckSweetScent refuses only in the Union Room, Colosseum and
+    -- Pal Park: elsewhere the scent is used and the field task says
+    -- "There appears to be nothing here..." (OverworldState:gen4SweetScent)
+    usable=true
   end
   if (move=='DIG' or move=='TELEPORT') and partner then return self:fieldRefused('partner') end
+  if (move=='DIG' or move=='TELEPORT') and costume then return self:fieldRefused('notnow') end
   if not usable then return self:fieldRefused('location') end
   self:close()
   -- the Journal's field-move rows (field_move_tasks.c, field_warp.c)
@@ -1211,7 +1229,7 @@ function Gen4PartyMenu:drawMessage()
     local mon = self:party()[self.index]
     local text
     if self.itemMenu then
-      text = self:word("promptItem", "Do what with\nan item?")
+      text = self:word("promptItem", Strings.source("Do what with\nan item?"))
     else
       local said = self.words.promptPokemon
       local name = mon and self:monName(mon) or ""

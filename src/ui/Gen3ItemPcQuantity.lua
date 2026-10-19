@@ -91,7 +91,7 @@ function Gen3ItemPcQuantity:draw()
   -- sSubwindowTemplates[1], the question beside the number.
   Font.drawBox(prompt.x / 8, prompt.y / 8, prompt.width / 8, prompt.height / 8)
   love.graphics.setColor(0, 0, 0, 1)
-  drawLines(Strings("Withdraw how many") .. "\n" .. self.itemName .. Strings("(s)?"),
+  drawLines(Strings("Withdraw how many") .. "\n" .. self.itemName .. Strings("(s)?"),  -- strings: line-break glue between translated parts
             prompt.x, prompt.y + 2)
 
   -- sWindowTemplates[3] + ItemPc_AddTextPrinterParameterized(..., 8, 10).

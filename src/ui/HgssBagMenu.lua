@@ -31,6 +31,7 @@
 
 local Gen4BagMenu = require("src.ui.Gen4BagMenu")
 local Font = require("src.render.Font")
+local Strings = require("src.core.Strings")
 local SecondScreen = require("src.ui.SecondScreen")
 
 local HgssBagMenu = setmetatable({}, { __index = Gen4BagMenu })
@@ -329,8 +330,7 @@ function HgssBagMenu:drawBag()
   if not self.bagFrame then self.bagFrame = { model:framing(pose) } end
   local centre, distance = self.bagFrame[1], self.bagFrame[2]
   local g = love.graphics
-  local previous = { g.getCanvas() }
-  g.push("all")
+  g.push("all")   -- the pop restores the bound canvas (and any depth set)
   g.origin()
   g.setCanvas({ self.bagTarget, depthstencil = self.bagDepth })
   g.clear(0, 0, 0, 0, true, true)
@@ -344,7 +344,6 @@ function HgssBagMenu:drawBag()
   end
   pcall(model.draw, model, vp, pose, materials)
   g.pop()
-  g.setCanvas(previous[1] and previous or nil)
   g.setColor(1, 1, 1, 1)
   g.draw(self.bagTarget, c.at[1] - W / 2, c.at[2] - H / 2)
 end
@@ -365,7 +364,7 @@ function HgssBagMenu:drawTop()
   if self.message then
     body = self.message
   elseif self.trash and self.trash.stage == "count" then
-    body = ("%s\nx%03d"):format(self:trashName(), self.trash.n)
+    body = Strings("%s\nx%03d", self:trashName(), self.trash.n)
   elseif row then
     Font.draw(tostring(row.label or ""), 8, 122)
     if row.qty then
