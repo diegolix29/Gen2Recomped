@@ -28,24 +28,35 @@ local function bootScreens(game)
   return (boot and boot.screens) or {}
 end
 
-function Game:load()
-  self.pointerOwners={}
-  self.secondScreenPointerOwner=nil
-  self.secondScreenOverworldPoketch=nil
-  self.data = Data
-  Data:load()
+-- WHICH ATTRACT MOVIE TO PLAY, or false/nil when this cartridge has none.
+-- Same choice Game:load uses to push the splash, so installMods can wait
+-- for that screen without restating the Yellow / Gen 2 / boot.screens rules.
+local function splashScreenId(game)
+  local Version = require("src.core.GameVersion")
+  local splash = Version.isGen2() and "Gen2Intro"
+    or (Version.isYellow() and "YellowIntro" or "IntroMovie")
+  local chosen = bootScreens(game).splash
+  if chosen == nil then chosen = splash end
+  return chosen
+end
 
+-- Mods, AFTER the cartridge intro.
+--
+-- Play on the launcher hands off to Game:load, which used to merge every
+-- enabled mod before the copyright card. Voxel pipelines, title-menu rows
+-- and draw wraps then owned the attract movie -- so the ROM importer's
+-- intro was never the cartridge's. The splash plays on vanilla Data;
+-- this runs once, when that movie is done (or immediately when there is
+-- no splash / autopilot skips it), then the title is the first screen
+-- mods may touch.
+function Game:installMods()
+  if self._modsInstalled then return end
+  self._modsInstalled = true
   -- Mods are a native engine subsystem.  They load after the verified ROM
   -- data exists, so mods can register or override the same definitions that
   -- the rest of the game consumes.  A broken mod is reported and skipped by
   -- the loader without preventing the base game from booting.
-  -- THE LAUNCHER'S BACKDROP LOADS THE PLAIN GAME (src/import/LauncherBackdrop
-  -- sets `loadWithoutMods` around its own Game:load). It boots the real game
-  -- behind the launcher, and with mods on that made every game the player
-  -- then pressed Play on the SECOND mod load in the process -- a mod that
-  -- wraps engine functions once behind an "already wrapped" flag kept the
-  -- dead first load's wraps (DRAMATIC_SHAPE's 3D battles drew a white screen).
-  self.mods = ModLoader.new(self.loadWithoutMods and { noMods = true } or nil)
+  self.mods = self.mods or ModLoader.new()
   self.mods:load(Data)
   self.modStatus = self.mods:status()
   -- AND THE MAP EDITOR'S OVERLAY AGAIN, ON TOP OF THE MERGE.
@@ -78,45 +89,22 @@ function Game:load()
   -- render pipelines dispatch off the merged dataset; point them at the
   -- one the mods just merged into before anything can draw a frame
   require("src.render.Pipelines").install(Data)
-
-  self.input = Input
-  Input:init()
-
-  self.touchControls = TouchControls
-  TouchControls:init()
-
-  self.renderer = Renderer
-  Renderer:init()
-
-  require("src.translation.Service").install(Data,require("src.core.GameVersion").get(),SaveData.loadOptions())
-  require("src.render.Font").load(Data)
-  -- menu cursor/border/geometry constants; field.theme restyles them
-  require("src.ui.Theme").load(Data)
-  -- the engine's own text, after the merge so a translation mod's catalog
-  -- is already in Data.strings; empty on a mod-free boot and skipped
+  -- translation mods merge catalogs into Data.strings; Theme may restyle
+  -- from the same merge. Both already ran on the vanilla tables for the
+  -- intro, so they run again now that the merge exists.
   require("src.core.Strings").load(Data)
+  require("src.ui.Theme").load(Data)
+end
 
-  self.stack = StateStack
-  StateStack:init()
-
-  self.save = SaveData.newGame(self:bootConfig())
-  -- seed=true keeps what entry chunks wrote through mod.save before any
-  -- save existed; the skeleton fires save.created exactly once
+-- save.created / game.ready, once mods (or the decision that there are
+-- none) are in. Entry chunks register on those events; firing them before
+-- installMods meant the splash ran under mods and the events were spent.
+function Game:announceReady()
+  if self._readyAnnounced then return end
+  self._readyAnnounced = true
   self:adoptSave(self.save, true)
   ModRuntime.emit("save.created", { save = self.save })
-  -- apply the persisted audio + display options before anything plays
   self:applyOptions(self.save.options)
-
-  FixedStep:init(function(step) self:step(step) end)
-  self.fixedStep = FixedStep
-
-  local OverworldState = require("src.world.OverworldController")
-  self.overworld = OverworldState
-
-  -- Discord Rich Presence: map name / battle status on the player's profile.
-  -- Soft-fail: missing Discord / IPC errors must never block boot.
-  pcall(function() require("src.core.DiscordPresence").init(self) end)
-
   -- Every service is up but nothing is on the stack yet; this payload is the
   -- sanctioned way for a mod to obtain the Game object.
   --
@@ -134,10 +122,72 @@ function Game:load()
   -- documented way, and adds no keys -- `pairs(payload)` is unchanged.
   ModRuntime.emit("game.ready",
     setmetatable({ game = self }, { __index = self }))
+end
+
+function Game:load()
+  self.pointerOwners={}
+  self.secondScreenPointerOwner=nil
+  self.secondScreenOverworldPoketch=nil
+  self.data = Data
+  Data:load()
+
+  -- An empty loader so intro screens can ask Game.mods without nil; the
+  -- entry chunks stay unloaded until installMods (after the splash, or
+  -- immediately when Play skips straight into the title / overworld).
+  self.mods = ModLoader.new()
+  self.modStatus = self.mods:status()
+  Data:publishGen2Palettes()
+  require("src.render.Pipelines").install(Data)
+
+  self.input = Input
+  Input:init()
+
+  self.touchControls = TouchControls
+  TouchControls:init()
+
+  self.renderer = Renderer
+  Renderer:init()
+
+  require("src.translation.Service").install(Data,require("src.core.GameVersion").get(),SaveData.loadOptions())
+  require("src.render.Font").load(Data)
+  -- menu cursor/border/geometry constants; field.theme restyles them
+  require("src.ui.Theme").load(Data)
+  -- engine text from vanilla Data.strings for the intro; installMods
+  -- reloads this after translation mods merge their catalogs
+  require("src.core.Strings").load(Data)
+
+  self.stack = StateStack
+  StateStack:init()
+
+  self.save = SaveData.newGame(self:bootConfig())
+  -- Vanilla options (volume, screens) before the intro; mod options apply
+  -- in announceReady once entry chunks have run.
+  self:applyOptions(self.save.options)
+
+  FixedStep:init(function(step) self:step(step) end)
+  self.fixedStep = FixedStep
+
+  local OverworldState = require("src.world.OverworldController")
+  self.overworld = OverworldState
+
+  -- Discord Rich Presence: map name / battle status on the player's profile.
+  -- Soft-fail: missing Discord / IPC errors must never block boot.
+  pcall(function() require("src.core.DiscordPresence").init(self) end)
 
   -- boot into the title screen (engine/movie/title.asm); NEW GAME runs
   -- the Oak speech + naming, CONTINUE restores the save.  The headless
   -- autopilot skips straight into the overworld.
+  --
+  -- Mods wait until this cartridge's intro is over: Play from the ROM
+  -- importer should show the studio card and attract movie on vanilla
+  -- Data. installMods + announceReady land before the title (or before
+  -- the overworld, on autopilot).
+  local chosen = splashScreenId(self)
+  local skipIntro = os.getenv("POKEPORT_AUTOPILOT") or not chosen
+  if skipIntro then
+    self:installMods()
+    self:announceReady()
+  end
   if os.getenv("POKEPORT_AUTOPILOT") then
     StateStack:push(OverworldState, self.save.player.map,
                     self.save.player.x, self.save.player.y, self.save.player.facing)
@@ -148,13 +198,12 @@ function Game:load()
     -- 18-scene movie, engine/movie/intro_yellow.asm, and Gold/Silver
     -- theirs, engine/movie/intro.asm GoldSilverIntro); the ids come from
     -- field.boot.screens so a total conversion owns the whole boot
-    local Version = require("src.core.GameVersion")
-    local splash = Version.isGen2() and "Gen2Intro"
-      or (Version.isYellow() and "YellowIntro" or "IntroMovie")
-    local chosen = bootScreens(self).splash
-    if chosen == nil then chosen = splash end
     if chosen then
-      Screens.push(self, chosen, function() StateStack:push(titleState) end)
+      Screens.push(self, chosen, function()
+        self:installMods()
+        self:announceReady()
+        StateStack:push(titleState)
+      end)
     else
       -- `false`, not merely absent: a dataset whose attract movie this engine
       -- does not have yet (Gen 3's) says so rather than being handed Red's,
@@ -449,10 +498,6 @@ Game.cameraLookDX = 0
 Game.cameraLookDY = 0
 
 local function lookPointerWanted(self)
-  -- never for the launcher's background game: it is a picture behind the
-  -- launcher, and capturing the pointer hid the launcher's mouse whenever the
-  -- player's camera was set to first or third person
-  if self.launcherPreview then return false end
   if not self:freeView() then return false end
   if (self.stack and self.stack:top()) ~= self.overworld then return false end
   if love.window and love.window.hasFocus then
@@ -544,9 +589,7 @@ end
 -- nothing and the camera would stop turning while the player is still asking it
 -- to.  An analog control that means "keep going" has to be read per frame.
 function Game:updateCameraStick(dt)
-  -- the launcher's background takes no look input (the right stick was
-  -- turning its camera while the player navigated the launcher)
-  local view = (not self.launcherPreview) and self:freeView() or nil
+  local view = self:freeView()
   if not view then
     if self.lookRelative then syncLookPointer(self, false) end
     Game.cameraLookDX = 0
@@ -942,18 +985,24 @@ function Game:draw()
     local okSS, SS = pcall(require, "src.ui.SecondScreen")
     if okSS and SS.mode and (SS.mode(self) == "display" or SS.combined(self))
        and not self.secondScreenDrawnThisFrame then
-      local version = require("src.core.GameVersion").info()
+      local GV = require("src.core.GameVersion")
+      local version = GV.info()
       local family = version and version.family
+      local nds = GV.isNds and GV.isNds()
       -- THE WATCH ONLY ONCE IT IS ON THE WRIST: Platinum's lower screen shows
       -- the Pokétch after `enablepoketch` (Jubilife) and nothing before; Black
       -- and White's is the C-Gear, not Platinum's watch (not built yet), so
-      -- theirs stays blank too
-      local poketchOn = require("src.pokemon.Gen4PoketchState").owned(self.save)
+      -- theirs stays blank too.
+      -- Gen 1-3 have no lower-screen field panel -- `owned()` used to treat
+      -- any gym badge as a Pokétch, which then drew Platinum's watch (or a
+      -- black 256x192) over their OPTION screen.
+      local poketchOn = nds and family ~= "bw"
+        and require("src.pokemon.Gen4PoketchState").owned(self.save)
       local panelModule = family == "hgss" and "src.ui.HgssFieldPanel"
-        or (family ~= "bw" and poketchOn and "src.ui.Gen4Poketch") or nil
+        or (poketchOn and "src.ui.Gen4Poketch") or nil
       local okP, Poketch = false, nil
       if panelModule then okP, Poketch = pcall(require, panelModule) end
-      if not panelModule then
+      if not panelModule and nds then
         pcall(SS.draw, self, function()
           love.graphics.setColor(0, 0, 0, 1)
           love.graphics.rectangle("fill", 0, 0, 256, 192)
