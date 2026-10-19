@@ -66,9 +66,16 @@ Tint.NEUTRAL = 0.999
 --                1 leaves routes alone, 0.8 makes them 20% darker.
 --   TOWN_FULL    how many post-equivalents count as "fully a town".
 Tint.TOWN_FLOOR = { 0.40, 0.46, 0.70 }
-Tint.WILD_SCALE = 1.0
+Tint.WILD_SCALE = 0.75       -- routes: 25% darker than the hour's tint (was 1.0)
 Tint.TOWN_FULL = 4
 Tint.TOWN_PANE_WEIGHT = 0.35
+-- A lit window counts toward "this is a town" by how far it is: in full inside
+-- TOWN_NEAR world units, fading to nothing at TOWN_REACH. Windows are lit across
+-- the whole 7x7-land window now, so without this a route passing a town a few
+-- chunks away would be lifted to town brightness. Routes stay dark; walking
+-- toward a town brightens the night as its windows come into range.
+Tint.TOWN_NEAR = 350
+Tint.TOWN_REACH = 1100
 Tint.TOWN_FADE = 1.2          -- seconds to ease in / out
 Tint.town = 0                 -- 0..1, smoothed; read by Gen4Light too
 
@@ -97,8 +104,19 @@ end
 local function updateTown(lights)
   local score = 0
   if type(lights) == "table" then
+    local near, reach = Tint.TOWN_NEAR, Tint.TOWN_REACH
     for _, l in ipairs(lights) do
-      score = score + ((l.kind == "post") and 1 or Tint.TOWN_PANE_WEIGHT)
+      if l.kind == "post" then
+        score = score + 1
+      else
+        local w = Tint.TOWN_PANE_WEIGHT
+        if l.d2 and reach > near then
+          local d = math.sqrt(l.d2)
+          local f = (reach - d) / (reach - near)
+          w = w * (f < 0 and 0 or (f > 1 and 1 or f))
+        end
+        score = score + w
+      end
     end
   end
   local target = math.max(0, math.min(1, score / math.max(0.1, Tint.TOWN_FULL)))
