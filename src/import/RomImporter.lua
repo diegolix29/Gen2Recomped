@@ -5151,6 +5151,11 @@ function RomImporter:joystickhat(joystick, hat, direction)
 end
 
 -- Player pressed Play on a game whose ROM is imported: hand off to boot.
+--
+-- This is only the handoff. Game:load plays that version's cartridge intro
+-- (studio card, attract movie) on vanilla Data -- mods stay unloaded until
+-- that splash finishes and the title is about to open. The launcher itself
+-- never runs a mod entry chunk.
 function RomImporter:play(version)
   if self.workState == "working" then return end
   if not self.ready[version] then return end
