@@ -75,9 +75,6 @@ local function widen(self)
 end
 
 local function inject(self)
-  -- DISABLED: Preventing TERRARIUM BATTLES injection into Gen4 start menu
-  return
-
   if not (Hook.factory and isGen4()) then return end
   for _, row in ipairs(self.rows) do
     if row.entry and row.entry.__terrariumBattleEntry then return end
@@ -111,17 +108,8 @@ function Hook.install(factory)
   Menu.new = function(...)
     local self = Hook.original.new(...)
     if type(self) == "table" and type(self.rows) == "table" then
-      -- DISABLED: Preventing TERRARIUM BATTLES injection
-      -- local okInject, err = pcall(inject, self)
-      -- if not okInject then log("warn", "gen4 start menu hook failed: %s", tostring(err)) end
-      -- Clean up any rows without id field to prevent crashes
-      local filtered = {}
-      for _, row in ipairs(self.rows) do
-        if row and row.id then
-          filtered[#filtered + 1] = row
-        end
-      end
-      self.rows = filtered
+      local okInject, err = pcall(inject, self)
+      if not okInject then log("warn", "gen4 start menu hook failed: %s", tostring(err)) end
     end
     return self
   end
