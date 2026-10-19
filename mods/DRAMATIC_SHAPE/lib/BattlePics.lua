@@ -135,7 +135,7 @@ local CUT = 0.5
 local function readBack(img)
   local w, h = img:getDimensions()
   if w <= 0 or h <= 0 then return nil end
-  local prevCanvas = love.graphics.getCanvas()
+  love.graphics.push("all")   -- the pop restores the bound canvas, depth set included
   local prevBlend, prevAlpha = love.graphics.getBlendMode()
   local prevR, prevG, prevB, prevA = love.graphics.getColor()
   local data = nil
@@ -150,11 +150,7 @@ local function readBack(img)
     data = canvas:newImageData()
     if canvas.release then pcall(canvas.release, canvas) end
   end)
-  if prevCanvas then
-    love.graphics.setCanvas(prevCanvas)
-  else
-    love.graphics.setCanvas()
-  end
+  love.graphics.pop()
   love.graphics.setBlendMode(prevBlend or "alpha", prevAlpha)
   love.graphics.setColor(prevR or 1, prevG or 1, prevB or 1, prevA or 1)
   return ok and data or nil

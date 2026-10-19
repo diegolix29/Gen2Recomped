@@ -274,7 +274,7 @@ function Player:refreshForm(data)
     FieldDefaults.fieldValue(data, "playerSprites", "fieldMove")
   local form = require("src.pokemon.Sprites").playerForm(data)
   -- BLACK / WHITE: the bike and surf sheets (src/world/Gen5PlayerForms.lua)
-  if form and data.gen5_version then form = require("src.world.Gen5PlayerForms").fix(data, form) end
+  if form and require("src.core.GameVersion").isGen5() then form = require("src.world.Gen5PlayerForms").fix(data, form) end
   if form then
     local sprites = data.sprites or {}
     if form.walk and sprites[form.walk] then walkId = form.walk end
@@ -1066,7 +1066,7 @@ function Player:draw(camX, camY)
   -- by src/world/Gen4FishingTask.lua
   local g4f = self.gen4Fish
   if g4f and g4f.sprite and g4f.sprite.drawFixedFrame then
-    g4f.sprite:drawFixedFrame(px, py, camX, camY, g4f.frame or 0)
+    g4f.sprite:drawFixedFrame(px, py, camX, camY, g4f.frame or 0, g4f.flip)
     return
   end
   -- THE FIELD-MOVE POSE IS A SEQUENCE, not a facing.

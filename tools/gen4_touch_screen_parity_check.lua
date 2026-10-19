@@ -24,7 +24,8 @@ package.loaded['src.ui.Theme'] = { cursor = 0 }
 package.loaded['src.render.Gen4Palettes'] = { text = function() return nil end }
 package.loaded['src.core.Sound'] = { play = function() end, playCry = function() end }
 package.loaded['src.ui.SecondScreen'] = { mode = function() return "display" end, stowed = function() return false end,
-  draw = function() end, toLocal = function(_, x, y) return x, y end }
+  draw = function() end, toLocal = function(_, x, y) return x, y end,
+  separateMode = function(mode) return mode == "display" end }
 
 local PASS, FAIL = 0, 0
 local function check(cond, what)

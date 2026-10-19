@@ -33,16 +33,25 @@ end
 -- fix(data, form) -> the form with bike / surf as the table states them, for
 -- a cache imported before the importer knew (Player.refreshForm calls this)
 function P.fix(data, form)
-  if not (data and data.gen5_version and type(form) == "table") or form.surf then return form end
-  -- the runtime does not load gen5_sprite_table; the three sheets are
-  -- consecutive members (6 / 7 / 8 and 9 / 10 / 11), checked by shape
+  if not (data and type(form) == "table" and require("src.core.GameVersion").isGen5()) then return form end
   local n = tonumber(tostring(form.walk or ""):match("^SPRITE_G4_(%d+)$"))
   if not n then return form end
   local sprites = data.sprites or {}
-  local bike, surf = sprites[id(n + 1)], sprites[id(n + 2)]
-  if bike and (tonumber(bike.frames) or 0) >= 12 and surf and (tonumber(surf.frames) or 0) == 4 then
-    form.bike, form.surf = id(n + 1), id(n + 2)
-    if not surf.facings then surf.facings, surf.walker = P.SURF_FACINGS, true end
+  -- the runtime does not load gen5_sprite_table; the three sheets are
+  -- consecutive members (6 / 7 / 8 and 9 / 10 / 11), checked by shape
+  if not form.surf then
+    local bike, surf = sprites[id(n + 1)], sprites[id(n + 2)]
+    if bike and (tonumber(bike.frames) or 0) >= 12 and surf and (tonumber(surf.frames) or 0) == 4 then
+      form.bike, form.surf = id(n + 1), id(n + 2)
+      if not surf.facings then surf.facings, surf.walker = P.SURF_FACINGS, true end
+    end
+  end
+  -- THE ROD: /a/0/4/9 members 156 / 157 (texture t8x8fishgirl.., 64 x 64
+  -- frames): four a facing -- up 0-3, down 4-7, left 8-11, right the left
+  -- mirrored -- raise, draw back, swing, line out (Gen4FishingTask.BW_POSE)
+  if not form.fishing then
+    local fish = sprites[id(n + 150)]
+    if fish and (tonumber(fish.frames) or 0) == 12 then form.fishing = id(n + 150) end
   end
   return form
 end

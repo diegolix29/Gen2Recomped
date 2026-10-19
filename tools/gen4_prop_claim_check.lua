@@ -200,6 +200,14 @@ do
       fromDoors[id] = true
     end
   end
+  -- ...plus bm_anime_list's flags-3 rows (Gen4PropAnim.INTERACTION_ANIMATIONS:
+  -- the PC monitor on/off and the healing displays), which interactions load
+  -- rather than the clock (Gen4Ground.oneShotAnimations, since 2026-10-05)
+  local interaction = 0
+  for _, id in ipairs(Gen4PropAnim.INTERACTION_ANIMATIONS or {}) do
+    if not fromDoors[id] then interaction = interaction + 1 end
+    fromDoors[id] = true
+  end
   -- A FLOOR FIRST, so emptying DOORS cannot make the comparison below vacuous.
   -- Fourteen distinct ids over the twenty doors: 5/6, 7/8/9/10, 27/28, 29/30,
   -- 33/34, 51/52 -- see Gen4PropAnim.DOORS, derived from `doorModelIDs[]`.
@@ -207,14 +215,14 @@ do
      "the door rows name %d distinct animation ids, not the fourteen "
      .. "(5/6, 7/8/9/10, 27/28, 29/30, 33/34, 51/52) the twenty doors use",
      rows)
-  ok(keys(ONE_SHOT) == rows,
-     "oneShotAnimations holds %d ids and the door table names %d -- a door "
-     .. "animation missing from this set is put on the frame clock and opens "
-     .. "and shuts by itself", keys(ONE_SHOT), rows)
+  ok(keys(ONE_SHOT) == rows + interaction,
+     "oneShotAnimations holds %d ids and the door table and interaction rows "
+     .. "name %d -- a door animation missing from this set is put on the frame "
+     .. "clock and opens and shuts by itself", keys(ONE_SHOT), rows + interaction)
   local same = true
   for id in pairs(fromDoors) do if not ONE_SHOT[id] then same = false end end
   for id in pairs(ONE_SHOT) do if not fromDoors[id] then same = false end end
-  ok(same, "oneShotAnimations is not the door table's own id set")
+  ok(same, "oneShotAnimations is not the door table's ids plus the interaction rows")
   -- NAMED, because this pair is the whole point of the section: they are the
   -- only BTP0 door, so they are the only ids that could reach the clock route
   -- at all.  `Gen4PropAnim.DOORS`' `elevator_door` row, ids { 51, 52 }.
@@ -224,8 +232,8 @@ do
      .. "on the frame clock")
   -- ...and a non-door flipbook must NOT be in it, or the clock route loses
   -- the monitors and the escalators along with the door.
-  ok(not ONE_SHOT[41] and not ONE_SHOT[15] and not ONE_SHOT[18],
-     "a non-door animation (41 `pc_moni_on`, 15 `stair_pc_u01d`, 18 `wfall`) "
+  ok(not ONE_SHOT[15] and not ONE_SHOT[18],
+     "a non-door animation (15 `stair_pc_u01d`, 18 `wfall`) "
      .. "is treated as script-owned, which takes it off the clock and nothing "
      .. "else would ever play it")
   ok(Gen4Ground.oneShotAnimations() == ONE_SHOT,
@@ -467,7 +475,7 @@ local ANIMS = {
   bta(103, "scroll_only", "glass", { 3 }),
   btp(51, "ele_door1_op", "panel", DOOR_TEX, { 3, 4, 7 }),
   btp(52, "ele_door1_cl", "panel", DOOR_TEX, { 3, 4, 7 }),
-  btp(41, "pc_moni_on",   "screen", MONI_TEX, { 5 }),
+  btp(15, "stair_pc_u01d", "screen", MONI_TEX, { 5 }),
   { kind = "BCA0", member = 7, name = "door_op", frames = 8, props = { 6 },
     tracks = { { index = 0, frames = 8, matrices = "" } } },
 }
@@ -531,7 +539,7 @@ do
   -- ...and the disjointness control: a flipbook that is NOT a door still runs
   -- on the clock, so the exclusion is narrow rather than "no BTP0 ever".
   ok(count(5) == 1,
-     "a clock-driven flipbook (`pc_moni_on`) resolved %d animation(s), not 1 "
+     "a clock-driven flipbook (`stair_pc_u01d`) resolved %d animation(s), not 1 "
      .. "-- excluding every BTP0 instead of the door animations would stop "
      .. "the monitors and the escalators as well", count(5))
   -- A claimed flipbook whose pictures the cache does not carry stays out, the
@@ -638,7 +646,7 @@ do
   -- A clock-driven flipbook is NOT a one-shot: `animationsFor` answers for it
   -- and counting it here as well would make the two arms say the same thing.
   ok(set[5] ~= true,
-     "a clock-driven flipbook (`pc_moni_on`) was counted as a script-owned "
+     "a clock-driven flipbook (`stair_pc_u01d`) was counted as a script-owned "
      .. "one-shot, which is the clock route and this one answering the same "
      .. "question")
   ok(fresh:oneShotProps() == set, "oneShotProps rebuilds its set every call")

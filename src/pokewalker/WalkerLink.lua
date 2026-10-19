@@ -23,6 +23,15 @@ local Courses = require("src.pokewalker.WalkerCourses")
 local L = {}
 
 local function readSave(version, slotId)
+  -- A GAME IN ANOTHER WINDOW HAS THIS SAVE OPEN: its next save would write
+  -- over whatever goes in now (SaveData.slotOpenElsewhere; that game's save
+  -- also merges deliveries, so this is the first guard, not the only one)
+  local okO, open, age = pcall(SaveData.slotOpenElsewhere, version, slotId)
+  if okO and open then
+    return nil, ("that save is open in a running game -- save and quit it first"
+      .. " (if no game is running, try again in %d min)")
+      :format(math.max(1, math.ceil((SaveData.OPEN_FRESH - (age or 0)) / 60)))
+  end
   local path = SaveData.slotDiskPath(version, slotId)
   local f = path and io.open(path, "rb")
   if not f then return nil, "no save in that slot" end

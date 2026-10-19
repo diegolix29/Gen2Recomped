@@ -1726,7 +1726,9 @@ do
     local drBody = dr and src:sub(dr, (src:find("\nfunction Gen4Battle%.", dr + 10)) or #src) or ""
     local atField = drBody:find("battle:drawBattleField()", 1, true)
     local atFade = drBody:find("Gen4Battle.drawBackgroundFade(battle)", 1, true)
+    -- called directly or through pcall (a raise must not leave the camera pushed)
     local atBattlers = drBody:find("Gen4Battle.drawBattlers(battle)", 1, true)
+      or drBody:find("pcall(Gen4Battle.drawBattlers, battle)", 1, true)
     ok(atFade ~= nil, "the background fade is drawn at all", atFade ~= nil, true)
     ok(atField ~= nil and atFade ~= nil and atBattlers ~= nil
        and atField < atFade and atFade < atBattlers,

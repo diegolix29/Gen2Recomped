@@ -254,7 +254,8 @@ function Screen:drawScene()
   end
   if self.noDepth then return nil end
   local g = love.graphics
-  local previous = { g.getCanvas() }
+  -- push("all")/pop restores the bound canvas, a mod's depth set included
+  g.push("all")
   g.setCanvas({ self.colour, depthstencil = self.depth })
   g.clear(0, 0, 0, 0, true, true)
 
@@ -292,7 +293,7 @@ function Screen:drawScene()
     self.burst:draw(m, poseFrom(self.burst, self.burstAnim, self.openFrame or 0))
   end
 
-  g.setCanvas(previous[1] and previous or nil)
+  g.pop()
   return self.colour
 end
 

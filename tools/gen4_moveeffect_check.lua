@@ -73,7 +73,7 @@ end
 -- because the two fields wanted are both single-line string values.
 local pret = {}
 local dirs = 0
-local list = io.popen('ls "' .. pretDir .. '/res/moves" 2>/dev/null')
+local list = io.popen('ls "' .. pretDir .. '/res/moves" 2>' .. (package.config:sub(1, 1) == "\\" and "nul" or "/dev/null"))
 for dir in (list and list:lines() or function() return nil end) do
   local f = io.open(pretDir .. "/res/moves/" .. dir .. "/data.json", "rb")
   if f then
@@ -307,7 +307,7 @@ io.write("\nand Kanto, Johto and Hoenn are untouched\n")
 do
   local hits = {}
   local p = io.popen('grep -rl "Gen4Moves" "' .. (root ~= "" and root or "./")
-                     .. '../src" 2>/dev/null')
+                     .. '../src" 2>' .. (package.config:sub(1, 1) == "\\" and "nul" or "/dev/null"))
   for line in (p and p:lines() or function() return nil end) do
     -- CASE-INSENSITIVE, because the Gen 4 ruleset's own file is
     -- `rulesets/gen4_platinum.lua` and a match on "Gen4" alone reported it as a

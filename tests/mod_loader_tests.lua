@@ -247,7 +247,14 @@ do
   }
   local writes = {}
   local fs = memfs(stateFiles)
-  fs.write = function(path, contents) writes[path] = contents return true end
+  -- writes land in the same table reads come from: options.lua goes through
+  -- SaveSafety.atomicWrite, which reads its staged .tmp back before trusting
+  -- it, so a write-only fs looks like a full disk and nothing is committed
+  fs.write = function(path, contents)
+    writes[path] = contents
+    stateFiles[path] = contents
+    return true
+  end
   local migrateLoader = Loader.new({ fs = fs })
   migrateLoader:_loadState()
 

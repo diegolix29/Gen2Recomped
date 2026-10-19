@@ -247,7 +247,7 @@ else
   -- window in the right half of a 32-tile screen, which is only true if the
   -- first operand is the left.
   local sites, lefts, tops = 0, {}, {}
-  local p = io.popen('ls "' .. PRET .. '/res/field/scripts/" 2>/dev/null')
+  local p = io.popen('ls "' .. PRET .. '/res/field/scripts/" 2>' .. (package.config:sub(1, 1) == "\\" and "nul" or "/dev/null"))
   if p then
     for name in p:lines() do
       if name:match("%.s$") then
@@ -342,7 +342,7 @@ else
     local ARGUED = { ["src/ui/ShopMenu.lua"] = true }
     local offenders = {}
     local function sweep(dir)
-      local ph = io.popen('ls "' .. dir .. '" 2>/dev/null')
+      local ph = io.popen('ls "' .. dir .. '" 2>' .. (package.config:sub(1, 1) == "\\" and "nul" or "/dev/null"))
       if not ph then return end
       local names = {}
       for name in ph:lines() do names[#names + 1] = name end
@@ -375,7 +375,7 @@ else
        tostring(GameVersion.moneySign()))
     local readers = 0
     local function count(dir)
-      local ph = io.popen('ls "' .. dir .. '" 2>/dev/null')
+      local ph = io.popen('ls "' .. dir .. '" 2>' .. (package.config:sub(1, 1) == "\\" and "nul" or "/dev/null"))
       if not ph then return end
       local names = {}
       for name in ph:lines() do names[#names + 1] = name end

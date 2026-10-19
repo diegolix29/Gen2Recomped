@@ -549,7 +549,7 @@ do
   -- weather gate lives in `useFieldMove` (asserted just below).
   local actions = src:match("function Gen4PartyMenu:actions%(%)(.-)\nend")
   ok(actions ~= nil, "Gen4PartyMenu:actions is gone")
-  ok(actions == nil or actions:find("F%.ORDER") ~= nil,
+  ok(actions == nil or actions:find("F%.ORDER") ~= nil or actions:find("F%.order%(") ~= nil,
      "Gen4PartyMenu:actions does not walk the field-move list (F.ORDER), so "
      .. "Flash and Defog reach no menu row at all")
   ok(actions == nil or actions:find("weatherOffers%s*%(") == nil,

@@ -313,6 +313,8 @@ function ItemEffects.gen4RecordFor(id, data)
     local hp = b[13]
     r.amount = (hp == GEN4_HP_ALL and "all")
       or (hp == GEN4_HP_HALF and "half") or hp
+    -- 253 is Black and White's "a quarter" (the Sitrus Berry's block)
+    if hp == 253 and require("src.core.GameVersion").isGen5() then r.hpDivisor = 4 end
   elseif bit(1, 0) then
     r.revive = true
     r.amount = "half"
@@ -379,6 +381,8 @@ end
 -- and `use` all agree about what an item does on every cartridge.
 function ItemEffects.recordFor(id, data)
   local Data=data or require('src.core.Data')
+  -- BLACK / WHITE: the party blocks a cache imported before Gen5Data kept them
+  require("src.inventory.Gen5Items").ensure(Data)
   local def=type(id)=='table' and id or (Data.items and Data.items[id])
   local berry=require('src.inventory.PolishedBerries').record(def)
   if berry then return berry end
@@ -924,7 +928,7 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
   -- ITEM_USE_FUNC_BICYCLE, 21 ESCAPE_ROPE, and 19 BAG_MESSAGE -- the bag's own
   -- UseItemInBag, which knows exactly the three Repels and the two Flutes.
   -- BLACK / WHITE dispatch on their own `fieldUse` (src/inventory/Gen5ItemUse.lua)
-  if data and data.gen5_version and itemDef and itemDef.fieldUse ~= nil then
+  if itemDef and itemDef.fieldUse ~= nil and require("src.core.GameVersion").isGen5() then
     local kind, msgs, extra = require("src.inventory.Gen5ItemUse").use(data, save, rawItemId, itemDef, target, battle, ow)
     if kind then return kind, msgs or {}, extra end
   end
@@ -1362,6 +1366,11 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
     if header and require("src.world.Gen4Fishing").NO_FISHING[header] then
       return "failed", { Strings("It can't be used here.") }
     end
+    -- CanUseFishingRod / ItemCheckUseFunc_FishingRod: not with a partner
+    -- (Platinum bag line 111, HGSS msg_0010_00118), not in the HGSS Rocket
+    -- disguise (msg_0010_00119)
+    local refusal = require("src.inventory.Gen4FieldChecks").rodRefusal(data, save)
+    if refusal then return "failed", { refusal } end
     return "fish", rawItemId
   end
   if itemId == "OLD_ROD" or itemId == "GOOD_ROD" or itemId == "SUPER_ROD" then

@@ -113,8 +113,24 @@ Targeting.GEN4_RANGE = GEN4_RANGE
 -- way round. Gen 1 and Gen 2 carry neither and still land on SELECTED, which
 -- in a single battle is "the one foe" -- the answer this engine gave before
 -- any of this existed.
+-- BLACK AND WHITE'S `target` IS AN ENUM, NOT HOENN'S BITFIELD (the move
+-- record's +0x14, grouped over all 559 moves): 0 any adjacent, 1 user or ally
+-- (Acupressure), 2 ally (Helping Hand), 3 adjacent foe (Me First), 4 every
+-- adjacent Pokemon (Surf, Earthquake), 5 all adjacent foes (Growl, Rock
+-- Slide), 6 the user's party, 7 the user, 8 everyone (Perish Song), 9 a
+-- random foe (Thrash, Uproar), 10 the field, 11 the foes' side, 12 the user's
+-- side, 13 the effect decides (Counter, Curse, Nature Power). Read as Hoenn's
+-- bits, Surf hit ONE random foe and Growl one foe in a BW double.
+local BW_TARGET = {
+  [0] = 0x00, [1] = 0x02, [2] = 0x80, [3] = 0x00, [4] = 0x20, [5] = 0x08,
+  [6] = 0x10, [7] = 0x10, [8] = 0x10, [9] = 0x04, [10] = 0x10, [11] = 0x40,
+  [12] = 0x10, [13] = 0x01,
+}
+Targeting.BW_TARGET = BW_TARGET
+
 local function kindOf(move)
   local t = move and tonumber(move.target)
+  if t and move.bwEffect ~= nil and move.effectClass ~= nil then return BW_TARGET[t] or 0x00 end
   if t then return t end
   local r = move and tonumber(move.range)
   if r then return GEN4_RANGE[r] or Targeting.SELECTED end
@@ -163,6 +179,13 @@ end
 -- battle passes the one foe it always passed and gets it straight back.
 function Targeting.resolve(battle, user, move, chosen)
   local k = kindOf(move)
+
+  -- BLACK AND WHITE: FOLLOW ME / RAGE POWDER draw every single-target move
+  -- from the other side to themselves this turn (src/battle/Gen5MoveRules.lua)
+  if battle.bw and (k == Targeting.SELECTED or k == Targeting.RANDOM) then
+    local center = require("src.battle.Gen5MoveRules").centerOfAttention(battle, user, move)
+    if center then return { center } end
+  end
 
   if k == Targeting.USER then return { user } end
 

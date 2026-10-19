@@ -405,8 +405,8 @@ function Gen3Pokedex:applySearch(result)
   if key then
     -- "from the heaviest" and "from the tallest" descend; the other two, and
     -- A TO Z, ascend
-    local down = wants(sentence, "from the\nheaviest")
-                 or wants(sentence, "from the\ntallest")
+    local down = wants(sentence, "from the\nheaviest")  -- strings: matching the ROM's sort sentence
+                 or wants(sentence, "from the\ntallest")   -- strings: matching the ROM's sort sentence
                  or wants(sentence, "from the heaviest")
                  or wants(sentence, "from the tallest")
     table.sort(kept, function(a, b)
