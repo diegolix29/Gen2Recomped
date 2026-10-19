@@ -2456,6 +2456,109 @@ function ControlEngine:_removeStockPikachu(ow)
   end
 end
 
+-- ---------------------------------------------------------------------------
+-- HeartGold / SoulSilver's NATIVE walking Pokemon (src/world/HgssFollowMon.lua)
+-- ---------------------------------------------------------------------------
+-- The stock-Pikachu handling above only covers Yellow/Gold's PikachuFollower.
+-- HGSS has its own, separate follower (an NPC marked `hgssFollowMon`, spawned
+-- by HgssFollowMon.onMapEntered / .update), which nothing here ever touched --
+-- so with our trailers (and their 3D models) active the cartridge's own 2D
+-- follower walked in the same spot: two followers drawn on top of each other.
+--
+-- Same contract as the stock-Pikachu path: while this engine owns the follower
+-- slot, the native one is removed and not allowed to respawn; the moment we
+-- stop owning it (PARTY FOLLOWER off, count 0 in follow mode) it is left alone
+-- and HgssFollowMon's own `not npc` branch puts it back.  Gen4Follower (Barry,
+-- Cheryl... the story PARTNER) is a different system and is NOT touched.
+
+--- True while our followers / control visuals are what should be on screen.
+-- Mirrors _shouldSpawnStockFollower: PARTY FOLLOWER must be on, and either we
+-- have trailers (count > 0) or the player is controlling a Pokemon / pack.
+function ControlEngine:ownsNativeFollowSlot(game)
+  if not self:_partyFollowerEnabled() then return false end
+  if self:followerCount(game) > 0 then return true end
+  local mode = self:controlMode(game)
+  return mode == "pokemon" or mode == "lead_trainer" or mode == "pack"
+end
+
+function ControlEngine:_removeHgssNativeFollower(ow)
+  if not ow then return 0 end
+  local removed = 0
+  for _, list in ipairs({ ow.npcs or {}, ow.entities or {} }) do
+    for i = #list, 1, -1 do
+      if list[i] and list[i].hgssFollowMon then
+        table.remove(list, i)
+        removed = removed + 1
+      end
+    end
+  end
+  if removed > 0 then
+    -- HgssFollowMon's per-map trail state; stale once its NPC is gone.
+    ow.hgssFollowTrail, ow.hgssFollowPending, ow.hgssFollowTalk = nil, nil, nil
+  end
+  return removed
+end
+
+--- Wrap HgssFollowMon.update / .onMapEntered so they stand down while we own
+-- the follower slot.  Idempotent; restored by _restoreHgssNativeBlock.
+function ControlEngine:_installHgssNativeBlock()
+  local F = tryRequire("src.world.HgssFollowMon")
+  if not (F and type(F.update) == "function" and type(F.onMapEntered) == "function") then
+    return false
+  end
+  -- Hot reload: drop a previous install's wrappers before layering new ones.
+  local previous = rawget(F, "_wildsNativeBlock")
+  if previous and type(previous.restore) == "function" then
+    pcall(previous.restore)
+  end
+
+  local engine = self
+  local state = { disabled = false, origUpdate = F.update, origOnMapEntered = F.onMapEntered }
+
+  -- true = we own the slot and the native follower was suppressed this call
+  local function suppress(game, ow)
+    if state.disabled then return false end
+    -- Cheap exit for every game that is not HGSS (F.active is "has follow data").
+    local okActive, active = pcall(F.active, game)
+    if not (okActive and active) then return false end
+    local ok, owned = pcall(engine.ownsNativeFollowSlot, engine, game)
+    if not (ok and owned) then return false end
+    local n = engine:_removeHgssNativeFollower(ow)
+    if n > 0 then
+      logInfo(engine.mod, "blocked HGSS native follower (%d removed): mod followers own the slot", n)
+    end
+    return true
+  end
+
+  state.wrapUpdate = function(game, ow, ...)
+    if suppress(game, ow) then return end
+    return state.origUpdate(game, ow, ...)
+  end
+  state.wrapOnMapEntered = function(game, ow, ...)
+    if suppress(game, ow) then return end
+    return state.origOnMapEntered(game, ow, ...)
+  end
+  state.restore = function()
+    state.disabled = true
+    if F.update == state.wrapUpdate then F.update = state.origUpdate end
+    if F.onMapEntered == state.wrapOnMapEntered then F.onMapEntered = state.origOnMapEntered end
+    if rawget(F, "_wildsNativeBlock") == state then rawset(F, "_wildsNativeBlock", nil) end
+    if engine._hgssNativeBlock == state then engine._hgssNativeBlock = nil end
+  end
+
+  F.update = state.wrapUpdate
+  F.onMapEntered = state.wrapOnMapEntered
+  rawset(F, "_wildsNativeBlock", state)
+  self._hgssNativeBlock = state
+  return true
+end
+
+function ControlEngine:_restoreHgssNativeBlock()
+  local state = self._hgssNativeBlock
+  if state and type(state.restore) == "function" then pcall(state.restore) end
+  self._hgssNativeBlock = nil
+end
+
 function ControlEngine:alignSaveFromOptions(game)
   game = game or self:_game()
   if not (game and game.save) then return end
@@ -2715,6 +2818,9 @@ function ControlEngine:install()
   PF.starterInParty = wrappedStarterInParty
 
   pcall(function() self:_installTalkWrap() end)
+  -- HeartGold/SoulSilver: keep the cartridge's own walking Pokemon off the map
+  -- while our followers are out (see _installHgssNativeBlock).
+  pcall(function() self:_installHgssNativeBlock() end)
   -- Re-assert OW wrap after talk wrap / late loads.
   pcall(function() self:_installOverworldUpdateWrap() end)
   if self._owUpdateWrapped then
@@ -2833,6 +2939,7 @@ function ControlEngine:install()
     if engine._vanillaOrigOnMapEntered then PF.onMapEntered = engine._vanillaOrigOnMapEntered end
     if engine._vanillaOrigStarterInParty then PF.starterInParty = engine._vanillaOrigStarterInParty end
     engine:_restoreTalkWrap()
+    engine:_restoreHgssNativeBlock()
     engine:_restoreOverworldUpdateWrap()
     engine._mapExitSnapshot = nil
     engine._pendingConnectionHandoff = nil
@@ -2903,6 +3010,7 @@ function ControlEngine:restore()
   if self._restoreState and type(self._restoreState.restore) == "function" then
     pcall(self._restoreState.restore)
   end
+  self:_restoreHgssNativeBlock()
   self:_restoreOverworldUpdateWrap()
   self._installed = false
   self._restoreState = nil
