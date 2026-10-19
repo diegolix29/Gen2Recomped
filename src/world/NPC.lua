@@ -761,6 +761,8 @@ function NPC:update(map, entities)
   -- This is deliberately lazy so pooled neighbours and scripted placements
   -- follow the same rule without needing a second rebuild pass.
   self:updateElevation(map)
+  -- a scripted jump's arc (src/script/Gen5MoveExec.lua), on the fixed step
+  if self.hopFrames and self.hopFrames > 0 then self.hopFrames = self.hopFrames - 1 end
   if self.shakeFrames then
     self.shakeFrames = self.shakeFrames - 1
     self.px = self.cellX * 16 + (math.floor(self.shakeFrames / 2) % 2 == 0 and 1 or -1)
@@ -782,7 +784,9 @@ function NPC:update(map, entities)
   -- (DoubleAddPikachuStepVectorToScreenPixelCoords), which is why the
   -- pixel span doubles while the frame count does not.  Nothing else sets
   -- either field, so every other object keeps the constant (#410, #409).
-  local stepLen = self.stepFrames or STEP_FRAMES
+  -- scriptStepLen: a Black / White movement action's own step length
+  -- (src/script/Gen5MoveExec.lua), only while that movement runs
+  local stepLen = self.scriptStepLen or self.stepFrames or STEP_FRAMES
   local span = self.hopStep and 2 or 1
   if self.moving then
     self.progress = self.progress + 1
@@ -833,6 +837,8 @@ function NPC:update(map, entities)
   -- FreezeObjectEvent (097404) returns at once if the held-movement bit is
   -- set -- which is why applymovement still moves people mid-cutscene.
   if self.gen3ScriptFrozen then return end
+  -- PLATINUM'S VS. SEEKER: an armed trainer spins in place (Gen4VsSeeker.spin)
+  if self.vsSeekerReady and require("src.world.Gen4VsSeeker").spin(self) then return end
   if self.spins then
     -- Spinners never leave their cell, so this is the whole behaviour: turn
     -- on a timer.  A script that freezes the object (talking to it, a
@@ -951,6 +957,11 @@ function NPC:walkPhase()
   local def = self.sprite and self.sprite.def
   if def and def.holdStep then return 1 end
   local p = self.progress % 16
+  -- a scripted step of another length keeps the same stride: step frame in
+  -- the middle half of the step, however long the step is
+  if self.scriptStepLen and self.scriptStepLen ~= 16 then
+    p = math.floor(self.progress * 16 / self.scriptStepLen) % 16
+  end
   return (p >= 4 and p < 12) and 1 or 0
 end
 
@@ -963,8 +974,19 @@ function NPC:pose()
   -- so it glides rather than walks (Ice Path boulders, the Kimono Girls).
   -- Visual-only x2 (FRLG ship departure). Collision, scripts and terrain
   -- remain at the map object, matching the cartridge's stationary object.
-  return self.sprite, self.px + (self.shiftPx or 0), self.py, self.facing,
-         self.sliding and 0 or self:walkPhase(), self.stepFlip, false
+  local py, hopping = self.py, false
+  -- a scripted jump (Gen5MoveExec): the cartridge's arc on the Gen 4 ground,
+  -- a plain sine elsewhere -- the player's own rule (Player:pose)
+  if self.hopFrames and self.hopFrames > 0 then
+    local lift = require("src.world.Gen4Jump").flatLift(self)
+    if not lift then
+      local t = 1 - self.hopFrames / (self.hopTotal or 32)
+      lift = math.floor(10 * math.sin(t * math.pi) + 0.5)
+    end
+    py, hopping = py - lift, true
+  end
+  return self.sprite, self.px + (self.shiftPx or 0), py, self.facing,
+         self.sliding and 0 or self:walkPhase(), self.stepFlip, hopping
 end
 
 function NPC:draw(camX, camY)

@@ -2227,8 +2227,7 @@ function Gen4Poketch:drawWatch()
     -- Match the transport canvas on high-DPI Android; inheriting the window's
     -- DPI here gives the LCD a different pixel grid from its device bezel.
     self.lcdCanvas = self.lcdCanvas or g.newCanvas(W, H, { dpiscale = 1 })
-    local prevCanvas = g.getCanvas()
-    g.push('all')
+    g.push('all')   -- the pop restores the bound canvas, a mod's depth set included
     g.setCanvas(self.lcdCanvas)
     g.origin()
     g.setScissor()
@@ -2239,7 +2238,6 @@ function Gen4Poketch:drawWatch()
     g.setScissor(FACE.x, FACE.y, FACE.w, FACE.h)
     self:drawLCD(shown)
     self:drawShutter()
-    g.setCanvas(prevCanvas)
     g.pop()
     self:applyLCDPalette(backlight)
     g.setColor(1, 1, 1, 1)

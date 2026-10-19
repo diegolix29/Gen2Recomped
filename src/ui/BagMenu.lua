@@ -316,6 +316,13 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
     game.stack:push(MailView.new(game, extra.mailType))
     return
   end
+  -- HGSS Dowsing MCHN: the touch-screen dowsing mode (src/world/HgssDowsing.lua)
+  if result == "hgss_dowsing" then
+    list:close()
+    local ow = game.overworld
+    if ow then require("src.world.HgssDowsing").toggle(game, ow) end
+    return
+  end
   -- Honey: taken from the bag and Sweet Scent's lure task run
   if result == "honey" then
     list:close()
@@ -835,6 +842,17 @@ local BAG_TEXT_BOOTED_HM = 59
 local BAG_TEXT_CONTAINED = 60
 
 local function useItem(game, battle, id, list)
+  -- HGSS: the Escape Rope / Water Stone at a Ruins of Alph chamber wall
+  -- (src/world/HgssAlphChambers.lua) runs the chamber's script instead
+  if not battle and game.data and game.data.isGen4Cache
+     and require("src.world.HgssAlphChambers").bagItem(game, id, list, battle) then
+    return
+  end
+  -- BLACK / WHITE in battle: balls, medicine, battle items, Poke Dolls by
+  -- the item's own battle pocket (src/battle/Gen5BagUse.lua)
+  if battle and require("src.battle.Gen5BagUse").handles(game, battle) then
+    return require("src.battle.Gen5BagUse").use(game, battle, id, list, showMessages)
+  end
   local def = game.data.items[id]
   -- ItemUseTMHM checks wIsInBattle before BootedUpTMText
   if battle and def and def.machine then

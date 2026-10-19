@@ -29,6 +29,7 @@
 --   MANAPHY_EGG   GenerateManaphyEgg: a Manaphy Egg, if the party has room
 
 local MysteryGift = {}
+local Strings = require("src.core.Strings")
 
 MysteryGift.BANK = 379
 -- enum MysteryGiftType (include/mystery_gift.h)
@@ -268,7 +269,7 @@ function MysteryGift.offer(game, carryOn)
               if not yes then return end
               MysteryGift.choose(save, g.key)
               game.stack:push(TextBox.new(game,
-                "The gift is on its way!\nThe deliveryman at any POKé MART\nwill hand it over.", function()
+                Strings("The gift is on its way!\nThe deliveryman at any POKé MART\nwill hand it over."), function()
                   if MysteryGift.owed(save) >= 1 and #MysteryGift.available(save) > 0 then return end
                   game.stack:pop()       -- the menu
                   finish()
@@ -280,7 +281,7 @@ function MysteryGift.offer(game, carryOn)
     game.stack:push(Menu.new(game, items, { noSound = true, onCancel = finish }))
   end
   if MysteryGift.owed(save) < 1 or #MysteryGift.available(save) == 0 then return finish() end
-  game.stack:push(TextBox.new(game, "A MYSTERY GIFT is available!\nChoose one to receive.", pick))
+  game.stack:push(TextBox.new(game, Strings("A MYSTERY GIFT is available!\nChoose one to receive."), pick))
 end
 
 return MysteryGift

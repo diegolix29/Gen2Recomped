@@ -568,7 +568,7 @@ function LinkState:updateTrade(input)
   if t.stage == "cancelled" then
     self:exitWith(t.error and Strings("The trade stopped:\n%s.", t.error)
                   or say(self.game.data, "cancelled",
-                         "The trade was\ncancelled."))
+                         Strings.source("The trade was\ncancelled.")))
     return
   end
   if t.stage == "done" then
@@ -638,7 +638,7 @@ function LinkState:updateTrade(input)
     -- self.confirmed == nil guard
     self.net:send({ type = "bye" })
     self:exitWith(say(self.game.data, "cancelled",
-                      "The trade was\ncancelled."))
+                      Strings.source("The trade was\ncancelled.")))
   elseif t.stage == "picking" and input:wasPressed("a") then
     if t:canPick(self.index) then
       self.net:send(t:pick(self.index))

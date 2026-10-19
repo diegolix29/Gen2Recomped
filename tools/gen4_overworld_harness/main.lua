@@ -88,7 +88,9 @@ function love.load()
       Data.gen5_main_menu_art=require('src.import.Gen5MainMenuArt').build(X)
       Data.gen5_juniper_art=require('src.import.Gen5JuniperArt').build(X)
       -- the gift box's starter app (overlay 223, /a/2/0/5)
-      Data.gen5_starter_art=require('src.import.Gen5StarterArt').build(X);X:close()
+      Data.gen5_starter_art=require('src.import.Gen5StarterArt').build(X)
+      -- the naming keyboard (overlay 194, /a/1/1/8 + /a/1/1/9)
+      Data.gen5_naming_art=require('src.import.Gen5NamingArt').build(X);X:close()
       local Assets=require('src.render.Assets');local original=Assets.image
       Assets.image=function(path,...) return pictures[path] or original(path,...) end
     end
@@ -698,6 +700,14 @@ function love.load()
       local elevated = map.def and map.def.elevationCells and map.elevationAfter and true or false
       local key = function(x, y, e) return (x * 4096 + y) * 32 + ((elevated and e) or 0) end
       local se = elevated and p.elevation or nil
+      -- ...and a DS map by cell AND the height stood at (src/world/
+      -- Gen4HeightRule.lua): a bridge's deck and the path under it
+      local HR = require("src.world.Gen4HeightRule")
+      local heighted = not elevated and HR.applies(map) and HR.standingY(map, p) ~= nil
+      if heighted then
+        key = function(x, y, e) return (x * 4096 + y) .. ":" .. math.floor((e or 0) / 8 + 0.5) end
+        se = HR.standingY(map, p)
+      end
       local prev, q, head = { [key(sx, sy, se)] = false }, { { sx, sy, se } }, 1
       local ents = ow.cast or ow.entities or ow.npcs or {}
       -- (a cap past the biggest map: Pinwheel Forest is 128 x 96)
@@ -706,9 +716,13 @@ function love.load()
         for dname, d in pairs(DIRS) do
           local nx, ny = c[1] + d[1], c[2] + d[2]
           local ne = elevated and map:elevationAfter(c[3], nx, ny, c[1], c[2]) or nil
+          if heighted then
+            ne = HR.standingY(map, { cellX = nx, cellY = ny, gen4Height = c[3], gen4HeightMap = map }) or c[3]
+          end
           local k = key(nx, ny, ne)
           if prev[k] == nil then
             local mover = { cellX = c[1], cellY = c[2], elevation = (elevated and c[3]) or p.elevation, facing = dname, surfing = p.surfing }
+            if heighted then mover.elevation, mover.gen4Height, mover.gen4HeightMap = p.elevation, c[3], map end
             local ok = Collision.canMove(map, ents, mover, dname)
             if ok and avoid and avoid[nx * 4096 + ny] and not (nx == tx and ny == ty) then ok = false end
             if ok or (nx == tx and ny == ty) then
@@ -825,6 +839,16 @@ function love.load()
       end
       -- STRENGTH=1: Strength active (as the boulder's field-move script leaves it)
       if os.getenv("STRENGTH") and OW and i == 1 then OW.strengthActive = true end
+      -- BW_SPOT="x,y[,kind]": a Black / White phenomenon spot at tick 2
+      -- (src/world/Gen5Phenomena.lua), its kind from the tile when not given
+      if os.getenv("BW_SPOT") and OW and i == 2 then
+        local x, y, k = os.getenv("BW_SPOT"):match("(%d+),(%d+),?(%d*)")
+        local Ph = require("src.world.Gen5Phenomena")
+        x, y = tonumber(x), tonumber(y)
+        k = tonumber(k) or Ph.kindAt(OW.map, x, y)
+        OW.gen5Spot = { x = x, y = y, kind = k or 0, mapId = OW.map.id, age = 0 }
+        print(("[spot] %d,%d kind %s behaviour %s"):format(x, y, tostring(k), tostring(OW.map:cellBehaviour(x, y))))
+      end
       -- EMOTE_AT=<tick>[:kind]: the "!" (or "double") over the player, as a
       -- trainer's sighting starts it (OverworldController's emote record)
       if os.getenv("EMOTE_AT") and OW and i == tonumber(os.getenv("EMOTE_AT"):match("^(%d+)")) then

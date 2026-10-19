@@ -406,7 +406,9 @@ function Gen4Title:drawGiratina()
   end
 
   local g = love.graphics
-  local previous = { g.getCanvas() }
+  -- push("all")/pop restores the bound canvas; a saved getCanvas() list
+  -- crashed in setCanvas when a mod had a depth set bound
+  g.push("all")
   g.setCanvas({ self.colour, depthstencil = self.depth })
   g.clear(0, 0, 0, 0, true, true)
 
@@ -432,7 +434,7 @@ function Gen4Title:drawGiratina()
         record.model:draw(vp,pose,require('src.render.Gen4TexAnim').materials(record.materials,at))
       end
     end
-    g.setCanvas(previous[1] and previous or nil)
+    g.pop()
     return self.colour
   end
 
@@ -449,7 +451,7 @@ function Gen4Title:drawGiratina()
                                     Gen4Model.multiply(projection, view)), pose,
       require("src.render.Gen4TexAnim").materials(self.giraMaterials, self:giraTime()))
 
-  g.setCanvas(previous[1] and previous or nil)
+  g.pop()
   return self.colour
 end
 

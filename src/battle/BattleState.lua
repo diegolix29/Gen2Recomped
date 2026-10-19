@@ -1259,6 +1259,13 @@ local function newBattle(game)
   -- during a switch, mods walking the state stack) can treat the battle screen
   -- and the party menu uniformly instead of special-casing this one screen.
   self.battle = self
+  -- BLACK AND WHITE: their move effects named for this engine, their species'
+  -- abilities and their ruleset, before the ruleset below is chosen
+  -- (src/battle/Gen5MoveEffects.lua; sets self.bw on a BW cache only)
+  do
+    local okG5, G5 = pcall(require, "src.battle.Gen5MoveEffects")
+    if okG5 and G5 then G5.attach(self) end
+  end
   -- ruleset from the merged registry (the requires above are the same
   -- records on a mod-free boot); an unknown save value falls back to the
   -- default with a notice instead of silently switching behavior
@@ -1276,6 +1283,13 @@ local function newBattle(game)
     Logger.warn("unknown ruleset %s; using %s", tostring(selected), fallback)
   end
   self.ruleset = ruleset or rulesets[fallback] or Rulesets.gen1_faithful
+  -- BLACK AND WHITE: a new save's options carry "gen1_faithful" as a default,
+  -- not as anybody's choice, and Kanto's rules on a BW cartridge freeze for
+  -- good and sleep for seven turns -- the cartridge's own rules instead
+  if self.bw and self.ruleset and self.ruleset.name == "gen1_faithful"
+     and rulesets.gen5_bw then
+    self.ruleset = rulesets.gen5_bw
+  end
   self.rng = function(a, b) return love.math.random(a, b) end
   -- side/field substrate: vanilla writes nothing here, but every battle
   -- carries the stable shape mods hang screens/hazards/tokens on
@@ -1371,6 +1385,8 @@ local function newBattle(game)
           local got, playing = pcall(src.isPlaying, src)
           return got and playing == true
         end
+        -- Black and White's Transform copy (effect VM op 66, src/battle/Gen5Transform.lua)
+        if self.gen4Anim.gen5 then pcall(function() require("src.battle.Gen5Transform").hook(self) end) end
       end
     end
   end
@@ -2626,6 +2642,10 @@ function BattleState:startMessage(item)
   self.lines = {}
   self.total = 0
   local text = item.text or ""
+  -- BLACK AND WHITE print the cartridge's own battle lines (Gen5BattleText)
+  if self.bw and text ~= "" then
+    text = require("src.battle.Gen5BattleText").translate(self, text)
+  end
   local pos, cont = 1, false
   while true do
     local npos = text:find("[\n\v]", pos)
@@ -2871,6 +2891,12 @@ function BattleState:updateQueue()
         -- different questions and a Gen 4 battle must not fall into Emerald's
         -- animator -- which would look up a Hoenn move index in a Hoenn table
         -- and play whatever happened to be there.
+        -- BLACK AND WHITE'S player stands a double's attacker and defender
+        -- on their own slots (Gen5MoveAnimPlayer:setLayout)
+        if self.gen4Anim and self.gen4Anim.setLayout then
+          pcall(self.gen4Anim.setLayout, self.gen4Anim, self:isDouble() and "double" or "single",
+                item.attackerPosition, item.targetPosition)
+        end
         if self:gen4Layout() and self.gen4Anim and item.anim
            and self.gen4Anim:duration(item.anim, item.attackerIsPlayer) > 0 then
           self.gen4AnimPlaying = true
@@ -3044,7 +3070,9 @@ function BattleState:updateQueue()
     local delay = (self.game.save.options and self.game.save.options.textSpeed)
                   or 3
     if delay ~= 1 and delay ~= 3 and delay ~= 5 then delay = 3 end
-    if input:isDown("a") or input:isDown("b") then delay = 1 end
+    -- (headless stubs and scripted drivers may hand in an input without
+    -- isDown; treat that as "nothing held")
+    if input.isDown and (input:isDown("a") or input:isDown("b")) then delay = 1 end
     self.charTimer = (self.charTimer or 0) + 1
     while self.charTimer >= delay and #cur < #self.codes do
       self.charTimer = self.charTimer - delay
@@ -3741,6 +3769,9 @@ function BattleState:enter()
         pokedudeDemo = self.pokedudeDemo ~= nil,
         save = counterpart and self.game.save or nil,
         battle = self })
+  -- ...OR ONE THE DEMO NAMES OUTRIGHT: Black and White's Juniper is no player
+  -- form, so Gen4Commands hands her ROM back pic in (src/battle/CatchTutorialDemo.lua)
+  if self.demoBackPath then backPath, backTrueColor = self.demoBackPath, true end
   local backPalette=namedPalette(self.data,"MEWMON")
   if not self.demo and not backTrueColor then
     local colors,key=require('src.render.PlayerPalette').of(self.data,self.game.save,
@@ -4008,6 +4039,11 @@ function BattleState:menuLockedAction(battler)
   -- a slot with nobody in it -- a double battle between a faint and the
   -- end-of-turn replacement -- is not locked into anything
   if not battler then return nil end
+  -- BLACK AND WHITE: a Pokemon carried up by Sky Drop chooses nothing
+  if self.bw then
+    local held = require("src.battle.Gen5MoveRules").menuLock(self, battler)
+    if held then return held end
+  end
   if battler.mustRecharge then return { special = "recharge" } end
   if battler.charging then return battler.charging end
   if battler.thrashTurns and battler.thrashTurns > 0 then return battler.thrashMove end
@@ -4670,6 +4706,11 @@ function BattleState:update(dt)
       -- TAUNT and TORMENT refuse the move at SELECTION rather than after the
       -- fact, the way DISABLE already does, so the player is never told to
       -- pick again for something the game was never going to allow.
+      elseif self.bw and require("src.battle.Gen5MoveRules").moveBlocked(self, chooser, mvDef, true) then
+        -- BLACK AND WHITE: the Choice lock, Imprison, Gravity, Heal Block
+        self:say(require("src.battle.Gen5MoveRules").moveBlocked(self, chooser, mvDef, true))
+        self.phase = "messages"
+        self.afterQueue = "menu"
       elseif self:tauntBlocks(chooser, mvDef) then
         self:say(Strings("%s can't use\n%s after the\ntaunt!",
                          chooser.name, mvDef and mvDef.name or mv.id))
@@ -4857,6 +4898,7 @@ function BattleState:restoreMimicked(battler)
     local r = self.mimicRestores[i]
     if r.battler == battler then
       r.entry.id, r.entry.mimic = r.id, nil
+      if r.pp then r.entry.pp = r.pp end -- (BW's Mimic gave the copy its own PP)
     else
       keep[#keep + 1] = r
     end
@@ -4884,6 +4926,11 @@ end
 -- eighty-first frame and the throw still follows.  Only the screen it is
 -- drawn on differs, which is the whole of the report.
 function BattleState:gen3TutorialBag()
+  -- HeartGold / SoulSilver and Black / White pick the ball on the touch
+  -- screen, with the battle left up top (src/battle/CatchTutorialDemo.lua)
+  if require("src.battle.CatchTutorialDemo").runBag(self, function() self:oldManThrow() end) then
+    return true
+  end
   if require("src.core.GameVersion").isGen4() then
     self.phase, self.afterQueue = "messages", "menu"
     self:ui(function()
@@ -6616,7 +6663,8 @@ function BattleState:oldManThrow()
   self.phase = "messages"
   self.afterQueue = "finish"
   self.result = "run" -- nothing is kept; wBattleResult only ends the demo
-  self:say(Strings("%s used\nPOKé BALL!", self.demoName or "OLD MAN"))
+  local DsDemo = require("src.battle.CatchTutorialDemo")
+  self:say(DsDemo.throwText(self) or Strings("%s used\nPOKé BALL!", self.demoName or "OLD MAN"))
   self:act(function()
     require("src.core.Sound").play(self.data, "Ball_Toss")
     -- ItemUseBall's beat before the toss chain (like throwBall)
@@ -6626,7 +6674,7 @@ function BattleState:oldManThrow()
     self:actNext(function()
       require("src.core.Sound").play(self.data, "Caught_Mon")
     end)
-    self:sayNext(Strings("All right!\n%s was\ncaught!", self.enemy.name))
+    self:sayNext(DsDemo.caughtText(self) or Strings("All right!\n%s was\ncaught!", self.enemy.name))
   end)
 end
 
@@ -6710,7 +6758,7 @@ function BattleState:changeStageAgainstMist(attacker, target, stat, stages)
 end
 
 function BattleState:changeStage(target, stat, stages)
-  local applied = Effects.applyStage(self.stages[self:sideOf(target)], stat,
+  local applied = MoveEffects.applyStage(self.stages[self:sideOf(target)], stat,
     stages)
   local name = self:monName(target)
   if not applied then
@@ -6904,12 +6952,20 @@ end
 -- ---------------------------------------------------------------------
 
 function BattleState:moveDef(moveInst)
+  -- a BW battle's Struggle is the cartridge's own move 165
   return self.data.moves[moveInst.id]
+         or (moveInst.struggle and self.bw and self.bw.struggle) or nil
 end
 
 -- the merged move_effects record for an effect id; the module records
 -- cover battles built without a loader
 function BattleState:effectRecord(effect)
+  -- BLACK AND WHITE: every BW move's effect is a BW_* record, built from the
+  -- cartridge's effect number and the move record's own fields
+  -- (src/battle/Gen5MoveEffects.lua; Transform is BW_TRANSFORM)
+  if self.bw and type(effect) == "string" and effect:sub(1, 3) == "BW_" then
+    return require("src.battle.Gen5MoveEffects").record(self, effect)
+  end
   local effects = self.data.move_effects
   if effects then return effects[effect] end
   return MoveEffects.RECORDS[effect]
@@ -6968,6 +7024,11 @@ function BattleState:accuracyRoll(move, user, target, accuracyRaw)
   if user.lockedOn == target then
     user.lockedOn = nil
     return true
+  end
+  -- BLACK AND WHITE: Telekinesis, Gravity, the Micle Berry (Gen5MoveRules)
+  if self.bw then
+    local hit = require("src.battle.Gen5MoveRules").accuracy(self, move, user, target, accuracyRaw)
+    if hit ~= nil then return hit end
   end
   if Runtime.wantsHook("battle.accuracy") then
     return Runtime.call("battle.accuracy", function(c)
@@ -7109,6 +7170,12 @@ function BattleState:computeDamage(user, target, move, opts)
         opts.spread = (aliveOn(true) + aliveOn(false) - 1) >= 2
       end
     end
+  end
+  -- BLACK AND WHITE: the battle rides along for the immunities its field
+  -- and items lift (Gravity, Ring Target -- Damage.compute)
+  if self.bw then
+    opts = opts or {}
+    opts.bwBattle = self
   end
   if Runtime.wantsHook("battle.damage") then
     return Runtime.call("battle.damage", function(c)
@@ -7410,6 +7477,10 @@ function BattleState:resolveTurn(playerAction)
               { self.player, self.enemy, playerAction } }
   end
 
+  -- BLACK AND WHITE: who chose what, Quick Claw / Custap, Pursuit before a
+  -- switch (src/battle/Gen5MoveRules.lua)
+  if self.bw then order = require("src.battle.Gen5MoveRules").arrange(self, order) end
+
   self.phase = "messages"
   self.afterQueue = "menu"
 
@@ -7484,6 +7555,9 @@ function BattleState:resolveSwitch(newMon)
   end
   self.phase = "messages"
   self.afterQueue = "menu"
+  -- BLACK AND WHITE: the foe chooses first, and a Pursuit catches the
+  -- Pokemon leaving (src/battle/Gen5MoveRules.lua)
+  if self.bw and require("src.battle.Gen5MoveRules").playerSwitch(self, newMon) then return end
   self:act(function() self:switchPlayerInto(BattleState.POS.PLAYER_LEFT,
                                             newMon) end)
   self:act(function()
@@ -7637,6 +7711,12 @@ function BattleState:abilitySwitchIn(battler)
         return
       end
     end
+  end
+  -- BLACK AND WHITE: entry hazards, Healing Wish (src/battle/Gen5MoveEffects.lua)
+  if self.bw then
+    require("src.battle.Gen5MoveEffects").onSwitchIn(self, battler)
+    if not (battler.mon and battler.mon.hp > 0) then return end
+    require("src.battle.Gen5HoldItems").onSwitchIn(self, battler)
   end
   -- FORECAST first: a CASTFORM arriving into rain is a WATER type before
   -- anything else on the field gets to speak.
@@ -7912,6 +7992,9 @@ end
 -- QUICK CLAW: a percentage roll, taken once per battler per turn.
 function BattleState:quickClawWins(battler)
   if not (battler and battler.mon and battler.mon.hp > 0) then return false end
+  -- BLACK AND WHITE roll Quick Claw and Custap as the order is settled, with
+  -- their own line (Gen5MoveRules.arrange)
+  if self.bw then return false end
   local chance = HoldItems.quickClawChance(battler)
   if chance <= 0 then return false end
   return (self.rng or love.math.random)(0, 99) < chance
@@ -7921,6 +8004,11 @@ end
 -- true when the band held and the Pokemon is standing on one HP.
 function BattleState:focusBandHolds(battler, incoming)
   if not (battler and battler.mon) then return false end
+  -- BLACK AND WHITE: Focus Sash / Focus Band (src/battle/Gen5HoldItems.lua)
+  if self.bw and require("src.battle.Gen5HoldItems").owns(battler) then
+    if battler.mon.hp <= 0 or incoming < battler.mon.hp then return false end
+    return require("src.battle.Gen5HoldItems").focusBand(self, battler, incoming)
+  end
   -- only a hit that would actually finish it, and only from full-ish health
   -- is NOT a condition: the cartridge lets a band save a Pokemon on 1 HP too
   if battler.mon.hp <= 0 or incoming < battler.mon.hp then return false end
@@ -7933,6 +8021,12 @@ end
 -- SHELL BELL, after a move has landed: the attacker takes back a share of
 -- what it dealt.
 function BattleState:shellBellDrain(attacker, dealt)
+  -- BLACK AND WHITE answer every hit with their own items: Shell Bell, Life
+  -- Orb, Rocky Helmet, Air Balloon, Red Card... (src/battle/Gen5HoldItems.lua)
+  if self.bw and attacker then
+    require("src.battle.Gen5HoldItems").afterHit(self, attacker, dealt)
+    return
+  end
   if not (attacker and attacker.mon and attacker.mon.hp > 0) then return end
   if (dealt or 0) <= 0 then return end
   local share = HoldItems.shellBellShare(attacker)
@@ -7962,6 +8056,10 @@ end
 -- effects answer to which, and this spends the answer.
 function BattleState:holdItemTrigger(battler, when)
   if not (battler and battler.mon and battler.mon.hp > 0) then return false end
+  -- BLACK AND WHITE's berries, Leftovers, orbs, herbs (src/battle/Gen5HoldItems.lua)
+  if self.bw and require("src.battle.Gen5HoldItems").owns(battler) then
+    return require("src.battle.Gen5HoldItems").trigger(self, battler, when)
+  end
   local act = HoldItems.trigger(battler, when)
   if not act then return false end
   local who = displayName(battler)
@@ -8796,8 +8894,10 @@ function BattleState:gen4SendOut(battler)
   -- Already throwing something: a second ball in the air is worse than none.
   if self.gen4Ball then return false end
 
-  local pos = Gen4Battle.battlerPos and Gen4Battle.battlerPos(self, 0)
-              or (Gen4Battle.BATTLER_POS and Gen4Battle.BATTLER_POS[0])
+  -- (a double's left flank stands on battler type 2, not the solo spot)
+  local slot = (self:isDouble() and self.battlerAt) and 2 or 0
+  local pos = Gen4Battle.battlerPos and Gen4Battle.battlerPos(self, slot)
+              or (Gen4Battle.BATTLER_POS and Gen4Battle.BATTLER_POS[slot])
   if not pos then return false end
 
   -- WHICH BALL THIS POKEMON LIVES IN.  `MON_DATA_POKEBALL` is an item id and
@@ -9017,7 +9117,10 @@ function BattleState:updateGen4Ball()
   local anim = self.gen4Ball
   if not anim then return end
   anim:update()
-  if anim:isDone() then self.gen4Ball = nil end
+  -- ...except a ball that CAUGHT: it stays on the platform, the Pokemon still
+  -- inside, through "Gotcha!" to the end of the battle.  Dropping it put the
+  -- caught Pokemon straight back on the field under the caught text.
+  if anim:isDone() and not anim.caught then self.gen4Ball = nil end
 end
 
 function BattleState:updateFx()
@@ -9256,6 +9359,13 @@ function BattleState:executeAction(user, target, action)
   end
 
   local function run()
+    -- BLACK AND WHITE: held in the sky, the Choice lock, the thaw flag, a
+    -- sealed / grounded move (src/battle/Gen5MoveRules.lua)
+    if self.bw then
+      local skip, swap = require("src.battle.Gen5MoveRules").beforeAction(self, user, target, action)
+      if skip then return end
+      if swap then action = swap end
+    end
     -- ghost battles: the ghost never attacks; its whole turn is the
     -- GetOutText (ExecuteEnemyMove -> PrintGhostText, core.asm:5462-5463)
     if self.ghost and not user.isPlayer then
@@ -9840,7 +9950,8 @@ function BattleState:performMove(user, target, moveInst, isCalled, suppressAnima
       -- WHERE it went, which is what GUST and EARTHQUAKE need to know: a
       -- Pokemon in the air is reachable by one and a Pokemon underground by
       -- the other, each for double damage.
-      user.hiddenAs = (move.id == "DIG") and "underground" or "air"
+      -- (a BW record names its own place: underwater, underground, vanished)
+      user.hiddenAs = move.hiddenAs or ((move.id == "DIG") and "underground" or "air")
     end
     if not branchAware then
       local chargeAnim = record.charge.anim
@@ -10010,7 +10121,8 @@ function BattleState:applyDamage(target, dmg, fromMove)
   if endured then
     self:sayNext(Strings("%s endured\nthe hit!", displayName(target)))
   elseif band then
-    self:sayNext(Strings("%s hung on\nusing its FOCUS BAND!", displayName(target)))
+    self:sayNext(require("src.battle.Gen5HoldItems").hungOnLine(self, target)
+                 or Strings("%s hung on\nusing its FOCUS BAND!", displayName(target)))
   end
   if target.bideTurns then
     target.bideDamage = (target.bideDamage or 0) + dealt
@@ -10945,7 +11057,7 @@ function BattleState:playerMonFainted()
       -- command sits.  (The Route 22 RIVAL1 wipe darkens one box early, over
       -- Rival1WinText, which pokered prints just before the same command.)
       self.blackedOut = true
-      if require("src.core.GameVersion").isGen4() and self.data.text then
+      if require("src.core.GameVersion").isNds() and self.data.text then
         -- PLATINUM'S subscript_battle_lost: the money goes IN BATTLE
         -- (BtlCmd_PayPrizeMoney -> BattleSystem_CalcMoneyPenalty), with the line
         -- for it, then "... ... ... ..." and the blackout -- bank 368 #36, #35
@@ -10965,12 +11077,22 @@ function BattleState:playerMonFainted()
           self.game.save.money = (self.game.save.money or 0) - penalty
         end
         self.gen4PenaltyPaid = true
-        self:sayNext(line(36) or Strings("%s is out of\nusable Pokémon!", name))
-        if penalty > 0 then
-          self:sayNext(line(self.kind == "trainer" and 35 or 34, penalty))
+        -- THE BANK IS THE GAME'S OWN: 368 is Platinum's battle bank, and
+        -- HeartGold / SoulSilver (197) and Black / White (system bank 15)
+        -- number theirs differently -- read through 368 they printed the
+        -- English fallbacks and queued a nil line for the money
+        -- (src/world/Gen4Blackout.lua lossLines)
+        local lines = require("src.world.Gen4Blackout").lossLines(self.data, name, penalty,
+                                                                 self.kind == "trainer")
+        if lines and #lines > 0 then
+          for _, s in ipairs(lines) do self:sayNext(s) end
+        else
+          self:sayNext(line(36) or Strings("%s is out of\nusable Pokémon!", name))
+          local paid = penalty > 0 and line(self.kind == "trainer" and 35 or 34, penalty)
+          if paid then self:sayNext(paid) end
+          self:sayNext(line(38) or "... ... ... ...")
+          self:sayNext(line(37) or Strings("%s blacked out!", name))
         end
-        self:sayNext(line(38) or "... ... ... ...")
-        self:sayNext(line(37) or Strings("%s blacked out!", name))
       else
         self:sayNext(Strings("%s is out of\nuseable POKéMON!", self.game.save.player.name))
         self:sayNext(Strings("%s blacked\nout!", self.game.save.player.name))
@@ -11162,7 +11284,7 @@ function BattleState:gen4SafariAction(choice)
     -- the ball comes off the count when the command is chosen
     st.balls = math.max(0, (st.balls or 0) - 1)
     local def = self:itemDef(G.SAFARI_BALL)
-    self:say(line(G.TEXT.usedOne, "%s used\none %s!", playerName,
+    self:say(line(G.TEXT.usedOne, Strings.source("%s used\none %s!"), playerName,
                   (def and def.name) or "Safari Ball"))
     self:act(function()
       require("src.core.Sound").play(self.data, "Ball_Toss")
@@ -11184,7 +11306,7 @@ function BattleState:gen4SafariAction(choice)
         if st.balls <= 0 then
           -- subscript_throw_safari_ball: the announcer, and the battle ends
           -- as a flight; the field runs the game-over script after it
-          self:sayNext(line(G.TEXT.outOfBalls, "Announcer: You're out of\nSafari Balls! Game over!"))
+          self:sayNext(line(G.TEXT.outOfBalls, Strings.source("Announcer: You're out of\nSafari Balls! Game over!")))
           self:actNext(function()
             self.result = "run"
             self.afterQueue = "finish"
@@ -11199,14 +11321,14 @@ function BattleState:gen4SafariAction(choice)
 
   local roll = self.rng(0, 9)
   if choice == "bait" then
-    self:say(line(G.TEXT.bait, "%s threw some Bait\nat the %s!", playerName, foe))
+    self:say(line(G.TEXT.bait, Strings.source("%s threw some Bait\nat the %s!"), playerName, foe))
     local said = G.bait(sf, roll)
     self:say(line(G.TEXT[said], said == "eating" and "%s is eating!" or "%s is busy eating!", foe))
   else -- "rock": Platinum's MUD
-    self:say(line(G.TEXT.mud, "%s threw mud at\nthe %s!", playerName, foe))
+    self:say(line(G.TEXT.mud, Strings.source("%s threw mud at\nthe %s!"), playerName, foe))
     local said = G.mud(sf, roll)
     self:say(line(G.TEXT[said], said == "angry" and "%s is angry!"
-                                or "%s is beside itself\nwith anger!", foe))
+                                or Strings.source("%s is beside itself\nwith anger!"), foe))
   end
   self:act(function() self:gen4SafariEnemyTurn() end)
 end
@@ -11413,7 +11535,9 @@ function BattleState:tryRun()
   end
   if escaped then
     require("src.core.Sound").play(self.data, "Run")
-    self:say(self:romText("_GotAwayText", "Got away safely!"))
+    -- BLACK AND WHITE: "X fled using its Smoke Ball!" (bank 14 #1004)
+    local smoke = self.bw and require("src.battle.Gen5HoldItems").smokeBallLine(self, self.player)
+    self:say(smoke or self:romText("_GotAwayText", "Got away safely!"))
     self.result = "run"
     self.afterQueue = "finish"
   else
@@ -11647,6 +11771,18 @@ function BattleState:gen4BallChain(caught, shakes, ball)
   -- table, rather than a number typed here.
   local pos = Gen4Battle.battlerPos and Gen4Battle.battlerPos(self, 1)
               or (Gen4Battle.BATTLER_POS and Gen4Battle.BATTLER_POS[1])
+  -- BLACK AND WHITE throw from their own capture effect (src/battle/Gen5BallAnim.lua)
+  local okG5, Gen5BallAnim = pcall(require, "src.battle.Gen5BallAnim")
+  local g5 = okG5 and Gen5BallAnim.wants(self) and Gen5BallAnim.new({
+    battle = self, ball = name, itemId = itemId, caught = caught, shakes = shakes,
+    targetPosition = self.enemy and self.enemy.position,
+  }) or nil
+  if g5 then
+    self.gen4Ball = g5
+    self.nextInsert = (self.nextInsert or 0) + 1
+    table.insert(self.queue, self.nextInsert, { wait = g5:estimate() })
+    return true
+  end
   local anim = Gen4BallAnim.new({
     ball = name,
     to = pos and { x = pos.x, y = pos.y } or nil,
@@ -12229,6 +12365,8 @@ function BattleState:openParty()
             "An EGG can't\nbattle!"))
         elseif mon.hp <= 0 then
           self:say(self:romText("_NoWillText", "There's no will\nto fight!"))
+        elseif self.bw and require("src.battle.Gen5MoveRules").switchRefused(self, mon) then
+          -- BLACK AND WHITE: bound, Mean Look, Shadow Tag... (Shed Shell frees)
         elseif self:isDouble() then
           -- A SWITCH IN A DOUBLE IS AN ACTION, NOT AN ANSWER.  The other
           -- three slots still move this turn, so it goes into the same
@@ -12770,7 +12908,7 @@ function BattleState:gen3AnimShake(battler)
   -- rotate `drawBattlerPic` already carries.
   if self.gen4AnimPlaying and self.gen4Anim and battler then
     local ok4, a, b, c, d = pcall(self.gen4Anim.monOffset, self.gen4Anim,
-                                  battler == self.player)
+                                  battler == self.player, battler)
     if ok4 then return a or 0, b or 0 end
     return 0, 0
   end
@@ -12807,7 +12945,7 @@ function BattleState:gen3AnimTint(battler)
   -- rotate `drawBattlerPic` already carries.
   if self.gen4AnimPlaying and self.gen4Anim and battler then
     local ok4, a, b, c, d = pcall(self.gen4Anim.monTint, self.gen4Anim,
-                                  battler == self.player)
+                                  battler == self.player, battler)
     if ok4 then return a, b, c, d end
     return nil
   end
@@ -12831,7 +12969,7 @@ function BattleState:gen3AnimSpecialMonState(battler)
   }
   -- Sinnoh: alpha / mosaic / brightness / white from Gen4MoveAnimExtras.
   if self.gen4AnimPlaying and self.gen4Anim and self.gen4Anim.monSpecial then
-    local ok4, sp = pcall(self.gen4Anim.monSpecial, self.gen4Anim, battler == self.player)
+    local ok4, sp = pcall(self.gen4Anim.monSpecial, self.gen4Anim, battler == self.player, battler)
     if ok4 and type(sp) == "table" then
       state.alpha = sp.alpha or 1
       state.mosaic = sp.mosaic or 1
@@ -12963,7 +13101,7 @@ end
 function BattleState:gen3AnimRotate(battler)
   -- Sinnoh's animator rotates through the same seam (Gen4MoveAnimExtras).
   if self.gen4AnimPlaying and self.gen4Anim and battler and self.gen4Anim.monRotate then
-    local ok4, angle4, rise4 = pcall(self.gen4Anim.monRotate, self.gen4Anim, battler == self.player)
+    local ok4, angle4, rise4 = pcall(self.gen4Anim.monRotate, self.gen4Anim, battler == self.player, battler)
     if ok4 and type(angle4) == "number" and angle4 ~= 0 then return angle4, tonumber(rise4) or 0 end
     return nil
   end
@@ -12991,7 +13129,7 @@ function BattleState:gen3AnimSquash(battler)
   -- rotate `drawBattlerPic` already carries.
   if self.gen4AnimPlaying and self.gen4Anim and battler then
     local ok4, a, b, c, d = pcall(self.gen4Anim.monAffine, self.gen4Anim,
-                                  battler == self.player)
+                                  battler == self.player, battler)
     if ok4 then return a or 1, b or 1 end
     return nil
   end
@@ -13429,7 +13567,9 @@ function BattleState:applyWavy(src)
   local wavy = self.fx and self.fx.wavy
   if not wavy then return src end
   local g = love.graphics
-  local prev = g.getCanvas()
+  -- push("all")/pop restores the bound canvas: setCanvas(getCanvas()) drops
+  -- (or chokes on) a depth set a mod has bound around the battle
+  g.push("all")
   g.setCanvas(self.waveCanvas)
   g.setColor(1, 1, 1, 1)
   g.rectangle("fill", 0, 0, 160, 144)
@@ -13439,7 +13579,7 @@ function BattleState:applyWavy(src)
     g.draw(src, self.waveQuad,
            WAVY_OFFSETS[(line + wavy.phase) % 32 + 1], line)
   end
-  g.setCanvas(prev)
+  g.pop()
   return self.waveCanvas
 end
 
@@ -14327,8 +14467,9 @@ function BattleState:drawClassic()
     -- SGB pipeline: gray BG canvas -> (wavy) -> zone recolor with the
     -- BGP fade -> mon pics -> OAM anim sprites (never BGP-faded)
     local g = love.graphics
-    local prev = g.getCanvas()
     local wavy = fx and fx.wavy
+    -- push("all")/pop restores the bound canvas, a mod's depth set included
+    g.push("all")
     g.setCanvas(self.bgCanvas)
     -- The white paper the whole battle is drawn on -- unless something has
     -- put a WORLD where the paper goes, in which case painting it is what
@@ -14361,7 +14502,7 @@ function BattleState:drawClassic()
       g.setScissor()
       self.grayPics = nil
     end
-    g.setCanvas(prev)
+    g.pop()
     self:drawZonePass(self:applyWavy(self.bgCanvas), sx, sy)
     if balls and balls[1] then
       -- they ride the window shake with the HUD chrome they sit in

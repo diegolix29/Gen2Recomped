@@ -2956,20 +2956,20 @@ function Commands.g2_std(ctx, id)
     -- Inline PokecenterNurseScript: welcome → yes/no → heal + machine → bye.
     local t = ctx.game.data and ctx.game.data.text or {}
     local bye = t._PokemonCenterFarewellText
-      or "We hope to see\nyou again!"
+      or Strings("We hope to see\nyou again!")
     local hello = t._PokemonCenterWelcomeText
-      or "Welcome to our\nPOKéMON CENTER!"
+      or Strings("Welcome to our\nPOKéMON CENTER!")
     if not ctx.save.usedPokecenter then
       ctx.save.usedPokecenter = true
       hello = hello .. "\f"
-        .. (t._ShallWeHealYourPokemonText or "Shall we heal your\nPOKéMON?")
+        .. (t._ShallWeHealYourPokemonText or Strings("Shall we heal your\nPOKéMON?"))
     end
     Commands.ask(ctx, hello)
     if not ctx.lastCheck then
       Commands.show_text(ctx, bye)
       return
     end
-    local need = t._NeedYourPokemonText or "OK. We'll need\nyour POKéMON."
+    local need = t._NeedYourPokemonText or Strings("OK. We'll need\nyour POKéMON.")
     Commands.show_text(ctx, need)
     Commands.g2_heal_party(ctx)
     -- Record the blackout/heal point so Escape Rope / white-out work.
@@ -2986,7 +2986,7 @@ function Commands.g2_std(ctx, id)
     end
     Commands.g2_heal_machine_anim(ctx)
     local fit = t._PokemonFightingFitText
-      or "Your POKéMON are\nfighting fit!"
+      or Strings("Your POKéMON are\nfighting fit!")
     Commands.show_text(ctx, fit)
     Commands.show_text(ctx, bye)
     return
@@ -3905,7 +3905,7 @@ function Commands.g2_fruittree(ctx, tree, fallback)
   -- scenery until TryResetFruitTrees clears the flags
   if save.g2FruitTrees[tree] or not itemId then
     return Commands.show_text(ctx,
-      t._FruitBearingTreeText or "It's a fruit-\nbearing tree.")
+      t._FruitBearingTreeText or Strings("It's a fruit-\nbearing tree."))
   end
   local def = game.data.items[itemId]
   local name = def and def.name or itemId
@@ -3916,14 +3916,14 @@ function Commands.g2_fruittree(ctx, tree, fallback)
   Commands.show_text(
   ctx,
   t._HeyItsFruitText and "_HeyItsFruitText"
-    or ("Hey! It's\n" .. name .. "!"),
+    or Strings("Hey! It's\n%s!", name),
   { RAM = name }
   )
   local quantity = require('src.core.GameVersion').get() == 'polishedcrystal' and math.random(1,3) or 1
   if not require("src.inventory.Bag").add(save, itemId, quantity, game.data) then
     -- .packisfull: the fruit stays on the tree, so the flag is NOT set
     return Commands.show_text(ctx,
-      t._FruitPackIsFullText or "But the PACK is\nfull…")
+      t._FruitPackIsFullText or Strings("But the PACK is\nfull…"))
   end
   save.g2FruitTrees[tree] = true
   ctx.textOpts = ctx.textOpts or {}
@@ -3934,7 +3934,7 @@ function Commands.g2_fruittree(ctx, tree, fallback)
   Commands.show_text(
   ctx,
   t._ObtainedFruitText and "_ObtainedFruitText"
-    or ("Obtained\n" .. name .. "!"),
+    or Strings("Obtained\n%s!", name),
   { RAM = name }
   )
 end
@@ -4170,14 +4170,14 @@ function Commands.g2_name_rater(ctx)
            or mon.species
   end
 
-  Commands.ask(ctx, t._NameRaterHelloText or "Would you like me\nto rate names?")
+  Commands.ask(ctx, t._NameRaterHelloText or Strings("Would you like me\nto rate names?"))
   if not ctx.lastCheck then
     return Commands.show_text(ctx, t._NameRaterComeAgainText
-      or "OK, then. Come\nagain sometime.")
+      or Strings("OK, then. Come\nagain sometime."))
   end
 
   Commands.show_text(ctx, t._NameRaterWhichMonText
-    or "Which POKéMON's\nnickname should I\vrate for you?")
+    or Strings("Which POKéMON's\nnickname should I\vrate for you?"))
   local picked
   require("src.ui.Screens").push(game, "PartyMenu", {
     pickOnly = true,
@@ -4187,11 +4187,11 @@ function Commands.g2_name_rater(ctx)
   runner:yield()
   if not picked then
     return Commands.show_text(ctx, t._NameRaterComeAgainText
-      or "OK, then. Come\nagain sometime.")
+      or Strings("OK, then. Come\nagain sometime."))
   end
   if Party.isEgg(picked) then
     return Commands.show_text(ctx, t._NameRaterEggText
-      or "Whoa… That's just\nan EGG.")
+      or Strings("Whoa… That's just\nan EGG."))
   end
 
   setBuffer(game,1,nickOf(picked))
@@ -4201,17 +4201,17 @@ function Commands.g2_name_rater(ctx)
   local player=save.player or {}
   if (ot and ot ~= player.name) or (picked.otId~=nil and player.id~=nil and picked.otId~=player.id) then
     return Commands.show_text(ctx, t._NameRaterPerfectNameText
-      or "Hm… {RAM:wStringBuffer1}?\nWhat a great name!")
+      or Strings("Hm… {RAM:wStringBuffer1}?\nWhat a great name!"))
   end
   Commands.ask(ctx, t._NameRaterBetterNameText
     or "Hm… {RAM:wStringBuffer1}? A better name?")
   if not ctx.lastCheck then
     return Commands.show_text(ctx, t._NameRaterComeAgainText
-      or "OK, then. Come\nagain sometime.")
+      or Strings("OK, then. Come\nagain sometime."))
   end
 
   Commands.show_text(ctx, t._NameRaterWhatNameText
-    or "All right. What\nname should we\vgive it, then?")
+    or Strings("All right. What\nname should we\vgive it, then?"))
   local chosen
   game.stack:push(require("src.ui.NamingScreen").new(game, {
     title = Strings("%s's NICKNAME?", nickOf(picked)),
@@ -4226,14 +4226,14 @@ function Commands.g2_name_rater(ctx)
   if not chosen or chosen == "" or chosen == nickOf(picked) then
     setBuffer(game,1,nickOf(picked))
     return Commands.show_text(ctx, t._NameRaterSameNameText
-      or "It might look the\nsame as before,\fbut this new name\nis much better!")
+      or Strings("It might look the\nsame as before,\fbut this new name\nis much better!"))
   end
   picked.nickname = chosen
   setBuffer(game,1,chosen)
   Commands.show_text(ctx, t._NameRaterNamedText
-    or "All right. This\nPOKéMON is now\vnamed {RAM:wStringBuffer1}.")
+    or Strings("All right. This\nPOKéMON is now\vnamed {RAM:wStringBuffer1}."))
   Commands.show_text(ctx, t._NameRaterFinishedText
-    or "That's a better\nname than before!\fWell done!")
+    or Strings("That's a better\nname than before!\fWell done!"))
 end
 
 -- ---------------------------------------------------------------------------
@@ -4271,11 +4271,11 @@ function Gen2Commands.dayCareDeposit(ctx, which, introText, leftText)
   -- .only_one: the last party member can never be boarded
   if #save.party < 2 then
     return Commands.show_text(ctx, t._OnlyOneMonText
-      or "Oh? But you have\njust one #MON.")
+      or Strings("Oh? But you have\njust one #MON."))
   end
 
   Commands.show_text(ctx, t._WhatShouldIRaiseText
-    or "What should I\nraise for you?")
+    or Strings("What should I\nraise for you?"))
   local picked
   require("src.ui.Screens").push(game, "PartyMenu", {
     pickOnly = true,
@@ -4288,11 +4288,11 @@ function Gen2Commands.dayCareDeposit(ctx, which, introText, leftText)
   end
   if Party.isEgg(picked) then
     return Commands.show_text(ctx, t._CantAcceptEggText
-      or "Sorry, but I can't\naccept an EGG.")
+      or Strings("Sorry, but I can't\naccept an EGG."))
   end
   if picked.mail then
     return Commands.show_text(ctx, t._RemoveMailText
-      or "Remove the MAIL\nfrom that #MON.")
+      or Strings("Remove the MAIL\nfrom that #MON."))
   end
   -- .last_healthy: boarding the only mon that can still battle is refused
   local healthy = 0
@@ -4301,7 +4301,7 @@ function Gen2Commands.dayCareDeposit(ctx, which, introText, leftText)
   end
   if healthy <= 1 and (picked.hp or 0) > 0 and not Party.isEgg(picked) then
     return Commands.show_text(ctx, t._LastHealthyMonText
-      or "That's your last\nhealthy #MON.")
+      or Strings("That's your last\nhealthy #MON."))
   end
 
   for i, mon in ipairs(save.party) do
@@ -4310,7 +4310,7 @@ function Gen2Commands.dayCareDeposit(ctx, which, introText, leftText)
   DayCare.deposit(save, which, picked)
   game.stringBuffer = Gen2Commands.dayCareName(game, picked)
   Commands.show_text(ctx, t._IllRaiseYourMonText
-    or "Fine, I'll raise\nyour #MON.")
+    or Strings("Fine, I'll raise\nyour #MON."))
   Commands.show_text(ctx, leftText, { RAM = game.stringBuffer })
 end
 
@@ -4338,12 +4338,12 @@ function Gen2Commands.dayCareWithdraw(ctx, which)
 
   if levelsGrown > 0 then
     Commands.ask(ctx, t._AreWeGeniusesText
-      or "Aren't we\ngeniuses?", { RAM = name })
+      or Strings("Aren't we\ngeniuses?"), { RAM = name })
     if not ctx.lastCheck then
       return Commands.show_text(ctx, t._OhFineThenText or "Oh, fine then.")
     end
     local report = t._YourMonHasGrownText
-      or "Your #MON grew by {NUM:LEVELS} levels.\fIt will cost ¥{NUM:FEE} to take it back."
+      or Strings("Your #MON grew by {NUM:LEVELS} levels.\fIt will cost ¥{NUM:FEE} to take it back.")
     local subs, index = { RAM = name }, 0
     -- Both decimal RAM operands occur in this line: growth, then price.
     -- Their addresses differ by cartridge, so substitute in ROM order.
@@ -4354,7 +4354,7 @@ function Gen2Commands.dayCareWithdraw(ctx, which)
     Commands.ask(ctx, report, subs)
   else
     Commands.ask(ctx, t._BackAlreadyText
-      or "Back already?\nYour #MON needs\nmore time with me.",
+      or Strings("Back already?\nYour #MON needs\nmore time with me."),
       { RAM = name })
   end
   if not ctx.lastCheck then
@@ -4362,11 +4362,11 @@ function Gen2Commands.dayCareWithdraw(ctx, which)
   end
   if (save.money or 0) < fee then
     return Commands.show_text(ctx, t._NotEnoughMoneyText
-      or "You don't have\nenough money.")
+      or Strings("You don't have\nenough money."))
   end
   if #save.party >= Party.MAX then
     return Commands.show_text(ctx, t._HaveNoRoomText
-      or "You have no room\nfor it.")
+      or Strings("You have no room\nfor it."))
   end
 
   save.money = save.money - fee
@@ -4389,10 +4389,10 @@ function Gen2Commands.dayCareWithdraw(ctx, which)
   end
   table.insert(save.party, mon)
   Commands.show_text(ctx, t._PerfectHeresYourMonText
-    or "Perfect! Here's\nyour #MON!")
+    or Strings("Perfect! Here's\nyour #MON!"))
   Commands.g2_cry(ctx, mon.species)
   Commands.show_text(ctx, t._GotBackMonText
-    or "{PLAYER} got\n{RAM:wStringBuffer} back!", { RAM = name })
+    or Strings("{PLAYER} got\n{RAM:wStringBuffer} back!"), { RAM = name })
 end
 
 -- `special DayCareMan` ($1E) -- wBreedMon1, the pen on the left.
@@ -4406,9 +4406,9 @@ function Commands.g2_daycare_man(ctx)
     and (t._DayCareManIntroEggText or t._DayCareManIntroText)
     or t._DayCareManIntroText
   return Gen2Commands.dayCareDeposit(ctx, DayCare.MAN,
-    intro or "I'm the DAY-CARE\nMAN. Want me to\nraise a #MON?",
+    intro or Strings("I'm the DAY-CARE\nMAN. Want me to\nraise a #MON?"),
     t._LeftWithDayCareManText
-      or "{RAM:wStringBuffer} was left with\nthe DAY-CARE MAN.")
+      or Strings("{RAM:wStringBuffer} was left with\nthe DAY-CARE MAN."))
 end
 
 -- `special DayCareLady` ($1F) -- wBreedMon2, the pen on the right.
@@ -4422,9 +4422,9 @@ function Commands.g2_daycare_lady(ctx)
     and (t._DayCareLadyIntroEggText or t._DayCareLadyIntroText)
     or t._DayCareLadyIntroText
   return Gen2Commands.dayCareDeposit(ctx, DayCare.LADY,
-    intro or "I'm the DAY-CARE\nLADY. Want me to\nraise a #MON?",
+    intro or Strings("I'm the DAY-CARE\nLADY. Want me to\nraise a #MON?"),
     t._LeftWithDayCareLadyText
-      or "{RAM:wStringBuffer} was left with\nthe DAY-CARE LADY.")
+      or Strings("{RAM:wStringBuffer} was left with\nthe DAY-CARE LADY."))
 end
 
 -- `special DayCareManOutside` ($20) -- the handover.  DayCareStep already
@@ -4452,29 +4452,29 @@ function Commands.g2_daycare_outside(ctx)
   if not egg then
     return Commands.show_text(ctx, t._DayCareManOutsideNotYetText
       or t["DayCareManOutside.NotYetText"]
-      or "Ah, it's you!\nYour #MON aren't\nlooking after an\nEGG yet.")
+      or Strings("Ah, it's you!\nYour #MON aren't\nlooking after an\nEGG yet."))
   end
   Commands.ask(ctx, t._FoundAnEggText
-    or "Ah, it's you!\nWe were raising\nyour #MON, and\fmy goodness, we\nfound an EGG!\fDo you want it?")
+    or Strings("Ah, it's you!\nWe were raising\nyour #MON, and\fmy goodness, we\nfound an EGG!\fDo you want it?"))
   if not ctx.lastCheck then
     breed.egg = nil
     DayCare.syncFlags(save)
     ctx.g2Var = 0
     return Commands.show_text(ctx, t._IllKeepItThanksText
-      or "Well then, I'll\nkeep it. Thanks!")
+      or Strings("Well then, I'll\nkeep it. Thanks!"))
   end
   if #save.party >= Party.MAX then
     return Commands.show_text(ctx, t._NoRoomForEggText
-      or "You have no room\nin your party.")
+      or Strings("You have no room\nin your party."))
   end
   breed.egg = nil
   breed.stepsToEgg = nil -- Accepted egg restarts DayCare_InitBreeding.
   DayCare.syncFlags(save)
   Party.add(save.party, egg)
   ctx.g2Var = 0
-  Commands.show_text(ctx, t._ReceivedEggText or "{PLAYER} received\nthe EGG!")
+  Commands.show_text(ctx, t._ReceivedEggText or Strings("{PLAYER} received\nthe EGG!"))
   Commands.show_text(ctx, t._TakeGoodCareOfEggText
-    or "Take good care of\nit!")
+    or Strings("Take good care of\nit!"))
 end
 
 -- `special DayCareMon1/2` ($44/$45) -- the two mons wandering the yard.  The
@@ -4493,7 +4493,7 @@ function Gen2Commands.dayCareYardMon(ctx, which)
   local name = Gen2Commands.dayCareName(game, mon)
   game.stringBuffer = name
   Commands.show_text(ctx, (which == 1 and t._LeftWithDayCareManText or t._LeftWithDayCareLadyText)
-    or "{RAM:NAME} was left with\nthe DAY-CARE keeper.",
+    or Strings("{RAM:NAME} was left with\nthe DAY-CARE keeper."),
     { RAM = name })
   Commands.g2_cry(ctx, mon.species)
   local tiers = {
@@ -4629,7 +4629,7 @@ local function requireCoinCase(ctx)
     local def=ctx.game.data.items and ctx.game.data.items[id]
     if count>0 and ((def and def.key=='COIN_CASE') or id=='COIN_CASE')then return true end
   end
-  Commands.show_text(ctx,"You'll need a\nCOIN CASE!")
+  Commands.show_text(ctx,Strings("You'll need a\nCOIN CASE!"))
   return false
 end
 
@@ -4689,7 +4689,7 @@ end
 function Commands.g2_move_deleter(ctx)
   local game = ctx.game
   -- Gold/Silver Move Deleter opens with a prompt before the party menu.
-  Commands.show_text(ctx, "Which POKéMON should\nforget a move?")
+  Commands.show_text(ctx, Strings("Which POKéMON should\nforget a move?"))
   local picked = pickPartyMon(ctx)
   if not picked then
     ctx.g2Var = 0
@@ -4698,7 +4698,7 @@ function Commands.g2_move_deleter(ctx)
   end
   local moves = picked.moves or {}
   if #moves <= 1 then
-    Commands.show_text(ctx, "This POKéMON knows\nonly one move.")
+    Commands.show_text(ctx, Strings("This POKéMON knows\nonly one move."))
     ctx.g2Var = 0
     ctx.lastCheck = false
     return
@@ -4730,7 +4730,7 @@ function Commands.g2_move_deleter(ctx)
   local forgotten = labels[slot] or "a move"
   table.remove(moves, slot)
   picked.moves = moves
-  Commands.show_text(ctx, (picked.nickname or "POKéMON") .. " forgot\n" .. tostring(forgotten) .. "!")
+  Commands.show_text(ctx, Strings("%s forgot\n%s!", picked.nickname or Strings("POKéMON"), tostring(forgotten)))
   ctx.g2Var = 1
   ctx.lastCheck = true
 end
@@ -4988,7 +4988,7 @@ Commands.g2_haircut_younger = Commands.g2_haircut_older
 Commands.g2_daisys_grooming = Commands.g2_haircut_older
 
 function Commands.g2_oaks_pc(ctx)
-  Commands.show_text(ctx, "PROF.OAK's PC\naccessed.")
+  Commands.show_text(ctx, Strings("PROF.OAK's PC\naccessed."))
 end
 
 function Commands.g2_trainer_house(ctx)

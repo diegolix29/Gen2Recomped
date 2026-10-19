@@ -898,6 +898,7 @@ function Player:clearTransforms()
   self.monWindowRect = nil
   self.screenFlash = nil
   self.bgScroll = nil
+  self.effectWindow = nil
   if not self.state then return end
   for _, s in pairs(self.state) do
     s.dx, s.dy, s.sx, s.sy, s.hidden, s.tint = 0, 0, 1, 1, false, nil
@@ -2258,7 +2259,7 @@ function Player:bgLayerState()
   -- `bgScroll` is the extras' scroll of the effect layer (Surf's wave,
   -- ScrollSwitchedBg, Muddy Water) -- whole-layer offsets.
   local scroll = self.bgScroll
-  if not (layer or shake or scroll) then return nil end
+  if not (layer or shake or scroll or self.effectWindow) then return nil end
   local r, g, b, a
   if layer then r, g, b, a = self:groupTint("effect") end
   return {
@@ -2272,6 +2273,13 @@ function Player:bgLayerState()
     offsetY = (anim and anim.offsetY or 0) + (shake and shake[2] or 0)
               + (scroll and scroll.y or 0),
     tint = (a and a > 0) and { r, g, b, a } or nil,
+    -- ScrollSwitchedBg's per-row offsets (the wave itself), with the whole-
+    -- layer mean already in offsetX so a caller drawing rows subtracts it
+    -- window 0 round the effect layer (FakeOutCurtain): { x1, x2 } or nil
+    window = self.effectWindow,
+    rows = scroll and scroll.rows or nil,
+    rowsStart = scroll and scroll.rowsStart or nil,
+    scrollX = scroll and scroll.x or 0,
   }
 end
 

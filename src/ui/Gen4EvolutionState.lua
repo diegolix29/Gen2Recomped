@@ -41,6 +41,7 @@
 
 local Base = require('src.ui.Gen3EvolutionState')
 local Assets = require('src.render.Assets')
+local Strings = require('src.core.Strings')
 local State = {}; State.__index = State
 setmetatable(State, { __index = Base }); State.isOpaque = true
 
@@ -55,15 +56,15 @@ local function se(self, name, opts)
 end
 
 local TEXT = {
-  evolving = { 915, "What?\n{STRVAR_1 1 0 0} is evolving!" },
-  congratulations = { 918, "Congratulations! Your {STRVAR_1 1 0 0}\nevolved into {STRVAR_1 1 1 0}!" },
-  stopped = { 919, "Huh? {STRVAR_1 1 0 0}\nstopped evolving!" },
+  evolving = { 915, Strings.source("What?\n{STRVAR_1 1 0 0} is evolving!") },
+  congratulations = { 918, Strings.source("Congratulations! Your {STRVAR_1 1 0 0}\nevolved into {STRVAR_1 1 1 0}!") },
+  stopped = { 919, Strings.source("Huh? {STRVAR_1 1 0 0}\nstopped evolving!") },
 }
 
 function State.text(game, role, one, two)
   local t = TEXT[role]
   local bank=((game.data or {}).gen4_evolution_ink or {}).bank or 368
-  local s = (((game.data or {}).text or {})[("TEXT_B%04d_%05d"):format(bank,t[1])]) or t[2]
+  local s = (((game.data or {}).text or {})[("TEXT_B%04d_%05d"):format(bank,t[1])]) or Strings(t[2])
   local function safe(v) return (tostring(v or ""):gsub("%%", "%%%%")) end
   s = s:gsub("{STRVAR_1 1,? ?0,? ?0}", safe(one)):gsub("{STRVAR_1 1,? ?1,? ?0}", safe(two))
   s = s:gsub("{WAIT %d+}", ""):gsub("{[^}]*}", ""):gsub("[\r\011]", "")

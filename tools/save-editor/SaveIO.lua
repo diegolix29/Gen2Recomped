@@ -66,7 +66,9 @@ function SaveIO.defaultPath()
   end
   -- same override conf.lua honors, so a mod-dev profile edits the save it
   -- actually plays
-  local identity = os.getenv("POKEPORT_IDENTITY") or "pokemon-love2d"
+  -- conf.lua's desktop identity ("pokemon-love2d" is the old name, kept only
+  -- on Android/iOS, where getSaveDirectory above always answers)
+  local identity = os.getenv("POKEPORT_IDENTITY") or "Gen2Recomp"
   local home = os.getenv("HOME") or os.getenv("USERPROFILE") or ""
   -- `io.popen and io.popen(...)` read like a guard and was not one: the field
   -- is always non-nil, and the CALL is what raises on Horizon.  This is the

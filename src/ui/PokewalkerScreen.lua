@@ -718,7 +718,7 @@ function P:bushes(x, y, w, h, n, f, onTap, opts)
     setc(opened and { 0.50, 0.52, 0.36 } or { 0.24, 0.64, 0.28 })
     g.circle("fill", cx + shake, cy - r * 0.35, r * 0.7)
     if opts.legendary and opts.shake == i then
-      P.drawStar(cx, cy - r * 1.45, math.max(14, r * 0.42), self.t)
+      P.drawStar(cx, cy - r * 1.3, math.max(14, r * 0.34), self.t)
     elseif opts.marks and opts.shake == i then
       g.setFont(f.title); setc(GOLD)
       g.printf(("!"):rep(opts.marks), cx - 60, cy - r * 1.7, 120, "center")
