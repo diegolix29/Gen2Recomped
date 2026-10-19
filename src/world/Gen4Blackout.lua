@@ -53,13 +53,22 @@ end
 local function gen4Key(bank, i) return ("TEXT_B%04d_%05d"):format(bank, i) end
 local function gen5SysKey(bank, i) return ("TEXT_G5S_%04d_%05d"):format(bank, i) end
 
--- a cartridge line with the player's name put in and the trailing waits off
+-- a cartridge line with the player's name put in and the trailing waits off.
+-- The values go in through the shared Gen 4 buffer / markup, the way the
+-- cartridge's template does it: slot 0 the player (BufferPlayerName), slot 1
+-- the money (BufferMoney) -- Gen 5's {VARn} / {CMD 0204 n} read the same
+-- slots. Black / White's "scurried" line names the player from slot 1, so
+-- with no amount the name fills that slot too.
 local function finish(s, name, amount)
   if not s then return nil end
-  s = s:gsub("{STRVAR_1 54 %d+ %d+}", tostring(amount or 0))
-       :gsub("{CMD 0204 %d+}", tostring(amount or 0))
-       :gsub("{STRVAR_1 3 %d+ %d+}", name or "")
-       :gsub("{VAR%d}", name or "")
+  local ctx = {}
+  require("src.import.Gen4Text").buffer(ctx, name or "",
+    amount ~= nil and tostring(amount) or (name or ""))
+  local ok, Commands = pcall(require, "src.script.Commands")
+  if ok and Commands and Commands.gen4Markup then
+    local okM, plain = pcall(Commands.gen4Markup, s, ctx)
+    if okM and type(plain) == "string" then s = plain end
+  end
   s = s:gsub("[\v\f\n ]+$", "")
   return s
 end

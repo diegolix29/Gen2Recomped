@@ -270,7 +270,8 @@ local GEN4_ALIASES = {
   -- with a known destination now rather than an assumed one -- and that screen
   -- reads the options shape, so it no longer crashes on arrival.)
   SummaryMenu = { id = "Gen4SummaryMenu",
-                  opts = { onCancel = true, mon = true, readOnlyMoves = true } },
+                  -- `page`: the battle party's MOVES button opens on that page
+                  opts = { onCancel = true, mon = true, readOnlyMoves = true, page = true } },
   -- THE KEYBOARD, which had no entry at all -- so every name the player types
   -- opened Kanto's, on a Platinum save.  Reported as "the keyboard where you
   -- type your name or your pokemons nickname is also not correct for gen4

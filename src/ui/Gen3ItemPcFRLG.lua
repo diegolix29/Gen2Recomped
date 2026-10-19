@@ -72,6 +72,7 @@ end
 
 function Gen3ItemPcFRLG:uiSize() return GBA_W, GBA_H end
 function Gen3ItemPcFRLG:wantsFillScale() return true end
+function Gen3ItemPcFRLG:wantsEdgeBleed() return false end
 
 function Gen3ItemPcFRLG:sgbPalettes()
   local P = require("src.render.PaletteFX")
@@ -93,6 +94,24 @@ end
 function Gen3ItemPcFRLG:subBox(key)
   local r = self:screen()
   return (r.subwindows and r.subwindows[key]) or FALLBACK.subwindows[key]
+end
+
+-- Every rectangle item_pc.c stores in a WindowTemplate is the CONTENT area.
+-- DrawStdFrameWithCustomTileAndPalette adds one 8px tile around it.  The old
+-- overlays treated those content dimensions as the complete frame, shrinking
+-- every transient window and pushing the right-hand submenu partly off-screen.
+function Gen3ItemPcFRLG:drawContentFrame(b, frameIndex)
+  if not b then return end
+  local tx, ty = math.floor(b.x / 8) - 1, math.floor(b.y / 8) - 1
+  local tw, th = math.floor(b.width / 8) + 2, math.floor(b.height / 8) + 2
+  if frameIndex == "standard" and Font.drawStandardBox then
+    Font.drawStandardBox(tx, ty, tw, th)
+  else
+    -- ItemPc_SetBorderStyleOnWindow uses the player's current user frame for
+    -- submenu / quantity windows. Only callers that explicitly request the
+    -- fixed standard frame should override it.
+    Font.drawBox(tx, ty, tw, th, tonumber(frameIndex))
+  end
 end
 
 function Gen3ItemPcFRLG:listRows()
@@ -236,6 +255,8 @@ function Gen3ItemPcFRLG:drawRows()
   local cursorX = win.x + (tonumber(L.cursorX) or FALLBACK.list.cursorX)
   local quantityX = win.x + (tonumber(L.quantityX) or FALLBACK.list.quantityX)
 
+  local uiStyles = self.game.data.font and self.game.data.font.uiTextStyles or {}
+  if uiStyles.dark then Font.pushStyle(uiStyles.dark) end
   for i = 0, self:listRows() - 1 do
     local row = self.rows[self.top + i]
     if not row then break end
@@ -254,6 +275,7 @@ function Gen3ItemPcFRLG:drawRows()
       Font.drawCode(Theme.cursorHollow, cursorX, y)
     end
   end
+  if uiStyles.dark then Font.popStyle() end
 end
 
 function Gen3ItemPcFRLG:draw()
@@ -276,7 +298,10 @@ function Gen3ItemPcFRLG:draw()
   local label = self:box("label")
   local labelText = tostring(self.title or ""):gsub(" ", "\n", 1)
   local faced = Font.hasFace and Font.hasFace("small") and Font.pushFace("small")
+  local uiStyles = self.game.data.font and self.game.data.font.uiTextStyles or {}
+  if uiStyles.white then Font.pushStyle(uiStyles.white) end
   drawLines(labelText, label.x, label.y + 1, 13)
+  if uiStyles.white then Font.popStyle() end
   if faced then Font.popFace() end
 
   self:drawRows()
@@ -287,14 +312,17 @@ function Gen3ItemPcFRLG:draw()
     local D = self:screen().description or FALLBACK.description
     local description = row and (row.close and Strings("Return to the PC.")
                                   or row.description) or ""
+    if uiStyles.white then Font.pushStyle(uiStyles.white) end
     drawLines(description, desc.x + (tonumber(D.x) or 0),
               desc.y + (tonumber(D.y) or 3),
               tonumber(D.lineHeight) or FALLBACK.description.lineHeight)
+    if uiStyles.white then Font.popStyle() end
   end
 
-  if row and row.id then
-    local ok, icon, quad, size =
-      pcall(require("src.ui.Gen3BagMenu").itemIcon, { game = self.game }, row.id)
+  if row and (row.id or row.close) then
+    local BagScreen = require("src.ui.Gen3BagMenu")
+    local ok, icon, quad, size = pcall(BagScreen.itemIcon,
+      { game = self.game }, row.id, row.close and 375 or nil)
     if ok and icon and quad then
       local cell = self:screen().itemIcon or FALLBACK.itemIcon
       love.graphics.setColor(1, 1, 1, 1)

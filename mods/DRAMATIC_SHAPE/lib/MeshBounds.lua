@@ -89,10 +89,8 @@ end
 --
 -- No bitwise operators: LOVE ships LuaJIT 5.1 and `&` is a parse error
 -- there, whatever a newer standalone build accepts.
-function MeshBounds.hidden(mesh, vp, model)
-  if not (mesh and vp) then return false end
-  local b = boxes[mesh]
-  if not b then return false end
+function MeshBounds.hiddenBox(b, vp, model)
+  if not (b and vp) then return false end
   local m = model and Mat4.mul(vp, model) or vp
   local m1, m2, m3, m4 = m[1], m[2], m[3], m[4]
   local m5, m6, m7, m8 = m[5], m[6], m[7], m[8]
@@ -117,6 +115,37 @@ function MeshBounds.hidden(mesh, vp, model)
     if not (oL or oR or oB or oT or oN or oF) then return false end
   end
   return oL or oR or oB or oT or oN or oF
+end
+
+function MeshBounds.hidden(mesh, vp, model)
+  return MeshBounds.hiddenBox(mesh and boxes[mesh],vp,model)
+end
+
+-- Curvature changes only world Y: y -= k * distance(xz, center)^2.
+-- Bound its minimum/maximum drop over the whole rectangle, rather than
+-- testing the unbent box or turning off culling for the entire world.
+local bent = {}
+function MeshBounds.hiddenCurved(mesh, vp, model, k, cx, cz)
+  local b=mesh and boxes[mesh]
+  if not (b and vp) then return false end
+  local tx,ty,tz=0,0,0
+  if model then
+    if model[1]~=1 or model[6]~=1 or model[11]~=1 or model[16]~=1
+      or model[2]~=0 or model[3]~=0 or model[5]~=0 or model[7]~=0
+      or model[9]~=0 or model[10]~=0 or model[13]~=0 or model[14]~=0 or model[15]~=0 then
+      return false -- unfamiliar transforms draw conservatively
+    end
+    tx,ty,tz=model[4],model[8],model[12]
+  end
+  local x0,x1,z0,z1=b[1]+tx,b[4]+tx,b[3]+tz,b[6]+tz
+  local dx=math.max(x0-cx,0,cx-x1)
+  local dz=math.max(z0-cz,0,cz-z1)
+  local fx=math.max(math.abs(x0-cx),math.abs(x1-cx))
+  local fz=math.max(math.abs(z0-cz),math.abs(z1-cz))
+  bent[1],bent[3],bent[4],bent[6]=x0,z0,x1,z1
+  bent[2]=b[2]+ty-k*(fx*fx+fz*fz)
+  bent[5]=b[5]+ty-k*(dx*dx+dz*dz)
+  return MeshBounds.hiddenBox(bent,vp)
 end
 
 return MeshBounds

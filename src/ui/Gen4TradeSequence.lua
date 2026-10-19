@@ -152,9 +152,16 @@ local FALLBACK = {
 function Screen.text(data, bank, index, buffers)
   local key = ("TEXT_B%04d_%05d"):format(bank or 350, index)
   local s = ((data or {}).text or {})[key] or Strings(FALLBACK[index] or "")
-  s = s:gsub("{STRVAR_1 %d+,? ?(%d+),? ?%d+}", function(slot)
-    return (tostring(buffers[tonumber(slot)] or ""):gsub("%%", "%%%%"))
-  end)
+  -- the buffers go in through the shared Gen 4 template (slot 0 up) and
+  -- gen4Markup expands the {STRVAR_1 _ slot _} tokens from them
+  buffers = buffers or {}
+  local ctx = {}
+  require("src.import.Gen4Text").buffer(ctx, buffers[0] or "", buffers[1] or "", buffers[2] or "")
+  local ok, Commands = pcall(require, "src.script.Commands")
+  if ok and Commands and Commands.gen4Markup then
+    local okM, plain = pcall(Commands.gen4Markup, s, ctx)
+    if okM and type(plain) == "string" then s = plain end
+  end
   s = s:gsub("{WAIT %d+}", ""):gsub("{[^}]*}", ""):gsub("[\r\011]", "")
   return s
 end

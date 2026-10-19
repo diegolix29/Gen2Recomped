@@ -15,6 +15,10 @@ local Gen3ItemPcSubmenu = {}
 Gen3ItemPcSubmenu.__index = Gen3ItemPcSubmenu
 Gen3ItemPcSubmenu.isOpaque = false
 
+function Gen3ItemPcSubmenu:uiSize() return 240, 160 end
+function Gen3ItemPcSubmenu:wantsFillScale() return true end
+function Gen3ItemPcSubmenu:wantsEdgeBleed() return false end
+
 local ENTRIES = {
   { label = "WITHDRAW", kind = "withdraw" },
   { label = "GIVE", kind = "give" },
@@ -69,20 +73,32 @@ end
 function Gen3ItemPcSubmenu:draw()
   local b = self.itemPc and self.itemPc:box("submenu")
             or { x = 176, y = 104, width = 56, height = 48 }
-  Font.drawBox(math.floor(b.x / 8), math.floor(b.y / 8),
-               math.floor(b.width / 8), math.floor(b.height / 8))
+  if self.itemPc and self.itemPc.drawContentFrame then
+    self.itemPc:drawContentFrame(b)
+  else
+    Font.drawBox(math.floor(b.x / 8) - 1, math.floor(b.y / 8) - 1,
+                 math.floor(b.width / 8) + 2, math.floor(b.height / 8) + 2, 1)
+  end
   love.graphics.setColor(0, 0, 0, 1)
+  local styles = self.game.data.font and self.game.data.font.uiTextStyles or {}
+  if styles.dark then Font.pushStyle(styles.dark) end
   for i, entry in ipairs(ENTRIES) do
     local y = b.y + 2 + (i - 1) * 16
     Font.draw(Strings(entry.label), b.x + 8, y)
     if i == self.index then Font.drawCode(Theme.cursor, b.x, y) end
   end
 
-  Font.drawBox(SELECTED.x / 8, SELECTED.y / 8,
-               SELECTED.width / 8, SELECTED.height / 8)
+  local selected = self.itemPc and self.itemPc:subBox("selected") or SELECTED
+  if self.itemPc and self.itemPc.drawContentFrame then
+    self.itemPc:drawContentFrame(selected, "standard")
+  else
+    Font.drawBox(selected.x / 8 - 1, selected.y / 8 - 1,
+                 selected.width / 8 + 2, selected.height / 8 + 2, 1)
+  end
   love.graphics.setColor(0, 0, 0, 1)
-  Font.draw(Strings("%s is selected.", self.itemName),
-            SELECTED.x, SELECTED.y + 2)
+  Font.draw(self.itemName .. Strings(" is"), selected.x, selected.y + 2)
+  Font.draw(Strings("selected."), selected.x, selected.y + 16)
+  if styles.dark then Font.popStyle() end
   love.graphics.setColor(1, 1, 1, 1)
 end
 

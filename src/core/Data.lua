@@ -1314,6 +1314,12 @@ function Data:seedDefaults()
           maxCols = win.width or 26,
         }
       end
+      local oakSpeech = (self.constants or {}).gen3FRLGOakSpeech
+      if type(oakSpeech) == "table" and type(oakSpeech.dialogueArrow) == "table" then
+        local box = self.field.theme.textBox
+        box.promptArrow = oakSpeech.dialogueArrow
+        box.promptArrowAtPen = true
+      end
       local dialogue = self.font and self.font.dialogueFrame
       if type(dialogue) == "table" and dialogue.layout ~= "gen4" then
         local box = self.field.theme.textBox

@@ -1222,7 +1222,17 @@ end
 --       the one gate that forces a re-import, and main's change alters what a
 --       FireRed cache CONTAINS -- so keeping v359 would let a FireRed cache
 --       built before the tutor fix pass as current. v360 invalidates both.
-local CACHE_FORMAT = "rom-cache-v360:"
+-- v361: one re-import of EVERY cache for this pass's import changes, so no
+--       install keeps a half-updated cache from stage-by-stage top-ups:
+--       Gen 3 trade names with U+2019 (FireRed CH'DING) and the Gen3Save
+--       buildBoxMon secure-half fix; Gen 4 move-effect palettes loaded
+--       sequentially, HGSS effect backgrounds / field FX / PC monitors /
+--       isBlackoutSpawn, the HGSS intro no longer listed as required;
+--       Platinum field FX and HM cut-in; Gen 5 item records (battle mask,
+--       party block), move animations and particles, field effects,
+--       transition types, Black City / White Forest, seasons, battle bag.
+--       The per-version revision strings below still say which parts.
+local CACHE_FORMAT = "rom-cache-v361:"
 -- The completion marker is written under each version's cache prefix
 -- (rom-cache.complete for Red, blue/rom-cache.complete for Blue).
 local MARKER_PATH = "rom-cache.complete"
@@ -1232,7 +1242,10 @@ local MARKER_PATH = "rom-cache.complete"
 local function markerFor(version)
   -- platinum-field-fx-v1: gen4_pt_field_fx (Gen4PtFieldFx), the Cut / Rock
   -- Smash obstacle animations and the HM cut-in's art
-  local revision = version == "platinum" and "platinum-geometry-v17:platinum-field-fx-v1:" or ""
+  -- platinum-effect-pal-v1: move-effect palettes loaded sequentially (Gen4Graphics.palette
+  -- `sequential`), as NNS_G2dLoadPalette does; hgss-pc-anim-v1: HGSS scriptProps PC
+  -- monitor frames (members 102/103) for g4_pc_animation
+  local revision = version == "platinum" and "platinum-geometry-v17:platinum-field-fx-v1:platinum-effect-pal-v1:" or ""
   -- gen5-trades-v5: constants.gen5Trades, gen5_trade_art and the trade
   -- commands' operands in map_scripts (Gen5Trades / Gen5TradeArt)
   -- gen5-starter-v6: gen5_starter_art, the gift box app (Gen5StarterArt)
@@ -1281,7 +1294,7 @@ local function markerFor(version)
   -- table (Gen4HgssBattle.EFFECT_BG_MEMBERS) -- 84 pictures, not 22
   -- hgss-field-fx-v1: gen4_hgss_field_fx (Cut / Rock Smash / Headbutt, /a/1/3/4)
   -- and gen4_hgss_mart_art again (installs updated stage by stage never got it)
-  if version == "heartgold" or version == "soulsilver" then revision = "hgss-gear-dex-v1:hgss-summary-v2:hgss-effect-bg-v1:hgss-field-fx-v1:" end
+  if version == "heartgold" or version == "soulsilver" then revision = "hgss-gear-dex-v1:hgss-summary-v2:hgss-effect-bg-v1:hgss-field-fx-v1:hgss-pc-anim-v1:" end
   -- Include version-specific field encounters, sleep, swarm and rate tables.
   -- Only these three caches need rebuilding; other markers remain stable.
   -- v8: field.gen2TradeAnim, GSC's own trade movie art (Gen2TradeArt).
@@ -1640,7 +1653,19 @@ local REQUIRED_FILES_GEN4 = {
 
 local function requiredFiles(version)
   local gen = GameVersion.generation(version)
-  if gen == 4 then return REQUIRED_FILES_GEN4 end
+  if gen == 4 then
+    -- HeartGold / SoulSilver open with HgssOakIntro (gen4_hgss_oak_art); their
+    -- import never writes Rowan's gen4_intro, so every import warned about it
+    local info = GameVersion.info(version)
+    if info and info.family == "hgss" then
+      local out = {}
+      for _, path in ipairs(REQUIRED_FILES_GEN4) do
+        if path ~= "data/generated/gen4_intro.lua" then out[#out + 1] = path end
+      end
+      return out
+    end
+    return REQUIRED_FILES_GEN4
+  end
   -- Black and White: their own list as the Gen 5 stages arrive (RomExtractorGen5)
   if gen == 5 then return require("src.import.RomExtractorGen5").REQUIRED_FILES end
   if gen == 3 then return REQUIRED_FILES_GEN3 end
@@ -9861,6 +9886,9 @@ function RomImporter:_refreshMods()
     end
   end
   self.mods = LauncherMods.list() or {}
+  -- LauncherMods just read (and may have written) the options file; any
+  -- settings table cached before that is stale and must not be saved back
+  self._settingsCache = nil
   -- A ZIP IN mods/ IS NOT A MOD THE GAME LOADS, and a copy that will not load
   -- beside one that will is how players end up with two: said once, when
   -- nothing more urgent is on the notice line (LauncherMods.copiesReport).

@@ -9002,7 +9002,8 @@ function Commands.g4_buffer_type_name(ctx, slot, typeVar)
     local okV, V = pcall(require, "src.import.Gen4Versions")
     bank = okV and V.OVERRIDES.heartgold.bank.typeName or 735
   end
-  local text = data and data.text and data.text[Gen4Text.label(bank, t)]
+  -- through the shared resolve, so the name lands in the slot without markup
+  local text = Gen4Text.resolve(data, bank, t)
   -- Black / White: the constants stage's own type names (Gen 5's order)
   if require("src.import.Gen4ScriptBands").family == "bw" then
     local types = data and data.constants and data.constants.types

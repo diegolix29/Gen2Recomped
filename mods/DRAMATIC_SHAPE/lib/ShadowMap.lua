@@ -527,6 +527,7 @@ end
 
 function ShadowMap.draw(mesh, texture, model)
   if not (drawing and mesh) then return end
+  local parts = type(mesh) == "table" and mesh.parts
   -- The same cull as the camera pass, against the LIGHT's clip matrix --
   -- the one this pass' own shader is transforming by, so a mesh outside it
   -- could not have written a texel. The sun's box is fitted to the view
@@ -538,9 +539,10 @@ function ShadowMap.draw(mesh, texture, model)
   -- FLAT and the bend is applied afterwards to the lit pass alone.
   if MeshBounds.hidden(mesh, ShadowMap.clipVP, model) then return end
   local sh = getShader()
-  if texture then mesh:setTexture(texture) end
+  if texture and not parts then mesh:setTexture(texture) end
   pcall(sh.send, sh, "model", "row", model or IDENTITY)
-  love.graphics.draw(mesh)
+  if parts then V.require("MeshBatch").draw(mesh, texture, ShadowMap.clipVP, model)
+  else love.graphics.draw(mesh) end
 end
 
 -- Close the pass and stamp it with the signature it was drawn for.

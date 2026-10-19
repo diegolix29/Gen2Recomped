@@ -239,6 +239,14 @@ function Gen4SummaryMenu.new(game, arg)
   for _,page in ipairs(self.pages) do
     if page.key=='contestMoves' and not page.title then page.title=self:b455(B.contestMoves,'') end
   end
+  -- `page` from the push: a page key ("moves") or an index into self.pages;
+  -- ensureVisiblePage below still falls back when it is hidden (an egg)
+  local want = arg and arg.species == nil and arg.page
+  if type(want) == "string" then
+    for i, page in ipairs(self.pages) do if page.key == want then self.page = i break end end
+  elseif type(want) == "number" and self.pages[want] then
+    self.page = want
+  end
   self:ensureVisiblePage()
   self.layout = (record and record.layout) or FALLBACK_LAYOUT
   self.natures = (record and record.natures) or {}

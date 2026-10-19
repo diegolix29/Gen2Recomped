@@ -522,10 +522,20 @@ function LauncherMods.list()
     -- entry for good.  Same rules as the loader's pass: nothing is taken from
     -- an id that is itself installed, nothing overwrites state the new id
     -- already has, and the file is written only when something moved.
-    if require("src.mods.ModRename").adoptOptions(options, manifests) then
+    local adopted = require("src.mods.ModRename").adoptOptions(options, manifests)
+    -- two members of one slot both on (an options file from before the
+    -- switch made them exclusive): keep one, say so on the other's card
+    local byId = {}
+    for _, m in ipairs(manifests) do byId[m.id] = m end
+    local normalized = LauncherMods.normalizeSlots(options, byId)
+    if adopted or normalized then
       SaveData.saveOptions(options)
     end
     local rows = LauncherMods.deriveList(manifests, options)
+    for _, row in ipairs(rows) do
+      local note = options.modSlotNotes and options.modSlotNotes[row.id]
+      if note and not row.enabled then row.slotNote = note end
+    end
     -- WHICH COPY IS ACTIVE AND WHICH ARE NOT, on the row itself
     local okA, annotate = pcall(LauncherMods.annotateCopies, rows, manifests,
       LauncherMods._lastScan)
@@ -569,16 +579,24 @@ function LauncherMods.annotateCopies(rows, manifests, scan)
       end
     end
   end
-  local losers = ModCopies.supersede(mods, function(id, mod) return mod.enabled end)
+  local switchedOn = {}
+  pcall(function() switchedOn = SaveData.loadOptions().modSwitchedOn or {} end)
+  local losers = ModCopies.supersede(mods, function(id, mod) return mod.enabled end,
+    switchedOn)
   local lost = {}
   for _, l in ipairs(losers) do lost[l.id] = l end
   for _, row in ipairs(rows) do
     local l = lost[row.id]
     if l then
+      -- both on can only survive normalizeSlots in a race; say what the game
+      -- will do with it
       row.supersededBy = l.winner
       row.status = "warn"
-      row.statusDetail = ("Not loaded: %s -- switch it off to use this one")
-        :format(l.reason)
+      row.statusDetail = ("Not loaded: %s -- switch that one off to use this one")
+        :format(l.note)
+    elseif row.slotNote then
+      -- switched off because another member of its slot was switched on
+      row.statusDetail = row.slotNote .. " (switch this one on to use it instead)"
     elseif row.ignoredCopies and row.status == "ok" then
       local first = row.ignoredCopies[1]
       row.statusDetail = ("Ready (%s); %d other cop%s ignored: %s %s")
@@ -587,11 +605,76 @@ function LauncherMods.annotateCopies(rows, manifests, scan)
           tostring(first.path))
     end
     -- the card draws the description, so that is where it is said
-    if l or row.ignoredCopies then
+    if l or row.slotNote or row.ignoredCopies then
       row.description = row.statusDetail .. "\n" .. (row.description or "")
     end
   end
   return rows
+end
+
+-- ------- one switch per mod slot
+--
+-- TERRARIUM AND DRAMATIC SHAPES ARE ONE SLOT (ModCopies.slots): a fork that
+-- kept the parent's old id, so both register the same render pipelines and
+-- wrap the same engine functions, and they cannot run together.  The player
+-- picks with the ordinary switch: turning one ON turns the others in its slot
+-- OFF, and the card of the one switched off says why.  The same holds for a
+-- launcher copy and its original, and for a renamed mod and its old id.
+
+local function installedById()
+  local byId = {}
+  local ok, list = pcall(discover)
+  for _, m in ipairs(ok and list or {}) do byId[m.id] = m end
+  return byId
+end
+
+local function isOn(options, m)
+  local on = ModGens.active(options.mods and options.mods[m.id], nil)
+  if on == nil then on = not m.experimental end
+  return on == true
+end
+
+-- after `id` was switched on in `options`: switch its slot-mates off
+local function exclusive(options, id, byId)
+  byId = byId or installedById()
+  if not byId[id] then return {} end
+  if not isOn(options, byId[id]) then return {} end
+  return require("src.mods.ModCopies").switchOn(options, id, byId)
+end
+
+-- normalizeSlots(options, byId) -> changed.  A slot with more than one member
+-- switched on (an options file from before this rule, an "Enable all") keeps
+-- ONE: the most recently switched on, else the slot's original (the bundled
+-- Dramatic Shapes over Terrarium).  The others are switched off and their
+-- cards say so.  Never both.
+function LauncherMods.normalizeSlots(options, byId)
+  local ModCopies = require("src.mods.ModCopies")
+  byId = byId or installedById()
+  options.mods = options.mods or {}
+  local slots = ModCopies.slots(byId)
+  local groups = {}
+  for id, m in pairs(byId) do
+    if isOn(options, m) then
+      local key = slots[id] or id
+      groups[key] = groups[key] or {}
+      groups[key][#groups[key] + 1] = { id = id, manifest = m }
+    end
+  end
+  local changed = false
+  for _, g in pairs(groups) do
+    if #g > 1 then
+      local winner = ModCopies.choose(g, options.modSwitchedOn)
+      options.modSlotNotes = options.modSlotNotes or {}
+      for _, member in ipairs(g) do
+        if member ~= winner then
+          options.mods[member.id] = ModGens.withEnabled(options.mods[member.id], false)
+          options.modSlotNotes[member.id] = ModCopies.replacedNote(member, winner)
+          changed = true
+        end
+      end
+    end
+  end
+  return changed
 end
 
 -- setEnabled(id, enabled): persist options.mods[id] in the exact shape
@@ -604,6 +687,7 @@ function LauncherMods.setEnabled(id, enabled)
   -- chips.  Writing a bare boolean here would reset them every time, which is
   -- exactly what "off and on again" must not cost the player.
   options.mods[id] = ModGens.withEnabled(options.mods[id], enabled)
+  if enabled then exclusive(options, id) end
   SaveData.saveOptions(options)
   return true
 end
@@ -615,6 +699,7 @@ function LauncherMods.setGeneration(id, generation, want)
   local options = SaveData.loadOptions()
   options.mods = options.mods or {}
   options.mods[id] = ModGens.withGen(options.mods[id], generation, want)
+  if want then exclusive(options, id) end
   SaveData.saveOptions(options)
   return true
 end
@@ -627,6 +712,7 @@ function LauncherMods.setForcedGeneration(id, generation, want)
   local options = SaveData.loadOptions()
   options.mods = options.mods or {}
   options.mods[id] = ModGens.withForced(options.mods[id], generation, want)
+  if want then exclusive(options, id) end
   SaveData.saveOptions(options)
   return true
 end
@@ -639,6 +725,7 @@ function LauncherMods.setAllGenerations(ids, generation, want)
   for _, id in ipairs(ids or {}) do
     options.mods[id] = ModGens.withGen(options.mods[id], generation, want)
   end
+  if want then LauncherMods.normalizeSlots(options) end
   SaveData.saveOptions(options)
   return true
 end
@@ -654,6 +741,7 @@ function LauncherMods.setAllEnabled(ids, enabled)
   for _, id in ipairs(ids or {}) do
     options.mods[id] = ModGens.withEnabled(options.mods[id], enabled)
   end
+  if enabled then LauncherMods.normalizeSlots(options) end
   SaveData.saveOptions(options)
   return true
 end

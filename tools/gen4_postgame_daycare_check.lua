@@ -63,29 +63,60 @@ local second={species=390,hp=10,ribbons={[32]=true}}
 local egg={species=175,isEgg=true,ribbons={[25]=true}}
 local incubating={species=490,eggSteps=20}
 local save={flags={},party={champion,egg,second,incubating},hallOfFame={}}
-local oldInduct=C.record_hall_of_fame
-local inducted=0
-C.record_hall_of_fame=function(ctx)
- assert(ctx.save.flags.FLAG_G4_0964 and ctx.save.flags.FLAG_G4_0966,'Hall of Fame opened before postgame flags')
- assert(champion.ribbons[32] and second.ribbons[32],'championship ribbons missing at induction')
- assert(not egg.ribbons[32] and incubating.ribbons==nil,'eggs cannot receive champion ribbons')
- inducted=inducted+1
- ctx.save.hallOfFame[#ctx.save.hallOfFame+1]={}
-end
+-- `cleargame` is ONE row now, `g4_clear_game` (Gen4ScriptVM L.cleargame):
+-- ClearGame's whole flow -- flags and ribbons, the Hall of Fame app, the
+-- induction, the gift offer, the save lines, the credits -- lives in
+-- Gen4Commands.g4_clear_game. Drive it with the screens stubbed and the save
+-- write held off, so nothing here touches a real save.
 local clearRows=VM.lower({{name='cleargame',args={}}})
-assert(clearRows[1][1]=='g4_prepare_hall_of_fame' and clearRows[2][1]=='record_hall_of_fame')
-local championship=Runner.new({save=save,data={}}, {})
-championship:run(clearRows)
-championship:run(clearRows)
-assert(inducted==2 and #save.hallOfFame==2,'repeat induction must still record one entry per win')
+assert(#clearRows==1 and clearRows[1][1]=='g4_clear_game','cleargame must lower to the one g4_clear_game row')
+local screens={}
+local SaveStub={applyPostGameHome=function() end,save=function() error('the check must not write a save') end}
+local stubs={
+ ['src.core.SaveData']=SaveStub,
+ ['src.script.ScriptSave']={write=function() return false end},
+ ['src.ui.Gen4Credits']={new=function(_,opts) return {kind='credits',opts=opts} end},
+ ['src.render.TextBox']={new=function(_,text,onDone) return {kind='text',text=text,onDone=onDone} end},
+ ['src.pokemon.Gen4MysteryGift']={offer=function(_,after) screens[#screens+1]={kind='gift'};after() end},
+ ['src.ui.Gen4HallOfFame']={new=function(game,opts)
+   local sv=game.save
+   assert(sv.flags.FLAG_G4_0964 and sv.flags.FLAG_G4_0966,'Hall of Fame opened before postgame flags')
+   assert(champion.ribbons[32] and second.ribbons[32],'championship ribbons missing at induction')
+   assert(not egg.ribbons[32] and incubating.ribbons==nil,'eggs cannot receive champion ribbons')
+   return {kind='hof',opts=opts}
+ end},
+}
+local saved={}
+for name,stub in pairs(stubs) do saved[name]=package.loaded[name];package.loaded[name]=stub end
+local game={save=save,data={},stack={push=function(_,screen) screens[#screens+1]=screen end}}
+local function win()
+ screens={}
+ C.g4_clear_game({game=game,save=save})
+ local hof=screens[1]
+ assert(hof and hof.kind=='hof','ClearGame must open the Hall of Fame first')
+ hof.opts.onDone()
+ -- the gift offer, then "Saving..." and "<player> saved the game.", then credits
+ local i=2
+ assert(screens[i].kind=='gift');i=i+1
+ assert(screens[i].kind=='text');screens[i].onDone();i=i+1
+ assert(screens[i].kind=='text');screens[i].onDone();i=i+1
+ assert(screens[i].kind=='credits','credits must follow the save lines')
+ return screens[i].opts
+end
+local first=win()
+assert(first.canSkip==false,'the first clear cannot skip the credits')
+local again=win()
+assert(again.canSkip==true,'a repeat clear may skip the credits')
+assert(#save.hallOfFame==2,'repeat induction must still record one entry per win')
+assert(#save.hallOfFame[1]==4,'every party member is in the induction, eggs and fainted ones included')
 assert(champion.ribbons[24] and egg.ribbons[25],'awarding champion ribbon must preserve existing ribbons')
-C.record_hall_of_fame=oldInduct
+for name in pairs(stubs) do package.loaded[name]=saved[name] end
 local wins=0
 for label,block in pairs(pool.scripts) do
  for _,ins in ipairs(block.instructions or {}) do
   if ins.name=='cleargame' then
    wins=wins+1
-   assert(VM.lower({ins})[1][1]=='g4_prepare_hall_of_fame','missing championship preparation at '..label)
+   assert(VM.lower({ins})[1][1]=='g4_clear_game','missing ClearGame at '..label)
   end
  end
 end

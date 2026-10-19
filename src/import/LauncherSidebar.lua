@@ -1532,6 +1532,11 @@ function Sidebar.install(RI)
   local origPlay = RI.play
   RI.play = function(self, version, ...)
     if self.workState ~= "working" and self.ready[version] then
+      -- FRESH, not the cached table: the mods panel writes options.mods
+      -- through LauncherMods behind this cache's back, and saving a stale
+      -- copy here put every mod switch flipped since it was read back the
+      -- way it was -- Terrarium switched on, Play, and both mods ran again
+      self._settingsCache = nil
       local opts = options(self)
       Sidebar.pushRecent(opts, version)
       saveOptions(self, opts)

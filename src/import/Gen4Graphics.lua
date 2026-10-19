@@ -287,7 +287,15 @@ Gen4Graphics.bgr555 = bgr555
 
 -- Returns a flat array of { r, g, b } and the colours-per-palette the file
 -- declares, so a caller can slice it into sub-palettes.
-function Gen4Graphics.palette(data)
+--
+-- `sequential` (optional) ignores a PMCP slot list and returns the TTLP
+-- colours in file order, which is what a loader that does not honour it sees:
+-- the battle sprite system copies an OBJ palette with NNS_G2dLoadPalette, not
+-- the `Ex` variant (pret src/graphics.c LoadPartialPalette is the only caller
+-- of NNS_G2dGetUnpackedPaletteCompressInfo), so the move-effect sprites'
+-- wepltt palettes -- every one of which carries a PMCP -- must be read this
+-- way or member 0 and 29 come out at slot 9 and draw from black filler.
+function Gen4Graphics.palette(data, sequential)
   local c = Gen4Graphics.container(data)
   if not c then return nil, "not a palette" end
   local s = c.sections.TTLP
@@ -319,7 +327,7 @@ function Gen4Graphics.palette(data)
   -- by the size it came out five palettes long, and the case's screens
   -- composed with the wrong colours or none. With a PMCP the slot list is
   -- the authority, each palette placed at its slot.
-  local pm = c.sections.PMCP
+  local pm = (not sequential) and c.sections.PMCP or nil
   if pm then
     local n = u16(c.data, pm.body) or 0
     local listAt = pm.body + (u32(c.data, pm.body + 4) or 8) - 0

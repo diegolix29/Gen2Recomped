@@ -227,7 +227,15 @@ for _, e in ipairs(silentExamples) do io.write("        " .. e .. "\n") end
 -- shape rather than quantities, and may not move at all.
 ok(labelRows >= 74825, "labels emitted across the corpus (floor)", labelRows, 74825)
 ok(branchRows >= 169017, "branch rows across the corpus (floor)", branchRows, 169017)
-ok(rows >= 599584, "compiled rows across the corpus (floor)", rows, 599584)
+-- 599,774 -> 595,667 and NOT a walk stopping short: blocks went 8,571 ->
+-- 8,580, labels and branch rows both rose, and no block lost a label. The
+-- 4,107 rows are link-play / display-only commands that now lower to NO row
+-- at all instead of a `g4_unimplemented` placeholder (Gen4ScriptVM's
+-- startcontestcommsync + waitforcommsyncstate 2,250, starthblank/stophblank
+-- 944, locktextspeed 374, destroynetworkicon 378, lockautoscrollforlink-
+-- contests 188, checkheapmemory 108), while startcontestcameraflashtask +
+-- its wait became one row. Measured row-verb by row-verb against 3252aec.
+ok(rows >= 595667, "compiled rows across the corpus (floor)", rows, 595667)
 
 io.write(("\n%d checks, %d failures\n"):format(checks, fails))
 os.exit(fails == 0 and 0 or 1)

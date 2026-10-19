@@ -559,7 +559,7 @@ if os.getenv("HGSS_PROP_ROM") or os.getenv("HGSS_PROP_OFF") then
         local fset, mset = sets[key], sets[modelsKey]
         local arc = X:archiveAt(archive)
         for _, record in ipairs((fset and fset.animations) or {}) do
-          for _, index in ipairs((record.pattern and record.props) or {}) do
+          for _, index in ipairs((record.pattern and (record.props or record.scriptProps)) or {}) do
             local packed = mset and mset.models and mset.models[index + 1]
             local bytes = packed and arc and arc:get(index)
             if bytes and Graphics.isCompressed(bytes) then bytes = Graphics.decompress(bytes) end

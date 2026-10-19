@@ -347,7 +347,9 @@ if charArc and plttArc and cellArc and animArc then
                                            tostring(ce), tostring(an))
         if not spriteArt[key] then
           local sheet = Gfx.tiles(cellMember(charArc, c))
-          local colours = Gfx.palette(cellMember(plttArc, p))
+          -- sequential: the sprite system ignores wepltt's PMCP slot list (see
+          -- Gen4Graphics.palette and the cellactor stage of RomExtractorGen4)
+          local colours = Gfx.palette(cellMember(plttArc, p), true)
           local cb = cellMember(cellArc, ce)
           local bank = cb and Cells.parse(cb, Gfx)
           local ab = cellMember(animArc, an)
@@ -434,7 +436,14 @@ ok(withSound > 400, "most programs play a sound", withSound, "over 400")
 -- defender while the real battler is hidden -- so counting the battler transform
 -- alone still gives 289 and counting what is actually on screen gives 290. MEASURED
 -- BOTH WAYS rather than assumed: exactly one program differs and it is that one.
-ok(withMotion == 290, "...and this many move a battler", withMotion, 290)
+--
+-- 313 AND NOT 290: the long tail of script functions (`Gen4MoveAnimExtras` and
+-- its four batch modules -- Quick Attack's oval, Drill Peck's lunge, Vital
+-- Throw, MoveBattler, the slides Whirlwind and Roar now play before the hide)
+-- drives the battler channels directly. MEASURED BOTH WAYS again: with the
+-- Extras module refused at `require` the corpus gives exactly 290, so all 23
+-- new programs are ones whose only motion is a newly ported function.
+ok(withMotion == 313, "...and this many move a battler", withMotion, 313)
 
 -- THE FRAME OF REFERENCE, which is the one rule here that is easy to get
 -- backwards and impossible to see from a still. ATTACKER and DEFENDER are
@@ -482,7 +491,21 @@ if player then
       -- the two sides are simply UNRELATED, and that is what this asserts.
       local consistent = true
       for i = 1, #a do
-        if a[i] ~= -b[i] and a[i] ~= b[i] then consistent = false break end
+        -- ...OR MIRRORED TO WITHIN THE HARDWARE'S FLOOR. pret's lerps keep the
+        -- position in fx32 and read it back with `>> FX32_SHIFT`, which rounds
+        -- towards minus infinity, and the direction is applied to the STEP
+        -- (DrillPeck: `ctx->pos.data[XY_PARAM_STEP_SIZE] *= dir`). So -32 over
+        -- three frames is -11 one way and +10 the other on the cartridge itself:
+        -- programs 27, 65, 98, 130, 233 and 332 (Quick Attack, Drill Peck,
+        -- Vital Throw, MoveBattler) differ by exactly that pixel -- including a
+        -- revolution that ends at sin ~ 0 and so rests at -1 one way and 0 the
+        -- other (RevolutionContext_Update's `FX_Mul(...) >> FX32_SHIFT`). Opposite
+        -- signs (or a zero) and a sum within one is still a mirror; an UNRELATED
+        -- frame is not, and `flipped` below still counts exact flips only.
+        local nearMirror = a[i] * b[i] <= 0 and math.abs(a[i] + b[i]) <= 1
+        if a[i] ~= -b[i] and a[i] ~= b[i] and not nearMirror then
+          consistent = false break
+        end
         -- ...AND COUNT THE TWO KINDS SEPARATELY, which is the half that makes
         -- this able to fail at all. "Mirrored or equal" alone is satisfied by
         -- NEVER FLIPPING: both sides get the same offset and every frame is
@@ -550,6 +573,14 @@ for what in pairs(missing) do
           -- deliberate and be wrong; the one generic callback,
           -- `OffsetAndAnimate`, IS implemented and so never appears here.
           or what:find("^sprite motion:")
+          -- THE PORTED FUNCTIONS' OWN APPROXIMATIONS ARE NAMED GAPS TOO. Each
+          -- `Gen4MoveAnimExtras` port that draws something the cartridge does
+          -- with hardware this screen lacks (a scanline wave, an OBJ window, an
+          -- affine pivot) says so with `H.note`, as "<pret function>: what is
+          -- approximated" -- e.g. "Extrasensory: per-scanline wave drawn as a
+          -- whole-battler shift". They are the same kind of entry as the sprite
+          -- motions above: stated, specific, and not something the VM forgot.
+          or what:find("^%u%w*: %S")
           or what:find("^cellactor")) then
     unexplained[#unexplained + 1] = what
   end
@@ -805,7 +836,7 @@ ok(crossChecked == 186 and #crossBad == 0,
 -- reduction, and it is the only reading available with one palette per sprite.
 local function opaqueOf(char, palette)
   local sheet = Gfx.tiles(cellMember(charArc, char))
-  local colours = Gfx.palette(cellMember(plttArc, palette))
+  local colours = Gfx.palette(cellMember(plttArc, palette), true)
   local cb = cellMember(cellArc, char)
   local bank = cb and Cells.parse(cb, Gfx)
   if not (sheet and colours and bank) then return nil end
@@ -839,12 +870,16 @@ if charArc and plttArc and cellArc then
   -- 480 bytes inside a 56-byte section -- the stated size is a VRAM allocation --
   -- so an unclamped reader returns about twenty real colours followed by whatever
   -- bytes came next, which is a palette that half works.
+  -- (Read SEQUENTIALLY, as the sprite system loads them: every wepltt member
+  -- also carries a PMCP slot list, and members 0 and 29 name slot 9 in it, so
+  -- the slot-placing reading is 160 entries long without reading past anything
+  -- -- and is not what the cartridge puts in OBJ palette memory.)
   local over, palettes = 0, 0
   for i = 0, plttArc.count - 1 do
     local bytes = cellMember(plttArc, i)
     local container = bytes and Gfx.container(bytes)
     local section = container and container.sections.TTLP
-    local colours = bytes and Gfx.palette(bytes)
+    local colours = bytes and Gfx.palette(bytes, true)
     if section and colours then
       palettes = palettes + 1
       if #colours > math.floor((section.size - 16) / 2) then over = over + 1 end
@@ -860,11 +895,17 @@ end
 local cellPrograms, spriteFrames, withArt, blankFrames = 0, 0, 0, 0
 local peakSprites, callbacks, usedBeforeLoad = 0, {}, 0
 local longestCellProgram = 0
+-- each program's own `initspritemanager <id> <max sprites> ...` limit, and how
+-- many programs put more up than theirs allows, and which program is busiest
+local overLimit, busiest = 0, nil
 if player then
   for id = 0, arc.count - 1 do
-    local uses = false
+    local uses, limit = false, nil
     for _, ins in ipairs((programs[id] or {}).code or {}) do
       if ins[1] == 78 or ins[1] == 79 then uses = true end
+      if Anim.OPCODES[ins[1]] == "initspritemanager" then
+        limit = math.max(limit or 0, tonumber(ins[3]) or 0)
+      end
     end
     if uses and player:start(id, true) then
       cellPrograms = cellPrograms + 1
@@ -880,7 +921,8 @@ if player then
           if s.func then callbacks[s.func] = true end
         end
       end
-      if peak > peakSprites then peakSprites = peak end
+      if peak > peakSprites then peakSprites = peak; busiest = id end
+      if limit == nil or peak > limit then overLimit = overLimit + 1 end
       if frames > longestCellProgram then longestCellProgram = frames end
       for _, row in ipairs(player:missing()) do
         if row.what:find("used before loading") then
@@ -910,12 +952,26 @@ ok(cellPrograms == 31, "this many programs add a 2D sprite", cellPrograms, 31)
 -- after about 43 frames though its sequence is 114 long (so 71 frames of it never
 -- play, twice over); Foresight's eye lives 107 frames on a sequence of 4. A
 -- lifetime taken from the animation was wrong in both directions at once.
-ok(spriteFrames == 1892, "A SPRITE IS ON THE SCREEN FOR THIS MANY FRAMES",
-   spriteFrames, 1892)
-ok(withArt == 1741, "...of which this many carry a picture", withArt, 1741)
-ok(longestCellProgram > 0 and longestCellProgram < 200,
+--
+-- 5635 AND NOT 1892, AND AGAIN EVERY PART IS A CALLBACK THAT NOW EXISTS. The
+-- `Gen4MoveAnimExtras` batches ported the per-move callbacks that were named
+-- gaps -- Assist's twelve paws, Frenzy Plant's vines, Grudge, Kinesis, Trick,
+-- String Shot, Constrict, Mean Look, Taunt, Fissure's own tick -- and each one
+-- multiplies, lengthens or (Taunt) shortens its sprite as pret does. Measured
+-- per program against the tree before them: the
+-- programs whose callbacks were already applied (MetalClaw 232/306/337, FakeOut,
+-- ScaryFace, Foresight, Swagger, OffsetAndAnimate) are unchanged frame for
+-- frame, and every program that grew is one whose callback is new.
+ok(spriteFrames == 5635, "A SPRITE IS ON THE SCREEN FOR THIS MANY FRAMES",
+   spriteFrames, 5635)
+ok(withArt == 5277, "...of which this many carry a picture", withArt, 5277)
+-- 212 IS MEAN LOOK, NOT A RUNAWAY: its eye (pret BattleAnimSpriteFunc_MeanLook:
+-- four decaying pulses, the sequence, a 30-frame delay, the flash and an 8-frame
+-- fade) lives 182 frames, and the script's `waitforanimtasks` now waits for it
+-- because every sprite callback is an anim task. Still a third of the budget.
+ok(longestCellProgram > 0 and longestCellProgram <= 212,
    "...and no program with a sprite in it runs away",
-   longestCellProgram .. " frames", "under 200")
+   longestCellProgram .. " frames", "212 or under")
 -- THE BLANK FRAMES ARE A FEATURE, NOT A SHORTFALL: cell 0 of members 17, 19 and
 -- 26 has no OAM entries and their own animations name it, a beat of nothing
 -- before the sprite appears. Counted apart so the two cannot be confused.
@@ -924,16 +980,29 @@ ok(longestCellProgram > 0 and longestCellProgram < 200,
 -- pair spends ten more there while the delay runs -- and frame 0 of that bank is
 -- one of these empty cells. Per move that is 2 * 1 + 2 * 11 = 24, and there are
 -- three such moves.
-ok(blankFrames == 151, "...and the rest are the cartridge's own blank frames",
-   blankFrames, 151)
+-- 358 NOW, NOT 151: the same empty cell 0, held by the newly ported callbacks
+-- that create their sprites ahead of showing them -- Frenzy Plant's vines (4 ->
+-- 145), Ingrain's (4 -> 59), Torment's beside Swagger (56 -> 66) -- and Fissure's
+-- one extra frame now that its task, not the animation, ticks it.
+ok(blankFrames == 358, "...and the rest are the cartridge's own blank frames",
+   blankFrames, 358)
 ok(withArt + blankFrames == spriteFrames, "...which accounts for every one",
    withArt .. " + " .. blankFrames, spriteFrames)
-ok(peakSprites > 0 and peakSprites <= 10,
+-- AGAINST EACH PROGRAM'S OWN MANAGER, not a constant: `initspritemanager`'s
+-- second operand is the most sprites that manager can hold (MetalClaw asks for
+-- 4, Assist for 12, Grudge for 10), so a callback leaking sprites shows up as a
+-- program over its own limit. The old bound of ten predates Assist's paws.
+ok(peakSprites > 0 and overLimit == 0,
    "no program puts more sprites up than the manager allows",
-   peakSprites, "between 1 and 10")
--- AND FOUR IS THE MOST ANY PROGRAM MANAGES, which is MetalClaw's four claws: the
--- one callback in the cartridge that multiplies its sprite.
-ok(peakSprites == 4, "...and the busiest is MetalClaw's four", peakSprites, 4)
+   ("peak %d, %d programs over their own limit"):format(peakSprites, overLimit),
+   "none over")
+-- AND TWELVE IS THE MOST ANY PROGRAM MANAGES, which is Assist (274): pret's
+-- BattleAnimSpriteFunc_Assist overwrites its paw count with
+-- ASSIST_SPRITE_DEFAULT_PAW_COUNT, 12, and its manager is sized for exactly
+-- that. It was MetalClaw's four while MetalClaw was the only callback applied
+-- that multiplies its sprite.
+ok(peakSprites == 12 and busiest == 274, "...and the busiest is Assist's twelve paws",
+   ("%d in program %s"):format(peakSprites, tostring(busiest)), "12 in program 274")
 -- pret: "All resource indices specified here must have been previously loaded."
 -- True on all 38 in the cartridge, so any failure means the program is not being
 -- read the way it runs -- most likely the resource operands being taken for
@@ -1085,20 +1154,31 @@ if player then
 end
 ok(spritesSeen > 20, "enough sprites inspected for their placement",
    spritesSeen, "over 20")
-ok(absoluteCount == 2, "...and exactly two of them sit at an absolute position",
-   absoluteCount, 2)
+-- TWELVE NOW, OVER NINE CALLBACKS, and every one added is a ported callback
+-- whose pret body calls ManagedSprite_SetPositionXY with a position it computed
+-- in screen space (counted in script_funcs_*.c): Assist's paws, Frenzy Plant's
+-- and Ingrain's vines, Helping Hand's and Trick's pair, Kinesis's spoon and
+-- Taunt's hand at (128, 80). Named exactly, so a tenth still fails.
+local ABSOLUTE_FUNCS = {
+  Assist = true, Fissure = true, FrenzyPlant = true, HelpingHand = true,
+  IcicleSpear = true, Ingrain = true, Kinesis = true, Taunt = true, Trick = true,
+}
+ok(absoluteCount == 12, "...and exactly twelve of them sit at an absolute position",
+   absoluteCount, 12)
 do
-  local named, wrong = {}, {}
+  local named, wrong, count = {}, {}, 0
   for func, isAbsolute in pairs(absoluteFuncs) do
     if isAbsolute then named[#named + 1] = func end
   end
   table.sort(named)
   for _, func in ipairs(named) do
-    if func ~= "Fissure" and func ~= "IcicleSpear" then wrong[#wrong + 1] = func end
+    if not ABSOLUTE_FUNCS[func] then wrong[#wrong + 1] = func end
   end
-  ok(#named == 2 and #wrong == 0,
-     "...and they are Fissure and IcicleSpear, by name",
-     table.concat(named, " and "), "Fissure and IcicleSpear")
+  for _ in pairs(ABSOLUTE_FUNCS) do count = count + 1 end
+  ok(#named == count and #wrong == 0,
+     "...and they are the nine that place themselves, by name",
+     table.concat(named, " and "),
+     "Assist, Fissure, FrenzyPlant, HelpingHand, IcicleSpear, Ingrain, Kinesis, Taunt, Trick")
 end
 
 -- AND NO SPRITE ASKS FOR A SEQUENCE ITS BANK DOES NOT HAVE. The clamp counts
@@ -1399,13 +1479,24 @@ do
     ok(blanksOnRight == 22,
        "...twenty-two of the twenty-four on the right, which is the pair that waits",
        blanksOnRight, 22)
-    -- AND THE TAIL IS REAL. The script ends long before the claws do, and the
-    -- player has to keep running: this is the assertion a one-frame tail fails.
-    ok(endedAt ~= nil and frames - endedAt > 1,
-       "...and the player outlives the script by more than one frame",
-       endedAt and (frames - endedAt) .. " frames of tail", "more than 1")
-    ok(endedAt ~= nil and frames == 41,
-       "...to the claws' fortieth step exactly", frames, 41)
+    -- AND THE SCRIPT WAITS FOR THEM. This used to assert a TAIL -- the script
+    -- ending long before the claws -- but BattleAnimSpriteFunc_MetalClaw starts
+    -- BattleAnimTask_MetalClawSprite with BattleAnimSystem_StartAnimTask, so the
+    -- program's closing `waitforanimtasks` holds until the task's fortieth step
+    -- deletes the claws, and `end` runs on the frame after. `taskCount` counts
+    -- live sprite callbacks now, which is that rule; there is no tail here.
+    ok(endedAt == nil and last ~= nil and frames == last + 1,
+       "...and the script waits for them, ending the frame after the last claw",
+       endedAt and (frames - endedAt) .. " frames of tail"
+         or ("last claw %s, end %d"):format(tostring(last), frames),
+       "no tail, end = last + 1")
+    -- 79 AND NOT 41: StatChangeMetal (callfunc 83, the metal sheen on the
+    -- attacker) is ported and the script waits for it first -- 37 frames of
+    -- load, blend, the 21-frame scroll and twelve of fade -- so the claws appear
+    -- on frame 39. Asserted relative to that, which is the part that is MetalClaw's.
+    ok(first ~= nil and frames == first + 40,
+       "...to the claws' fortieth step exactly",
+       first and ("claws from %d, end %d"):format(first, frames), "first + 40")
   end
 end
 
@@ -1653,7 +1744,12 @@ do
     -- ONE particle file, so its whole timeline starts three frames later. The 103
     -- drawn frames above are unchanged, which is the check that this is a shift and
     -- not a lengthening.
-    ok(frames == 107, "...and the player stops on the frame after", frames, 107)
+    -- 108 AND NOT 107: the sprite is still drawn on 103 frames (5 to 107), but
+    -- the FakeOut callback is an anim task (BattleAnimSystem_StartAnimTask), so
+    -- the program's last `waitforanimtasks` waits for it and the script's own
+    -- freespritemanager / end run on frame 108 -- the frame the sprite goes --
+    -- where before the run ended in a tail that stopped with the sprite.
+    ok(frames == 108, "...and the player stops on the frame after", frames, 108)
   end
 end
 
@@ -1815,9 +1911,15 @@ for _, side in ipairs({ true, false }) do
     -- most of the stretch now happens while the script is still running. The
     -- assertion is kept because its POINT is that the number is not ZERO -- which
     -- is what the `playing` guard reported for every frame of it.
-    ok(inTail == 3,
-       "...three of them AFTER the script has ended, in the tail",
-       inTail, 3)
+    -- ZERO NOW, AND THAT IS THE CARTRIDGE: BattleAnimTask_ScaryFaceSprite ends
+    -- with BattleAnimSystem_EndAnimTask, so it is an anim task and move 137's
+    -- `waitforanimtasks` after `addspritewithfunc` holds the script until the
+    -- face and the stretch are done. The stretch all happens while the script
+    -- runs; the accessors' `alive()` guard is still exercised by the 24 frames
+    -- above and by the neutral-after assertion below.
+    ok(inTail == 0,
+       "...none of them after the script has ended: it waits for the face",
+       inTail, 0)
     ok(neutralAfter == true,
        "...and the battler is put back once the player is finished",
        neutralAfter, true)
@@ -1925,10 +2027,16 @@ do
     -- which is the restore rather than an extra frame of white. A ramp that ran
     -- 0 -> 10 -> 0 continuously would give 10 and 10 with NO flat frame, so the
     -- flat one is part of the measurement.
-    ok(up == 10 and down == 10 and flat == 1,
+    -- ...AND ONE MORE FLAT FRAME AT THE END, at 0: Foresight's callback is an
+    -- anim task, so the closing `waitforanimtasks` holds the script until it ends
+    -- and `freespritemanager` / `end` run one frame later -- with the restored
+    -- (alpha 0) blend still showing, since nothing takes it off but the player
+    -- finishing. Hence 2 flat and 23 frames, where the peak's flat one is still
+    -- the measurement.
+    ok(up == 10 and down == 10 and flat == 2 and steps[12] == steps[11],
        "...ten steps up, one held, ten back down -- not one long ramp",
-       ("%d up, %d flat, %d down"):format(up, flat, down), "10, 1 and 10")
-    ok(#steps == 22, "...over 22 frames in all", #steps, 22)
+       ("%d up, %d flat, %d down"):format(up, flat, down), "10, 2 (peak + end) and 10")
+    ok(#steps == 23, "...over 23 frames in all", #steps, 23)
     -- AND THE LAST FRAME OF THE WALK IS THE RESTORE, not a removal: nothing in
     -- the C takes the blend off, because a fraction of zero writes the unfaded
     -- colour back. What takes it off for good is the player finishing.
@@ -2183,7 +2291,18 @@ do
   -- tinted stretch is clipped by the end of their run. The count of PROGRAMS is
   -- unchanged, which is what says the load cost moved the window rather than
   -- adding a tint anywhere.
-  ok(frames == 8754, "...over this many frames of the corpus", frames, 8754)
+  --
+  -- 9670 AND NOT 8754, AND AGAIN THE PROGRAM COUNT DID NOT MOVE: the tint holds
+  -- until the recovery fade, and the stretch between the two fades got longer in
+  -- 20 programs because the script now waits for what pret waits for -- the
+  -- battler fade's round trip (FadeBattlerSprite repeats `endDelay` times), the
+  -- ported per-move functions, and sprite callbacks (all anim tasks). Measured
+  -- per program: 20 grew and every one of them runs longer too (Mean Look 133 ->
+  -- 212, Trick and Switcheroo 58 -> 134). Where the tint grew by MORE than the run
+  -- (Scary Face 32 -> 69 tinted of 58 -> 73), the recovery fade used to start
+  -- while the face was still up and the rest played untinted in the tail; the
+  -- script now reaches it only after the callback ends, as on the cartridge.
+  ok(frames == 9670, "...over this many frames of the corpus", frames, 9670)
 end
 
 -- A SECOND FADE WHILE ONE IS RUNNING IS DROPPED, not queued -- pret's `StartFade`
@@ -2944,7 +3063,11 @@ if bgArc and Gfx4 then
       if spec and not seen[spec.art] then
         seen[spec.art] = true
         local sheet = Gfx4.tiles(bgMember(spec.tiles))
-        local raw = Gfx4.palette(bgMember(spec.palette))
+        -- SEQUENTIAL: BattleBgSwitch_SetBg loads the first PALETTE_SIZE_BYTES of
+        -- the file into slot 9 (PaletteData_LoadBufferFromFileStart), ignoring
+        -- the PMCP slot list these NCLRs carry -- which for 57 of the 58 says
+        -- slot 9 anyway, but for member 299 (background 20) does not.
+        local raw = Gfx4.palette(bgMember(spec.palette), true)
         local map = Gfx4.tilemap(bgMember(spec.tilemap))
         local image = sheet and raw and map
           and Gfx4.compose(map, sheet, Gfx4.paletteAtSlot(raw, spec.slot))
@@ -3281,7 +3404,14 @@ do
   if player and player:start(87, true) then
     local f = 0
     while player:update() and f < 400 do f = f + 1 end
+    -- RECORDED AS A DELIBERATE SKIP, not a gap: the note is on
+    -- `Player.NOT_NEEDED` now (the shake moves BG2 inside a FADE-mode switch,
+    -- which never turns BG2 on -- invisible on the cartridge too), so it lands
+    -- in `player.skipped` and `missing()` no longer lists it. Still exactly once.
     local noted = 0
+    for what, n in pairs(player.skipped or {}) do
+      if what:find("base layer", 1, true) then noted = noted + n end
+    end
     for _, row in ipairs(player:missing()) do
       if row.what:find("base layer", 1, true) then noted = noted + row.count end
     end
@@ -3425,8 +3555,13 @@ do
       end
     end
   end
-  ok(showed == 52, "this many programs put a switched background on the screen",
-     showed, 52)
+  -- 54 AND NOT 52, and the two new ones carry no `switchbg` at all: Surf (57) and
+  -- Muddy Water (330) load their wave background from their own script function
+  -- (BattleAnimScriptFunc_Surf, ported in Gen4MoveAnimFuncsA), which sets the
+  -- same effect layer. The 52 `switchbg` programs are the same 52 (some hold
+  -- their picture longer, waiting on newly ported tasks before the restore).
+  ok(showed == 54, "this many programs put a switched background on the screen",
+     showed, 54)
   ok(frames > 3000, "...over this many frames of the corpus",
      frames .. " layer-frames", "more than 3000")
 end
@@ -3458,7 +3593,11 @@ do
     local body = gb:match("function Gen4Battle%.draw%(battle%)(.*)$") or ""
     local fade = body:find("Gen4Battle.drawBackgroundFade(battle)", 1, true)
     local eff = body:find("Gen4Battle.drawEffectBackground(battle)", 1, true)
+    -- ...called through `pcall(Gen4Battle.drawBattlers, battle)` now, so a raise
+    -- inside cannot leave the move camera's transform pushed; either spelling is
+    -- the same call in the same place.
     local mons = body:find("Gen4Battle.drawBattlers(battle)", 1, true)
+      or body:find("pcall(Gen4Battle.drawBattlers, battle)", 1, true)
     ok(fade and eff and mons and fade < eff and eff < mons,
        "...drawn after the background fade and before the battlers",
        (fade and eff and mons) and ("%d < %d < %d"):format(fade, eff, mons)
@@ -4023,10 +4162,18 @@ do
       if player:bgGrayscale() then window = window + 1 end
     end
   end
-  ok(window == 2, "program 377 greys the background for exactly two frames",
-     window .. " of " .. total, 2)
-  ok(total > 60, "...out of a program more than thirty times that long", total,
-     "over 60")
+  -- FORTY NOW, NOT TWO, and still the script's own paired call that ends it:
+  -- between the on (callfunc 74 1) and the off (74 0) sit two FadeBattlerSprite
+  -- calls and a `waitforanimtasks`. BattleAnimTask_FadeBattlerSprite is an anim
+  -- task and a round trip -- fade 0 -> 10 at one step a frame, hold 15, fade
+  -- back, clean up -- which this port used to run as a one-way ramp the wait did
+  -- not hold for. The grey lasts exactly as long as the wait, and the program
+  -- does not end grey, which is what the operand being load-bearing means.
+  ok(window == 40, "program 377 greys the background for exactly forty frames",
+     window .. " of " .. total, 40)
+  ok(total > 60 and total - window > 40,
+     "...out of a program that runs on in colour for over forty more", total,
+     "over 60, and over 40 frames not grey")
   -- ...AND IT IS THE SCRIPT'S OWN PAIRED CALL THAT TURNS IT OFF, not the port's
   -- housekeeping. Every one of the five programs ends with its grey already cleared:
   -- the last sampled frame of four of them still reads grey, but the final `update`
@@ -4172,20 +4319,31 @@ do
       end
     end
   end
-  ok(programs == 496, "this many programs ask for a sound", programs, 496)
-  ok(total == 3865, "...over this many sound events in the corpus", total, 3865)
+  -- 499 AND 3976, NOT 496 AND 3865: no sound command changed. Double Team (104),
+  -- Minimize (107), Magnitude (222) and Bulk Up (339) used to finish on their
+  -- first update -- every
+  -- callfunc they wait on was unimplemented, so `waitforanimtasks` fell straight
+  -- through and the run ended before a queued sound played -- and now run 41 to
+  -- 101 frames; three of them now sound at all. The rest is length: a looped or
+  -- moving sound keeps stepping while a program waits on the newly ported tasks
+  -- (Extrasensory 326's moving sound 124 -> 154 events over 120 -> 143 frames), and
+  -- a delayed one now fires before the end instead of being cut off.
+  ok(programs == 499, "this many programs ask for a sound", programs, 499)
+  ok(total == 3976, "...over this many sound events in the corpus", total, 3976)
   -- THE BREAKDOWN, because a total says nothing about which command produced it: a
   -- port that turned every command into a bare play would report the same 3,865.
   -- MORE EVENTS THAN COMMANDS (3,865 against 1,220) is the point of the three sound
   -- TASKS: one `playloopedsoundeffect` is up to 24 plays and one moving sound is a
   -- pan every third frame for as long as the move lasts.
-  ok(kinds.play == 1821 and kinds.pan == 2012 and kinds.cry == 10
+  -- (1868 plays and 2076 pans: the same lengthening, above; cries and stops are
+  -- one per command and did not move)
+  ok(kinds.play == 1868 and kinds.pan == 2076 and kinds.cry == 10
      and kinds.stop == 12 and kinds.stopcries == 10,
      "...split between plays, pans, cries, stops and cry stops",
      ("%s plays, %s pans, %s cries, %s stops, %s stopcries"):format(
        tostring(kinds.play), tostring(kinds.pan), tostring(kinds.cry),
        tostring(kinds.stop), tostring(kinds.stopcries)),
-     "1821, 2012, 10, 12, 10")
+     "1868, 2076, 10, 12, 10")
 end
 
 -- ---------------------------------------------------------------------------
@@ -4346,15 +4504,31 @@ end
 -- were counted as an anim task, every `waitforanimtasks` after one would wait for the
 -- noise to finish.
 do
+  -- MEASURED AS A DIFFERENCE, because program 0 now has an anim task of its own
+  -- running beside the sound on frame 5 (Sketch, callfunc 79, ported): the count
+  -- `waitforanimtasks` reads is taken with the sound tasks in place and again
+  -- with them lifted out, and the two must agree.
+  local SOUND_KINDS = { sndrepeat = true, snddelay = true, sndpan = true }
   local counted = nil
   if player and player:start(0, true) then
     local f = 0
     while player:update() and f < 600 do
       f = f + 1
-      if f == 5 then counted = { player:taskCount(), player:soundTaskCount() } end
+      if f == 5 then
+        local with = player:taskCount()
+        local kept, lifted = {}, 0
+        for _, t in ipairs(player.tasks) do
+          if SOUND_KINDS[t.kind] then lifted = lifted + 1 else kept[#kept + 1] = t end
+        end
+        local all = player.tasks
+        player.tasks = kept
+        local without = player:taskCount()
+        player.tasks = all
+        counted = { with - without, player:soundTaskCount(), lifted }
+      end
     end
   end
-  ok(counted ~= nil and counted[2] > 0,
+  ok(counted ~= nil and counted[2] > 0 and counted[3] > 0,
      "program 0 has a sound task running on frame 5",
      counted and counted[2] or "no frame", "more than 0")
   ok(counted ~= nil and counted[1] == 0,
@@ -4708,9 +4882,14 @@ do
     -- on the Gen 3 ball record -- so the bare name is satisfied by code that has
     -- nothing to do with this. The question is whether the SHARED draw asks the
     -- Gen 4 animator, which is `gen4Anim.monHidden`.
+    -- AND ONLY THE HIDE. The shared draw now DOES ask the Gen 4 animator two
+    -- things, on purpose and behind `gen4AnimPlaying`: `monSpecial` (alpha,
+    -- mosaic, brightness, white) and `monRotate`, the channels the ported
+    -- functions drive, as `pcall(self.gen4Anim.monSpecial, self.gen4Anim,
+    -- battler == self.player, battler)`. The old second needle, `gen4Anim,
+    -- battler`, matched those calls; what must not be there is a hide.
     local shared = bs and bs:gsub("%-%-[^\n]*", "") or ""
-    ok(shared ~= "" and shared:find("gen4Anim%.monHidden") == nil
-       and shared:find("gen4Anim, *battler") == nil,
+    ok(shared ~= "" and shared:find("gen4Anim%.monHidden") == nil,
        "...and the shared battler draw does not ask it",
        shared:find("gen4Anim%.monHidden") and "IT DOES" or "untouched", "untouched")
   end
@@ -5137,11 +5316,20 @@ do
   end
   local a, ap = hiddenFrames(true)
   local b, bp = hiddenFrames(false)
-  ok(a == 462 and ap == 14,
-     "a Pokemon is off the field for 462 frames over 14 programs, player casting",
-     ("%d frames / %d programs"):format(a, ap), "462 / 14")
-  ok(b == 409 and bp == 13, "...and 409 over 13 with the foe casting",
-     ("%d frames / %d programs"):format(b, bp), "409 / 13")
+  -- 683 / 18 AND 630 / 17, NOT 462 / 14 AND 409 / 13: the ported functions hide a
+  -- battler through the same channel -- Teleport (100), Double Team (104), Faint
+  -- Attack (185), Baton Pass (226) and Extreme Speed (245) --
+  -- and three hides got SHORTER for a reason: Whirlwind (18) and Roar (46) now
+  -- play their slide-off (callfunc 61) before the hide, and Role Play (272) and
+  -- Transform (144) keep the hidden battler's copy on screen through the
+  -- Pokemon sprite manager, which `monHidden` answers "on screen" for. Measured
+  -- per program against the tree before the ports; no program leaves a side
+  -- hidden (asserted above).
+  ok(a == 683 and ap == 18,
+     "a Pokemon is off the field for 683 frames over 18 programs, player casting",
+     ("%d frames / %d programs"):format(a, ap), "683 / 18")
+  ok(b == 630 and bp == 17, "...and 630 over 17 with the foe casting",
+     ("%d frames / %d programs"):format(b, bp), "630 / 17")
   -- A FLOOR THAT CANNOT BE HIT BY ACCIDENT: before this pass both numbers were
   -- zero, because nothing read the channel.
   ok(a > 0 and b > 0, "...which is not zero, as it was before this pass",

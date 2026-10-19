@@ -1,5 +1,6 @@
 {
   "id": "Gen2Recomped-DramaticShapes",
+  "previous_ids": ["DRAMATIC_SHAPE"],
   "name": "Gen2Recomped-DramaticShapes Voxel Mod",
   "version": "0.7.71",
   "api": 2,

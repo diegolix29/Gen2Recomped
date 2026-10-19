@@ -212,7 +212,27 @@ function Loader:setEnabled(id, enabled)
   if not self.mods[id] then return false end
   self.disabled[id] = not enabled
   self.mods[id].enabled = enabled
+  -- the same mod under another id (Terrarium / Dramatic Shapes) cannot run
+  -- beside this one: switching this on switches that off, as the launcher's
+  -- menu does (ModCopies.switchOn)
+  local mates = {}
+  if enabled then
+    pcall(function()
+      mates = require("src.mods.ModCopies").slotMates(self.mods, id)
+    end)
+    for _, mate in ipairs(mates) do
+      self.disabled[mate] = true
+      self.mods[mate].enabled = false
+    end
+  end
   self:_saveState()
+  if enabled and self.fs.write then
+    pcall(function()
+      local options = SaveData.loadOptions(self.fs)
+      require("src.mods.ModCopies").switchOn(options, id, self.mods)
+      SaveData.saveOptions(options, self.fs)
+    end)
+  end
   return true
 end
 
@@ -1185,18 +1205,25 @@ function Loader:load(data)
   -- parent's old id (ModCopies.ALIASES).  Both enabled used to mean both
   -- entry chunks ran -- two sets of wraps, two sets of option rows, and the
   -- second one failing half-way on a registry collision with its residue
-  -- left on the engine.  The better copy runs; the other is reported.
+  -- left on the engine.  The one the player switched on runs (the most
+  -- recent switch, else the slot's original -- ModCopies.choose); the other
+  -- is reported.  The launcher normally keeps only one of them on.
   do
+    local switchedOn = {}
+    pcall(function()
+      switchedOn = SaveData.loadOptions(self.fs).modSwitchedOn or {}
+    end)
     local ok, losers = pcall(require("src.mods.ModCopies").supersede, self.mods,
-      function(id, mod) return mod.enabled end)
+      function(id, mod) return mod.enabled end, switchedOn)
     for _, row in ipairs(ok and losers or {}) do
       local mod = self.mods[row.id]
       mod.superseded = true
       mod.supersededBy = row.winner
       mod.state = "superseded"
-      mod.failure = ("not loaded: %s"):format(row.reason)
-      Logger.warn("mod %s %s is not loaded -- %s; switch that one off to use "
-        .. "this one", row.id, tostring(mod.manifest.version), row.reason)
+      mod.failure = ("not loaded: %s"):format(row.note)
+      Logger.warn("mod %s %s is not loaded -- %s (%s); switch that one off to "
+        .. "use this one", row.id, tostring(mod.manifest.version), row.note,
+        row.reason)
     end
   end
   -- the two lifecycle events mods do their late installs in are journaled

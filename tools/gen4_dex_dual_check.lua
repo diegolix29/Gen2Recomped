@@ -25,7 +25,11 @@ package.loaded['src.render.Renderer']=renderer
 local cries=0;local stopped=0
 package.loaded['src.core.Sound']={playCry=function() cries=cries+1;return {stop=function() stopped=stopped+1 end} end}
 local target;local calls={}
-love={graphics={setColor=function() end,rectangle=function() end,push=function() end,pop=function() end,
+-- push('all')/pop save and restore the render target the way LOVE 11 does
+local gstack={}
+love={graphics={setColor=function() end,rectangle=function() end,
+ push=function(what) gstack[#gstack+1]={all=what=='all',target=target} end,
+ pop=function() local s=table.remove(gstack);if s and s.all then target=s.target end end,
  translate=function() end,scale=function() end,origin=function() end,setScissor=function() end,clear=function() end,
  getCanvas=function() return target end,setCanvas=function(v) target=v end,
  newCanvas=function(w,h) return {w=w,h=h,setFilter=function() end} end,
@@ -65,7 +69,8 @@ SS.injectTouch(game,'touchpressed','finger',188,24);check(dex.tab==1,'physical F
 game.save.options.secondScreenMode='inset'
 local x,y,scale=SS.rect(game)
 check(dex:touchpressed('mouse',10+(x+68*scale)*2,20+(y+24*scale)*2) and dex.tab==2,'scaled inset mouse uses lower-panel coordinates')
-game.save.options.secondScreenMode='swap';game.secondScreenUp=true;dex.tab=1
+-- swap starts stowed (SecondScreen.stowed: the single-screen default); the player un-stows to raise the full lower screen
+game.save.options.secondScreenMode='swap';game.save.options.secondScreenStowed=false;game.secondScreenUp=true;dex.tab=1
 check(dex:touchpressed('finger',10+108*2,20+24*2) and dex.tab==3,'scaled swapped touch selects Cry')
 game.secondScreenUp=false;check(not dex:bottomVisible(),'lowered swap preserves combined single-screen controls')
 game.save.options.secondScreenMode='off';check(not dex:bottomVisible(),'single-screen mode retains controls')

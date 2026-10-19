@@ -7,6 +7,8 @@ local target,draws
 local g=love.graphics
 g.getDimensions=function() return width,height end;g.getPixelDimensions=function() return width*dpi,height*dpi end
 g.getCanvas=function() return target end;g.setCanvas=function(c) target=c end
+-- LOVE 11: push('all') saves the render target with the rest of the state and pop puts it back; plain push() keeps only the transform.
+local gstack={};g.push=function(what) gstack[#gstack+1]={all=what=='all',target=target} end;g.pop=function() local s=table.remove(gstack);if s and s.all then target=s.target end end
 local function canvas(w,h) return {getWidth=function() return w end,getHeight=function() return h end,getDimensions=function() return w,h end,setFilter=function() end,release=function() end} end
 g.newCanvas=function(w,h,opts) T.eq(opts.dpiscale,1,'native panel/source pixels');return canvas(w,h) end
 g.draw=function(image,x,y,angle,sx,sy) draws[#draws+1]={image=image,x=x,y=y,sx=sx,sy=sy,target=target} end

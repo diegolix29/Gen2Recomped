@@ -201,6 +201,7 @@ local function read(t, data, perRow, colors)
     if not sealed("e") then seed(W - 1, y) end
   end
   while n > 0 do
+    Budget.tick()
     local i = queue[n]
     n = n - 1
     local x, y = i % W, math.floor(i / W)
@@ -1120,7 +1121,7 @@ local function emit(m, sp, atlasW, atlasH)
     return cell[(y * zn + (z - zmin)) * W + x]
   end
   for y = 0, ytop do
-    Budget.tick()
+    Budget.check()
     for z = zmin, zmax do
       local base = (y * zn + (z - zmin)) * W
       for x = 0, W - 1 do
@@ -1134,7 +1135,7 @@ local function emit(m, sp, atlasW, atlasH)
   -- derived from the quads because it is the number
   -- tools/building_voxels.py checks this build against.
   for y = 0, ytop do
-    Budget.tick()
+    Budget.check()
     for z = zmin, zmax do
       for x = 0, W - 1 do
         if ci(x, y, z) and not (ci(x + 1, y, z) and ci(x - 1, y, z)
@@ -1191,7 +1192,7 @@ local function emit(m, sp, atlasW, atlasH)
   for _, d in ipairs({ 1, -1 }) do
     local shade = d == 1 and SHADE.south or SHADE.north
     for y = 0, ytop do
-      Budget.tick()
+      Budget.check()
       for z = zmin, zmax do
         local x = 0
         while x < W do
@@ -1337,7 +1338,7 @@ function Buildings.build(S, map, data, perRow)
       local first = t.tiles[1][1]
       local built = nil
       for ty = 0, th - bh do
-        Budget.tick()
+        Budget.check()
         for tx = 0, tw - bw do
           -- A placement never stamps into cells another template already
           -- claimed. Templates are matched independently, and one

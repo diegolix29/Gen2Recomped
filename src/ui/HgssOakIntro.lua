@@ -23,11 +23,13 @@ function Oak:music(name)
 end
 function Oak:text(id)
   local text=(self.art.text or {})[id] or ''
-  text=text:gsub('{STRVAR_1 %d+[, ]+(%d+)[, ]+%d+}',function(slot)
-    return tonumber(slot)==0 and ((self.game.save.player or {}).name or '') or ''
-  end)
+  -- the player's name goes in slot 0 (BufferPlayerName) and the shared Gen 4
+  -- markup expands it, dropping {YESNO}/{ALN_CENTER}; the \v/\f page breaks
+  -- stay for say() to split on
+  require('src.import.Gen4Text').buffer(self.game,(self.game.save.player or {}).name or '')
+  local ok,plain=pcall(require('src.script.Commands').gen4Markup,text,self.game)
   -- one value: gsub's count would ride into {text(44),text(45),text(46)}
-  return (text:gsub('{YESNO %d+}',''):gsub('{ALN_CENTER}',''))
+  return ok and type(plain)=='string' and plain or text
 end
 function Oak:say(id,phase)
   self.message=id;self.phase=phase;self.page=1;self.pages={};self.choice=1;self.bottom=nil

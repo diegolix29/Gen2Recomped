@@ -99,8 +99,22 @@ love = {
     newCanvas = function(w, h) rec("newCanvas", w, h) return newFakeCanvas(w, h) end,
     getCanvas = function() return G.canvas end,
     setCanvas = function(c) rec("setCanvas", c) G.canvas = c end,
-    push = function(what) G.stack = G.stack + 1 rec("push", what) end,
-    pop = function() G.stack = G.stack - 1 rec("pop") end,
+    -- LOVE 11 semantics: push("all") saves the whole state -- the render
+    -- target and scissor included -- and the matching pop puts it back;
+    -- a plain push() saves only the transform.
+    push = function(what)
+      G.stack = G.stack + 1
+      G.saved = G.saved or {}
+      G.saved[G.stack] = (what == "all") and { canvas = G.canvas, scissor = G.scissor } or false
+      rec("push", what)
+    end,
+    pop = function()
+      local s = G.saved and G.saved[G.stack]
+      if G.saved then G.saved[G.stack] = nil end
+      G.stack = G.stack - 1
+      if s then G.canvas, G.scissor = s.canvas, s.scissor end
+      rec("pop")
+    end,
     origin = function() rec("origin") end,
     translate = function(x, y) rec("translate", x, y) end,
     scale = function(x, y) rec("scale", x, y) end,
@@ -287,9 +301,13 @@ do
   local iOrigin, iScissor = indexOf("origin"), indexOf("setScissor")
   ok(iBind and iOrigin and iScissor and iOrigin > iBind and iScissor > iBind,
      "the transform and scissor were reset before the canvas was bound")
-  local iRestore = indexOf("setCanvas", (iBind or 0) + 1)
-  ok(iRestore ~= nil and G.log[iRestore][1] == rendererCanvas,
-     "there is no second setCanvas putting the renderer's target back")
+  -- the target goes back through push("all")/pop, as LOVE 11 keeps the
+  -- render targets on its state stack.  A hand restore of {getCanvas()} is
+  -- what choked on a mod's depth-stencil binding ("Canvas expected").
+  local iPush = indexOf("push")
+  local iPop = indexOf("pop", (iBind or 0) + 1)
+  ok(iPush and iBind and iPush < iBind and G.log[iPush][1] == "all" and iPop ~= nil,
+     "the canvas bind is not fenced by push(\"all\")/pop, so nothing puts the renderer's target back")
   ok(game.secondScreenDirty == true,
      "the frame was drawn and nothing marked it as needing to be sent")
   -- the canvas is reused, not rebuilt every frame
@@ -449,7 +467,7 @@ if ui then
   -- pass 137's bug, in this mode's shape: a refusal keyed to the wrong question
   ok(ui:find('mode == "display"' , 1, true) ~= nil,
      "toLocal no longer distinguishes `display` at all")
-  ok(ui:find("g.setCanvas(previous)", 1, true) ~= nil,
+  ok(ui:find('g.push("all")', 1, true) ~= nil and ui:find("g.pop()", 1, true) ~= nil,
      "the mid-frame canvas bind does not put the renderer's target back")
 end
 

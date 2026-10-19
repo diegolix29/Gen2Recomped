@@ -12,7 +12,10 @@ package.loaded['src.core.Game']=game
 package.loaded['src.core.TouchControls']={}
 local voxel={level=6,ready=true,isFreeCam=function(level) return level==6 or level==7 end}
 local modules={Mat4={},VoxelState=voxel,Voxel3D={available=function() return true end},
- WorldCurve={},ThirdPerson={update=function() end}}
+ WorldCurve={},ThirdPerson={update=function() end},
+ -- the mod's own seam installer (FirstPerson.install goes through it); it only
+ -- needs src.core.Game, which is the stub above
+ Rewrap=assert(loadfile('mods/DRAMATIC_SHAPE/lib/Rewrap.lua'))()}
 local fp=assert(loadfile('mods/DRAMATIC_SHAPE/lib/FirstPerson.lua'))({require=function(name) return assert(modules[name],name) end})
 fp.install()
 for _,mode in ipairs({6,7}) do

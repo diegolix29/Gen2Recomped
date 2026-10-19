@@ -55,7 +55,7 @@ local GEOM_REV = "dsvx-160-r3"
 local DIR = "dramatic_shape_voxel_cache/" .. GEOM_REV
 local FLOATS_PER_VERTEX = 6
 local BYTES_PER_VERTEX = FLOATS_PER_VERTEX * 4
-local CHUNK_VERTS = 65536
+local CHUNK_VERTS = 32766 -- multiple of six: never split a triangle/quad
 local writeCounter = 0
 
 -- The recovery release disabled this module outright because a cached mesh
@@ -123,28 +123,59 @@ local function hashAdd(h, value)
   return (h * 65599 + (n % MOD) + 1) % MOD
 end
 
+-- A ROM border is a table on Gen 3. tostring(table) contains a process
+-- address, so hashing it made every subsequent launch miss the disk cache.
+local function hashValue(h,value,seen)
+  if type(value)~="table" then return hashAdd(h,value) end
+  seen=seen or {}
+  assert(not seen[value],"cyclic voxel cache identity")
+  seen[value]=true
+  local keys={}
+  for key in pairs(value) do
+    assert(type(key)=="number" or type(key)=="string","invalid voxel border key")
+    keys[#keys+1]=key
+  end
+  table.sort(keys,function(a,b)return type(a)..tostring(a)<type(b)..tostring(b)end)
+  h=hashAdd(h,"{")
+  for _,key in ipairs(keys)do
+    h=hashAdd(h,type(key)..":"..tostring(key))
+    h=hashValue(h,value[key],seen)
+  end
+  seen[value]=nil
+  return hashAdd(h,"}")
+end
+
 local signatureMemo = setmetatable({}, { __mode = "k" })
 local function bodySignature(map)
   local memo = signatureMemo[map]
   if memo then return memo end
   local def = map and map.def or {}
-  local tw = math.max(0, (tonumber(def.width) or 0) * 4)
-  local th = math.max(0, (tonumber(def.height) or 0) * 4)
+  local ts = map and map.tileset or {}
+  local blockTiles = tonumber(ts.blockTiles) or 4
+  local tw = math.max(0, (tonumber(def.width) or 0) * blockTiles)
+  local th = math.max(0, (tonumber(def.height) or 0) * blockTiles)
+  local gen3 = Gen3.mapIsGen3(map)
+  local atlas = gen3 and Gen3.describe(ts) or nil
   local h = 146959
   h = hashAdd(h, GEOM_REV)
   h = hashAdd(h, map and map.id or "")
   h = hashAdd(h, def.tileset or (map and map.tileset and map.tileset.id) or "")
   h = hashAdd(h, def.width or 0)
   h = hashAdd(h, def.height or 0)
-  h = hashAdd(h, def.borderBlock or def.border or 0)
+  h = hashValue(h, def.borderBlock or def.border or 0)
+  if gen3 then
+    h = hashValue(h, def.elevationCells or 0)
+    h = hashValue(h, def.collisionCells or 0)
+  end
   -- UVs are baked into the cached vertex stream, so atlas layout belongs in
   -- the signature too. This prevents a valid-position mesh from sampling the
   -- wrong tiles after an extracted-cache/tileset layout change -- a failure
   -- that looks exactly like collision paths becoming invisible under grass.
-  local ts = map and map.tileset or {}
-  h = hashAdd(h, ts.tilesPerRow or 16)
-  h = hashAdd(h, ts.imageWidth or 0)
-  h = hashAdd(h, ts.imageHeight or 0)
+  -- Use the canonical tile atlas, not fields populated as a side effect of
+  -- whichever renderer (2D cell sheet / 3D tile sheet) happened to run first.
+  h = hashAdd(h, atlas and atlas.perRow or ts.tilesPerRow or 16)
+  h = hashAdd(h, atlas and atlas.width or ts.imageWidth or 0)
+  h = hashAdd(h, atlas and atlas.height or ts.imageHeight or 0)
   if map and type(map.tileAt) == "function" then
     for y = 0, th - 1 do
       for x = 0, tw - 1 do
@@ -343,9 +374,8 @@ local function loadRawMesh(path, count)
     return nil, false, "cached mesh byte count mismatch"
   end
 
-  local okMesh, mesh = pcall(love.graphics.newMesh, Voxel3D.FORMAT, count,
-    "triangles", "static")
-  if not okMesh or not mesh then return nil, false, tostring(mesh) end
+  local Batch = V.require("MeshBatch")
+  local mesh = Batch.new()
 
   local okFile, file = pcall(love.filesystem.newFile, path)
   if not okFile or not file then
@@ -368,8 +398,9 @@ local function loadRawMesh(path, count)
         error("short cached mesh read")
       end
       local data = love.data.newByteData(chunk)
-      mesh:setVertices(data, at + 1)
+      local added, addErr = pcall(Batch.add, mesh, Voxel3D.FORMAT, data, verts)
       if data.release then pcall(data.release, data) end
+      if not added then error(addErr) end
       at = at + verts
       if Budget and type(Budget.check) == "function" then Budget.check() end
     end
@@ -464,6 +495,7 @@ local function prune()
   local groups = {}
   local total = 0
   for _, name in ipairs(items) do
+    Budget.check()
     local path = DIR .. "/" .. name
     local okInfo, info = pcall(love.filesystem.getInfo, path)
     if okInfo and info and info.type == "file" then
@@ -483,8 +515,10 @@ local function prune()
   for _, g in pairs(groups) do order[#order + 1] = g end
   table.sort(order, function(a, b) return a.time < b.time end)
   for _, g in ipairs(order) do
+    Budget.check()
     if total <= cap then break end
     for _, suffix in ipairs({ ".meta", ".terrain.bin", ".water.bin" }) do
+      Budget.check()
       pcall(love.filesystem.remove, DIR .. "/" .. g.stem .. suffix)
     end
     total = total - g.bytes

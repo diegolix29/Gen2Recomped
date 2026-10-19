@@ -20,6 +20,10 @@ local Gen3ItemPcQuantity = {}
 Gen3ItemPcQuantity.__index = Gen3ItemPcQuantity
 Gen3ItemPcQuantity.isOpaque = false
 
+function Gen3ItemPcQuantity:uiSize() return 240, 160 end
+function Gen3ItemPcQuantity:wantsFillScale() return true end
+function Gen3ItemPcQuantity:wantsEdgeBleed() return false end
+
 function Gen3ItemPcQuantity.new(game, itemPc, opts)
   opts = opts or {}
   local self = setmetatable({}, Gen3ItemPcQuantity)
@@ -87,20 +91,34 @@ function Gen3ItemPcQuantity:draw()
             or { x = 192, y = 120, width = 40, height = 32 }
   local prompt = self.itemPc and self.itemPc:subBox("quantityPrompt")
                  or { x = 48, y = 120, width = 128, height = 32 }
+  local styles = self.game.data.font and self.game.data.font.uiTextStyles or {}
 
   -- sSubwindowTemplates[1], the question beside the number.
-  Font.drawBox(prompt.x / 8, prompt.y / 8, prompt.width / 8, prompt.height / 8)
+  if self.itemPc and self.itemPc.drawContentFrame then
+    self.itemPc:drawContentFrame(prompt, "standard")
+  else
+    Font.drawBox(prompt.x / 8 - 1, prompt.y / 8 - 1,
+                 prompt.width / 8 + 2, prompt.height / 8 + 2, 1)
+  end
   love.graphics.setColor(0, 0, 0, 1)
-  drawLines(Strings("Withdraw how many") .. "\n" .. self.itemName .. Strings("(s)?"),  -- strings: line-break glue between translated parts
+  if styles.dark then Font.pushStyle(styles.dark) end
+  local verb = self.verb == "DEPOSIT" and Strings("Deposit how many")
+               or Strings("Withdraw how many")
+  drawLines(verb .. "\n" .. self.itemName .. Strings("(s)?"),  -- strings: line-break glue between translated parts
             prompt.x, prompt.y + 2)
 
   -- sWindowTemplates[3] + ItemPc_AddTextPrinterParameterized(..., 8, 10).
-  Font.drawBox(math.floor(q.x / 8), math.floor(q.y / 8),
-               math.floor(q.width / 8), math.floor(q.height / 8))
+  if self.itemPc and self.itemPc.drawContentFrame then
+    self.itemPc:drawContentFrame(q)
+  else
+    Font.drawBox(math.floor(q.x / 8) - 1, math.floor(q.y / 8) - 1,
+                 math.floor(q.width / 8) + 2, math.floor(q.height / 8) + 2, 1)
+  end
   love.graphics.setColor(0, 0, 0, 1)
   local faced = Font.hasFace and Font.hasFace("small") and Font.pushFace("small")
   Font.draw(("×%03d"):format(self.qty), q.x + 8, q.y + 10)
   if faced then Font.popFace() end
+  if styles.dark then Font.popStyle() end
   love.graphics.setColor(1, 1, 1, 1)
 end
 

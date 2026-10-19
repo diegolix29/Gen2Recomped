@@ -893,8 +893,12 @@ function Gen4Ground:oneShotProps()
     -- but a cache imported before those frames were written has the animation
     -- and not the pictures -- and `animates` is the same test the clock route
     -- applies, so a prop cannot be animated by one and baked by the other.
-    if record.pattern and record.props and oneShot[record.member or -1] then
-      for _, index in ipairs(record.props) do
+    -- HGSS (Gen4HgssPropAnim) records a script-owned claim as `scriptProps`
+    -- rather than `props` -- its PC monitor (102/103 on `pc01`/`pc05`) among
+    -- them -- so both are owners here (src/script/Gen4PcAnimation.lua).
+    local owners = record.props or record.scriptProps
+    if record.pattern and owners and oneShot[record.member or -1] then
+      for _, index in ipairs(owners) do
         local packed = models[index + 1]
         if packed and Gen4TexAnim.animates({ record }, packed.patternImages) then
           set[index] = true

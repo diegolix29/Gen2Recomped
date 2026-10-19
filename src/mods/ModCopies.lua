@@ -157,10 +157,110 @@ function ModCopies.slots(manifests)
   return out
 end
 
--- supersede(mods, isEnabled) -> { { id, winner, reason } } for every enabled
--- mod that shares a slot with a better enabled one.  mods: id -> { manifest,
--- path, home }.
-function ModCopies.supersede(mods, isEnabled)
+-- WHICH MEMBER OF A SLOT IS THE ORIGINAL: the id an alias points at, a mod
+-- that declares another member's id in previous_ids (it is that mod, renamed),
+-- and anything that is not a launcher copy -- in that order.  The bundled
+-- Dramatic Shapes is the original of the DRAMATIC_SHAPE slot; Terrarium, which
+-- declares DRAMATIC_SHAPE as its own id, is not.
+local aliasTargets = nil
+local function primaryRank(m, memberIds)
+  if not aliasTargets then
+    aliasTargets = {}
+    for _, target in pairs(ModCopies.ALIASES) do aliasTargets[target] = true end
+  end
+  local man = m.manifest or m
+  if aliasTargets[man.id] then return 3 end
+  for _, old in ipairs(man.previousIds or {}) do
+    if memberIds[old] then return 2 end
+  end
+  local raw = man.raw or {}
+  if not (type(raw.install_source_id) == "string" and raw.install_source_id ~= "") then
+    return 1
+  end
+  return 0
+end
+
+-- choose(members, switchedOn) -> the member that runs.  members: list of
+-- { id, manifest }.  THE PLAYER'S SWITCH DECIDES: the one switched on most
+-- recently (switchedOn[id] = os.time() of that switch, kept in
+-- options.modSwitchedOn) wins; with no timestamp to go on -- an options file
+-- from before the timestamps -- the slot's original wins.  Versions are NOT
+-- compared: these are different mods sharing one slot (a fork and its
+-- parent), and "1.8.7 > 0.7.71" says nothing about which one the player wants.
+function ModCopies.choose(members, switchedOn)
+  switchedOn = switchedOn or {}
+  local memberIds = {}
+  for _, m in ipairs(members) do memberIds[m.id] = true end
+  local best, bestKey
+  for _, m in ipairs(members) do
+    local key = { tonumber(switchedOn[m.id]) or -1, primaryRank(m, memberIds) }
+    if not best
+        or key[1] > bestKey[1]
+        or (key[1] == bestKey[1] and key[2] > bestKey[2])
+        or (key[1] == bestKey[1] and key[2] == bestKey[2] and m.id < best.id) then
+      best, bestKey = m, key
+    end
+  end
+  return best, bestKey and bestKey[1] >= 0
+end
+
+local function nameOf(mod)
+  local man = mod.manifest or mod
+  return tostring(man.name or man.id)
+end
+ModCopies.nameOf = nameOf
+
+-- the card / log wording for a member that is off because another one is on
+function ModCopies.replacedNote(loser, winner)
+  return ("%s switched off -- %s replaces it"):format(nameOf(loser), nameOf(winner))
+end
+
+-- slotMates(mods, id) -> the other ids in id's slot (mods: id -> mod/manifest)
+function ModCopies.slotMates(mods, id)
+  local slots = ModCopies.slots(mods)
+  local key = slots[id]
+  local out = {}
+  if not key then return out end
+  for other, k in pairs(slots) do
+    if other ~= id and k == key then out[#out + 1] = other end
+  end
+  table.sort(out)
+  return out
+end
+
+-- switchOn(options, id, mods, now) -> the ids switched OFF.  The one place
+-- "turning one on turns the other off" is written into an options table, so
+-- the launcher's menu and the in-game manager store it the same way:
+--   options.mods[mate]          off (through ModGens, chips kept)
+--   options.modSwitchedOn[id]   when this one was switched on
+--   options.modSlotNotes[mate]  "<mate> switched off -- <id> replaces it"
+-- The caller has already switched `id` itself on, and saves.
+function ModCopies.switchOn(options, id, mods, now)
+  local ModGens = require("src.mods.ModGens")
+  options.mods = options.mods or {}
+  options.modSwitchedOn = options.modSwitchedOn or {}
+  options.modSlotNotes = options.modSlotNotes or {}
+  options.modSwitchedOn[id] = now or os.time()
+  options.modSlotNotes[id] = nil
+  local off = {}
+  local me = mods[id]
+  for _, mate in ipairs(ModCopies.slotMates(mods, id)) do
+    local was = ModGens.active(options.mods[mate], nil)
+    if was ~= false then
+      options.mods[mate] = ModGens.withEnabled(options.mods[mate], false)
+      off[#off + 1] = mate
+    end
+    if me and mods[mate] then
+      options.modSlotNotes[mate] = ModCopies.replacedNote(mods[mate], me)
+    end
+  end
+  return off
+end
+
+-- supersede(mods, isEnabled, switchedOn) -> { { id, winner, reason } } for
+-- every enabled mod that shares a slot with another enabled one and is not
+-- the one ModCopies.choose picks.  mods: id -> { manifest, path, home }.
+function ModCopies.supersede(mods, isEnabled, switchedOn)
   local slots = ModCopies.slots(mods)
   local groups = {}
   for id, mod in pairs(mods) do
@@ -168,21 +268,21 @@ function ModCopies.supersede(mods, isEnabled)
       local key = slots[id] or id
       groups[key] = groups[key] or {}
       local g = groups[key]
-      g[#g + 1] = { id = id, version = mod.manifest.version, home = mod.home or "other",
-                    folder = (mod.path or ""):match("([^/]+)$"), path = mod.path,
-                    where = mod.where }
+      g[#g + 1] = { id = id, manifest = mod.manifest or mod }
     end
   end
   local out = {}
   for _, g in pairs(groups) do
     if #g > 1 then
-      table.sort(g, function(a, b) return ModCopies.better(a, b) end)
-      for i = 2, #g do
-        out[#out + 1] = { id = g[i].id, winner = g[1].id,
-          reason = ("%s %s is the same mod and is %s"):format(g[1].id,
-            tostring(g[1].version),
-            versionCompare(g[1].version, g[i].version) > 0 and "newer"
-              or "preferred at this version") }
+      local winner, byTime = ModCopies.choose(g, switchedOn)
+      for _, m in ipairs(g) do
+        if m ~= winner then
+          out[#out + 1] = { id = m.id, winner = winner.id, byTime = byTime,
+            note = ModCopies.replacedNote(m, winner),
+            reason = ("%s is the same mod and is the one %s"):format(
+              nameOf(winner), byTime and "switched on most recently"
+                or "kept when both are on") }
+        end
       end
     end
   end
@@ -419,8 +519,27 @@ function ModCopies.scan(fs, opts)
           for _, t in ipairs(twins) do group[#group + 1] = t end
           table.sort(group, function(a, b) return ModCopies.better(a, b) end)
           local best = group[1]
-          local point = best.realDir and ModCopies.mountPrivate(norm(best.realDir) .. "/" .. path)
-          if point then
+          -- THE SAME VERSION IN BOTH HOMES, and the visible copy chosen: the
+          -- merged view is what this has always loaded (an author's checkout
+          -- behind an installed copy of the same release), so it is kept
+          -- and only reported.  A private mount moves mod.path, and a mod
+          -- that builds a real path out of it (getRealDirectory .. mod.path)
+          -- is better left alone where nothing is gained.
+          local sameRelease = best == copy
+          for _, t in ipairs(twins) do
+            if versionCompare(t.version, copy.version) ~= 0 then sameRelease = false end
+          end
+          local point = (not sameRelease) and best.realDir
+            and ModCopies.mountPrivate(norm(best.realDir) .. "/" .. path)
+          if sameRelease then
+            copies[#copies + 1] = copy
+            for i = 2, #group do
+              out.ignored[#out.ignored + 1] = { copy = group[i], winner = copy,
+                reason = ModCopies.reason(group[i], copy)
+                  .. " (same folder name and release in two homes: files are "
+                  .. "read from the chosen copy first)" }
+            end
+          elseif point then
             best.logicalPath = path
             best.path = point
             -- manifest.path is what imports and storage resolve against; it

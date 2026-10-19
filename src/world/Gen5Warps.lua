@@ -34,6 +34,11 @@ function W.stepWarpAt(map, cx, cy)
   local w = map:warpAtCell(cx, cy)
   local wd = w and (w.def or w)
   local t = wd and tonumber(wd.transition)
+  -- A RECORD WITH NO DESTINATION (zone 0xFFFF) IS ONLY A LANDING SPOT: Opelucid
+  -- Gym Z121's warp 3 at (26,45), where warp 2's lift sets the player down,
+  -- is type 5 with zone 0xFFFF. Taken, it sent the player to "Z65535" (the
+  -- resolver's fallback: home); a walk across that tile must stay a walk.
+  if wd and tonumber(wd.destHeader) == 0xFFFF then return nil end
   if t and W.STEP_TYPES[t] then return wd end
   return nil
 end

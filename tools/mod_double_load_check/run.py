@@ -279,24 +279,76 @@ def same_version_copy_enabled(base, args):
     return [
         ("a same-version import is still a separate copy", "-> true probe-1" in r.get("install", "")),
         ("with both on, one runs", r.get("round1.game.inits") == "1"),
-        ("the other is superseded", "superseded" in r.get("round1.game.states", "")),
+        ("switching the copy on switched the original off",
+         "probe=disabled" in r.get("round1.game.states", "")
+         and "probe-1=loaded" in r.get("round1.game.states", "")),
     ], r
 
 
-@scenario
-def renamed_fork_alias(base, args):
-    sc = Scenario(base, "renamed_fork_alias")
-    write_mod(sc.game / "mods" / "DRAMATIC_SHAPE", "Gen2Recomped-DramaticShapes", "0.7.71")
+def fork_setup(base, name):
+    sc = Scenario(base, name)
+    write_mod(sc.game / "mods" / "DRAMATIC_SHAPE", "Gen2Recomped-DramaticShapes", "0.7.71",
+              previous_ids=["DRAMATIC_SHAPE"])
     z = sc.dir / "dl" / "Fork.Advance.Mod.1.8.7.zip"
     write_zip(z, "DRAMATIC_SHAPE", "1.8.7")
     sc.env["INSTALL"] = str(z)
-    r, _ = run(sc, args, rounds=1)
+    return sc
+
+
+def fork_checks(r, runs_id, off_id, off_note):
+    lst = r.get("round1.game.init_list", "")
+    rows = r.get("launcher.rows", "")
+    off_row = [row for row in rows.split(" | ") if row.startswith(off_id + "@")]
     return [
         ("the fork installs", "-> true DRAMATIC_SHAPE 1.8.7" in r.get("install", "")),
         ("only one of the two voxel mods runs", r.get("round1.game.inits") == "1"),
-        ("the newer one", "DRAMATIC_SHAPE@1.8.7" in r.get("round1.game.init_list", "")),
-        ("launcher row says which one", "Not loaded" in r.get("launcher.rows", "")),
-    ], r
+        ("the switched-on one runs: " + runs_id, lst.startswith(runs_id + "@")),
+        ("the other is off in the menu", bool(off_row) and ":off:" in off_row[0]),
+        ("and its card says why", bool(off_row) and off_note in off_row[0]),
+    ]
+
+
+@scenario
+def fork_both_default_on(base, args):
+    # a fresh install leaves both on (no switch was pressed): the bundled one
+    # is kept, the fork is switched off and says so
+    sc = fork_setup(base, "fork_both_default_on")
+    r, _ = run(sc, args, rounds=1)
+    return fork_checks(r, "Gen2Recomped-DramaticShapes", "DRAMATIC_SHAPE",
+                       "switched off -- Probe Gen2Recomped-DramaticShapes replaces it"), r
+
+
+@scenario
+def fork_switched_on(base, args):
+    # the player switches the fork on in the mod menu: it runs, the bundled one
+    # is switched off
+    sc = fork_setup(base, "fork_switched_on")
+    sc.env["ENABLE"] = "DRAMATIC_SHAPE"
+    r, _ = run(sc, args, rounds=1)
+    return fork_checks(r, "DRAMATIC_SHAPE", "Gen2Recomped-DramaticShapes",
+                       "switched off -- Probe DRAMATIC_SHAPE replaces it"), r
+
+
+@scenario
+def fork_switched_back(base, args):
+    # ...and back: switching the bundled one on again switches the fork off
+    sc = fork_setup(base, "fork_switched_back")
+    sc.env["ENABLE"] = "DRAMATIC_SHAPE,Gen2Recomped-DramaticShapes"
+    r, _ = run(sc, args, rounds=1)
+    return fork_checks(r, "Gen2Recomped-DramaticShapes", "DRAMATIC_SHAPE",
+                       "switched off -- Probe Gen2Recomped-DramaticShapes replaces it"), r
+
+
+@scenario
+def fork_legacy_options(base, args):
+    # an options file from before: both on, the fork switched on later
+    sc = fork_setup(base, "fork_legacy_options")
+    (sc.save / "options.lua").write_text(
+        'return { mods = { ["DRAMATIC_SHAPE"] = true, ["Gen2Recomped-DramaticShapes"] = true },'
+        ' modSwitchedOn = { ["DRAMATIC_SHAPE"] = 200, ["Gen2Recomped-DramaticShapes"] = 100 } }')
+    r, _ = run(sc, args, rounds=1)
+    return fork_checks(r, "DRAMATIC_SHAPE", "Gen2Recomped-DramaticShapes",
+                       "switched off -- Probe DRAMATIC_SHAPE replaces it"), r
 
 
 def relaunch_checks(r):
@@ -357,16 +409,40 @@ def terrarium_scenarios(args):
                                 ignore=shutil.ignore_patterns(".git", "*.zip"))
             installs = [args.terrarium_old, args.terrarium_new] if args.terrarium_old else [args.terrarium_new]
             sc.env["INSTALL"] = ";".join(str(p) for p in installs)
+            # the player switches Terrarium on in the mod menu
+            sc.env["ENABLE"] = "DRAMATIC_SHAPE"
             r, _ = run(sc, args, rounds=2)
             runs = r.get("round2.game.entry_runs", "")
+            rows = r.get("launcher.rows", "")
             return [
                 ("terrarium installs (update over the old one when given)",
                  r.get("install", "").count("-> true DRAMATIC_SHAPE") == len(installs)),
-                ("one copy of the voxel mod runs per Play",
+                ("Terrarium, switched on, is the one copy that runs per Play",
                  "DRAMATIC_SHAPE=2" in runs and "Gen2Recomped-DramaticShapes" not in runs),
+                ("Dramatic Shapes is switched off and says Terrarium replaces it",
+                 "Gen2Recomped-DramaticShapes@0.7.71:off:" in rows
+                 and "Advanced Terrarium Voxel Mod replaces it" in rows),
                 ("no registry collision", "already registered" not in r.get("round1.game.error", "")),
             ], r
         out.append(terrarium_install)
+
+        def terrarium_default(base, args):
+            # installed but never switched: the bundled Dramatic Shapes is kept
+            sc = Scenario(base, "terrarium_default")
+            if args.ds:
+                shutil.copytree(args.ds, sc.game / "mods" / "DRAMATIC_SHAPE",
+                                ignore=shutil.ignore_patterns(".git", "*.zip"))
+            sc.env["INSTALL"] = str(args.terrarium_new)
+            r, _ = run(sc, args, rounds=1)
+            runs = r.get("round1.game.entry_runs", "")
+            rows = r.get("launcher.rows", "")
+            return [
+                ("only Dramatic Shapes runs", runs == "Gen2Recomped-DramaticShapes=1"),
+                ("Terrarium is off and its card says why",
+                 "DRAMATIC_SHAPE@1.8.7:off:" in rows and "Advanced Terrarium Voxel Mod switched off" in rows),
+            ], r
+        if args.ds:
+            out.append(terrarium_default)
     return out
 
 

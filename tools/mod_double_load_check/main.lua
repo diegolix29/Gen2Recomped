@@ -168,6 +168,23 @@ end
 -- again after EXIT GAME)
 local RI = require("src.import.RomImporter")
 local importers = {}
+-- THE CACHE IS NOT WHAT IS UNDER TEST.  A CACHE_FORMAT bump marks every
+-- existing import "built by another version of this app", and the launcher
+-- then offers to re-import instead of Play; the copy each scenario uses is
+-- taken as ready so a format bump elsewhere does not stop a mods check.
+do
+  local report0 = RI.readyReport
+  if report0 and getenv0("FORCE_READY") ~= "0" then
+    RI.readyReport = function(version, ...)
+      local r = report0(version, ...)
+      if version == VERSION and type(r) == "table" and not r.ok
+          and love.filesystem.getInfo(VERSION .. "/rom-cache.complete") then
+        return { ok = true, missing = {}, gaps = {} }
+      end
+      return r
+    end
+  end
+end
 do
   local new0 = RI.new
   RI.new = function(...)

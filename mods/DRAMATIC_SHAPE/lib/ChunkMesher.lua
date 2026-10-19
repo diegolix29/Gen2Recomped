@@ -207,7 +207,20 @@ local function newTableSink()
       return quads * 6
     end,
     finish = function()
-      return Voxel3D.newMesh(verts, indices)
+      if #indices == 0 or not (love and love.graphics and love.graphics.newMesh) then return nil end
+      local Batch = V.require("MeshBatch")
+      local mesh = Batch.new()
+      local ok = pcall(function()
+        for first = 1, #indices, 65532 do
+          local part = {}
+          for i = first, math.min(#indices, first + 65531) do
+            part[#part+1] = verts[indices[i]]
+          end
+          Batch.addTable(mesh, Voxel3D.FORMAT, part)
+        end
+      end)
+      if not ok then mesh:release(); return nil end
+      return mesh
     end,
   }
 end
@@ -244,9 +257,10 @@ local TRI_ORDER = { 1, 2, 3, 1, 3, 4 }
 --
 -- BLOCK is in VERTICES and MUST be a multiple of 6, or a quad's six
 -- vertices would straddle two blocks and the upload slices would not line
--- up with the quads. 65,532 = 6 x 10,922, one and a half megabytes, and
--- within four vertices of the 65,536 the upload already sliced at.
-local BLOCK = 65532
+-- up with the quads. 32,766 vertices bound each allocation/upload to 768 KiB
+-- rather than reserving one map-sized GPU buffer. Spatial sinks share this
+-- limit, so small border chunks do not each reserve a multi-megabyte block.
+local BLOCK = 32766
 
 local function newFfiSink()
   local blocks = { ffi.new("float[?]", BLOCK * 6) }
@@ -263,6 +277,7 @@ local function newFfiSink()
     end
   end
   sink = {
+    rawBlocks = eachBlock,
     push = function(c, uv, shade)
       if fill + 6 > BLOCK then
         nb = nb + 1
@@ -272,7 +287,7 @@ local function newFfiSink()
           blocks[nb] = nxt
         end
         fill = 0
-        -- 1.5 MB of geometry has just been emitted; a frame that wants its
+        -- 768 KiB of geometry has just been emitted; a frame that wants its
         -- slice back can have it here
         Budget.check()
       end
@@ -346,33 +361,97 @@ local function newFfiSink()
       -- frame spike. The mesh is not cached (so never drawn) until the
       -- whole upload lands, and LuaJIT yields fine across pcall.
       -- One slice per block now, which is what a block is sized for.
-      local ok, mesh = pcall(function()
-        local m = love.graphics.newMesh(Voxel3D.FORMAT, n,
-                                        "triangles", "static")
-        local at = 0
+      local Batch = V.require("MeshBatch")
+      local mesh = Batch.new()
+      local ok = pcall(function()
         eachBlock(function(buf, count)
-          local bytes = count * 6 * 4
-          local data = love.data.newByteData(bytes)
-          ffi.copy(data:getFFIPointer(), buf, bytes)
-          m:setVertices(data, at + 1)
+          local data = love.data.newByteData(count * 6 * 4)
+          ffi.copy(data:getFFIPointer(), buf, count * 6 * 4)
+          local added, err = pcall(Batch.add, mesh, Voxel3D.FORMAT, data, count)
           data:release()
-          at = at + count
-          Budget.check()
+          if not added then error(err) end
         end)
-        return m
       end)
+      if not ok then mesh:release(); return nil end
       return ok and mesh or nil
     end,
   }
   return sink
 end
 
-local function newSink()
+local function plainSink()
   if ffi and love and love.data and love.data.newByteData
-     and love.graphics and love.graphics.newMesh then
-    return newFfiSink()
-  end
+     and love.graphics and love.graphics.newMesh then return newFfiSink() end
   return newTableSink()
+end
+
+-- Keep nearby faces together, including forests emitted after the ground.
+-- Each batch has tight bounds instead of spanning the whole map. All UVs,
+-- heights and triangles stay unchanged; this is only a submission layout.
+local function newSink(map)
+  if not (map and Gen3.mapIsGen3(map)) then return plainSink() end
+  local children, order = {}, {}
+  local lastX, lastZ, lastChild
+  local sink = {}
+  function sink.push(c, uv, shade)
+    local x=(c[1][1]+c[2][1]+c[3][1]+c[4][1])*.25
+    local z=(c[1][3]+c[2][3]+c[3][3]+c[4][3])*.25
+    local cx,cz=math.floor(x/128),math.floor(z/128)
+    local child=lastChild
+    if cx~=lastX or cz~=lastZ then
+      -- ROM map dimensions keep chunk x well inside this stride. Numeric
+      -- keys avoid allocating millions of temporary strings in a forest.
+      local key=cz*65536+cx
+      child=children[key]
+      if not child then child=plainSink();children[key]=child;order[#order+1]=key end
+      lastX,lastZ,lastChild=cx,cz,child
+    end
+    child.push(c,uv,shade)
+  end
+  function sink.vertexCount()
+    local n=0;for _,key in ipairs(order)do n=n+children[key].vertexCount() end
+    return n
+  end
+  function sink.finish()
+    local Batch=V.require("MeshBatch")
+    local batch=Batch.new()
+    local ok,err=pcall(function()
+      for _,key in ipairs(order)do
+        local expected=children[key].vertexCount()
+        local child=children[key].finish()
+        children[key]=nil
+        if expected > 0 and not child then error("could not upload terrain chunk") end
+        if child then
+          for _,part in ipairs(child.parts)do batch.parts[#batch.parts+1]=part end
+          batch.count=batch.count+child.count
+        end
+        Budget.check()
+      end
+    end)
+    if not ok then batch:release();error(err) end
+    return batch.count>0 and batch or nil
+  end
+  if ffi and love and love.data and love.data.newByteData then
+    function sink:writeRaw(path)
+      local file=love.filesystem.newFile(path)
+      if not file or not file:open("w") then return false,"could not write terrain cache" end
+      local ok,err=pcall(function()
+        for _,key in ipairs(order)do
+          children[key].rawBlocks(function(buf,count)
+            local data=love.data.newByteData(count*24)
+            ffi.copy(data:getFFIPointer(),buf,count*24)
+            local bytes=data:getString();data:release()
+            assert(file:write(bytes),"short terrain cache write")
+            Budget.check()
+          end)
+        end
+      end)
+      file:close()
+      if not ok then love.filesystem.remove(path) end
+      return ok,err
+    end
+  end
+  return sink
 end
 
 -- -------------------------------------------------------------- geometry
@@ -882,6 +961,7 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
     local members, queue, head, seen = {}, { { tx0, ty0 } }, 1, { [k0] = true }
     local votes = {}
     while head <= #queue and #queue < 2048 do
+      Budget.tick()
       local c = queue[head]; head = head + 1
       members[#members + 1] = keyOf(c[1], c[2])
       for _, d in ipairs({ { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }) do
@@ -2591,7 +2671,7 @@ end
 -- it the water is inside the terrain mesh, which is the historical
 -- contract and what every other caller still wants.
 function ChunkMesher.build(map, bodyOnly, masks, split)
-  local sink = newSink()
+  local sink = newSink(map)
   local waterSink = split and newSink() or nil
   runGeometry(map, bodyOnly, masks, sink, waterSink)
   return sink.finish(), waterSink and waterSink.finish() or nil
@@ -2628,7 +2708,7 @@ function ChunkMesher.bake(map, slot, masks)
     local okHas, hit = pcall(DiskCache.has, map, slot, masks)
     if okHas and hit then return false, "cached" end
   end
-  local sink = newSink()
+  local sink = newSink(map)
   if type(sink.writeRaw) ~= "function" then
     return false, "no ffi sink"          -- the table sink cannot be persisted
   end
@@ -2823,7 +2903,7 @@ local function loadCachedTerrain(job)
   -- the path a map the player has already visited takes and therefore the
   -- one a cull most needs to cover
   recordBox(job and job.map)
-  if not DiskCache then return nil end
+  if not DiskCache or (job and job.rebuild) then return nil end
   local okLoad, hit, terrain, water =
     pcall(DiskCache.load, job.map, job.slot, job.masks)
   if not okLoad or not hit then return nil end
@@ -2839,10 +2919,9 @@ local function runJob(job)
   local map = job.map
   local c = entry(job.id)
 
-  -- Terrain BEFORE the auxiliary meshes when it comes off disk: the cached
-  -- vertex stream is the whole reason a town can appear the moment you walk
-  -- into it, and grass/flowers/figures are cheap enough to land a frame or
-  -- two later. On a miss the original order stands.
+  -- Read/upload cached terrain cooperatively, but keep it unpublished until
+  -- its supporting map analysis is ready. Existing cache files are reusable;
+  -- only the GPU upload/submission layout changes.
   local cachedTerrain, cachedWater = loadCachedTerrain(job)
   if cachedTerrain ~= nil then
     if (gen[job.id] or 0) ~= job.gen then
@@ -2854,8 +2933,6 @@ local function runJob(job)
       end
       return
     end
-    swapSlot(c, job.slot, cachedTerrain)
-    swapSlot(c, waterSlot(job.slot), cachedWater)
   end
 
   if c.grass == nil or c.flowers == nil or c.figures == nil
@@ -2864,6 +2941,8 @@ local function runJob(job)
     local okF, flowers = pcall(buildFlowerMesh, map)
     local okX, figures = pcall(buildFigureMeshes, map)
     if (gen[job.id] or 0) ~= job.gen then
+      if cachedTerrain and cachedTerrain.release then pcall(cachedTerrain.release,cachedTerrain) end
+      if cachedWater and cachedWater.release then pcall(cachedWater.release,cachedWater) end
       if okG and grass and grass.release then pcall(grass.release, grass) end
       if okF and flowers and flowers.release then
         pcall(flowers.release, flowers)
@@ -2877,8 +2956,17 @@ local function runJob(job)
     c.figures = (okX and figures) or false
     if c.stale then c.stale.aux = nil end
   end
+  job.assetsReady = true
+  Budget.check()
+  -- Do not publish cached terrain before its map analysis is ready: render
+  -- queries such as ground height would otherwise rebuild that analysis
+  -- synchronously on the first visible frame, bypassing this budget.
+  if cachedTerrain ~= nil then
+    swapSlot(c, job.slot, cachedTerrain)
+    swapSlot(c, waterSlot(job.slot), cachedWater)
+  end
   if cachedTerrain == nil then
-    local sink = newSink()
+    local sink = newSink(map)
     local waterSink = newSink()
     runGeometry(map, job.slot == "body", job.masks, sink, waterSink)
     -- Persist BEFORE finish(): the sink still owns the raw stream, and
@@ -2910,6 +2998,11 @@ end
 -- one-block edit never drops the scene to the flat 2D path while the
 -- replacement cooks.
 function ChunkMesher.request(map, bodyOnly, masks, urgent)
+  if urgent then
+    -- Leaving an unfinished map must not leave its old job urgent forever.
+    -- The current map wins; the previous neighbourhood may finish in idle time.
+    for _, pending in ipairs(jobs) do pending.urgent = pending.id == map.id end
+  end
   local slot = bodyOnly and "body" or "full"
   local c = cache[map.id]
   local stale = c and c.stale and (c.stale[slot] or c.stale.aux)
@@ -2918,12 +3011,14 @@ function ChunkMesher.request(map, bodyOnly, masks, urgent)
   local job = jobIndex[key]
   if not job then
     job = { id = map.id, map = map, slot = slot, masks = masks,
-            urgent = urgent or false, gen = gen[map.id] or 0 }
+            urgent = urgent or false, rebuild = stale and true or false,
+            gen = gen[map.id] or 0 }
     jobIndex[key] = job
     jobs[#jobs + 1] = job
   elseif urgent then
     job.urgent = true
   end
+  if stale then job.rebuild = true end
   return (c and c[slot]) or nil
 end
 
@@ -2940,28 +3035,21 @@ end
 local URGENT_SLICE = 0.012
 local IDLE_SLICE = 0.005
 local COVERED_SLICE = 0.030
+local COLD_SLICE = 0.004
 
--- A COLD MAP HAS NOTHING TO PROTECT.
+-- COLD MAPS STILL NEED RESPONSIVE FRAMES.
 --
 -- The adaptive slice below exists to stop meshing from turning a busy frame
 -- into a dropped one -- it measures what the rest of the frame costs and
 -- hands the build a share of the headroom.  That is exactly right while the
 -- voxel world is ON SCREEN and a hitch is visible.
 --
--- Before the first chunk of a map is built there is no voxel world on screen:
--- the mode is drawing the flat 2D fallback, which costs almost nothing, and
--- the player is waiting for the relief to appear.  Protecting a frame that
--- has nothing in it spends the whole wait defending against a hitch that
--- cannot happen, and it is the "the voxels take a bit of time to activate"
--- report.
+-- A cold map still draws the cheap flat fallback. Use a small, bounded
+-- bootstrap allowance: timer.getDelta includes vsync/present wait, so the
+-- warm-frame headroom estimate otherwise pins a cold build to its minimum
+-- forever. Four milliseconds leaves input/render room without the old 24ms
+-- cold-frame stall or charging idle vsync time as rendering work.
 --
--- So while a map has no cached mesh at all, the urgent job gets a fixed slice
--- twice the on-screen ceiling.  Deliberately not the covered slice: the 2D
--- fallback is still being drawn and the player can still walk about in it, so
--- the frame has to keep moving -- 24 ms leaves better than 40 fps on a host
--- with no headroom, against 12 ms and twice the wait.
-local COLD_SLICE = 0.024
-
 -- The fixed slices above are a CEILING, not a target. On a machine with room
 -- to spare they are never reached; on a machine already missing its frame,
 -- spending a flat 12 ms on top of an already-full frame is what turns a busy
@@ -3002,7 +3090,20 @@ end
 -- Seconds the last pump actually spent; for probes and overlays.
 function ChunkMesher.lastSlice() return lastSpend end
 
-function ChunkMesher.pump(covered)
+local function nextJob(foregroundOnly)
+  local urgent
+  for _, job in ipairs(jobs) do if job.urgent then urgent=job;break end end
+  if foregroundOnly and not urgent then return nil, false end
+  -- Analysis publishes shared tileset/template caches. Finish an already
+  -- running analysis before interleaving another map, then preempt its long
+  -- geometry/upload stage freely when the player crosses a seam or door.
+  for _, job in ipairs(jobs) do
+    if job.co and not job.assetsReady then return job, urgent and job~=urgent end
+  end
+  return urgent or jobs[1], false
+end
+
+function ChunkMesher.pump(covered, foregroundOnly)
   -- A SEAM IS FINISHED WHEN BOTH SIDES HAVE SEEN EACH OTHER.
   --
   -- `Structures.smoothGen3Seams` meets a neighbour halfway from the two RAW
@@ -3035,21 +3136,12 @@ function ChunkMesher.pump(covered)
     end
   end
   if #jobs == 0 then lastSpend = 0 return end
-  local pick = jobs[1]
-  for _, j in ipairs(jobs) do
-    if j.urgent then
-      pick = j
-      break
-    end
-  end
+  local pick, waitingOnAnalysis = nextJob(foregroundOnly)
+  if not pick then lastSpend=0;return end
   local started = clock()
-  -- nothing of this map is meshed yet: see COLD_SLICE
-  local cold = false
-  if pick.urgent and not covered then
-    local cc = cache[pick.id]
-    if not (cc and (cc.full or cc.body)) then cold = true end
-  end
-  local slice = cold and COLD_SLICE or sliceFor(pick.urgent, covered)
+  local current = cache[pick.id]
+  local cold = waitingOnAnalysis or (pick.urgent and not (current and (current.full or current.body)))
+  local slice = (cold and not covered) and COLD_SLICE or sliceFor(pick.urgent, covered)
   local deadline = started + slice
   while pick do
     if not pick.co then
@@ -3070,13 +3162,7 @@ function ChunkMesher.pump(covered)
       lastSpend = clock() - started
       return
     end
-    pick = jobs[1]
-    for _, j in ipairs(jobs) do
-      if j.urgent then
-        pick = j
-        break
-      end
-    end
+    pick = nextJob(foregroundOnly)
   end
   lastSpend = clock() - started
 end

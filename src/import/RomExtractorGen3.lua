@@ -5670,13 +5670,24 @@ function RomExtractorGen3:extractConstants()
 
   local spawn = self.manifest.newGame and self.manifest.newGame.spawn
   if type(spawn) == "table" and spawn.group and spawn.number then
+    local fireRed = (self.manifest or {}).frlgItemMenu ~= nil
+    -- FireRed does not use Emerald's WarpToTruck/centre-of-layout start.  Its
+    -- WarpToPlayersRoom calls SetWarpDestination(..., -1, 6, 6) explicitly
+    -- (pokefirered src/new_game.c), on the same bedroom map identified by the
+    -- manifest.  Keeping the Emerald-discovered y=3 put a new player beside
+    -- the PC instead of in the middle of the rug.
+    local startX = fireRed and 6 or (spawn.x or 0)
+    local startY = fireRed and 6 or (spawn.y or 0)
     constants.gen3NewGameSpawn = {
       map = ("MAP_G%02d_N%02d"):format(spawn.group, spawn.number),
-      x = spawn.x or 0, y = spawn.y or 0,
-      source = ("ROM:NewGameInitData -> WarpToTruck(group %d, map %d), "
-                .. "centre of a %dx%d layout")
-               :format(spawn.group, spawn.number,
-                       spawn.width or 0, spawn.height or 0),
+      x = startX, y = startY,
+      source = fireRed
+        and ("ROM:NewGameInitData -> WarpToPlayersRoom(group %d, map %d), (6,6)")
+             :format(spawn.group, spawn.number)
+        or (("ROM:NewGameInitData -> WarpToTruck(group %d, map %d), "
+             .. "centre of a %dx%d layout")
+            :format(spawn.group, spawn.number,
+                    spawn.width or 0, spawn.height or 0)),
     }
   end
 
@@ -7226,28 +7237,107 @@ function RomExtractorGen3:extractFont()
   -- rounded caps) in sTextWindowPalettes[0]; the user frames only border
   -- menus.  Baked as one 18-tile strip for Font.drawDialogueBox.
   local dialogueRecord = nil
+  local signpostRecord = nil
+  local standardFrameRecord = nil
+  local fieldTextStyles = nil
+  local uiTextStyles = nil
   if (self.manifest or {}).frlgItemMenu ~= nil then
     local ok, err = pcall(function()
-      local GFX, PAL, N = 0x41F1C8, 0x471DEC, 18
-      local colors = RomGba.palette(self.rom:bytes(PAL, 32))
-      local raw = self.rom:bytes(GFX, N * 32)
-      local px = RomGba.tiles4bpp(raw, N, 1)
-      local image = ImageWriter.blank(N * 8, 8)
+      local MSG_GFX = self:symbol("gMenuMessageWindow_Gfx") or 0x41F1C8
+      local SIGN_GFX = self:symbol("gSignpostWindow_Gfx") or 0x470B0C
+      local PAL = self:symbol("gTextWindowPalettes") or 0x471DEC
+
+      local function bakeFrame(gfx, paletteId, count, name)
+        local colors = RomGba.palette(self.rom:bytes(PAL + paletteId * 32, 32))
+        local raw = self.rom:bytes(gfx, count * 32)
+        local px = RomGba.tiles4bpp(raw, count, 1)
+        local image = ImageWriter.blank(count * 8, 8)
+        for y = 1, 8 do
+          for x = 1, count * 8 do
+            local v = px[y][x]
+            -- Colour zero is transparent on the BG layer.  Preserve that in
+            -- the baked strip so the sign/message frame can sit over the field
+            -- exactly like the cartridge rather than painting its transparent
+            -- holes with palette entry zero.
+            local c = v ~= 0 and colors[v + 1]
+            if c then
+              image:setPixel(x - 1, y - 1,
+                             c[1] / 255, c[2] / 255, c[3] / 255, 1)
+            end
+          end
+        end
+        self:saveImage(image, "fonts/" .. name .. ".png")
+        local fill = colors[2]
+        return {
+          image = "assets/generated/fonts/" .. name .. ".png",
+          tile = 8, tiles = count,
+          fill = { fill[1] / 255, fill[2] / 255, fill[3] / 255 },
+          source = ("ROM:gfx %07X, gTextWindowPalettes[%d] %07X")
+                   :format(gfx, paletteId, PAL + paletteId * 32),
+        }, colors
+      end
+
+      local colors
+      dialogueRecord, colors = bakeFrame(MSG_GFX, 0, 18, "frlg_dialogue")
+      -- MSGBOX_SIGN uses the exact same tile placement as a field dialogue
+      -- frame, but loads gSignpostWindow_Gfx and text-window palette 1 first.
+      -- The asset is 0x260 bytes = 19 tiles; the nineteenth tile is retained
+      -- even though the common frame path addresses the first eighteen.
+      signpostRecord = bakeFrame(SIGN_GFX, 1, 19, "frlg_signpost")
+      signpostRecord.layout = "frlg_signpost"
+
+      -- DrawStdFrameWithCustomTileAndPalette is the 9-tile fixed frame used by
+      -- the bag DEPOSIT ITEM tab and the Item-PC transient message/question
+      -- windows.  It is NOT the configurable user frame and therefore must not
+      -- follow the player's Options -> Frame Type setting.
+      local STD_GFX = self:symbol("gStdTextWindow_Gfx") or 0x471A4C
+      -- LoadStdWindowGfx pairs these tiles with GetTextWindowPalette(3).
+      -- Item-PC and bag calls merely choose the destination palette bank.
+      local STD_PAL = PAL + 3 * 32
+      local stdColors = RomGba.palette(self.rom:bytes(STD_PAL, 32))
+      local stdRaw = self.rom:bytes(STD_GFX, 9 * 32)
+      local stdPx = RomGba.tiles4bpp(stdRaw, 9, 1)
+      local stdImage = ImageWriter.blank(9 * 8, 8)
       for y = 1, 8 do
-        for x = 1, N * 8 do
-          local v = px[y][x]
-          local c = v ~= 0 and colors[v + 1]
+        for x = 1, 9 * 8 do
+          local v = stdPx[y][x]
+          local c = v ~= 0 and stdColors[v + 1]
           if c then
-            image:setPixel(x - 1, y - 1, c[1] / 255, c[2] / 255, c[3] / 255, 1)
+            stdImage:setPixel(x - 1, y - 1,
+                              c[1] / 255, c[2] / 255, c[3] / 255, 1)
           end
         end
       end
-      self:saveImage(image, "fonts/frlg_dialogue.png")
-      local fill = colors[2]
-      dialogueRecord = {
-        image = "assets/generated/fonts/frlg_dialogue.png", tile = 8, tiles = N,
-        fill = { fill[1] / 255, fill[2] / 255, fill[3] / 255 },
-        source = ("ROM:gMenuMessageWindow_Gfx %07X, sTextWindowPalettes %07X"):format(GFX, PAL),
+      self:saveImage(stdImage, "fonts/frlg_standard_frame.png")
+      local stdFill = stdColors[2]
+      standardFrameRecord = {
+        image = "assets/generated/fonts/frlg_standard_frame.png",
+        tile = 8, tiles = 9,
+        fill = { stdFill[1] / 255, stdFill[2] / 255, stdFill[3] / 255 },
+        source = ("ROM:gStdTextWindow_Gfx %07X, gTextWindowPalettes[3] %07X")
+                 :format(STD_GFX, STD_PAL),
+      }
+
+      local function rgb(i)
+        local c = colors[i + 1]
+        return { c[1] / 255, c[2] / 255, c[3] / 255, 1 }
+      end
+      -- AddTextPrinterDiffStyle: female NPCs are red, male NPCs blue, and
+      -- objects/system text dark gray; all three use the light-gray shadow.
+      -- These are palette indices, not invented RGB values, so the runtime can
+      -- reproduce ContextNpcGetTextColor without baking another font page.
+      fieldTextStyles = {
+        female = { text = rgb(4), shadow = rgb(3) },
+        male = { text = rgb(8), shadow = rgb(3) },
+        neutral = { text = rgb(2), shadow = rgb(3) },
+        mon = { text = rgb(2), shadow = rgb(3) },
+      }
+      -- bag.c/item_pc.c both use the same first ten standard text colours.
+      -- Their lower description strips deliberately switch to white text over
+      -- the blue background, while lists/submenus use dark gray on light paper.
+      uiTextStyles = {
+        white = { text = rgb(1), shadow = rgb(2) },
+        dark = { text = rgb(2), shadow = rgb(3) },
       }
     end)
     if not ok then Logger.warn("gen3 frlg dialogue frame: %s", tostring(err)) end
@@ -7257,6 +7347,9 @@ function RomExtractorGen3:extractFont()
   local perRow = 16
   local cellW = math.floor(tonumber(font.cellWidth) or 8)
   local cellH = math.floor(tonumber(font.cellHeight) or 11)
+  -- gFontInfos gives FireRed FONT_NORMAL a 14px runtime height.
+  local frlg = (self.manifest or {}).frlgItemMenu ~= nil
+  if frlg and tonumber(font.fontId) == 1 then cellH = 14 end
   local top = math.floor(tonumber(font.inkTop) or 0)
   local rows = math.ceil(count / perRow)
 
@@ -7497,7 +7590,58 @@ function RomExtractorGen3:extractFont()
   -- Each is a page of its own -- own cell, own widths, own picture -- and they
   -- are keyed by the ROLE the font id gives them, not by address.
   local faces = {}
-  for _, face in ipairs(font.faces or {}) do
+  local faceDefs = {}
+  for _, face in ipairs(font.faces or {}) do faceDefs[#faceDefs + 1] = face end
+  -- FireRed's field dialogue has two extra Latin faces.  They are not colour
+  -- aliases of FONT_NORMAL: text.c decompresses dedicated Male/Female glyph
+  -- sheets with their own width tables, then AddTextPrinterDiffStyle paints
+  -- them blue/red.  The generic font discovery only needs normal/small for
+  -- menus, so append these exact named cartridge sheets for field dialogue.
+  if (self.manifest or {}).frlgItemMenu ~= nil then
+    -- FireRed keeps NormalCopy1, Normal, Male and Female Latin width tables as
+    -- byte-identical 512-byte runs. The retail manifest only names Normal, so
+    -- locate the next two identical runs after it; each corresponding full
+    -- glyph sheet starts exactly 0x8000 bytes before its width table. This is
+    -- the same relationship used by text.c, but remains relocation-safe.
+    local function nextMatchingWidths(from)
+      local n = math.min(count, 512)
+      local first = self.rom:u32(widths)
+      for at = math.max(0, math.floor(from or 0)), self.rom.size - n do
+        if self.rom:u32(at) == first then
+          local same = true
+          for i = 0, n - 1 do
+            if self.rom:u8(at + i) ~= self.rom:u8(widths + i) then
+              same = false; break
+            end
+          end
+          if same then return at end
+        end
+      end
+      return nil
+    end
+    local maleWidths = self:symbol("sFontMaleLatinGlyphWidths")
+                       or nextMatchingWidths(widths + 1)
+    local femaleWidths = self:symbol("sFontFemaleLatinGlyphWidths")
+                         or (maleWidths and nextMatchingWidths(maleWidths + 1))
+    local extra = {
+      { role = "male", fontId = 4,
+        glyphs = self:symbol("sFontMaleLatinGlyphs")
+                 or (maleWidths and maleWidths - 0x8000),
+        widths = maleWidths },
+      { role = "female", fontId = 5,
+        glyphs = self:symbol("sFontFemaleLatinGlyphs")
+                 or (femaleWidths and femaleWidths - 0x8000),
+        widths = femaleWidths },
+    }
+    for _, face in ipairs(extra) do
+      if face.glyphs and face.widths then
+        face.cellWidth, face.cellHeight = 8, 14
+        face.glyphBytes, face.tilesAcross = 0x40, 2
+        faceDefs[#faceDefs + 1] = face
+      end
+    end
+  end
+  for _, face in ipairs(faceDefs) do
     local role = face.role
     if role and face.glyphs ~= glyphs then
       local fw = math.floor(tonumber(face.cellWidth) or cellW)
@@ -7620,6 +7764,10 @@ function RomExtractorGen3:extractFont()
     -- the twenty border sets the OPTION screen's FRAME row picks between
     frames = frameRecord,
     dialogueFrame = dialogueRecord,
+    signpostFrame = signpostRecord,
+    standardFrame = standardFrameRecord,
+    fieldTextStyles = fieldTextStyles,
+    uiTextStyles = uiTextStyles,
     -- the cursor and the more-below marker, which are drawn shapes in cells
     -- the cartridge leaves blank; see the note above extractFont's page pass
     symbols = { cursor = SYMBOLS.cursor,
@@ -13690,6 +13838,9 @@ RomExtractorGen3.PC_MENU = {
   AT_ORDER = 0x04,    -- ldr r0, =<the row list>
   AT_COUNT = 0x0A,    -- mov r0, #<how many>
   MOV_R0 = 0x2000,
+  -- FireRed's BedroomPC/PlayerPC call DisplayItemMessageOnField with this
+  -- string before opening the top menu.  The symbol is gText_WhatWouldYouLikeToDo.
+  FRLG_TOP_PROMPT = 0x416262,
   -- THE SCREEN ITSELF, which blinks on when the PC is used.  Both metatile
   -- sets are read out of the one function that writes them (08138D88), the
   -- blink out of the task that calls it (08138D10).
@@ -14212,6 +14363,14 @@ function RomExtractorGen3:extractPCMenu()
     end
   end
 
+  local topPrompt
+  if fireRed then
+    local okPrompt, text = pcall(self.readText, self, P.FRLG_TOP_PROMPT, 80)
+    if okPrompt and type(text) == "string" and text ~= "" then
+      topPrompt = text
+    end
+  end
+
   -- ---- ...AND THE POKEMON STORAGE MENU ----------------------------------
   --
   -- Reported from play: "for the storage missing deposit, withdrawal, and
@@ -14342,6 +14501,7 @@ function RomExtractorGen3:extractPCMenu()
     itemStorage = storage,
     mailbox = mailbox,
     describe = describe,
+    topPrompt = topPrompt,
     text = said,
     storage = box,
     orders = orders,
@@ -44417,9 +44577,12 @@ function RomExtractorGen3:extractFireRedItemPc()
       local cell = ty * S.COLS + tx
       local e = map[cell * 2 + 1] + map[cell * 2 + 2] * 256
       local tid = e % 1024
+      local flipX = math.floor(e / 1024) % 2 == 1
+      local flipY = math.floor(e / 2048) % 2 == 1
       local bank = math.floor(e / 4096) % 16
       if tid < tileCount and bank < S.PALETTE_BANKS then
-        RomExtractorGen3.partyTile(image, tiles, colors, tid, bank, tx * 8, ty * 8)
+        RomExtractorGen3.partyTile(image, tiles, colors, tid, bank,
+                                   tx * 8, ty * 8, flipX, flipY)
       end
     end
   end
@@ -46620,6 +46783,9 @@ RomExtractorGen3.FRLG_NAMING = {
   GFX = 0xE980E4, BG_MAP = 0xE982BC,
   KB_MAPS = { upper = 0xE98398, lower = 0xE98458, symbols = 0xE98518 },
   MENU_PAL = 0xE98024, KB_PAL = 0xE97FE4,
+  -- text.c gKeypadIconTiles is a 128x32 4bpp sheet (64 tiles).  Naming's
+  -- WIN_BANNER loads GetTextWindowPalette(2), the third 16-colour row here.
+  KEYPAD_GFX = 0x1EA700, TEXT_WINDOW_PALS = 0x471DEC,
   -- naming_screen.c's private rival sheet is a second exact copy of
   -- gObjectEventPic_Blue (0x38A428) in the retail ROM.  Its dedicated palette
   -- sits between gNamingScreenKeyboard_Pal and gNamingScreenMenu_Pal in
@@ -46755,6 +46921,39 @@ function RomExtractorGen3:extractFireRedNaming(namingSpec, folder, constantKey)
   end
   pcall(layer, "bg", N.BG_MAP, true)
   for key, at in pairs(N.KB_MAPS) do pcall(layer, "kb_" .. key, at, false) end
+
+  -- PrintControls does not draw button-shaped boxes.  The {DPAD_ANY},
+  -- {A_BUTTON} and {B_BUTTON} control codes call DrawKeypadIcon, which blits
+  -- these exact pixels from gKeypadIconTiles with colour 0 keyed out.  Pull
+  -- those three icons so the runtime can compose gText_MoveOkBack with the
+  -- cartridge's own small-font glyphs and keypad art.
+  pcall(function()
+    local raw = rom:bytes(N.KEYPAD_GFX, 64 * 32)
+    local px = RomGba.tiles4bpp(raw, 16, 4)
+    local palRaw = rom:bytes(N.TEXT_WINDOW_PALS + 2 * 32, 32)
+    local bannerPal = {}
+    for i = 0, 15 do
+      bannerPal[i] = { RomGba.bgr555(palRaw[i * 2 + 1] + palRaw[i * 2 + 2] * 256) }
+    end
+    local function keypad(key, tile, w, h)
+      local sx, sy = (tile % 16) * 8, math.floor(tile / 16) * 8
+      local img = ImageWriter.blank(w, h)
+      for y = 0, h - 1 do
+        for x = 0, w - 1 do
+          local v = px[sy + y + 1][sx + x + 1]
+          local col = v ~= 0 and bannerPal[v]
+          if col then
+            img:setPixel(x, y, col[1] / 255, col[2] / 255, col[3] / 255, 1)
+          end
+        end
+      end
+      save(key, img)
+    end
+    keypad("help_a", 0x00, 8, 12)
+    keypad("help_b", 0x01, 8, 12)
+    keypad("help_dpad", 0x22, 8, 12) -- CHAR_DPAD_NONE / {DPAD_ANY}
+  end)
+
   for key, spec in pairs(N.SPRITES) do
     pcall(function()
       local at, w, h, bank = spec[1], spec[2], spec[3], spec[4]
@@ -46762,14 +46961,21 @@ function RomExtractorGen3:extractFireRedNaming(namingSpec, folder, constantKey)
       local raw = rom:bytes(at, cols * rws * 32)
       local px = RomGba.tiles4bpp(raw, cols, rws)
       local img = ImageWriter.blank(w, h)
+      -- SpriteCB_Cursor changes ONLY OBJ palette entry 1 while the keyboard
+      -- cursor idles.  Keep those pixels in a separate white mask so the
+      -- runtime can replace that one colour every frame without tinting the
+      -- rest of the cartridge-ripped cursor art.
+      local pulse = key == "cursor" and ImageWriter.blank(w, h) or nil
       for y = 1, h do
         for x = 1, w do
           local v = px[y][x]
           local col = v ~= 0 and pal[bank * 16 + v]
           if col then img:setPixel(x - 1, y - 1, col[1] / 255, col[2] / 255, col[3] / 255, 1) end
+          if pulse and v == 1 then pulse:setPixel(x - 1, y - 1, 1, 1, 1, 1) end
         end
       end
       save(key, img)
+      if pulse then save("cursor_pulse", pulse) end
     end)
   end
   -- RIVAL's naming icon is not the ordinary object-event sprite at runtime:
@@ -46814,9 +47020,15 @@ function RomExtractorGen3:extractFireRedNaming(namingSpec, folder, constantKey)
   end)
   local function c(i) local t = pal[i] return { t[1], t[2], t[3] } end
   local constants = self._constants or {}
+  local cursorWord = rom:u16(N.MENU_PAL + 5 * 32 + 2) -- palette 5, entry 1
   constants[constantKey] = {
     images = images,
     rivalIcon = rivalIcon,
+    cursorPulseBase = {
+      cursorWord % 32,
+      math.floor(cursorWord / 32) % 32,
+      math.floor(cursorWord / 1024) % 32,
+    },
     colors = {
       fill = { upper = c(10 * 16 + 13), lower = c(10 * 16 + 14), symbols = c(10 * 16 + 15) },
       key = { c(10 * 16 + 1), c(10 * 16 + 2) },
@@ -47623,6 +47835,12 @@ RomExtractorGen3.FRLG_OAK_SPEECH = {
   GUIDE_TILES = 0x4605E8, PIKACHU_MAP = 0x460BA8,
   OAK_TILES = 0x460CA4, OAK_MAP = 0x460CE8,
   GUIDE_PAGE2 = 0x460D94, GUIDE_PAGE3 = 0x460E34,
+  -- The guide's top bar uses GetTextWindowPalette(2), and its A/B control
+  -- codes use text.c's shared keypad sheet.  The bobbing red page cursor is
+  -- sDoubleArrowTiles1 with gStandardMenuPalette.
+  KEYPAD_GFX = 0x1EA700, TEXT_WINDOW_PALS = 0x471DEC,
+  TEXT_CURSOR_GFX = 0x1EA54C, TEXT_CURSOR_PAL = 0x41F408,
+  DIALOGUE_ARROW_GFX = 0x1EA14C,
   PICS = {                             -- {pal, tiles, palette bank}
     red = { 0x4615FC, 0x46163C, 4 }, leaf = { 0x460ED4, 0x460F14, 4 },
     oak = { 0x461CD4, 0x461D14, 6 }, rival = { 0x4623AC, 0x4623EC, 6 },
@@ -47681,6 +47899,96 @@ function RomExtractorGen3:extractFireRedOakSpeech()
     self:saveImage(img, "oak_speech_frlg/" .. key .. ".png")
     record.images[key] = "assets/generated/oak_speech_frlg/" .. key .. ".png"
   end
+
+  -- Top-bar palette + the two control-code glyphs.  TopBarWindowPrintString
+  -- fills with palette index 15, uses indices 1/2 for the small-font ink and
+  -- shadow, and DrawKeypadIcon blits the same palette over gKeypadIconTiles.
+  pcall(function()
+    local palRaw = rom:bytes(S.TEXT_WINDOW_PALS + 2 * 32, 32)
+    local textPal = {}
+    for i = 0, 15 do
+      textPal[i] = { RomGba.bgr555(palRaw[i * 2 + 1] + palRaw[i * 2 + 2] * 256) }
+    end
+    record.colors = {
+      topBar = textPal[15], topInk = textPal[1], topShadow = textPal[2],
+    }
+    -- NewGameScene's setup copies GetTextWindowPalette(2)[15] over BG palette
+    -- 0 colour 0 before the controls guide is shown.  Tile 0 is entirely index
+    -- 0, so this is also the guide's steady-state body colour and the colour
+    -- behind transparent-looking portions of the guide tilemaps.
+    bgColors[1] = textPal[15]
+    local raw = rom:bytes(S.KEYPAD_GFX, 64 * 32)
+    local px = RomGba.tiles4bpp(raw, 16, 4)
+    local function keypad(key, tile)
+      local sx, sy = (tile % 16) * 8, math.floor(tile / 16) * 8
+      local img = ImageWriter.blank(8, 12)
+      for y = 0, 11 do
+        for x = 0, 7 do
+          local v = px[sy + y + 1][sx + x + 1]
+          local col = v ~= 0 and textPal[v]
+          if col then
+            img:setPixel(x, y, col[1] / 255, col[2] / 255, col[3] / 255, 1)
+          end
+        end
+      end
+      save(key, img)
+    end
+    keypad("guideAButton", 0x00)
+    keypad("guideBButton", 0x01)
+  end)
+
+  -- CreateTextCursorSprite(sheet 0, 230,149) uses this 16x16 four-tile sprite.
+  pcall(function()
+    local raw = rom:bytes(S.TEXT_CURSOR_GFX, 0x80)
+    local px = RomGba.tiles4bpp(raw, 2, 2)
+    local palRaw = rom:bytes(S.TEXT_CURSOR_PAL, 32)
+    local pal = {}
+    for i = 0, 15 do
+      pal[i] = { RomGba.bgr555(palRaw[i * 2 + 1] + palRaw[i * 2 + 2] * 256) }
+    end
+    local img = ImageWriter.blank(16, 16)
+    for y = 0, 15 do
+      for x = 0, 15 do
+        local v = px[y + 1][x + 1]
+        local col = v ~= 0 and pal[v]
+        if col then
+          img:setPixel(x, y, col[1] / 255, col[2] / 255, col[3] / 255, 1)
+        end
+      end
+    end
+    save("guideCursor", img)
+  end)
+
+  -- FireRed's ordinary text-printer prompt is not a font glyph.  text.c blits
+  -- a 10x12 rectangle from sDownArrowTiles at currentX/currentY, cycling source
+  -- x offsets 0,16,32,16.  Preserve the three distinct cartridge frames in one
+  -- strip; TextBox places them at the live pen rather than on the box border.
+  pcall(function()
+    local raw = rom:bytes(S.DIALOGUE_ARROW_GFX, 0x400)
+    local px = RomGba.tiles4bpp(raw, 16, 2) -- 128x16 source bitmap
+    local palRaw = rom:bytes(S.TEXT_WINDOW_PALS + 2 * 32, 32)
+    local pal = {}
+    for i = 0, 15 do
+      pal[i] = { RomGba.bgr555(palRaw[i * 2 + 1] + palRaw[i * 2 + 2] * 256) }
+    end
+    local img = ImageWriter.blank(30, 12)
+    for frame, sx in ipairs({ 0, 16, 32 }) do
+      for y = 0, 11 do
+        for x = 0, 9 do
+          local v = px[y + 1][sx + x + 1]
+          local col = v ~= 0 and pal[v]
+          if col then
+            img:setPixel((frame - 1) * 10 + x, y,
+                         col[1] / 255, col[2] / 255, col[3] / 255, 1)
+          end
+        end
+      end
+    end
+    save("dialogueArrow", img)
+    record.dialogueArrow = {
+      path = record.images.dialogueArrow, frames = 3, width = 10, height = 12,
+    }
+  end)
 
   -- a 4bpp tilemap, `cols` wide, placed at a tile offset on a 240x160 canvas
   local function compose(key, tiles, map, cols, rows, ox, oy)
@@ -54082,7 +54390,10 @@ function RomExtractorGen3:extractBattleTextbox()
   local base = colours(palRaw)     -- banks 0 and 1
   local menuPal = colours(menuRaw) -- BG palette 5
 
-  -- the twenty OPTIONS frames, each nine tiles and sixteen colours
+  -- The OPTIONS frames, each nine tiles and sixteen colours.  Follow the
+  -- pointer table itself: FireRed has small empty blobs between some of the
+  -- frame graphics, so the tile sheets are deliberately not one contiguous
+  -- `FRAME_TILES + i * size` array.
   local frames = {}
   for i = 0, T.FRAME_COUNT - 1 do
     local at = T.FRAMES + i * 8
@@ -54090,76 +54401,81 @@ function RomExtractorGen3:extractBattleTextbox()
       tiles = rom:pointer(at), palette = rom:pointer(at + 4),
     }
   end
-  -- ...and the table has to be the contiguous run the two blob arrays are,
-  -- which is what says 0x51021C is the struct array and not a palette
-  local contiguous = true
-  for i = 0, T.FRAME_COUNT - 1 do
-    if frames[i + 1].tiles ~= T.FRAME_TILES + i * T.FRAME_TILES_BYTES then
-      contiguous = false
-    end
-    if frames[i + 1].palette ~= T.FRAME_PALETTES + i * T.FRAME_PALETTE_BYTES then
-      contiguous = false
+  local validFrames = true
+  for i = 1, T.FRAME_COUNT do
+    if not (frames[i] and frames[i].tiles and frames[i].palette) then
+      validFrames = false
+      break
     end
   end
-  if not contiguous then
-    Logger.warn("gen3 battle textbox: the frame table at %07X does not point "
-                  .. "at the two contiguous blob arrays -- one frame is used "
-                  .. "for every setting", T.FRAMES)
+  if not validFrames then
+    Logger.warn("gen3 battle textbox: the frame table at %07X has a missing "
+                  .. "tiles/palette pointer -- the battle keeps frame 1", T.FRAMES)
   end
 
   -- ---- compose ------------------------------------------------------------
   local images = {}
+  local frameImages = {}
   local composed = pcall(function()
-    -- the frame the strips are drawn with.  Composing all twenty would be
-    -- twenty times the pictures for a setting almost nobody moves, so this
-    -- takes the first -- which is the frame a new save starts on -- and the
-    -- table above is recorded so a later pass can follow the option.
-    local ft = {}
-    for k = 1, T.FRAME_TILES_BYTES do
-      ft[k] = rom:u8(T.FRAME_TILES + k - 1)
-    end
-    local framePal = {}
-    for k = 1, T.FRAME_PALETTE_BYTES do
-      framePal[k] = rom:u8(T.FRAME_PALETTES + k - 1)
-    end
-    local sheet = {}
-    for k = 1, #tiles do sheet[k] = tiles[k] end
-    for _, tileBase in ipairs(T.FRAME_TILE_BASES or { T.FRAME_TILE_BASE }) do
-      for k = 1, T.FRAME_TILES_BYTES do
-        sheet[tileBase * 32 + k] = ft[k]
-      end
-    end
-    local pal = {}
-    for i = 0, 31 do pal[i] = base[i] end
-    for i = 0, 15 do
-      local r, g, b = RomGba.bgr555(framePal[i * 2 + 1] + framePal[i * 2 + 2] * 256)
-      pal[T.FRAME_BANK * 16 + i] = { r, g, b }
-    end
-    -- partyTile wants a one-based colour list indexed bank*16 + index + 1
-    local flat = {}
-    for i = 0, 31 do flat[i + 1] = pal[i] end
+    -- FireRed loads the selected user frame into BOTH battle tile ranges every
+    -- time battle BGs are initialized.  Bake every available option so the
+    -- battle panel follows the same Frame Type setting as normal windows.
+    for frameIndex = 0, (validFrames and T.FRAME_COUNT or 1) - 1 do
+      local ft = {}
+      local frame = frames[frameIndex + 1]
+      local ftAt = (frame and frame.tiles) or T.FRAME_TILES
+      for k = 1, T.FRAME_TILES_BYTES do ft[k] = rom:u8(ftAt + k - 1) end
 
-    for _, panel in ipairs(T.PANELS) do
-      local img = ImageWriter.blank(T.WIDTH * 8, T.PANEL_ROWS * 8)
-      for r = 0, T.PANEL_ROWS - 1 do
-        for c = 0, T.WIDTH - 1 do
-          local cell = (panel.row + r) * T.COLS + c
-          local e = map[cell * 2 + 1] + map[cell * 2 + 2] * 256
-          local id = e % 1024
-          local bank = math.floor(e / 4096) % 16
-          if id > 0 and id < tileCount and bank < 2 then
-            RomExtractorGen3.partyTile(img, sheet, flat, id, bank, c * 8, r * 8)
+      local framePal = {}
+      local fpAt = (frame and frame.palette) or T.FRAME_PALETTES
+      for k = 1, T.FRAME_PALETTE_BYTES do framePal[k] = rom:u8(fpAt + k - 1) end
+
+      local sheet = {}
+      for k = 1, #tiles do sheet[k] = tiles[k] end
+      for _, tileBase in ipairs(T.FRAME_TILE_BASES or { T.FRAME_TILE_BASE }) do
+        for k = 1, T.FRAME_TILES_BYTES do sheet[tileBase * 32 + k] = ft[k] end
+      end
+
+      local pal = {}
+      for i = 0, 31 do pal[i] = base[i] end
+      for i = 0, 15 do
+        local r, g, b = RomGba.bgr555(framePal[i * 2 + 1] + framePal[i * 2 + 2] * 256)
+        pal[T.FRAME_BANK * 16 + i] = { r, g, b }
+      end
+      local flat = {}
+      for i = 0, 31 do flat[i + 1] = pal[i] end
+
+      local perFrame = {}
+      for _, panel in ipairs(T.PANELS) do
+        local img = ImageWriter.blank(T.WIDTH * 8, T.PANEL_ROWS * 8)
+        for r = 0, T.PANEL_ROWS - 1 do
+          for c = 0, T.WIDTH - 1 do
+            local cell = (panel.row + r) * T.COLS + c
+            local e = map[cell * 2 + 1] + map[cell * 2 + 2] * 256
+            local id = e % 1024
+            local bank = math.floor(e / 4096) % 16
+            if id > 0 and id < tileCount and bank < 2 then
+              RomExtractorGen3.partyTile(img, sheet, flat, id, bank, c * 8, r * 8)
+            end
           end
         end
+        local suffix = frameIndex == 0 and panel.key
+                       or (panel.key .. "_frame" .. tostring(frameIndex + 1))
+        local rel = "battle/textbox_" .. suffix .. ".png"
+        self:saveImage(img, rel)
+        perFrame[panel.key] = "assets/generated/" .. rel
+        if frameIndex == 0 then images[panel.key] = perFrame[panel.key] end
       end
-      self:saveImage(img, "battle/textbox_" .. panel.key .. ".png")
-      images[panel.key] = "assets/generated/battle/textbox_" .. panel.key .. ".png"
+      frameImages[frameIndex + 1] = perFrame
     end
 
-    -- ...and the arrow, which is two tiles of the same sheet in bank 0
+    -- ...and the arrow, which is two tiles of the original battle sheet in
+    -- bank 0; it is independent of the user's decorative frame selection.
+    local cursorPal = {}
+    for i = 0, 31 do cursorPal[i + 1] = base[i] end
     local cur = ImageWriter.blank(8, 8 * #T.CURSOR_TILES)
     for i, id in ipairs(T.CURSOR_TILES) do
-      RomExtractorGen3.partyTile(cur, sheet, flat, id, T.CURSOR_BANK,
+      RomExtractorGen3.partyTile(cur, tiles, cursorPal, id, T.CURSOR_BANK,
                                  0, (i - 1) * 8)
     end
     self:saveImage(cur, "battle/textbox_cursor.png")
@@ -54182,6 +54498,7 @@ function RomExtractorGen3:extractBattleTextbox()
   local constants = self._constants or {}
   constants.gen3BattleTextbox = {
     images = images,
+    frameImages = frameImages,
     y = T.SCREEN_Y,
     width = T.WIDTH * 8,
     height = T.PANEL_ROWS * 8,

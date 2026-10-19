@@ -58,4 +58,11 @@ function B.check()
   end
 end
 
+-- Being above the overworld is not evidence that the world is hidden:
+-- battles and menus still draw it. Only a fully opaque warp fade qualifies.
+function B.covered(top, transition)
+  return type(top) == "table" and getmetatable(top) == transition
+    and type(top.alpha) == "function" and top:alpha() >= 1 or false
+end
+
 return B

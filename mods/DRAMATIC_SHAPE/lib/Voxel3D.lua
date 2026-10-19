@@ -1541,6 +1541,7 @@ end
 -- upright transform or it reads its own shadow as falling on itself.
 function Voxel3D.draw(mesh, texture, model, pull, sunModel)
   if not (active and mesh) then return end
+  local parts = type(mesh) == "table" and mesh.parts
   -- OFF SCREEN IS NOT DRAWN.
   --
   -- Measured with this frame's own matrix: standing in Lilycove, six
@@ -1570,12 +1571,13 @@ function Voxel3D.draw(mesh, texture, model, pull, sunModel)
   -- sending a uniform to the other shader would go nowhere
   local sh = activeShader
   if not sh then return end
-  if texture then mesh:setTexture(texture) end
+  if texture and not parts then mesh:setTexture(texture) end
   -- LOVE defaults matrix uniforms to column-major; Mat4 is row-major
   pcall(sh.send, sh, "model", "row", model or IDENTITY)
   pcall(sh.send, sh, "sunModel", "row", sunModel or model or IDENTITY)
   pcall(sh.send, sh, "pull", pull or 0)
-  love.graphics.draw(mesh)
+  if parts then V.require("MeshBatch").draw(mesh, texture, Voxel3D.vp, model, Voxel3D.curveK, Voxel3D.curveX, Voxel3D.curveZ)
+  else love.graphics.draw(mesh) end
 end
 
 -- Project a world point to canvas pixels: returns (x, y, scale), or nil

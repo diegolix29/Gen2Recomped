@@ -2944,12 +2944,13 @@ end
 -- hands its prop animations to the one-shot manager under a tag; the other two
 -- play animation 0 and animation 1 of that tag.
 --
--- THIS IS THE DOOR ANIMATION AGAIN, ALMOST: an NSBCA one-shot on an NSBMD map
--- prop, loaded by the same `MapPropOneShotAnimationManager_LoadPropAnimations`
--- against a four-model list of its own (`pokecenter_pc` and the three desk
--- laptops).  Two of the three missing stages are shared -- this port reads
--- NSBMD without NSBCA and bakes a chunk's props into a flat canvas -- so these
--- take the SAME named no-op rather than a fourth spelling of one absence.
+-- THIS IS THE DOOR ANIMATION AGAIN, ALMOST: a one-shot on a map prop, loaded
+-- by the same `MapPropOneShotAnimationManager_LoadPropAnimations` against a
+-- four-model list of its own.  These used to be the named no-op "prop
+-- animations"; they now play the PC's `pc_moni_on` / `pc_moni_off` flipbook
+-- (bm_anime 41/42, HGSS 102/103) on a Gen4PropOneShot slot under the tag --
+-- see src/script/Gen4PcAnimation.lua, which also lowers HGSS's unnamed
+-- ScrCmd_500/501/502 (the same three commands in its PC script).
 --
 -- THE THIRD STAGE IS WHERE THEY PART, and this comment used to get it wrong.
 -- It read "and has no Gen 4 SE bank", which was the same stale claim the door
@@ -2960,9 +2961,7 @@ end
 -- all, where a door plays `..._PlayAnimationWithSoundEffect`.  There is no PC
 -- sound to be missing.  The beep the script plays either side of these is a
 -- separate `playse` and is already lowered.
-L.loadpcanimation = function(_, s) emit(s, { "g4_noop", "prop animations" }) end
-L.playpcbootupanimation = function(_, s) emit(s, { "g4_noop", "prop animations" }) end
-L.playpcshutdownanimation = function(_, s) emit(s, { "g4_noop", "prop animations" }) end
+require("src.script.Gen4PcAnimation").install(L)
 
 -- `savetvsegmentpokemonstoragebulletin` -- files a TV segment about the
 -- player's party after a visit to the storage system.  Same answer as

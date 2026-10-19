@@ -10,8 +10,9 @@ function g.getShader() return shader end
 function g.setShader(s) shader=s end
 function g.getScissor() if clip then return unpack(clip) end end
 function g.setScissor(...) clip=select('#',...)>0 and {...} or nil end
-function g.push() stack[#stack+1]={shader=shader,clip=clip} end
-function g.pop() local s=table.remove(stack);shader,clip=s.shader,s.clip end
+-- LOVE 11: push('all') also saves the render target (canvas) and pop restores it.
+function g.push(what) stack[#stack+1]={shader=shader,clip=clip,all=what=='all',canvas=canvas} end
+function g.pop() local s=table.remove(stack);shader,clip=s.shader,s.clip;if s.all then canvas=s.canvas end end
 function g.newCanvas(w,h,opts) T.eq(opts.dpiscale,1,'LCD has device-independent pixels');return {w=w,h=h} end
 function g.origin() end
 function g.clear() end

@@ -401,12 +401,18 @@ mod.content.render_pipelines:register("voxel", {
     -- it: a map's shape analysis plus its geometry, drained a slice at a
     -- time. It is worth its own span because it is felt as a HITCH and not
     -- as fps -- `max` on this label is the number that matters, and it is
-    -- large: Structures.forMap is not interruptible (the budget can only
-    -- suspend the geometry coroutine), so the first pump on arriving at a
-    -- map carries the whole analysis in one frame.
+    -- large: shape analysis and geometry consume the same cooperative
+    -- budget. Coarse row passes check every row; shared tileset analysis
+    -- finishes atomically before geometry can be preempted by another map.
     local tPump = Perf.now()
-    ChunkMesher.pump(Game and Game.stack
-                     and Game.stack:top() ~= ow)
+    -- A battle/menu above the overworld still renders and accepts input.
+    -- Only a fully opaque warp fade can safely borrow the covered slice.
+    local top = Game and Game.stack and Game.stack:top()
+    local Transition = require("src.render.Transition")
+    local covered = V.require("BuildBudget").covered(top, Transition)
+    -- Keep automatic neighbour work out of battles and interactive overlays.
+    -- The current map can still finish if its battle terrain is not ready.
+    ChunkMesher.pump(covered, top and top ~= ow and not covered)
     Perf.add("ChunkMesher.pump", tPump)
     pumpPrebake()
   end,

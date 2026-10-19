@@ -413,20 +413,61 @@ do
      .. "TV segment commands", rows)
 end
 
--- THE PROP ANIMATIONS SHARE THE DOOR'S ROW, for the same reason: one absence,
--- stated once.
+-- THE PC'S SCREEN IS LIT NOW.  These were the named no-op "prop animations";
+-- they lower to one row (src/script/Gen4PcAnimation.lua) that plays the PC
+-- monitor's pc_moni_on / pc_moni_off flipbook on a one-shot slot -- and HGSS's
+-- unnamed ScrCmd_500/501/502, the same three commands in its PC script, lower
+-- to the same row.
 do
-  local vmSrc = slurp("src/script/Gen4ScriptVM.lua") or ""
-  local code = vmSrc:gsub("%-%-[^\r\n]*", "")
-  for _, name in ipairs({ "loadpcanimation", "playpcbootupanimation",
-                          "playpcshutdownanimation" }) do
-    local line = code:match("L%." .. name .. "[^\n]*")
-    ok(line ~= nil and line:find("g4_noop", 1, true) ~= nil,
-       "%s no longer lowers to the named no-op row", name)
+  local want = { loadpcanimation = "load", playpcbootupanimation = "on",
+                 playpcshutdownanimation = "off",
+                 scrcmd_500 = "load", scrcmd_501 = "on", scrcmd_502 = "off" }
+  for name, which in pairs(want) do
+    local okL, rows = pcall(VM.lower, { { name = name, args = { 90 } } })
+    local row = okL and type(rows) == "table" and rows[1]
+    ok(row and row[1] == "g4_pc_animation" and row[2] == which and row[3] == 90,
+       "%s does not lower to g4_pc_animation %s <tag>", name, which)
   end
-  ok(code:find('"prop animations"', 1, true) ~= nil,
-     "the prop-animation rows no longer name what is absent, so the log says "
-     .. "an opcode number instead of a feature")
+  -- ...and the row reaches the PC: the module reloaded against the stub so its
+  -- handler lands on `Shared`, then run on a ground whose only PC is the
+  -- SECOND prop of the chunk.
+  -- (dofile, not require: the stub searcher above answers every src.* name)
+  package.loaded["src.world.Gen4PropOneShot"] = dofile("src/world/Gen4PropOneShot.lua")
+  local PcA = dofile("src/script/Gen4PcAnimation.lua")
+  local fn = rawget(Shared, "g4_pc_animation")
+  ok(type(fn) == "function", "g4_pc_animation has no handler")
+  if type(fn) == "function" then
+    local desk, pc = { model = 5 }, { model = 119 }
+    local ground = {
+      animsByMember = {
+        [41] = { member = 41, name = "pc_moni_on", frames = 20, props = { 119 } },
+        [42] = { member = 42, name = "pc_moni_off", frames = 20, props = { 119 } } },
+      grid = { land = { 7 } },
+      terrain = { chunks = { [7] = { objects = { desk, pc } } } } }
+    local ow = { map = { renderer = { gen4Ground = ground } } }
+    local ctx = { overworld = ow }
+    fn(ctx, "load", 90)
+    ok(ow.gen4PcProps and ow.gen4PcProps[90] == pc, "load did not find the PC prop")
+    fn(ctx, "on", 90)
+    local slot = ow.gen4OneShots and ow.gen4OneShots[90]
+    ok(slot and slot.object == pc and slot.animation == 41 and slot.frames == 20,
+       "boot-up did not start pc_moni_on (41) on the PC")
+    fn(ctx, "off", 90)
+    slot = ow.gen4OneShots and ow.gen4OneShots[90]
+    ok(slot and slot.animation == 42, "shutdown did not start pc_moni_off (42)")
+    -- HGSS: a script-owned claim, under other member numbers
+    ground.animsByMember = {
+      [102] = { member = 102, name = "pc_moni_on", frames = 20, scriptProps = { 119 } },
+      [103] = { member = 103, name = "pc_moni_off", frames = 20, scriptProps = { 119 } } }
+    ok(PcA.findPc(ground) == pc, "an HGSS scriptProps claim did not find the PC")
+    -- no PC on the map: nothing runs, so waitforanimation steps over
+    local bare = { overworld = { map = { renderer = { gen4Ground = {
+      animsByMember = ground.animsByMember, grid = { land = { 7 } },
+      terrain = { chunks = { [7] = { objects = { desk } } } } } } } } }
+    fn(bare, "load", 90); fn(bare, "on", 90)
+    ok(not (bare.overworld.gen4OneShots or {})[90],
+       "a map with no PC started a one-shot that a wait would hang on")
+  end
 end
 
 io.write(("\n%d checks, %d failed, %d reported\n"):format(checks, fails, reports))

@@ -1709,7 +1709,8 @@ end
 -- sun transform (water is terrain: the sun saw the same matrix).
 function Water.draw(mesh, texture, model)
   if not (active and mesh) then return end
-  if texture then mesh:setTexture(texture) end
+  local parts = type(mesh) == "table" and mesh.parts
+  if texture and not parts then mesh:setTexture(texture) end
   pcall(active.send, active, "model", "row", model or Mat4.identity())
   -- Per draw rather than per pass, and read off the TEXTURE rather than
   -- assumed: it is what converts a world pixel of the columns' parallax into
@@ -1721,7 +1722,8 @@ function Water.draw(mesh, texture, model)
       pcall(active.send, active, "atlasSize", { w, h })
     end
   end
-  love.graphics.draw(mesh)
+  if parts then V.require("MeshBatch").draw(mesh, texture, nil, model)
+  else love.graphics.draw(mesh) end
 end
 
 function Water.finish()

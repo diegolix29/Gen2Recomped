@@ -176,7 +176,7 @@ else
     return n
   end
 
-  local sites, offenders, declines = 0, {}, 0
+  local sites, offenders, declines, fields = 0, {}, 0, 0
   for _, dir in ipairs({ "src/ui", "src/world", "src/script", "src/battle" }) do
     for _, name in ipairs(listDir(dir)) do
       local src = slurp(dir .. "/" .. name)
@@ -194,7 +194,14 @@ else
               if chunk then i = i + #chunk - 1 end
             elseif depth == 1 then
               local k = body:match("^([%a_][%w_]*)%s*=", i)
-              if k and (i == 1 or body:sub(i - 1, i - 1):match("[{,%s]")) then
+              -- A FIELD starts right after `{` or `,` (whitespace aside).
+              -- Whitespace alone is not enough: a callback's body is at the
+              -- same brace depth, and Gen4RowanIntro's `onDone` has
+              -- `local save = self.game.save` in it -- a local, not a key,
+              -- which read as two false `save` pushes.
+              local before = body:sub(1, i - 1):match("(%S)%s*$")
+              if k and k ~= "local" and (i == 1 or before == "{" or before == ",") then
+                if not keys[k] then fields = fields + 1 end
                 keys[k] = true
                 i = i + #k
               end
@@ -234,12 +241,21 @@ else
   -- stopped matching would report a clean sweep over nothing at all.
   ok(sites >= 30, "only %d table-literal push site(s) were found; the sweep is "
      .. "not reaching the call sites and its clean result means nothing", sites)
-  ok(declines >= 10,
-     "only %d declining key(s) were seen across the whole port; the rule below "
-     .. "is only interesting because declines are COMMON and correct, and a "
-     .. "count this low means the alias lookup is not working", declines)
-  io.write(("   %d table-literal push sites, %d declining key(s), %d of them "
-            .. "on a screen that reads the key\n"):format(sites, declines,
+  -- The second floor used to be `declines >= 10`, and it was standing on the
+  -- parser's own mistake: 38 of the 40 "declines" were callback statements
+  -- (`picked = value` in an `onDone`, `local save = ...`) read as keys,
+  -- because a function body sits at the table's brace depth. With fields
+  -- read only after `{` or `,`, the port's real declines are BagMenu's
+  -- `giveTo` (twice). So the floors are on what the parser READS -- the
+  -- fields of every literal -- and on that one known decline.
+  ok(fields >= 150,
+     "only %d field(s) were read out of the push literals; the key parser is "
+     .. "not reading them and the result below means nothing", fields)
+  ok(declines >= 1,
+     "no declining key was seen across the whole port (BagMenu's `giveTo` "
+     .. "is one); the alias lookup is not working", declines)
+  io.write(("   %d table-literal push sites, %d field(s), %d declining key(s), %d of them "
+            .. "on a screen that reads the key\n"):format(sites, fields, declines,
                                                           #offenders))
   for _, o in ipairs(offenders) do io.write("   ", o, "\n") end
   ok(#offenders == 0,

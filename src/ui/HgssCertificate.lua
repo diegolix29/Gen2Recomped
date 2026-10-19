@@ -65,10 +65,15 @@ function C.new(game, id, onDone)
   local mon = firstMon(save)
   local def = mon and data.pokemon and data.pokemon[mon.species]
   local nick = mon and (mon.nickname or (def and def.name)) or ""
+  -- the certificate's own template: slot 0 the player, slot 1 the first
+  -- party Pokemon (the bank's {STRVAR_1 3 0 0} / {STRVAR_1 1 1 0}); the
+  -- shared Gen 4 markup expands them line by line in printBlock, after the
+  -- line's {ALN_CENTER} has been read
+  self.buffers = {}
+  require("src.import.Gen4Text").buffer(self.buffers, player, nick)
   local function line(n)
-    local t = data.text and data.text[("TEXT_B%04d_%05d"):format(C.TEXT_BANK, n)] or ""
-    t = t:gsub("{STRVAR_1 3 %d+ %d+}", player):gsub("{STRVAR_1 1 %d+ %d+}", nick)
-    return t
+    local t = data.text and data.text[("TEXT_B%04d_%05d"):format(C.TEXT_BANK, n)]
+    return type(t) == "string" and t or ""
   end
   if id == 2 then
     self.lines = { { line(4), 0, 36 }, { line(5), 0, 56 } }
@@ -145,7 +150,8 @@ function C:printBlock(text, x, y)
   local ink = self.rec.ink
   for raw in (tostring(text) .. "\n"):gmatch("(.-)\n") do
     local centre = raw:find("{ALN_CENTER}", 1, true) ~= nil
-    local s = raw:gsub("{[^}]*}", "")
+    local ok, plain = pcall(require("src.script.Commands").gen4Markup, raw, self.buffers)
+    local s = ((ok and type(plain) == "string") and plain or raw):gsub("{[^}]*}", "")
     local px = centre and math.floor((W - Font.width(s)) / 2) or x
     shadowed(s, px, y, ink)
     y = y + 16

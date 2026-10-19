@@ -40,12 +40,17 @@ function S.new(game, opts)
   return self
 end
 
-local function text(game, n) return game.data.text and game.data.text[Gen4Text.label(S.BANK, n)] end
-local function fill(game, s, ...)
+-- a bank line through the shared resolve: markup expanded, trailing wait off
+local function text(game, n) return Gen4Text.resolve(game.data, S.BANK, n, game) end
+-- a line with placeholders: buffer the values FIRST (slot 0 up), then resolve
+-- expands its {STRVAR_1} tokens from them, as StringTemplate_Format does
+local function fill(game, n, fallback, ...)
   Gen4Text.buffer(game, ...)
+  local s = text(game, n)
+  if s then return s end
   local Commands = require("src.script.Commands")
-  local ok, plain = pcall(Commands.gen4Markup, tostring(s or ""), game)
-  return ok and plain or tostring(s or "")
+  local ok, plain = pcall(Commands.gen4Markup, fallback, game)
+  return ok and plain or fallback
 end
 function S:typeName(t)
   return Gen4Text.resolve(self.data, S.TYPE_NAMES, t, self.game) or tostring(t)
@@ -87,7 +92,7 @@ function S:ask()
     msg = text(game, S.MSG_MATRON) or "Will you battle against the Hall Matron?"
   else
     local rank = math.min(self:rankAt(cell) + 1, 10)
-    msg = fill(game, text(game, S.MSG_CONFIRM) or "Battle the {STRVAR_1 15, 0, 0}-type?",
+    msg = fill(game, S.MSG_CONFIRM, "Battle the {STRVAR_1 15 0 0}-type?",
                self:typeName(T.GRID[cell]), tostring(rank))
   end
   self.asking = true

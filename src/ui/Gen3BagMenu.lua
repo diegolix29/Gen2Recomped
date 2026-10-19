@@ -262,6 +262,14 @@ function Gen3BagMenu.new(game, opts)
   self.store = opts.store
   self.pcList = (self.store == "withdraw" or self.store == "toss")
   if self.pcList then self.lockPocket = true end
+  -- FireRed's DEPOSIT ITEM opens the real bag at the ITEMS pocket, but its
+  -- ITEMMENULOCATION_ITEMPC mode disables pocket switching.  The striped bag
+  -- and the bag sprite are still the real bag; only the title/window semantics
+  -- and the input mode change (item_menu.c GoToBagMenu / SwitchBagPocket).
+  if self.frlg and self.itemPc then
+    self.pocket = 1
+    self.lockPocket = true
+  end
   if opts.pocket then
     for i, row in ipairs(self.pockets) do
       if row.key == opts.pocket then self.pocket = i break end
@@ -298,7 +306,30 @@ end
 -- the importer multiplies out, so everything here is already pixels.
 function Gen3BagMenu:box(key)
   local r = self:screen()
+  if self.frlg and key == "quantity" then
+    -- sWindowTemplates[0], opened by InitQuantityToTossOrDeposit.
+    return { x = 192, y = 120, width = 40, height = 32 }
+  end
   return (r.windows and r.windows[key]) or FALLBACK.windows[key]
+end
+
+function Gen3BagMenu:subBox(key)
+  if self.frlg and key == "quantityPrompt" then
+    -- ShowBagWindow(6, 2) -> sWindowTemplates[8].
+    return { x = 48, y = 120, width = 128, height = 32 }
+  end
+  return nil
+end
+
+function Gen3BagMenu:drawContentFrame(b, frameIndex)
+  if not b then return end
+  local tx, ty = math.floor(b.x / 8) - 1, math.floor(b.y / 8) - 1
+  local tw, th = math.floor(b.width / 8) + 2, math.floor(b.height / 8) + 2
+  if frameIndex == "standard" and Font.drawStandardBox then
+    Font.drawStandardBox(tx, ty, tw, th)
+  else
+    Font.drawBox(tx, ty, tw, th, tonumber(frameIndex) or 1)
+  end
 end
 
 function Gen3BagMenu:listRows()
@@ -364,9 +395,14 @@ function Gen3BagMenu:rebuild()
       }
     end
   end
-  -- CLOSE BAG is a row, not a button: B and this land in the same place, and
-  -- the cartridge lists it at the end of every pocket.
-  rows[#rows + 1] = { close = true, label = Strings("CLOSE BAG") }
+  -- The LIST row is CANCEL on FireRed.  "Close the BAG." belongs to the
+  -- description window underneath it (Bag_BuildListMenuTemplate versus
+  -- PrintItemDescriptionOnMessageWindow); using the description as the row
+  -- label is what produced the screenshot's incorrect CLOSE BAG entry.
+  rows[#rows + 1] = {
+    close = true,
+    label = self.frlg and Strings("CANCEL") or Strings("CLOSE BAG"),
+  }
   self.rows = rows
   self.index = math.min(self.index, #rows)
   self.top = math.max(1, math.min(self.top, #rows - self:listRows() + 1))
@@ -494,17 +530,36 @@ end
 -- ...and one it stops for, which is a real box the player dismisses.  Used
 -- for the answers ("Withdrew 5 POTIONs."), which the cartridge waits on.
 function Gen3BagMenu:tell(text)
+  -- FireRed's deposit flow never leaves the bag for its answer.  ShowBagWindow
+  -- overlays sWindowTemplates[9] on the lower-right description area and waits
+  -- for A/B there.  Keep that message owned by this state so the bag, item
+  -- icon and list remain visible behind it instead of flashing back to field.
+  if self.frlg and self.itemPc then
+    self.resultMessage = tostring(text or "")
+    return
+  end
   local TextBox = require("src.render.TextBox")
   self.game.stack:push(TextBox.new(self.game, text))
 end
 
 -- Ask how many, then act.  An important item never reaches here (the callers
--- refuse it first) and a stack of one still asks, because the cartridge's
--- quantity window opens on every depositable pick.
+-- refuse it first).  FireRed's ITEMPC deposit has its own lower-screen prompt
+-- geometry; the generic quantity state remains for the shared non-ITEMPC paths.
 function Gen3BagMenu:askQuantity(id, held, prompt, done)
   local game = self.game
   local def = game.data.items and game.data.items[id]
   local name = (def and def.name) or id
+  if self.frlg and self.itemPc and self.store == "deposit" then
+    game.stack:push(require("src.ui.Gen3ItemPcQuantity").new(game, self, {
+      max = math.max(1, math.floor(held or 1)),
+      itemName = name,
+      verb = "DEPOSIT",
+      onDone = function(qty)
+        if qty and qty > 0 then done(qty, name) end
+      end,
+    }))
+    return
+  end
   local QuantityBox = require("src.ui.QuantityBox")
   self:say(fillLine(prompt, name, held))
   game.stack:push(QuantityBox.new(game, {
@@ -528,14 +583,22 @@ function Gen3BagMenu:depositItem(id)
     return self:tell(bagWord(game, "noRoomStore"))
   end
   local held = (game.save.inventory or {})[id] or 1
-  self:askQuantity(id, held, bagWord(game, "depositPrompt"), function(qty, name)
+  local function deposit(qty, name)
     Bag.remove(game.save, id, qty)
     game.save.pcItems = game.save.pcItems or {}
     game.save.pcItems[id] = (game.save.pcItems[id] or 0) + qty
     self:rebuild()
     Sound.play(game.data, "Withdraw_Deposit")
     self:tell(fillLine(bagWord(game, "deposited"), name, qty))
-  end)
+  end
+  -- item_menu.c Task_ChooseHowManyToDeposit skips the quantity UI when there
+  -- is exactly one.  That is the common early-game POTION case in the user's
+  -- comparison and it also avoids a one-item selector the cartridge never
+  -- shows.
+  local def = game.data.items and game.data.items[id]
+  local name = (def and def.name) or id
+  if held <= 1 then return deposit(1, name) end
+  self:askQuantity(id, held, bagWord(game, "depositPrompt"), deposit)
 end
 
 -- WITHDRAW: the PC's list, the PC's words, the bag as the destination.
@@ -800,6 +863,13 @@ function Gen3BagMenu:update(dt)
   if self.script then self.script(self) end
   if self.noInput then return end
   local input = self.game.input
+  if self.resultMessage then
+    if input:wasPressed("a") or input:wasPressed("b") then
+      Sound.play(self.game.data, "Press_AB")
+      self.resultMessage = nil
+    end
+    return
+  end
   if input:wasPressed("down") then self:moveCursor(1)
   elseif input:wasPressed("up") then self:moveCursor(-1)
   elseif input:wasPressed("right") then self:movePocket(1)
@@ -868,39 +938,27 @@ local function drawRows(self, inset)
       Font.draw(qty, qtyRight - Font.width(qty), y)
     end
     if first + i == self.index then
-      -- WHAT MARKS THE CHOSEN ROW, and it is not an arrow.
-      --
-      -- Reported from play: "the highlighted item is supposed to have a red
-      -- box flashing around it not a arrow for the bag".  The port drew
-      -- Theme.cursor -- the Game Boy's triangle -- because that is what every
-      -- other list here uses; Hoenn's bag frames the whole row instead, and
-      -- the frame blinks.
-      --
-      -- THE COLOUR IS THE CARTRIDGE'S OWN, not a red written down here: the
-      -- pocket-dot marker's colour is already read out of both palettes
-      -- (gen3BagScreen.pocketDots.selected.colour), and it is the same
-      -- selection colour -- red in the boy's palette, blue in the girl's --
-      -- so the two marks on this screen agree by construction rather than by
-      -- a second opinion.  A cache without it falls back to red, which is
-      -- what the boy's palette holds.
-      local mark = (r.pocketDots or {}).selected
-      local player = (self.game.save or {}).player or {}
-      local rgb = (mark and mark.colour
-                   and ((player.gender == "girl" and mark.colour.female)
-                        or mark.colour.male or mark.colour.female))
-                  or { 255, 0, 0 }
-      -- half a second lit, half dark, off the screen's own frame count
-      if math.floor((self.tick or 0) / 30) % 2 == 0 then
-        local boxY = top + i * pitch
-        love.graphics.setColor(rgb[1] / 255, rgb[2] / 255, rgb[3] / 255, 1)
-        love.graphics.rectangle("fill", cursorX, boxY, win.width - (cursorX - win.x), 1)
-        love.graphics.rectangle("fill", cursorX, boxY + pitch - 1,
-                                win.width - (cursorX - win.x), 1)
-        love.graphics.rectangle("fill", cursorX, boxY, 1, pitch)
-        love.graphics.rectangle("fill", win.x + win.width - 1, boxY, 1, pitch)
-        -- back to the ink the rows are printed in, not to white: the next
-        -- row's label draws immediately after this
-        love.graphics.setColor(0, 0, 0, 1)
+      if self.frlg then
+        -- FRLG uses the ListMenu triangle cursor at the list template cursor x.
+        -- The flashing full-row outline belongs to the other Gen 3 bag path.
+        Font.drawCode(Theme.cursor, cursorX, y)
+      else
+        local mark = (r.pocketDots or {}).selected
+        local player = (self.game.save or {}).player or {}
+        local rgb = (mark and mark.colour
+                     and ((player.gender == "girl" and mark.colour.female)
+                          or mark.colour.male or mark.colour.female))
+                    or { 255, 0, 0 }
+        if math.floor((self.tick or 0) / 30) % 2 == 0 then
+          local boxY = top + i * pitch
+          love.graphics.setColor(rgb[1] / 255, rgb[2] / 255, rgb[3] / 255, 1)
+          love.graphics.rectangle("fill", cursorX, boxY, win.width - (cursorX - win.x), 1)
+          love.graphics.rectangle("fill", cursorX, boxY + pitch - 1,
+                                  win.width - (cursorX - win.x), 1)
+          love.graphics.rectangle("fill", cursorX, boxY, 1, pitch)
+          love.graphics.rectangle("fill", win.x + win.width - 1, boxY, 1, pitch)
+          love.graphics.setColor(0, 0, 0, 1)
+        end
       end
     end
   end
@@ -966,11 +1024,12 @@ end
 -- The 24x24 picture for one item, off the atlas the importer composes from
 -- gItemIconTable.  The slot IS the item's cartridge index, so there is no
 -- table to walk: icon n sits at (n % cols, n / cols).
-function Gen3BagMenu:itemIcon(id)
+function Gen3BagMenu:itemIcon(id, forcedIndex)
   local rec = (self.game.data.constants or {}).gen3ItemIcons
   if type(rec) ~= "table" or type(rec.image) ~= "string" then return nil end
   local def = id and self.game.data.items and self.game.data.items[id]
-  local index = def and tonumber(def.index)
+  local index = forcedIndex ~= nil and tonumber(forcedIndex)
+                or (def and tonumber(def.index))
   if not index then return nil end
   local count = math.floor(tonumber(rec.count) or 0)
   if index < 0 or index >= count then index = math.floor(tonumber(rec.blank) or 0) end
@@ -985,7 +1044,7 @@ function Gen3BagMenu:itemIcon(id)
 end
 
 function Gen3BagMenu:draw()
-  local inset = math.max(0, math.floor((ROW_PITCH - Font.glyphHeight()) / 2))
+  local inset = self.frlg and 0 or math.max(0, math.floor((ROW_PITCH - Font.glyphHeight()) / 2))
   local r = self:screen()
 
   -- THE PICTURE IS 240 COLUMNS AND THE SURFACE MAY BE WIDER.
@@ -1112,8 +1171,11 @@ function Gen3BagMenu:draw()
   -- half the difference on top of that, as if the record were the box, moved
   -- it four right and two down and put its right-hand column on the border.
   local row = self:selected()
-  if row and row.id then
-    local icon, iquad = self:itemIcon(row.id)
+  if row and (row.id or (row.close and self.frlg)) then
+    -- CreateItemMenuIcon(ITEMS_COUNT) is FireRed's RETURN/CANCEL arrow.  It is
+    -- slot 375 in gItemIconTable (include/constants/items.h), immediately after
+    -- the last real item; the import already bakes that slot into this atlas.
+    local icon, iquad = self:itemIcon(row.id, row.close and self.frlg and 375 or nil)
     if icon and iquad then
       local cell = r.itemIcon or FALLBACK.itemIcon
       love.graphics.setColor(1, 1, 1, 1)
@@ -1133,12 +1195,29 @@ function Gen3BagMenu:draw()
   love.graphics.setColor(0, 0, 0, 1)
   local pocketBox = self:box("pocketName")
   local name = self.pcList and Gen3BagMenu.pcWord(self.game, "title")
+               or (self.itemPc and self.frlg and "DEPOSIT ITEM")
                or self.pockets[self.pocket].name
-  local nameY = pocketBox.y
-                + math.max(0, math.floor((pocketBox.height - Font.glyphHeight()) / 2))
+  if self.itemPc and self.frlg then
+    -- sDefaultBagWindowsDeposit[2] is content (1,1) 8x2.  Its standard frame
+    -- sits one tile outside, so the complete fixed Type-1 box is 10x4 at 0,0.
+    -- The normal pocket-name window is 9 tiles wide and palette 15; deposit is
+    -- deliberately the narrower 8-tile palette-12 window seen in retail.
+    pocketBox = { x = 8, y = 8, width = 64, height = 16 }
+    if Font.drawStandardBox then Font.drawStandardBox(0, 0, 10, 4)
+    else Font.drawBox(0, 0, 10, 4, 1) end
+  end
+  local small = self.itemPc and self.frlg and Font.hasFace and Font.hasFace("small")
+  local faced = small and Font.pushFace("small")
+  local uiStyles = self.game.data.font and self.game.data.font.uiTextStyles or {}
+  local titleStyle = self.frlg and (self.itemPc and uiStyles.dark or uiStyles.white)
+  if titleStyle then Font.pushStyle(titleStyle) end
   Font.draw(name, pocketBox.x + math.max(0, math.floor((pocketBox.width - Font.width(name)) / 2)),
-            nameY)
+            pocketBox.y + math.max(0, math.floor((pocketBox.height - Font.glyphHeight()) / 2)))
+  if titleStyle then Font.popStyle() end
+  if faced then Font.popFace() end
+  if self.frlg and uiStyles.dark then Font.pushStyle(uiStyles.dark) end
   drawRows(self, inset)
+  if self.frlg and uiStyles.dark then Font.popStyle() end
 
   -- the description panel, which is the half of this screen the Game Boy bag
   -- does not have at all
@@ -1154,7 +1233,8 @@ function Gen3BagMenu:draw()
     local describe = ((self.game.data.constants or {}).gen3PCMenu or {}).describe
     text = (type(describe) == "table" and describe[#describe]) or ""
   else
-    text = row and (row.close and Strings("Close the BAG.")
+    text = row and (row.close and (self.frlg and Strings("CLOSE BAG")
+                                   or Strings("Close the BAG."))
                     or row.description) or ""
   end
   -- FireRed prints three lines at the face's own fourteen-pixel pitch from
@@ -1162,9 +1242,26 @@ function Gen3BagMenu:draw()
   local pitch = tonumber(D.lineHeight) or ROW_PITCH
   local y = desc.y + (tonumber(D.y) or 1)
         + (D.lineHeight and r.layout == "frlg" and 0 or inset)
+  local descStyle = self.frlg and uiStyles.white
+  if descStyle then Font.pushStyle(descStyle) end
   for line in tostring(text or ""):gmatch("[^\n]+") do
     Font.draw(line, desc.x + (tonumber(D.x) or 3), y)
     y = y + pitch
+  end
+  if descStyle then Font.popStyle() end
+  if self.resultMessage then
+    -- sWindowTemplates[9] content: (6,15), 23x4.  DrawStdFrameWithCustomTile...
+    -- adds one tile around it, producing the retail 200x48 panel from x40.
+    if Font.drawStandardBox then Font.drawStandardBox(5, 14, 25, 6)
+    else Font.drawBox(5, 14, 25, 6, 1) end
+    love.graphics.setColor(0, 0, 0, 1)
+    local my = 122
+    if self.frlg and uiStyles.dark then Font.pushStyle(uiStyles.dark) end
+    for line in (self.resultMessage .. "\n"):gmatch("([^\n]*)\n") do
+      Font.draw(line, 48, my)
+      my = my + 14
+    end
+    if self.frlg and uiStyles.dark then Font.popStyle() end
   end
   love.graphics.pop()
   love.graphics.setColor(1, 1, 1, 1)

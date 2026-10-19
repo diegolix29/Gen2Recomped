@@ -70,6 +70,75 @@ local VAR_LAST_TALKED = 0x800F
 -- comes upstairs and then says nothing at all.
 local VAR_FACING = 0x800C
 
+-- FireRed's ContextNpcGetTextColor maps fixed object-event graphics 0..91 to
+-- male/female dialogue faces.  IDs 92..108 (and 151) are neutral objects and
+-- 109..150 are Pokemon; those two both use the normal dark field face.  The
+-- female half of the cartridge's packed sTextColorTable is listed explicitly;
+-- every other human ID in 0..91 is male.
+Gen3Commands._frlgFemaleGfx = Gen3Commands._frlgFemaleGfx or {}
+for _, id in ipairs({
+  7,8,9,10,11,12,13,15,17,22,23,24,28,29,31,35,37,40,42,44,46,48,50,
+  58,64,65,66,75,76,77,81,83,85,88,
+}) do Gen3Commands._frlgFemaleGfx[id] = true end
+
+function Gen3Commands._frlgSpeakerRole(ctx)
+  -- Explicit `textcolor` wins over the selected object exactly like
+  -- ContextNpcGetTextColor.  The script constants are male=0, female=1,
+  -- mon=2, neutral=3; 255 means use the selected object/default again.
+  local explicit = tonumber(ctx and ctx.g3TextColor)
+  if explicit and explicit ~= 255 then
+    if explicit == 0 then return "male" end
+    if explicit == 1 then return "female" end
+    if explicit == 2 then return "mon" end
+    return "neutral"
+  end
+  local id = tonumber(ctx and ctx.npc and ctx.npc.def and ctx.npc.def.graphicsId)
+  if not id then return "neutral" end
+  if id >= 0 and id <= 91 then
+    return Gen3Commands._frlgFemaleGfx[id] and "female" or "male"
+  end
+  if id >= 109 and id <= 150 then return "mon" end
+  return "neutral"
+end
+
+function Gen3Commands._frlgFieldTextOpts(ctx, signOverride)
+  local data = ctx and ctx.game and ctx.game.data
+  local font = data and data.font
+  local styles = font and font.fieldTextStyles
+  -- Only FireRed publishes these styles; other Gen 3 games therefore keep the
+  -- exact generic show_text behaviour they had before this fidelity pass.
+  if type(styles) ~= "table" then
+    return signOverride ~= nil and { signpost = signOverride } or nil
+  end
+  local role = Gen3Commands._frlgSpeakerRole(ctx)
+  local opts = {
+    style = styles[role] or styles.neutral,
+    face = (role == "male" or role == "female") and role or nil,
+    promptOnlyWhenWaiting = true,
+    -- AddTextPrinterParameterized2: content y=15 tiles, y+1 baseline;
+    -- 14px Latin face + 1px line spacing.
+    line1Y = 121, line2Y = 136, scrollDistance = 15,
+  }
+  if signOverride ~= nil then
+    opts.signpost = signOverride and true or false
+  elseif ctx.g3SignMessage then
+    opts.signpost = true
+  end
+  return opts
+end
+
+function Gen3Commands.g3_text_color(ctx, color)
+  ctx.g3TextColor = tonumber(color)
+end
+
+function Gen3Commands.g3_sign_message(ctx, enabled)
+  ctx.g3SignMessage = enabled and true or false
+end
+
+function Gen3Commands.g3_show_text(ctx, text, signOverride)
+  return Commands.show_text(ctx, text, nil, Gen3Commands._frlgFieldTextOpts(ctx, signOverride))
+end
+
 local function varStore(save)
   if not save then return nil end
   save.gen3Vars = save.gen3Vars or {}
@@ -3276,10 +3345,11 @@ end
 -- handles that by ticking the script runner from its own update, because the
 -- state stack only updates the state on top.
 --
--- The GEOMETRY is the script's own.  `10 3` is the window's tile position and
--- a Gen 3 front pic is 64x64 -- eight tiles, not the Game Boy's seven -- so
--- the frame is drawn one tile outside that and PicBox is told both rather
--- than keeping its Game Boy constants.
+-- The GEOMETRY is the script's own. FireRed passes `10 3` to
+-- CreateWindowFromRect, which puts the 8x8 content at (x+1,y+1); the standard
+-- border therefore begins at the script's (x,y). CreateMonSprite_PicBox uses
+-- the same content origin for the 64x64 front pic. PicBox is told the outer
+-- frame directly rather than keeping its Game Boy constants.
 function Commands.g3_show_mon_pic(ctx, species, x, y)
   species = valueOf(ctx, species)   -- ScrCmd_showmonpic: VarGet
   ctx.g3MonPic = tonumber(species)
@@ -3298,8 +3368,8 @@ function Commands.g3_show_mon_pic(ctx, species, x, y)
   local box = require("src.ui.PicBox").new(game, {
     path = path, trueColor = trueColor and true or false,
     passive = true, overworld = ow,
-    -- the frame sits one tile outside the window the script names
-    box = { x = tx - 1, y = ty - 1, w = PIC_TILES + 2, h = PIC_TILES + 2 },
+    -- FireRed's script coordinates name the outer frame origin.
+    box = { x = tx, y = ty, w = PIC_TILES + 2, h = PIC_TILES + 2 },
     picTiles = PIC_TILES,
   })
   ow.pokepicBox = box

@@ -55,6 +55,14 @@ local FRLG_FALLBACK = {
   mailbox = { "READ", "MOVE TO BAG", "GIVE", "EXIT" },
 }
 
+-- sStandardTextBox_WindowTemplates[0] in new_menu_helpers.c.  Both the static
+-- top-menu prompt and the highlighted Item Storage description are printed in
+-- this same field-dialogue window on FireRed.
+local FRLG_DIALOGUE_BOX = {
+  tx = 2, ty = 15, tw = 26, th = 4,
+  gbaWindow = true, textX = 0, textY = 1,
+}
+
 function Gen3PlayerPC.words(game, menu)
   local c = game and game.data and game.data.constants or {}
   local r = record(game)
@@ -278,7 +286,11 @@ local function g3Withdraw(game, back)
           if pc[id] <= 0 then pc[id] = nil end
           pcOrder(game, pc)
           require("src.core.Sound").play(game.data, "Withdraw_Deposit")
-          say(game, Strings("Withdrew\n%s.", itemName(game, id)),
+          local line = require("src.ui.Gen3BagMenu").pcWord(game, "withdrew")
+          line = tostring(line or Strings("Withdrew {VAR2}\n{VAR1}(s)."))
+            :gsub("{STR_VAR1}", "{VAR1}"):gsub("{STR_VAR2}", "{VAR2}")
+            :gsub("{VAR2}", tostring(qty)):gsub("{VAR1}", itemName(game, id))
+          say(game, line,
               resume, current)
         end, current, "WITHDRAW")
       end, back, function(sourceId, beforeId)
@@ -289,42 +301,16 @@ local function g3Withdraw(game, back)
   open()
 end
 
--- wNumBoxItems capacity: 50 stacks (PC_ITEM_CAPACITY)
-local function pcFull(game, pc, id)
-  if pc[id] then return false end -- growing an existing stack is fine
-  local cap = (game.data.field or {}).pcItemCap or 50
-  local stacks = 0
-  for _ in pairs(pc) do stacks = stacks + 1 end
-  return stacks >= cap
-end
-
 local function g3Deposit(game, back)
-  local pc = game.save.pcItems
-  local Bag = require("src.inventory.Bag")
-  local open
-  open = function()
-    -- the REAL bag: depositing is choosing out of your own pockets
-    local menu = require("src.ui.Gen3BagMenu").new(game, {
-      pick = true, itemPc = true,
-      onCancel = back,
-      onPick = function(id)
-        if Bag.isBadge and Bag.isBadge(id) then return open() end
-        local have = (game.save.inventory or {})[id] or 1
-        askQuantity(game, id, have, function(qty)
-          if pcFull(game, pc, id) then
-            return say(game, Strings("No room left to\nstore items."), open)
-          end
-          Bag.remove(game.save, id, qty)
-          pc[id] = (pc[id] or 0) + qty
-          pcOrder(game, pc)
-          require("src.core.Sound").play(game.data, "Withdraw_Deposit")
-          say(game, Strings("%s was\nstored via PC.", itemName(game, id)), open)
-        end)
-      end,
-    })
-    game.stack:push(menu)
-  end
-  open()
+  -- ITEMMENULOCATION_ITEMPC is still the real bag, but it is a BAG MODE, not
+  -- a generic pick callback that closes the screen.  Let Gen3BagMenu own that
+  -- mode so its deposit title, CANCEL/return row, quantity path and result
+  -- window stay on the same retail screen throughout the operation.
+  game.stack:push(require("src.ui.Gen3BagMenu").new(game, {
+    store = "deposit",
+    itemPc = true,
+    onCancel = back,
+  }))
 end
 
 local function g3Toss(game, back)
@@ -389,6 +375,7 @@ local function itemStorage(game, onCancel)
         or nil
       rows[#rows + 1] = {
         label = Strings(label),
+        describe = describe[i],
         keepOpen = flow ~= nil,
         onSelect = flow and function() flow(game) end or nil,
       }
@@ -404,6 +391,7 @@ local function itemStorage(game, onCancel)
   end
   -- sWindowTemplate_ItemStorageSubmenu: (1,1), 14 wide inside its frame
   local sub = Menu.new(game, rows, { noSound = true, tx = 0, ty = 0, tw = 16,
+                                     describeBox = fireRed and FRLG_DIALOGUE_BOX or nil,
                                      onCancel = onCancel })
   -- placed on the GBA's own 240x160, not the Game Boy's centred 160x144
   function sub:uiSize() return 240, 160 end
@@ -475,6 +463,13 @@ function Gen3PlayerPC.new(game, opts)
   opts = opts or {}
   game.save.pcItems = game.save.pcItems or {}
   local words = Gen3PlayerPC.words(game, "main")
+  local constants = (game.data or {}).constants or {}
+  local bagScreen = constants.gen3BagScreen
+  local fireRed = constants.gen3FRLGItemPc ~= nil
+                  or (type(bagScreen) == "table" and bagScreen.layout == "frlg")
+  local pcRecord = record(game) or {}
+  local topPrompt = pcRecord.topPrompt
+                    or (fireRed and "What would you like to do?" or nil)
   local menu
   local function close()
     local done = opts.onDone
@@ -484,7 +479,7 @@ function Gen3PlayerPC.new(game, opts)
   local rows = {}
   for _, i in ipairs(Gen3PlayerPC.order(game, opts.order, #words)) do
     local label = words[i]
-    local row = { label = Strings(label or "") }
+    local row = { label = Strings(label or ""), describe = topPrompt }
     local word = tostring(label or ""):upper()
     if word:find("ITEM STORAGE", 1, true) then
       row.keepOpen = true
@@ -499,8 +494,21 @@ function Gen3PlayerPC.new(game, opts)
         end
       end
     elseif word:find("MAILBOX", 1, true) then
-      row.keepOpen = true
-      row.onSelect = function() notBuilt(game, Strings(label)) end
+      if fireRed then
+        -- Task_PlayerPcMailbox removes the top menu before displaying this
+        -- exact field message, then Task_ReturnToTopMenu redraws the menu after
+        -- A/B.  The port has no mail-save model yet, so its representable
+        -- FireRed state is precisely the cartridge's zero-mail arm.
+        row.onSelect = function()
+          local TextBox = require("src.render.TextBox")
+          game.stack:push(TextBox.new(game, Strings("There's no MAIL here."),
+            function() Gen3PlayerPC.reopen(game, opts) end,
+            { promptOnlyWhenWaiting = true }))
+        end
+      else
+        row.keepOpen = true
+        row.onSelect = function() notBuilt(game, Strings(label)) end
+      end
     else
       -- TURN OFF: the row that ends the session
       row.onSelect = close
@@ -512,6 +520,7 @@ function Gen3PlayerPC.new(game, opts)
     noSound = true,
     -- sWindowTemplate_TopMenu_*: (1,1), 13 wide inside its frame
     tx = 0, ty = 0, tw = 15,
+    describeBox = fireRed and FRLG_DIALOGUE_BOX or nil,
     onCancel = close,
   })
   function menu:uiSize() return 240, 160 end

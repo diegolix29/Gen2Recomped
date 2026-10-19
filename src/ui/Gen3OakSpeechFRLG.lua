@@ -68,7 +68,11 @@ function Speech.new(game, onDone)
   self.black = 1          -- whole-screen fade to black
   self.picAlpha = 0       -- trainer pic + platform
   self.picTarget = 0
-  self.picOffset = 0      -- slide left while the name list is up
+  -- Visual offset of BG2 trainer art + the platform OBJ sprites.  Oak speech's
+  -- task variable counts DOWN to -60, but BG2 HOFS=-60 displays the bitmap
+  -- sixty pixels to the RIGHT, while gSpriteCoordOffsetX is explicitly +60.
+  -- Store the screen-space result here so draw() does not invert it again.
+  self.picOffset = 0
   self.picScale = 1
   self.picWhite = 0
   self.nidoAlpha, self.nidoScale, self.nidoWhite = 0, 0, 0
@@ -199,6 +203,7 @@ end
 function Speech:menu(labels, opts)
   local Menu = require("src.ui.Menu")
   local choice
+  opts = opts or {}
   local items = {}
   for i, label in ipairs(labels) do
     items[i] = { label = label, onSelect = function()
@@ -207,6 +212,15 @@ function Speech:menu(labels, opts)
       self.waitFrames = 1
     end }
   end
+  -- oak_speech.c passes WindowTemplate CONTENT coordinates to these menus.
+  -- Their frame is one tile outside the template on every side and every row
+  -- starts at y=1 with a 16-pixel pitch.  A fresh FireRed save has Frame Type
+  -- 1 (optionsWindowFrameType=0), so keep the professor intro on that frame
+  -- even though this port deliberately persists desktop options across New
+  -- Game.
+  opts.gbaWindow = true
+  opts.th = opts.th or (#labels * 2)
+  opts.frameIndex = 1
   opts.cancelable = opts.onCancelIndex ~= nil
   if opts.onCancelIndex then
     opts.onCancel = function() choice = opts.onCancelIndex; self.waitFrames = 1 end
@@ -366,7 +380,7 @@ function Speech:run()
   while true do
     box = self:ask(question)
     question = "rivalNameAgain"
-    if self.picOffset > -60 then self:tween("picOffset", -60, 2) end
+    if self.picOffset < 60 then self:tween("picOffset", 60, 2) end
     local labels = { clean(self.text.newName) or Strings("NEW NAME") }
     for i = 1, 4 do labels[#labels + 1] = rivals[i] end
     local pick = self:menu(labels, { tx = 2, ty = 2, tw = 12 })
@@ -493,38 +507,61 @@ local function drawLines(text, x, y, pitch, ink, shadow, alpha)
 end
 
 function Speech:drawTopBar(right)
-  love.graphics.setColor(LIGHT[1], LIGHT[2], LIGHT[3], 1)
+  local colors = self.rec.colors or {}
+  local bar = colors.topBar or { 0, 123, 197 }
+  local ink = colors.topInk or { 255, 255, 255 }
+  local shadow = colors.topShadow or { 99, 99, 99 }
+  love.graphics.setColor(bar[1] / 255, bar[2] / 255, bar[3] / 255, 1)
   love.graphics.rectangle("fill", 0, 0, GBA_W, 16)
   love.graphics.setColor(1, 1, 1, 1)
   if self.phase == "guide" and self.page == 1 then
-    drawLines(clean(self.text.controls) or "CONTROLS", 4, 1, 14, DARK, WHITE, 1)
+    drawLines(clean(self.text.controls) or "CONTROLS", 4, 1, 14,
+              { ink[1] / 255, ink[2] / 255, ink[3] / 255 },
+              { shadow[1] / 255, shadow[2] / 255, shadow[3] / 255 }, 1)
   end
-  -- {A_BUTTON} NEXT / {B_BUTTON} BACK: the button glyphs are control codes the
-  -- text reader drops, so they are drawn here as the small keypad icons
-  local function icon(letter, x)
-    love.graphics.setColor(DARK[1], DARK[2], DARK[3], 1)
-    love.graphics.rectangle("fill", x, 3, 11, 10, 3, 3)
-    love.graphics.setColor(1, 1, 1, 1)
-    drawLines(letter, x + 3, 1, 14, WHITE, DARK, 1)
-    return x + 13
-  end
+  -- TopBarWindowPrintString uses FONT_SMALL and right-aligns the literal
+  -- {A_BUTTON}/{B_BUTTON} control-code icons four pixels from the edge.
   local nextWord = ((clean(self.text.aNext) or "NEXT"):gsub("^%s+", ""))
-  local parts = { { "A", nextWord } }
-  if self.page > 1 then parts[2] = { "B", "BACK" } end
+  local parts = { { self:image("guideAButton"), nextWord .. (self.page > 1 and " " or "") } }
+  if self.page > 1 then parts[2] = { self:image("guideBButton"), "BACK" } end
+  local faced = Font.hasFace and Font.hasFace("small") and Font.pushFace("small")
   local width = 0
-  for _, p in ipairs(parts) do width = width + 13 + Font.width(p[2]) + 6 end
-  local x = GBA_W - width - 2
+  for _, p in ipairs(parts) do width = width + 8 + Font.width(p[2]) end
+  local x = GBA_W - 4 - width
+  local topInk = { ink[1] / 255, ink[2] / 255, ink[3] / 255, 1 }
+  local topShadow = { shadow[1] / 255, shadow[2] / 255, shadow[3] / 255, 1 }
   for _, p in ipairs(parts) do
-    x = icon(p[1], x)
-    drawLines(p[2], x, 1, 14, DARK, WHITE, 1)
-    x = x + Font.width(p[2]) + 6
+    love.graphics.setColor(1, 1, 1, 1)
+    if p[1] then love.graphics.draw(p[1], x, 1) end
+    x = x + 8
+    local two = Font.beginTwoTone(topInk, topShadow)
+    if not two then love.graphics.setColor(topInk) end
+    Font.draw(p[2], x, 1)
+    if two then Font.endTwoTone() end
+    x = x + Font.width(p[2])
   end
+  if faced then Font.popFace() end
+  love.graphics.setColor(1, 1, 1, 1)
 end
 
 function Speech:drawGuide()
   local bg = self.rec.backdrop or { 16, 115, 230 }
   love.graphics.setColor(bg[1] / 255, bg[2] / 255, bg[3] / 255, 1)
   love.graphics.rectangle("fill", 0, 0, GBA_W, GBA_H)
+  -- oak_speech.c fills BG1's row below the top-bar with tile 2/palette 13 and
+  -- the last screen row with tile 14/palette 13.  Their decoded scanlines are
+  -- solid, so reproduce the cartridge pixels directly rather than leaving the
+  -- guide's plain backdrop visible through those two bands.
+  local function band(y, h, r, g, b)
+    love.graphics.setColor(r / 255, g / 255, b / 255, 1)
+    love.graphics.rectangle("fill", 0, y, GBA_W, h)
+  end
+  band(16, 2, 0, 82, 115)
+  band(18, 1, 16, 172, 222)
+  band(19, 5, 0, 123, 197)
+  band(152, 5, 0, 123, 197)
+  band(157, 1, 0, 115, 139)
+  band(158, 2, 0, 82, 115)
   love.graphics.setColor(1, 1, 1, 1)
   local icons = self.page == 2 and self:image("guidePage2")
                 or self.page == 3 and self:image("guidePage3") or nil
@@ -536,6 +573,14 @@ function Speech:drawGuide()
     drawLines(clean(self.text[t.key]), t.x, t.y, 16, WHITE, DARK, self.textAlpha)
   end
   self:drawTopBar()
+  -- CreateTextCursorSprite(0, 230,149) becomes a 16x16 sprite at (225,145).
+  -- SpriteCB_TextCursor advances 0,1,2,1 px every nine frames.
+  local cursor = self:image("guideCursor")
+  if cursor then
+    local bob = ({ 0, 1, 2, 1 })[math.floor(self.pikaTimer / 9) % 4 + 1]
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(cursor, 225, 145 + bob)
+  end
 end
 
 function Speech:drawPikachu()

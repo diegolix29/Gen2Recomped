@@ -12816,7 +12816,7 @@ function Structures.forMap(map)
     local cw, ch = math.floor(tw2 / 2), math.floor(th2 / 2)
     local count, walked = {}, 0
     for cy = 0, ch - 1 do
-      Budget.tick()
+      Budget.check()
       for cx = 0, cw - 1 do
         local okC, c = pcall(gen3.classAt, cx, cy)
         if okC and (c == "ground" or c == "grass") then
@@ -13491,7 +13491,7 @@ function Structures.forMap(map)
   if S.terraced then
     local lifted = 0
     for cy = math.floor(y0 / 2), math.floor(y1 / 2) do
-      Budget.tick()
+      Budget.check()
       for cx = math.floor(x0 / 2), math.floor(x1 / 2) do
         local k = keyOf(cx * 2, cy * 2)
         local sh = S.shapeAt[k]
@@ -14346,7 +14346,7 @@ function Structures.forMap(map)
       local okJ, g3j = pcall(Gen3.forMap, map)
       if okJ and g3j and g3j.metatileAt and g3j.blockedAt and g3j.attributes then
         for cy = 0, H3 - 1 do
-          Budget.tick()
+          Budget.check()
           for cx = 0, W3 - 1 do
             if not counterAt(cx, cy) then
               local okB, bl = pcall(g3j.blockedAt, cx, cy)
@@ -14370,7 +14370,7 @@ function Structures.forMap(map)
     end
 
     for cy = 0, H3 - 1 do
-      Budget.tick()
+      Budget.check()
       for cx = 0, W3 - 1 do
         local k0 = keyOf(cx * 2, cy * 2)
         local s0 = shapeAt[k0]
@@ -14597,7 +14597,7 @@ function Structures.levelGen3Plots(S, map)
 
   local levelled = 0
   for cy = 0, H - 1 do
-    Budget.tick()
+    Budget.check()
     for cx = 0, W - 1 do
       if Gen3.isBerryPlot(map, cx, cy) then
         local okE, mine = pcall(map.cellElevation, map, cx, cy)
@@ -17804,7 +17804,7 @@ function Structures.buildDrawnTerraces(S, map, x0, x1, y0, y1)
   do
     local candK, comp, comps = {}, {}, {}
     for cy = 0, H - 1 do
-      Budget.tick()
+      Budget.check()
       for cx = 0, W - 1 do
         if not walk[K(cx, cy)] then
           local s0 = S.shapeAt[keyOf(cx * 2, cy * 2)]
@@ -17866,7 +17866,7 @@ function Structures.buildDrawnTerraces(S, map, x0, x1, y0, y1)
   for _ = 1, 8 do
     local lift = {}
     for cy = 1, H - 2 do
-      Budget.tick()
+      Budget.check()
       for cx = 1, W - 2 do
         if walk[K(cx, cy)] then
           local s0 = S.shapeAt[keyOf(cx * 2, cy * 2)]
@@ -17906,7 +17906,7 @@ function Structures.buildDrawnTerraces(S, map, x0, x1, y0, y1)
   do
     local tw2b, th2b = W * 2, H * 2
     for ty = -RING * 2, th2b + RING * 2 - 1 do
-      Budget.tick()
+      Budget.check()
       for tx = -RING * 2, tw2b + RING * 2 - 1 do
         if tx < 0 or ty < 0 or tx >= tw2b or ty >= th2b then
           local k = keyOf(tx, ty)
@@ -19782,7 +19782,7 @@ function Structures.standGen3Furniture(S, map, x0, x1, y0, y1)
   -- ---- the cells the detector had to guess at, and only those
   local cand = {}
   for cy = cy0, cy1 do
-    Budget.tick()
+    Budget.check()
     for cx = cx0, cx1 do
       local k = keyOf(cx * 2, cy * 2)
       local s = S.shapeAt[k]
@@ -29844,7 +29844,7 @@ function Structures.buildObject(S, map, region, cluster,
     local rx = (c[1] - region.minX) * 8
     local ry = (c[2] - region.minY) * 8
     for py = 0, 7 do
-      Budget.tick()
+      Budget.check()
       for px = 0, 7 do
         local i = (ry + py + 1) * W + (rx + px + 1)
         local on = state[i] ~= nil and state[i] ~= "air"
@@ -31989,7 +31989,7 @@ function Structures.buildGen3Joinery(S, map)
   -- ---- which cells, and what each stands at
   local claim, order = {}, {}
   for cy = 0, H - 1 do
-    Budget.tick()
+    Budget.check()
     for cx = 0, W - 1 do
       local k = keyOf(cx * 2, cy * 2)
       local s = S.shapeAt[k]

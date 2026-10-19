@@ -7,6 +7,7 @@
 -- the text is exhausted and A is pressed, then calls onDone.
 
 local Logger = require("src.core.Logger")
+local Assets = require("src.render.Assets")
 local Font = require("src.render.Font")
 local Theme = require("src.ui.Theme")
 local Timing = require("src.core.Timing")
@@ -46,6 +47,9 @@ function TextBox.new(game, text, onDone, opts)
   local self = setmetatable({}, TextBox)
   self.game = game
   self.onDone = onDone
+  self.textFace = opts.face
+  local facePushed = self.textFace and Font.hasFace and Font.hasFace(self.textFace)
+                     and Font.pushFace(self.textFace)
   self.choice = opts.choice
   self.defaultNo = opts.defaultNo
   self.choiceNoSound = opts.noSound
@@ -87,8 +91,15 @@ function TextBox.new(game, text, onDone, opts)
   self.scrollHoldFrames = tonumber(opts.scrollHoldFrames)
   self.textX = opts.textX or (self.boxTx + 1) * 8
   self.drawFrame = opts.drawFrame ~= false
+  self.signpost = opts.signpost == true
   self.fillColor = opts.fillColor
   self.textStyle = opts.style
+  self.promptArrow = opts.promptArrow or box.promptArrow
+  self.promptArrowAtPen = opts.promptArrowAtPen == true or box.promptArrowAtPen == true
+  -- GBA field text only draws the pen arrow for explicit page/scroll prompt
+  -- control codes; reaching the final terminator waits silently for A/B.
+  self.promptOnlyWhenWaiting = opts.promptOnlyWhenWaiting == true
+  self.promptArrowImage = nil
   self.clipToBox = opts.clipToBox == true
   self.uiWidth, self.uiHeight = opts.uiWidth, opts.uiHeight
   -- WHERE THE TWO LINES SIT, which stopped being a constant when the font
@@ -129,6 +140,7 @@ function TextBox.new(game, text, onDone, opts)
   self.done = false
   self.blink = 0
   self:beginLine()
+  if facePushed then Font.popFace() end
   return self
 end
 
@@ -619,7 +631,11 @@ function TextBox:draw()
     r:setUIAnchor(x,y,w,h,"bottom")
   end
   if self.drawFrame then
-    Font.drawDialogueBox(self.boxTx, self.boxTy, self.boxTw, self.boxTh)
+    if self.signpost and Font.drawSignpostBox then
+      Font.drawSignpostBox(self.boxTx, self.boxTy, self.boxTw, self.boxTh)
+    else
+      Font.drawDialogueBox(self.boxTx, self.boxTy, self.boxTw, self.boxTh)
+    end
   elseif self.fillColor then
     local c = self.fillColor
     love.graphics.setColor(c[1] or 0, c[2] or 0, c[3] or 0, c[4] or 1)
@@ -633,6 +649,8 @@ function TextBox:draw()
                              self.boxTw * 8, self.boxTh * 8)
   end
   love.graphics.setColor(0, 0, 0, 1)
+  local facePushed = self.textFace and Font.hasFace and Font.hasFace(self.textFace)
+                     and Font.pushFace(self.textFace)
   if self.textStyle then Font.pushStyle(self.textStyle) end
   if self.scrollPx and self.scrollPx > 0 then
     self.scrollPx = self.scrollPx - (self.scrollStep or 2)
@@ -655,6 +673,7 @@ function TextBox:draw()
   -- and a line the wrapper measured as fitting runs off the end of the box.
   -- The wrapper already measures with Font.advanceOf, so this is what makes
   -- the drawing agree with the measuring rather than merely look better.
+  local lastPen, lastY
   for i, line in ipairs(self.shown) do
     local y = (ys[i] or self.line2Y) + (i == 1 and off or 0)
     local pen = self.textX
@@ -662,10 +681,29 @@ function TextBox:draw()
       Font.drawCode(code, pen, y)
       pen = pen + Font.advanceOf(code) + self.letterSpacing
     end
+    lastPen, lastY = pen, y
   end
-  if (self.waiting or (self.done and not self.choice and not self.auto
-                       and not self.stay))
-     and self.blink < 30 then
+  local prompt = self.waiting or (self.done and not self.promptOnlyWhenWaiting
+                                  and not self.choice and not self.auto and not self.stay)
+  if prompt and self.promptArrowAtPen and type(self.promptArrow) == "table"
+     and type(self.promptArrow.path) == "string" and lastPen and lastY then
+    if self.promptArrowImage == nil then
+      local ok, img = pcall(Assets.image, self.promptArrow.path)
+      self.promptArrowImage = ok and img or false
+      if self.promptArrowImage then self.promptArrowImage:setFilter("nearest", "nearest") end
+    end
+    if self.promptArrowImage then
+      local fw = tonumber(self.promptArrow.width) or 10
+      local fh = tonumber(self.promptArrow.height) or 12
+      local frames = tonumber(self.promptArrow.frames) or 3
+      local seq = { 0, 1, 2, 1 }
+      local frame = math.min(frames - 1, seq[math.floor(self.blink / 9) % 4 + 1])
+      local iw, ih = self.promptArrowImage:getDimensions()
+      local quad = love.graphics.newQuad(frame * fw, 0, fw, fh, iw, ih)
+      love.graphics.setColor(1, 1, 1, 1)
+      love.graphics.draw(self.promptArrowImage, quad, lastPen, lastY)
+    end
+  elseif prompt and self.blink < 30 then
     -- page-advance cursor: glyph $EE by default, the blinking down arrow
     -- the original prints via `ld a, "▼"` (home/text.asm)
     Font.drawCode(Theme.moreArrow or 0xEE,
@@ -673,6 +711,7 @@ function TextBox:draw()
                   (self.boxTy + self.boxTh - 1) * 8 - 4)
   end
   if self.textStyle then Font.popStyle() end
+  if facePushed then Font.popFace() end
   if self.clipToBox then
     if oldScissor and oldScissor[1] ~= nil then
       love.graphics.setScissor(oldScissor[1], oldScissor[2],

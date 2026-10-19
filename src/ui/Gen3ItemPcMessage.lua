@@ -16,6 +16,10 @@ local Gen3ItemPcMessage = {}
 Gen3ItemPcMessage.__index = Gen3ItemPcMessage
 Gen3ItemPcMessage.isOpaque = false
 
+function Gen3ItemPcMessage:uiSize() return 240, 160 end
+function Gen3ItemPcMessage:wantsFillScale() return true end
+function Gen3ItemPcMessage:wantsEdgeBleed() return false end
+
 function Gen3ItemPcMessage.new(game, itemPc, text, onDone, kind)
   local self = setmetatable({}, Gen3ItemPcMessage)
   self.game = game
@@ -57,14 +61,21 @@ end
 
 function Gen3ItemPcMessage:draw()
   local b = self:messageBox()
-  Font.drawBox(math.floor(b.x / 8), math.floor(b.y / 8),
-               math.floor(b.width / 8), math.floor(b.height / 8))
+  if self.itemPc and self.itemPc.drawContentFrame then
+    self.itemPc:drawContentFrame(b, "standard")
+  else
+    Font.drawBox(math.floor(b.x / 8) - 1, math.floor(b.y / 8) - 1,
+                 math.floor(b.width / 8) + 2, math.floor(b.height / 8) + 2, 1)
+  end
   love.graphics.setColor(0, 0, 0, 1)
+  local styles = self.game.data.font and self.game.data.font.uiTextStyles or {}
+  if styles.dark then Font.pushStyle(styles.dark) end
   local y = b.y + 2
   for line in (self.text .. "\n"):gmatch("([^\n]*)\n") do
     Font.draw(line, b.x, y)
     y = y + 14
   end
+  if styles.dark then Font.popStyle() end
   love.graphics.setColor(1, 1, 1, 1)
 end
 

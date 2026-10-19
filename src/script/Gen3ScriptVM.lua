@@ -239,10 +239,12 @@ L.vcall_if = function(ir, s) return L.call_if(ir, s) end
 L.vbuffermessage = L.nop
 L.vbufferstring = L.nop
 
--- Text STYLING, which this engine's one text box does not vary.
-L.textcolor = L.nop
-L.signmsg = L.nop
-L.normalmsg = L.nop
+-- FireRed varies field text by speaker and can explicitly override that choice
+-- with `textcolor`; `signmsg` swaps the field-message frame until `normalmsg`.
+-- Keep those two bits on the Gen 3 runtime context instead of discarding them.
+L.textcolor = function(ir, s) emit(s, { "g3_text_color", ir[2] }) end
+L.signmsg = function(_, s) emit(s, { "g3_sign_message", true }) end
+L.normalmsg = function(_, s) emit(s, { "g3_sign_message", false }) end
 L.loadhelp = L.nop
 L.unloadhelp = L.nop
 L.drawbox = L.nop
@@ -307,12 +309,12 @@ L.message = function(ir, s)
   local key = type(ir[2]) == "string" and ir[2] or s.lastText
   if key then
     s.lastText = key
-    emit(s, { "show_text", key })
+    emit(s, { "g3_show_text", key })
   end
 end
 L.messageautoscroll = function(ir, s)
   local key = type(ir[3]) == "string" and ir[3] or s.lastText
-  if key then emit(s, { "show_text", key }) end
+  if key then emit(s, { "g3_show_text", key }) end
 end
 L.messageinstant = L.message
 
@@ -380,7 +382,10 @@ local function std(ir, s, isJump)
   local index = tonumber(ir[2])
   for _, row in ipairs(STD_PROLOGUE[index] or {}) do emit(s, row) end
   if PLAIN_MSGBOX[index] then
-    if s.lastText then emit(s, { "show_text", s.lastText }) end
+    if s.lastText then
+      emit(s, { "g3_show_text", s.lastText,
+                index == STD_MSGBOX_SIGN and true or nil })
+    end
   elseif index == STD_MSGBOX_YESNO then
     -- `ask` leaves the answer on ctx; g3_from_yesno copies it into VAR_RESULT,
     -- which is what the compare_var_to_value that always follows will read

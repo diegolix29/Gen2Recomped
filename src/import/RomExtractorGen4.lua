@@ -718,7 +718,11 @@ function RomExtractorGen4:extractCellActors()
   for step, key in ipairs(order) do
     local want = wanted[key]
     local sheet = Gen4Graphics.tiles(member(char, want.char))
-    local colours = Gen4Graphics.palette(member(pltt, want.palette))
+    -- SEQUENTIAL, ignoring the PMCP every wepltt member carries: the sprite
+    -- system loads OBJ palettes without it (see Gen4Graphics.palette). Read
+    -- by its slot list, member 0 was padded to bank 9 twice and member 29
+    -- (PMCP slot 9, OAM bank 0) drew from black filler.
+    local colours = Gen4Graphics.palette(member(pltt, want.palette), true)
     local bank = nil
     local cellBytes = member(cellArc, want.cell)
     if cellBytes then bank = Gen4Cells.parse(cellBytes, Gen4Graphics) end
@@ -6855,6 +6859,11 @@ function RomExtractorGen4:extractModels()
               for _, record in ipairs(fieldSet.animations or {}) do
                 local claimed = false
                 for _, owner in ipairs(record.props or {}) do
+                  if owner == modelIndex then claimed = true end
+                end
+                -- an HGSS script-owned claim (the PC monitor, the escalators)
+                -- is `scriptProps`; its frames are drawn by a one-shot
+                for _, owner in ipairs(record.scriptProps or {}) do
                   if owner == modelIndex then claimed = true end
                 end
                 if record.pattern and (record.name == model.name or claimed) then
