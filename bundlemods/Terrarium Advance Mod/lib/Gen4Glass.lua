@@ -55,9 +55,9 @@
 --     The test is conservative: a triangle is kept when its UV bounding box
 --     covers any glass texel (a summed-area table makes that O(1)), so a pane is
 --     never dropped, only needless geometry is.
---   * The land window stays WINDOW = 3 (7x7 lands) so a whole town is lit, which is
---     affordable now that a land only holds its pane triangles. FOLLOW_DRAW_DIST
---     = true also bounds it by Gen4Distance (the G4 DRAW DIST row) for a phone.
+--   * The land window is WINDOW = 2 (5x5 lands, was 3 = 7x7) and is also bounded
+--     by Gen4Distance (the G4 DRAW DIST row), so NEAR / MID / FAR also shrink or
+--     grow the glass. The haze has swallowed anything further anyway.
 --   * By day nothing is built (BUILD_BY_DAY = false). Lands fill in over the first
 --     dusk frames, spread by Gen4Budget, while the lamps are still fading in.
 --   * Pieces are drawn grouped by texture, so the glass uniforms are sent once per
@@ -121,9 +121,7 @@ local Glass = {
   MAX_FRACTION = 0.45,  -- more of the picture than this and it is not a window
   MAX_SAT_TEXELS = 262144, -- bigger textures skip the fast triangle test (all kept)
 
-  WINDOW = 3,           -- lands each way around the camera: every lit window of a
-                        -- town shows, not just the ones you are standing next to
-  FOLLOW_DRAW_DIST = false, -- true: also shrink the window with the G4 DRAW DIST row
+  WINDOW = 2,           -- lands each way around the camera (was 3)
   REACH_SLACK = 0.35,   -- chunks past Gen4Distance's reach a land is still kept
   PULL = 0.6,           -- toward the eye, world units: the overlay's depth bias
   SHADE = 0.1,          -- the overlay's own vertex shade (day glint's base only)
@@ -137,7 +135,7 @@ local Glass = {
   GLINT_MIN = 0.02,
 
   BUILDS_PER_FRAME = 3,
-  MAX_RESIDENT = 56,    -- must cover the whole window (7x7 = 49 lands)
+  MAX_RESIDENT = 30,
   MAX_VERTS = 60000,    -- split a mesh before it needs 32-bit indices
   LOG = true,
 
@@ -674,7 +672,7 @@ end
 -- G4 DRAW DIST row (Gen4Distance) plus a little slack, never past the window.
 local function reachFor(px)
   local cap = (Glass.WINDOW + 0.5) * px
-  if not (Glass.FOLLOW_DRAW_DIST and Distance and Distance.reach) then return cap end
+  if not (Distance and Distance.reach) then return cap end
   local ok, r = pcall(Distance.reach, px)
   r = ok and tonumber(r) or cap
   return min(r + Glass.REACH_SLACK * px, cap)
