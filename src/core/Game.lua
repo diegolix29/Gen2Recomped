@@ -52,11 +52,17 @@ end
 function Game:installMods()
   if self._modsInstalled then return end
   self._modsInstalled = true
+  -- Skip mod loading for launcher preview (background gameplay in launcher)
+  if self.launcherPreview then
+    return
+  end
   -- Mods are a native engine subsystem.  They load after the verified ROM
   -- data exists, so mods can register or override the same definitions that
   -- the rest of the game consumes.  A broken mod is reported and skipped by
   -- the loader without preventing the base game from booting.
-  self.mods = self.mods or ModLoader.new()
+  -- Always create a fresh loader here - the one in Game:load is an empty stub
+  -- for intro screens to query, and never actually loads mods.
+  self.mods = ModLoader.new()
   self.mods:load(Data)
   self.modStatus = self.mods:status()
   -- AND THE MAP EDITOR'S OVERLAY AGAIN, ON TOP OF THE MERGE.
@@ -131,6 +137,9 @@ function Game:load()
   self.data = Data
   Data:load()
 
+  -- Clear launcher preview flag if set - this is a real game launch
+  self.launcherPreview = nil
+
   -- An empty loader so intro screens can ask Game.mods without nil; the
   -- entry chunks stay unloaded until installMods (after the splash, or
   -- immediately when Play skips straight into the title / overworld).
@@ -183,12 +192,9 @@ function Game:load()
   -- Data. installMods + announceReady land before the title (or before
   -- the overworld, on autopilot).
   local chosen = splashScreenId(self)
-  local skipIntro = os.getenv("POKEPORT_AUTOPILOT") or not chosen
-  if skipIntro then
+  if os.getenv("POKEPORT_AUTOPILOT") then
     self:installMods()
     self:announceReady()
-  end
-  if os.getenv("POKEPORT_AUTOPILOT") then
     StateStack:push(OverworldState, self.save.player.map,
                     self.save.player.x, self.save.player.y, self.save.player.facing)
   else
@@ -205,6 +211,9 @@ function Game:load()
         StateStack:push(titleState)
       end)
     else
+      -- No splash screen: install mods before title
+      self:installMods()
+      self:announceReady()
       -- `false`, not merely absent: a dataset whose attract movie this engine
       -- does not have yet (Gen 3's) says so rather than being handed Red's,
       -- and `or splash` would have handed it Red's -- which is precisely how
@@ -332,6 +341,9 @@ function Game:makeTitleState()
       end
     end,
     onContinue = function()
+      -- Ensure mods are loaded before continuing a save
+      self:installMods()
+      self:announceReady()
       local loaded, recovered = SaveData.load()
       if loaded then
         self:restoreSave(loaded, recovered)
@@ -1409,6 +1421,8 @@ function Game:fireHotkey(actionId)
     self:writeSave()
     return true
   elseif actionId == "loadGame" then
+    self:installMods()
+    self:announceReady()
     local loaded, recovered = SaveData.load()
     if loaded then self:restoreSave(loaded, recovered) end
     return true
@@ -1530,6 +1544,8 @@ function Game:keypressed(key)
     self:writeSave()
     return
   elseif key == "f2" then
+    self:installMods()
+    self:announceReady()
     local loaded, recovered = SaveData.load()
     if loaded then self:restoreSave(loaded, recovered) end
     return
