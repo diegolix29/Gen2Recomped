@@ -598,21 +598,6 @@ function Horde.install()
   installed = true
   local mod = V.mod
 
-  -- THE CARDS AND THE SOUNDS. The mode pushes HordeGameOver and
-  -- HordeExitPrompt by name and fires the DS_HORDE_* chip programs, so all of
-  -- them have to be in the registries -- nothing put them there, and the
-  -- first game over pushed a screen that did not exist. Each under pcall: a
-  -- missing card or sound costs that card or sound, not the mod.
-  pcall(function()
-    mod.content.screens:register("HordeGameOver",
-                                 { new = V.require("HordeGameOver").new })
-  end)
-  pcall(function()
-    mod.content.screens:register("HordeExitPrompt",
-                                 { new = V.require("HordeExitPrompt").new })
-  end)
-  pcall(function() V.require("HordeSfx").register(mod) end)
-
   installGloom()
 
   -- THE CODE. `input.step` runs once per fixed step, immediately before

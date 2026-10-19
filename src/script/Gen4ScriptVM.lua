@@ -223,37 +223,8 @@ Gen4ScriptVM.flagName = flagName
 
 L.setflag = function(ins, s) emit(s, { "set_flag", flagName(ins.args[1]) }) end
 L.clearflag = function(ins, s) emit(s, { "clear_flag", flagName(ins.args[1]) }) end
--- BLACK / WHITE's set / clear take a var as readily as a flag: the hidden
--- items' common script sets "the flag in 0x8002" (900 + the item's index),
--- which read literally set flag 0x8002 and left every hidden item to be
--- picked up again (flags stop below 0x4000; vars start there)
-do
-  local set0, clear0 = L.setflag, L.clearflag
-  local function bw() return require("src.core.GameVersion").isGen5() end
-  L.setflag = function(ins, s)
-    local n = tonumber(ins.args[1])
-    if n and n >= 0x4000 and bw() then return emit(s, { "g4_set_flag_var", n }) end
-    return set0(ins, s)
-  end
-  L.clearflag = function(ins, s)
-    local n = tonumber(ins.args[1])
-    if n and n >= 0x4000 and bw() then return emit(s, { "g4_clear_flag_var", n }) end
-    return clear0(ins, s)
-  end
-end
 L.checkflag = function(ins, s) emit(s, { "g4_check_flag", flagName(ins.args[1]) }) end
 L.checkflagfromvar = function(ins,s) emit(s, {'g4_check_flag_var',ins.args[1],ins.args[2]}) end
--- (Black / White: a checkflag on a var reads the flag the var names)
-do
-  local check0 = L.checkflag
-  L.checkflag = function(ins, s)
-    local n = tonumber(ins.args[1])
-    if n and n >= 0x4000 and require("src.core.GameVersion").isGen5() then
-      return emit(s, { "g4_bw_check_flag_var", n })
-    end
-    return check0(ins, s)
-  end
-end
 L.setflagfromvar = function(ins,s) emit(s, {'g4_set_flag_var',ins.args[1]}) end
 -- HeartGold / SoulSilver's ClearFlagVar <var>: the flag the var names, cleared
 L.clearflagvar = function(ins,s) emit(s, {'g4_clear_flag_var',ins.args[1]}) end
@@ -2444,18 +2415,8 @@ end
 --
 -- So this is a no-op because the work HAS BEEN DONE, not because it is
 -- missing; implementing it for real would halve the money a second time.
---
--- ...BUT IT DOES NOT RETURN. The blackout task takes the field away, so
--- nothing after the row runs on the cartridge. Platinum and HGSS follow it
--- with `ReleaseAll / End` anyway; Black and White's trainer scripts do not --
--- `8D var; if (var != 1) goto L; 8E; goto M; L: 8C; M: <the win's lines>` --
--- so a lost gym battle fell through 0x8C into the leader's defeat speech and
--- handed over the badge and the TM in the Pokemon Center. So the row is
--- ReleaseAll + End here, which is what all eight Sinnoh / Johto sites say next.
 L.blackoutfrombattle = function(_, s)
   emit(s, { "g4_noop", "the scripted blackout (the battle teardown has already done it)" })
-  emit(s, { "g4_release_all" })
-  emit(s, { "jump", "end" })
 end
 -- 0x14B IS THE SAME FUNCTION AS 0x14A IN THE CARTRIDGE -- byte for byte, both
 -- a single `FieldTask_StartBlackOutFromBattle(ctx->task)` -- AND IT STILL MUST
@@ -4002,11 +3963,8 @@ L.waitabpadpress = function(_, s) emit(s, { "g4_noop", "a wait for A or B" }) en
 -- Elite Four are reachable in order without the lift, and Cynthia's room ends
 -- in an explicit `Warp` to the Hall of Fame hallway rather than in the
 -- platform. See src/import/Gen4PlatformLifts.lua.
--- ...AND SINCE THE HEIGHT RULE (src/world/Gen4HeightRule.lua) THEY ARE NOT:
--- the top floor is a wall from the bottom one, as on the cartridge, and the
--- lift is ridden (src/world/Gen4PlatformLiftRide.lua).
 L.triggerplatformlift = function(_, s)
-  emit(s, { "g4_platform_lift_ride" })
+  emit(s, { "g4_noop", "the platform lift (all nine rooms are walkable without it)" })
 end
 L.initpersistedmapfeaturesforplatformlift = function(_, s)
   emit(s, { "g4_map_feature_init", "platformlift" })
@@ -4195,14 +4153,7 @@ require("src.script.HgssPhoneCallCommands").install(L)
 require("src.script.Gen5BattleSubway").install(L)
 -- Black / White's Big Stadium / Small Court (0x1F3-0x1F8, 0x25C): src/script/Gen5Stadium.lua
 require("src.script.Gen5Stadium").install(L)
--- Black / White's Pokemon Musical (0x167-0x16E, 0x05D): src/script/Gen5Musical.lua
-require("src.script.Gen5Musical").install(L)
 -- HGSS's MartSell (0x30E): src/script/HgssMartCommands.lua
 require("src.script.HgssMartCommands").install(L)
--- HGSS phone rematches (GetPhoneBookRematch / ScrCmd_462): src/script/HgssPhoneRematch.lua
-require("src.script.HgssPhoneRematch").install(L)
--- HGSS trainers offering their number (LoadPhoneDat / GetPhoneContactMsgIds /
--- the gift pair): src/script/HgssPhoneNumbers.lua
-require("src.script.HgssPhoneNumbers").install(L)
 
 return Gen4ScriptVM

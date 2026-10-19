@@ -106,16 +106,7 @@ B[#B + 1] = { name = "sprout tower elder li",
 -- Violet Gym (scr_seq_0859_T22GYM0101): Falkner (person 0), the Zephyr Badge,
 -- VAR_SCENE_VIOLET_CITY_OW 0x4074 -> 1, VAR_SCENE_ELMS_LAB -> 6
 B[#B + 1] = { name = "falkner",
-  -- the walkway is 464 units over the floor: the lift (coord trigger at
-  -- (15,20), VioletGymElevator) is the only way up (src/world/Gen4HeightRule.lua)
-  steps = { { "teleport", "T22GYM0101", 15, 26, "up" }, { "walkto", 15, 20 },
-            { "until", function(r)
-                local g = r.game.save and r.game.save.hgssGymmick
-                local def = r.ow and r.ow.map and r.ow.map.def
-                local up = def and def.gen4HeightEdits and def.gen4HeightEdits["15,20"]
-                return g and g.kind == "violet" and g.violetLift == 1 and up == 496 and not r:busy()
-              end, 3000 },
-            { "talk", 0 },
+  steps = { { "teleport", "T22GYM0101", 15, 26, "up" }, { "talk", 0 },
             { "until", function(r) return r:var(0x4074) >= 1 end, 60000 },
             { "do", function(r) print(("[hg] falkner: 0x4074=%s 0x4108=%s"):format(r:var(0x4074), r:var(0x4108))) end } },
   expect = function(r) return r:var(0x4074) >= 1 and r:var(0x4108) >= 6 end,
@@ -208,15 +199,7 @@ B[#B + 1] = { name = "ilex forest farfetch'd",
 B[#B + 1] = { name = "whitney",
   steps = { { "do", trainUp }, { "teleport", "T25GYM0101", 13, 6, "up" }, { "talk", 0 },
             { "until", function(r) return r:var(0x410A) >= 1 end, 60000 },
-            -- the lass's line is the coord trigger at (13,11) (scr_seq_T25GYM0101_001,
-            -- FLAG_UNK_0B7): Whitney's corner reaches the pit only under the
-            -- walkway, through that trigger (the walkways are 52 units up)
-            { "walkto", 13, 10 },
-            -- down onto the trigger (held until its scene has set the flag:
-            -- the scene puts the player back on (13,10), so a cell count
-            -- never sees the step)
-            { "until", function(r) if r:flag(0xB7) then return true end r.held = "down" end, 6000 },
-            { "talk", 0 },
+            { "talk", 1 }, { "talk", 0 },
             { "until", function(r) return r:flag(0x85) end, 30000 } },
   expect = function(r) return r:flag(0x85) end, why = "flag 0x85 (Plain Badge, TM45)", expectBudget = 12000,
   budget = 80000 }
@@ -361,10 +344,9 @@ B[#B + 1] = { name = "rocket hideout: ariana and the electrodes",
   expect = at(10), why = "0x40AC >= 10 (the generator stopped)", expectBudget = 12000, budget = 160000 }
 
 -- Mahogany Gym (T28GYM0101): Pryce (person 0), past the ice; the Glacier
--- Badge and TM07 (0xD2). Fire beats his Ice types; at 100, as the default
--- level lost to his Piloswine on close HP more than once.
+-- Badge and TM07 (0xD2). Fire beats his Ice types.
 B[#B + 1] = { name = "pryce",
-  steps = { { "do", trainUpWith(53, 100) }, { "teleport", "T28GYM0101", 7, 6, "up" }, { "talk", 0 },
+  steps = { { "do", trainUpWith(53) }, { "teleport", "T28GYM0101", 7, 6, "up" }, { "talk", 0 },
             { "until", function(r) return r:flag(0xD2) end, 60000 } },
   expect = function(r) return r:flag(0xD2) end, why = "flag 0xD2 (Glacier Badge, TM07)", expectBudget = 12000 }
 

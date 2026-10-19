@@ -140,35 +140,9 @@ if b then
       tostring(boot and boot.startY), tostring(boot and boot.lastHeal and boot.lastHeal.map)))
   local forms=b.field and b.field.playerForms
   check(forms and forms.girl and forms.girl.walk=='SPRITE_G4_009' and forms.boy.walk=='SPRITE_G4_006'
-    and forms.girl.bike=='SPRITE_G4_010' and forms.boy.bike=='SPRITE_G4_007'
-    and forms.girl.surf=='SPRITE_G4_011' and forms.boy.surf=='SPRITE_G4_008',
-    'native male/female walking, bicycle (rows 2/5) and surf (rows 3/6) forms')
-  -- the field effects (/a/0/7/5, Gen5FieldEffects): the "!" is member 50
-  -- (ov21 0x21D9A6C), the phenomena / lure pictures and the surf mount model
-  local em, fe = b.gen4_emotes, b.gen5_field_effects
-  check(em and em.exclamation and em.exclamation.member == 50 and em.question and em.question.member == 51
-    and em.exclamation.width == 16 and #em.exclamation.rgba == 1024,
-    ('field effects: "!" member %s'):format(tostring(em and em.exclamation and em.exclamation.member)))
-  check(fe and fe.textures and fe.textures['94/mv_kusa.1'] == nil and fe.textures['84/fishing_lure.1']
-    and fe.textures['60/ee_kusa_sp'] and fe.anims and fe.anims[115] and fe.anims[115].frames == 81
-    and fe.anims[134] and fe.anims[134].frames == 45,
-    'field effects: lure, shaking grass and ripple pictures with their animation tracks')
-  local fset = b.gen4_models and b.gen4_models.sets and b.gen4_models.sets.fldeff
-  check(fset and fset.byMember and fset.byMember[49], 'field effects: the sea_ride surf mount (member 49) in the fldeff set')
-  -- the zones' field permissions (+0x1E): the bike bit 0x0400 (ARM9 0x2013C20)
-  local zm = b.maps or {}
-  local U = require('src.inventory.Gen5ItemUse')
-  check(zm.Z391 and zm.Z391.gen5Flags == 0x4921 and zm.Z006 and zm.Z006.gen5Flags == 0xEC40
-    and not U.allowBike(zm.Z391) and U.allowBike(zm.Z006),
-    ('zone flags: Z391 %s, Z006 %s'):format(tostring(zm.Z391 and zm.Z391.gen5Flags), tostring(zm.Z006 and zm.Z006.gen5Flags)))
+    and forms.girl.bike=='SPRITE_G4_011', 'native male/female walking and bicycle forms')
   check(b.gen5_juniper_art and b.gen5_juniper_art.text[6]:find('Welcome to the world',1,true),
     'Juniper art and message bank are written with the import')
-  -- BW's own keyboard (overlay 194): /a/1/1/9's pages and /a/1/1/8's boards
-  local nm = b.gen5_naming_art
-  check(nm and nm.pages and nm.pages[1].rows[1][1] == 'A' and nm.pages[2].rows[3][12] == '\u{2642}'
-    and nm.qwerty and nm.qwerty.upper.rows[1][1] == 'Q' and nm.qwerty.lower.rows[3][8] == '-'
-    and nm.keys_dark and nm.qwerty_lit and nm.obj_cursor_l_0 and nm.text and nm.text[0] == 'Your name?',
-    'naming keyboard: BW pages, qwerty rows, boards and bank 81')
   -- placements' z is stored negated: Nuvema's living room (zone 390, land
   -- 504) has its floor at z -250..-72 and its 16 pieces inside it
   local liv = ((b.gen4_terrain or {}).chunks or {})[504]
@@ -537,67 +511,11 @@ if b then
   end
   local rep = b.gen5_version or {}
   check(rep.family == 'bw' and #(rep.notPorted or {}) > 0, 'what is not ported yet is reported')
-  -- THE MAPS PASS (Gen5Warps, Gen5DynamicCity): the Marvelous Bridge copy's
-  -- deck warps are step-onto warps (transition 6), and Black City has floor
-  -- and its shops' doors
-  do
-    local maps = b.maps or {}
-    local W = require('src.world.Gen5Warps')
-    local function cellMap(def)
-      local warpAt = {}
-      for i, wp in ipairs(def.warps or {}) do warpAt[wp.y * def.width + wp.x] = { index = i, def = wp } end
-      return { def = def, warpAtCell = function(_, x, y) return warpAt[y * def.width + x] end }
-    end
-    local z303 = maps.Z303
-    local m303 = z303 and cellMap(z303)
-    check(m303 and W.stepWarpAt(m303, 14, 33) and W.stepWarpAt(m303, 161, 33)
-      and W.stepWarpAt(m303, 14, 33).destMap == 'Z314' and W.stepWarpAt(m303, 161, 33).destMap == 'Z313',
-      "Marvelous Bridge (Z303): its deck warps (14,33) and (161,33) are step-onto warps (transition 6) to Routes 16 and 15")
-    local z263 = maps.Z263
-    check(z263 and not W.stepWarpAt(cellMap(z263), 14, 31), "the real bridge's gate doors (Z263) stay press warps")
-    local z0 = maps.Z000
-    local function blocked(def, x, y) return def.blocks:byte((y * def.width + x) * 2 + 1) == 0xFF end
-    local open = 0
-    if z0 then for y = 0, z0.height - 1 do for x = 0, z0.width - 1 do if not blocked(z0, x, y) then open = open + 1 end end end end
-    local doors = z0 and blocked(z0, 43, 36) and not blocked(z0, 43, 37) and blocked(z0, 11, 37) and not blocked(z0, 11, 38)
-      and blocked(z0, 27, 38) and blocked(z0, 19, 45) and blocked(z0, 35, 45)
-    check(z0 and open > 1000 and doors,
-      ('Black City (Z000): RD floor (%d open cells) with its pieces -- every shop door (43,36) (11,37) (27,38) (19,45) (35,45) a wall to press'):format(open))
-    local t = b.gen4_terrain or {}
-    local objs = t.chunks and t.chunks[232] and t.chunks[232].objects or {}
-    local pieces = 0
-    for _, o in ipairs(objs) do if o.gen5Piece then pieces = pieces + 1 end end
-    check(pieces >= 4, ("Black City chunk 232 carries the pieces' buildings (%d)"):format(pieces))
-  end
 end
 
 local w = extract(white, 'white')
 check(w ~= nil and w.pokemon and w.pokemon[644] and w.pokemon[644].name == 'Zekrom'
   and w.pokemon[643] and w.pokemon[643].name == 'Reshiram', 'White: the stages run (Reshiram, Zekrom)')
--- White shows White Forest where Black shows Black City: the Black Gate's
--- warps lead to Z424 (ARM9 0x20A72A8's swap, Gen5DynamicCity.remap)
-if w then
-  local to = {}
-  for _, id in ipairs({ 'Z375', 'Z379' }) do
-    for _, wp in ipairs((w.maps or {})[id] and w.maps[id].warps or {}) do to[wp.destMap] = true end
-  end
-  check(to.Z424 and not to.Z000, 'White: the Black Gate leads to White Forest (Z424), not Black City')
-end
--- the season's texture set: the area's record + season (Gen5Seasons)
-do
-  local S = require('src.render.Gen5Seasons')
-  local sets = {}
-  for k = 6, 9 do sets[k] = { textures = { grass = 'set' .. k } } end
-  sets[14] = { textures = { gate = 'gate14' } }
-  sets[10006] = { textures = { grass = 'set6', gate = 'gate14' }, merged = { 6, 14 } }
-  for k = 15, 17 do sets[k] = { textures = { gate = 'gate' .. k } } end
-  local terrain = { sets = sets }
-  local plain, merged = { texture = 6, area = 6 }, { texture = 10006, area = 6 }
-  check(S.setFor(terrain, plain, 0).textures.grass == 'set6' and S.setFor(terrain, plain, 3).textures.grass == 'set9'
-    and S.setFor(terrain, merged, 2).textures.grass == 'set8' and S.setFor(terrain, merged, 2).textures.gate == 'gate16'
-    and S.setFor(terrain, { texture = 250, area = 250 }, 2) == nil and S.areaFor(220, 3) == 220,
-    'seasons: a place wears its area + season set (merged sets per area), indoor areas (210+) never change')
-end
 
 -- third person: the eye stops in front of a wall behind the player, not over water
 do

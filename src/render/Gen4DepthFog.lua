@@ -64,10 +64,6 @@ function F.current()
   local force = os.getenv and tonumber(os.getenv("G4FOG") or "")
   if force then return F.WEATHERS[force] end
   if not platinum() then return nil end
-  -- FOG (14), steady or thinning after Defog (src/world/Gen4FogWeather.lua)
-  local FW = package.loaded["src.world.Gen4FogWeather"]
-  local fogRow = FW and FW.depthRow and FW.depthRow()
-  if fogRow then return fogRow end
   local G = game()
   local raw = G and G.save and tonumber(G.save.gen4WeatherActive)
   return raw and F.WEATHERS[raw] or nil
@@ -88,7 +84,6 @@ function F.begin(ground, mode, a, b)
     a = { mode, a, b, cam.projection == "orthographic" and 1 or 0 },
     b = { near, far, row.offset, 1024 / 2 ^ row.slope },
     c = { row.rgb[1] / 31, row.rgb[2] / 31, row.rgb[3] / 31 },
-    shift = row.shift,
   }
 end
 

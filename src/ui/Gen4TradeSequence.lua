@@ -63,7 +63,6 @@
 
 local Gen4Model = require("src.render.Gen4Model")
 local Assets = require("src.render.Assets")
-local Strings = require("src.core.Strings")
 local Logger = require("src.core.Logger")
 local bit = require("bit")
 
@@ -144,14 +143,14 @@ end
 -- three buffers TradeSequence_Init sets: 0 the Pokemon sent, 1 the Pokemon
 -- received, 2 the other trainer
 local FALLBACK = {
-  [0] = Strings.source("{STRVAR_1 0 0 0} will be\nsent to {STRVAR_1 3 2 0}."),
+  [0] = "{STRVAR_1 0 0 0} will be\nsent to {STRVAR_1 3 2 0}.",
   [1] = "Bye-bye, {STRVAR_1 0 0 0}!",
-  [2] = Strings.source("{STRVAR_1 3 2 0} sent over\n{STRVAR_1 0 1 0}."),
+  [2] = "{STRVAR_1 3 2 0} sent over\n{STRVAR_1 0 1 0}.",
   [3] = "Take good care of {STRVAR_1 0 1 0}!",
 }
 function Screen.text(data, bank, index, buffers)
   local key = ("TEXT_B%04d_%05d"):format(bank or 350, index)
-  local s = ((data or {}).text or {})[key] or Strings(FALLBACK[index] or "")
+  local s = ((data or {}).text or {})[key] or FALLBACK[index] or ""
   s = s:gsub("{STRVAR_1 %d+,? ?(%d+),? ?%d+}", function(slot)
     return (tostring(buffers[tonumber(slot)] or ""):gsub("%%", "%%%%"))
   end)
@@ -1917,9 +1916,7 @@ function Screen:draw3D(p, drawMon, bright, edge)
     if drawMon then drawMon() end
     return
   end
-  -- push("all")/pop restores the bound canvas: setCanvas(getCanvas()) drops
-  -- (or chokes on) a depth set a mod has bound around the screen
-  g.push("all")
+  local previous = g.getCanvas()
   g.setCanvas({ self.colour3d, depthstencil = self.depth3d })
   g.clear(0, 0, 0, 0, true, true)
   if drawMon then drawMon() end
@@ -1933,7 +1930,7 @@ function Screen:draw3D(p, drawMon, bright, edge)
       Gen4Model.drawTint = nil
     end
   end
-  g.pop()
+  g.setCanvas(previous)
   drawLayer(self.colour3d, bright or 0, edge and (not m or m.alpha >= 31))
 end
 

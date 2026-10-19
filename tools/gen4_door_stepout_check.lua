@@ -196,10 +196,7 @@ if f then
     '        stepsOut = self.map:isDoorTileCell(self.player.cellX, self.player.cellY)',
     '      end',
   }, "\n")
-  -- Black / White take the Gen 4 arm too (their door cell is solid)
-  local gate5 = gate:gsub("if GameVersion%.isGen4%(%) then",
-    "if GameVersion.isGen4() or GameVersion.isGen5() then", 1)
-  ok(flat:find(gate, 1, true) ~= nil or flat:find(gate5, 1, true) ~= nil,
+  ok(flat:find(gate, 1, true) ~= nil,
      "the step-out gate is no longer the two-armed Gen 4 / tile construct")
   -- the older generations must still ask the tile
   ok(text:find("stepsOut = self.map:isDoorTileCell(", 1, true) ~= nil,

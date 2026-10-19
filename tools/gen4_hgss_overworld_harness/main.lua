@@ -284,18 +284,6 @@ if os.getenv("CMD_TRACE") then
   end
 end
 
--- HOUR=n: the wall clock reads hour n (0-23) today, so the area light and the
--- time-of-day prop animations (Gen4PropClock: the lighthouse lamp, Violet's
--- lanterns, the Pokémon Center dome) can be pictured at night
-if os.getenv("HOUR") then
-  local date, hour = os.date, tonumber(os.getenv("HOUR"))
-  os.date = function(fmt, t)
-    local out = date(fmt, t)
-    if type(out) == "table" and hour then out.hour = hour end
-    return out
-  end
-end
-
 -- FOG_OFF=1: a map script's fog (Morty's gym) is dropped again at once, to
 -- see what is under it
 if os.getenv("FOG_OFF") then
@@ -402,12 +390,9 @@ dofile(("tools/%s/main.lua"):format(harness))
 -- chosen before the first frame -- Platinum's camera modes on this install
 local camTilt = os.getenv("CAM_TILT")
 if camTilt then
-  -- applied as the overworld is PUSHED: the overworld harness runs its whole
-  -- tick loop inside love.load, so a tilt chosen after load came too late
-  -- for every tick (the run walked on the cartridge camera whatever was asked)
-  local StateStack = require("src.core.StateStack")
-  local push0, applied = StateStack.push, false
-  local function applyTilt()
+  local load = love.load
+  love.load = function(...)
+    local r = { load(...) }
     local Gen4Camera = require("src.render.Gen4Camera")
     local G = package.loaded["src.core.Game"]
     local at
@@ -419,14 +404,7 @@ if camTilt then
     if G and G.save then G.save.options = G.save.options or {}; G.save.options.gen4CameraTilt = at end
     Gen4Camera.setTilt(at)
     print(("[cam] tilt %s (row %d)"):format(tostring(Gen4Camera.TILTS[at]), at))
-  end
-  StateStack.push = function(self, state, ...)
-    local G = package.loaded["src.core.Game"]
-    if not applied and G and G.save and state == package.loaded["src.world.OverworldController"] then
-      applied = true
-      applyTilt()
-    end
-    return push0(self, state, ...)
+    return (table.unpack or unpack)(r)
   end
 end
 

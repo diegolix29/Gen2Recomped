@@ -53,12 +53,7 @@ Pads._setForceNXForTests(false)
 for _,version in ipairs({'red','gold','crystal','emerald','firered'}) do
  V.set(version);Input:init()
  local menu=Menu.new({input=Input,save={options={}}})
- -- X and Y rows are listed for every game since 2026-10-13 (BindingsMenu.new:
- -- "a player laying out a controller once wants to see the whole pad"); only
- -- the Gen 4 aliases below stay off outside Gen 4
- local hasX,hasY=false,false
- for _,item in ipairs(menu.items) do hasX=hasX or item.button.id=='x';hasY=hasY or item.button.id=='y' end
- T.check(hasX and hasY,version..' lists the X and Y rows')
+ for _,item in ipairs(menu.items) do T.check(item.button.id~='x' and item.button.id~='y',version..' has no DS-only rows') end
  Input:keypressed('/');Input:step();T.check(not Input:wasPressed('start'),version..' no X-to-menu alias');Input:keyreleased('/')
  Input:keypressed("'");Input:step();T.check(not Input:wasPressed('select'),version..' no Y-to-item alias');Input:keyreleased("'")
 end

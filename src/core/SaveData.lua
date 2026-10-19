@@ -21,7 +21,6 @@ local Bag = require("src.inventory.Bag")
 local Badges = require("src.inventory.Badges")
 
 local GameVersion = require("src.core.GameVersion")
-local SaveSafety = require("src.core.SaveSafety")
 
 local SaveData = {}
 
@@ -44,9 +43,6 @@ local saveNames
 -- The main save filename for a version -- used by the title screen's
 -- CONTINUE gate so it looks for the right game's save.
 function SaveData.saveFilename(version)
-  -- every CONTINUE gate asks this first: a lost or unreadable main file with
-  -- a good copy behind it is put back before the answer (once per process)
-  pcall(SaveData.ensureRecovered, version)
   local main = saveNames(version)
   return main
 end
@@ -99,8 +95,6 @@ local function makePortableFs(dir)
       os.remove(full(name))
       return true
     end,
-    -- for SaveSafety.atomicWrite's rename-over-the-old-file step
-    realPath = function(name) return full(name) end,
     createDirectory = function(name)
       -- portable mode writes real files through io.*, which will not
       -- create missing parent directories; mkdir the tree so a slot path
@@ -634,11 +628,7 @@ function SaveData.saveOptions(opts, fs, gen)
     end
     opts.tutorials = merged
   end
-  -- options.lua also holds every game's save-slot registry, so a write cut
-  -- short here used to make every slot vanish from the launcher.  Atomic,
-  -- with the previous good copy kept as options.lua.bak (SaveSafety).
-  local ok, err = SaveSafety.atomicWrite(fs, OPTIONS_FILENAME, SaveSerializer.encode(opts),
-    { bak = OPTIONS_FILENAME .. ".bak", decode = SaveSafety.decodeAny })
+  local ok, err = fs.write(OPTIONS_FILENAME, SaveSerializer.encode(opts))
   if not ok then
     Logger.error("options save failed: %s", tostring(err))
   end
@@ -679,15 +669,6 @@ end
 function SaveData.loadOptions(fs)
   fs = persistFs(fs)
   local data, err = readTable(fs, OPTIONS_FILENAME)
-  if not data then
-    -- a cut-short options.lua: the staged and the previous copy hold the
-    -- slot registry too (SaveSafety.atomicWrite)
-    data = readTable(fs, OPTIONS_FILENAME .. ".tmp")
-      or readTable(fs, OPTIONS_FILENAME .. ".bak")
-    if data then
-      Logger.warn("options.lua unreadable (%s); using its backup copy", tostring(err))
-    end
-  end
   if not data then
     if fs.getInfo(OPTIONS_FILENAME) then
       Logger.error("options load failed: %s", tostring(err))
@@ -765,16 +746,14 @@ end
 -- Decode a slot's save using the same recovery order load() uses -- main,
 -- then the .tmp write-witness, then the .bak -- so a slot mid-crash still
 -- summarizes.  nil when nothing readable is present.
---
--- Since the save-safety pass the order runs on through every stamped
--- .bak-* copy and the Pokewalker / cloud backups of the slot
--- (SaveSafety.loadBest), and the second return says what was found:
--- "ok" | "recovered" | "unreadable" (files there, none decode) | "none".
 local function decodeSlot(fs, version, id)
-  local main, bak = slotNames(version, id)
-  local data, from, _, state = SaveSafety.loadBest(fs, main, bak,
-    function() return SaveData._slotExtras(version, id) end)
-  return data, state, from
+  local main, bak, tmp = slotNames(version, id)
+  local data = fs.getInfo(main) and SaveSerializer.decode(fs.read(main) or "")
+  if data then return data end
+  data = fs.getInfo(tmp) and SaveSerializer.decode(fs.read(tmp) or "")
+  if data then return data end
+  data = fs.getInfo(bak) and SaveSerializer.decode(fs.read(bak) or "")
+  return data or nil
 end
 
 -- One-time legacy consolidation: a pre-slots install has a flat save file
@@ -783,63 +762,12 @@ end
 -- active slot.  Returns the new slot id, or nil when there is nothing to
 -- migrate or the copy could not be verified (originals left in place so no
 -- data is ever lost to a failed move).
--- ORPHANED SLOT FILES.  The registry lives in options.lua; a slot file on
--- disk the registry does not list (options.lua lost or rolled back) is a save
--- the launcher would never show and a later createSlot/migration would have
--- written over.  These find such files and pick ids that collide with none.
-local MAX_SLOT_PROBE = 64
-
-local function slotFilesExist(fs, version, id)
-  local main, bak, tmp = slotNames(version, id)
-  return fs.getInfo(main) or fs.getInfo(bak) or fs.getInfo(tmp)
-    or fs.getInfo(main .. ".backups") or nil
-end
-
-local function slotNumber(id) return tonumber(tostring(id):match("^slot(%d+)$")) end
-
-local function freeSlotId(fs, version, list)
-  local taken, n = {}, 0
-  for _, id in ipairs(list or {}) do
-    taken[id] = true
-    local k = slotNumber(id)
-    if k and k > n then n = k end
-  end
-  repeat n = n + 1 until not taken["slot" .. n] and not slotFilesExist(fs, version, "slot" .. n)
-  return "slot" .. n
-end
-
--- slot ids with a main/.tmp/.bak file on disk that `list` does not register
-local function orphanSlots(fs, version, list)
-  local registered, found, out = {}, {}, {}
-  for _, id in ipairs(list or {}) do registered[id] = true end
-  local function consider(id)
-    if id and not registered[id] and not found[id] then
-      local main, bak, tmp = slotNames(version, id)
-      if fs.getInfo(main) or fs.getInfo(bak) or fs.getInfo(tmp) then
-        found[id] = true
-        out[#out + 1] = id
-      end
-    end
-  end
-  if fs.getDirectoryItems then
-    local ok, items = pcall(fs.getDirectoryItems, slotDir(version))
-    if ok and type(items) == "table" then
-      for _, item in ipairs(items) do consider(item:match("^(slot%d+)%.lua")) end
-    end
-  end
-  for n = 1, MAX_SLOT_PROBE do consider("slot" .. n) end
-  table.sort(out, function(a, b) return (slotNumber(a) or 0) < (slotNumber(b) or 0) end)
-  return out
-end
-
 local function tryMigrateLegacy(version, fs)
   local lmain, lbak, ltmp = legacyNames(version)
   local mainBody = fs.getInfo(lmain) and fs.read(lmain)
   local bakBody = fs.getInfo(lbak) and fs.read(lbak)
   if not (mainBody or bakBody) then return nil end
-  -- never "slot1" blindly: a slot file left by a lost registry would be
-  -- written over
-  local id = freeSlotId(fs, version, {})
+  local id = "slot1"
   local dmain, dbak = slotNames(version, id)
   ensureParentDir(fs, dmain)
   if mainBody then fs.write(dmain, mainBody) end
@@ -869,45 +797,11 @@ local function ensureVersionSlots(version, fs)
   end
   local opts = SaveData.loadOptions(fs)
   local reg = opts.saveSlots and opts.saveSlots[version]
-  local hasList = reg and type(reg.list) == "table" and #reg.list > 0
-  if not hasList and tryMigrateLegacy(version, fs) then
-    opts = SaveData.loadOptions(fs)
-    reg = opts.saveSlots and opts.saveSlots[version]
-  end
-  -- slot files on disk the registry has lost track of come back into it
-  local okO, orphans = pcall(orphanSlots, fs, version, reg and reg.list)
-  if okO and #orphans > 0 then
-    reg = type(reg) == "table" and reg or {}
-    reg.list = type(reg.list) == "table" and reg.list or {}
-    for _, id in ipairs(orphans) do reg.list[#reg.list + 1] = id end
-    reg.active = reg.active or reg.list[1]
-    opts.saveSlots = opts.saveSlots or {}
-    opts.saveSlots[version] = reg
-    SaveData.saveOptions(opts, fs)
-    Logger.warn("save slots for %s were missing from options.lua; re-registered %s",
-      tostring(version), table.concat(orphans, ", "))
-  end
-  -- NOTHING HERE AT ALL: the save directory itself may have moved (Android
-  -- volume change, portable switch, fused vs unfused).  Slots found in another
-  -- location are registered here -- read only there; a load copies the save in
-  -- (SaveData._slotExtras / load) -- so the launcher does not start fresh.
-  if not (reg and type(reg.list) == "table" and #reg.list > 0)
-      and type(SaveData._foreignSlots) == "function" then
-    local okF, found = pcall(SaveData._foreignSlots, version)
-    if okF and #found > 0 then
-      reg = { list = found, active = found[1] }
-      opts.saveSlots = opts.saveSlots or {}
-      opts.saveSlots[version] = reg
-      SaveData.saveOptions(opts, fs)
-      Logger.warn("no %s saves here; found %s in another storage location",
-        tostring(version), table.concat(found, ", "))
-    end
-  end
   if reg and type(reg.list) == "table" and #reg.list > 0 then
     activeSlotCache[version] = reg.active or reg.list[1]
     return
   end
-  activeSlotCache[version] = false
+  activeSlotCache[version] = tryMigrateLegacy(version, fs) or false
 end
 
 -- (body for the forward-declared saveNames.)  Resolves the ACTIVE slot for
@@ -1013,18 +907,10 @@ function SaveData.listSlots(version)
   local list = (reg and reg.list) or {}
   local out = {}
   for _, id in ipairs(list) do
-    -- ONE BAD SLOT MUST NOT TAKE THE LIST DOWN, and a slot whose files do not
-    -- decode is SHOWN (unreadable = true, "restore from backup") rather than
-    -- passed off as an empty NEW GAME slot that a click would overwrite.
-    local okD, save, state, from = pcall(decodeSlot, fs, version, id)
-    if not okD then save, state, from = nil, "unreadable", nil end
-    local okS, name, meta = pcall(SaveData.slotSummary, save, version)
-    if not okS then name, meta = nil, nil end
-    local unreadable = save == nil and state == "unreadable"
+    local save = decodeSlot(fs, version, id)
+    local name, meta = SaveData.slotSummary(save, version)
     out[#out + 1] = { id = id, exists = save ~= nil, name = name, meta = meta,
-                      label = reg.names and reg.names[id] or nil,
-                      unreadable = unreadable or nil,
-                      recoveredFrom = from }
+                      label = reg.names and reg.names[id] or nil }
   end
   return out
 end
@@ -1097,9 +983,12 @@ function SaveData.createSlot(version)
   local opts = SaveData.loadOptions(fs)
   opts.saveSlots = opts.saveSlots or {}
   local reg = opts.saveSlots[version] or { list = {}, active = nil }
-  -- past every registered id AND every slot file on disk, so a file left by
-  -- a lost registry (or a deleted slot's backups) is never written over
-  local id = freeSlotId(fs, version, reg.list)
+  local maxN = 0
+  for _, id in ipairs(reg.list) do
+    local n = tonumber(tostring(id):match("^slot(%d+)$"))
+    if n and n > maxN then maxN = n end
+  end
+  local id = "slot" .. (maxN + 1)
   reg.list[#reg.list + 1] = id
   opts.saveSlots[version] = reg
   SaveData.saveOptions(opts, fs)
@@ -1130,12 +1019,21 @@ function SaveData.writeSlot(version, slotId, saveTable)
   if not knownVersion(version) then return false, "unknown version" end
   if type(slotId) ~= "string" then return false, "missing slot id" end
   if type(saveTable) ~= "table" then return false, "missing save table" end
-  local main, bak = slotNames(version, slotId)
+  local main, bak, tmp = slotNames(version, slotId)
   local encoded = SaveSerializer.encode(saveTable)
   local fs = persistFs(nil)
   ensureParentDir(fs, main)
-  -- atomic, previous good copy kept (SaveData.commitSave)
-  return SaveData.commitSave(fs, main, bak, encoded, saveTable)
+  if fs.getInfo(main) then
+    local prev = fs.read(main)
+    if prev then fs.write(bak, prev) end
+  end
+  local ok, err = fs.write(tmp, encoded)
+  if not ok then return false, err end
+  remove(fs, main)
+  ok, err = fs.write(main, encoded)
+  if not ok then return false, err end
+  remove(fs, tmp)
+  return true
 end
 
 -- Delete a registered slot: remove its main/.bak/.tmp files, drop it from the
@@ -1160,19 +1058,10 @@ function SaveData.deleteSlot(version, slotId)
   end
   if not found then return false, "slot not registered" end
 
-  -- NOT ERASED: moved to saves/<version>/deleted/, so a slot deleted by
-  -- mistake (or one that only looked empty) can still be brought back with
-  -- Tools -> Restore a Save.  A file whose copy did not verify stays put.
   local main, bak, tmp = slotNames(version, slotId)
-  local trash = slotDir(version) .. "/deleted/" .. slotId .. "-" .. SaveSafety.stamp()
-  ensureParentDir(fs, trash .. ".lua")
-  for _, pair in ipairs({ { main, ".lua" }, { bak, ".lua.bak" }, { tmp, ".lua.tmp" } }) do
-    local bytes = SaveSafety.read(fs, pair[1])
-    if bytes then
-      fs.write(trash .. pair[2], bytes)
-      if SaveSafety.read(fs, trash .. pair[2]) == bytes then remove(fs, pair[1]) end
-    end
-  end
+  remove(fs, main)
+  remove(fs, bak)
+  remove(fs, tmp)
 
   table.remove(reg.list, idx)
   if reg.names then reg.names[slotId] = nil end
@@ -1436,7 +1325,6 @@ end)
 function SaveData.saveFileExists(version)
   version = version or GameVersion.get()
   if not knownVersion(version) then return nil end
-  pcall(SaveData.ensureRecovered, version)
   local FILENAME = saveNames(version)
   local fs = persistFs(nil)
   if not (fs and fs.getInfo and FILENAME) then return nil end
@@ -1445,475 +1333,83 @@ function SaveData.saveFileExists(version)
   return info ~= nil
 end
 
--- ------- the safety layer (src/core/SaveSafety.lua, docs/save-safety.md)
-
--- What this process last read from / wrote to each save file, so a write can
--- tell that something else (the launcher's Pokewalker in another window, a
--- cloud sync) changed the file under a running game.
-local knownBytes = {}
-local loadedWalkerKeys = {}
--- name -> where a pre-load recovery (SaveData.ensureRecovered) found the save,
--- handed to the next load so the player is told
-local lastRecovery = {}
-local recoveryChecked = {}
-
--- test seam (tools/save_safety_check): forget what this process has read,
--- as a fresh launch would
-function SaveData._resetSafetyState()
-  for _, t in ipairs({ knownBytes, loadedWalkerKeys, lastRecovery, recoveryChecked }) do
-    for k in pairs(t) do t[k] = nil end
-  end
-end
-
-local function readReal(path)
-  local f = io.open(path, "rb")
-  if not f then return nil end
-  local s = f:read("*a")
-  f:close()
-  return s
-end
-
--- OTHER PLACES THIS GAME'S SAVES CAN BE.  The save directory is not one
--- fixed folder: portable mode moves it next to the executable, the fused and
--- unfused desktop builds use different %APPDATA% folders, the old identity
--- was "pokemon-love2d", and on Android getExternalFilesDir can name a
--- different volume (phone / adopted SD / internal fallback) from one run to
--- the next.  A save in one of those places is not gone, so loads and the
--- restore tool look there too -- read-only, never writing anywhere but the
--- current save directory.
-local otherLocCache
-function SaveData.otherLocations()
-  if otherLocCache then return otherLocCache end
-  local roots, seen = {}, {}
-  local function norm(p) return (p:gsub("\\", "/"):gsub("/+$", ""):lower()) end
-  local function add(p)
-    if type(p) ~= "string" or p == "" then return end
-    local k = norm(p)
-    if seen[k] then return end
-    seen[k] = true
-    roots[#roots + 1] = p
-  end
-  if not (love and love.filesystem) then otherLocCache = roots; return roots end
-  local saveDir = love.filesystem.getSaveDirectory and love.filesystem.getSaveDirectory() or nil
-  local current = SaveData.portableBaseDir() or saveDir
-  if current then seen[norm(current)] = true end
-  if SaveData.portableBaseDir() then add(saveDir) else
-    for _, base in ipairs(SaveData.gameFolders()) do add(base) end
-  end
-  local ident = saveDir and saveDir:gsub("\\", "/"):match("([^/]+)/*$") or "Gen2Recomp"
-  local idents = { ident, "Gen2Recomp", "pokemon-love2d" }
-  local osName = love.system and love.system.getOS and love.system.getOS() or ""
-  local home = os.getenv("HOME") or os.getenv("USERPROFILE") or ""
-  for _, id in ipairs(idents) do
-    if osName == "Windows" then
-      local appdata = os.getenv("APPDATA")
-      if appdata then add(appdata .. "/LOVE/" .. id); add(appdata .. "/" .. id) end
-    elseif osName == "Linux" then
-      local xdg = os.getenv("XDG_DATA_HOME") or (home .. "/.local/share")
-      add(xdg .. "/love/" .. id); add(xdg .. "/" .. id)
-    elseif osName == "OS X" then
-      add(home .. "/Library/Application Support/LOVE/" .. id)
-      add(home .. "/Library/Application Support/" .. id)
-    end
-  end
-  if osName == "Android" and saveDir then
-    local pkg = saveDir:match("/Android/data/([^/]+)/") or saveDir:match("/data/data/([^/]+)/")
-      or saveDir:match("/data/user/%d+/([^/]+)/")
-    for _, row in ipairs(SaveData.externalDataDirs()) do
-      local files = row.path:match("^(.*)/gamedata$") or row.path
-      add(files .. "/save/" .. ident)
-    end
-    if pkg then
-      add("/storage/emulated/0/Android/data/" .. pkg .. "/files/save/" .. ident)
-      add("/sdcard/Android/data/" .. pkg .. "/files/save/" .. ident)
-      add("/data/data/" .. pkg .. "/files/save/" .. ident)
-      add("/data/user/0/" .. pkg .. "/files/save/" .. ident)
-    end
-  end
-  add(SaveData.dataDirSetting and SaveData.dataDirSetting() or nil)
-  otherLocCache = roots
-  return roots
-end
-
--- test seam: tools/save_safety_check points this at scratch folders
-function SaveData._setOtherLocations(list) otherLocCache = list end
-
--- the same relative file in every other location, as fallback candidates
-local function elsewhere(rel, out)
-  for _, root in ipairs(SaveData.otherLocations()) do
-    for _, suffix in ipairs({ "", ".tmp", ".bak" }) do
-      local path = root .. "/" .. rel .. suffix
-      out[#out + 1] = { label = "copy in " .. root, path = path,
-                        read = function() return readReal(path) end }
-    end
-  end
-  return out
-end
-
--- slot ids with a readable save in another storage location (see
--- ensureVersionSlots: only asked when this location has none for the game)
-function SaveData._foreignSlots(version)
-  local out = {}
-  if not knownVersion(version) then return out end
-  for n = 1, 16 do
-    local id = "slot" .. n
-    local rel = (slotNames(version, id))
-    local hit = false
-    for _, root in ipairs(SaveData.otherLocations()) do
-      for _, suffix in ipairs({ "", ".tmp", ".bak" }) do
-        if not hit and SaveSafety.decodeSave(readReal(root .. "/" .. rel .. suffix)) then hit = true end
-      end
-    end
-    if hit then out[#out + 1] = id end
-  end
-  return out
-end
-
--- Copies of a slot kept outside its own folder, newest first: the Pokewalker's
--- pre-write backups, the cloud sync's local backups (both always in LOVE's
--- save directory), then the same slot in another storage location.
-function SaveData._slotExtras(version, slotId)
-  local out = {}
-  local lfs = love and love.filesystem
-  if lfs and lfs.getDirectoryItems and type(slotId) == "string" then
-    local dir = "pokewalker_backups/" .. version
-    local ok, items = pcall(lfs.getDirectoryItems, dir)
-    local rows = {}
-    if ok and type(items) == "table" then
-      for _, item in ipairs(items) do
-        if item:sub(1, #slotId + 1) == slotId .. "_" and item:match("%.lua$") then rows[#rows + 1] = item end
-      end
-    end
-    table.sort(rows, function(a, b) return a > b end)
-    for _, item in ipairs(rows) do
-      local file = dir .. "/" .. item
-      local y, mo, d, h, mi, se = item:match("_(%d%d%d%d)(%d%d)(%d%d)_(%d%d)(%d%d)(%d%d)_")
-      out[#out + 1] = { label = "pokewalker backup", file = file,
-        t = y and os.time({ year = tonumber(y), month = tonumber(mo), day = tonumber(d),
-                            hour = tonumber(h), min = tonumber(mi), sec = tonumber(se) }) or nil,
-        read = function() return SaveSafety.read(lfs, file) end }
-    end
-    for i = 1, 2 do
-      local file = ("cloud_backups/%s/%s.%d.lua"):format(version, slotId, i)
-      out[#out + 1] = { label = "cloud sync backup " .. i, file = file,
-                        read = function() return SaveSafety.read(lfs, file) end }
-    end
-  end
-  if knownVersion(version) and type(slotId) == "string" then
-    elsewhere((slotNames(version, slotId)), out)
-  end
-  return out
-end
-
-local function legacyExtras(version)
-  if not knownVersion(version) then return {} end
-  return elsewhere((legacyNames(version)), {})
-end
-
-local function extrasFor(version)
-  return function()
-    local slot = activeSlotCache[version]
-    if slot then return SaveData._slotExtras(version, slot) end
-    return legacyExtras(version)
-  end
-end
-
--- ------- in use by a running game
---
--- <save>.open says which process has the save loaded and when it last
--- touched it.  The launcher's Pokewalker / event writers refuse a slot that a
--- game in ANOTHER window has open (a write there would be overwritten by that
--- game's next save); the game's own save also merges whatever was delivered
--- meanwhile (SaveSafety.mergeWalker), so the refusal is the first line, not
--- the only one.
-SaveData.OPEN_FRESH = 15 * 60
-local openMarkers = {}
-
-local function markOpen(fs, name)
-  local m = name .. ".open"
-  pcall(fs.write, m, SaveSerializer.encode({ session = SaveSafety.session, t = os.time() }))
-  openMarkers[m] = fs
-end
-
--- an orderly quit lets go of every marker this process wrote
-function SaveData.closeOpen()
-  for m, fs in pairs(openMarkers) do
-    local t = SaveSafety.decodeAny(SaveSafety.read(fs, m))
-    if type(t) == "table" and t.session == SaveSafety.session and fs.remove then pcall(fs.remove, m) end
-    openMarkers[m] = nil
-  end
-end
-
--- true (+ seconds since it was touched) when a game in another process has
--- this slot open
-function SaveData.slotOpenElsewhere(version, slotId)
-  if not (knownVersion(version) and type(slotId) == "string") then return false end
-  -- a phone runs one copy of the app: a marker there is always left by a
-  -- killed process (no love.quit), never by a live game
-  local osName = love and love.system and love.system.getOS and love.system.getOS()
-  if osName == "Android" or osName == "iOS" then return false end
-  local fs = persistFs(nil)
-  if not fs then return false end
-  local main = slotNames(version, slotId)
-  local t = SaveSafety.decodeAny(SaveSafety.read(fs, main .. ".open"))
-  if type(t) ~= "table" or t.session == SaveSafety.session then return false end
-  local age = os.time() - (tonumber(t.t) or 0)
-  if age >= 0 and age < SaveData.OPEN_FRESH then return true, age end
-  return false
-end
-
--- ------- write
-
--- commitSave(fs, main, bak, encoded, live, reencode) -> ok, err
---
--- Every progress write goes through here (SaveData.save, writeSlot):
---   * the file being replaced is snapshotted first when it matters -- a
---     different playthrough replacing it ("replaced"), a file changed on disk
---     since this process read it ("external", and the walker's deliveries in
---     it are merged into `live` first), otherwise the throttled rolling copy;
---   * a main file that is missing while .tmp/.bak hold a save keeps those
---     ("orphan") before anything can rotate them away;
---   * then SaveSafety.atomicWrite (verified .tmp, rename, .bak = previous
---     GOOD copy, an unreadable previous copy kept as .corrupt-<stamp>).
--- `reencode` rebuilds the bytes when a merge changed `live`.
-function SaveData.commitSave(fs, main, bak, encoded, live, reencode)
-  local prevBytes = SaveSafety.read(fs, main)
-  local prev = SaveSafety.decodeSave(prevBytes)
-  if not prev then
-    for _, f in ipairs({ main .. ".tmp", bak }) do
-      local b = SaveSafety.read(fs, f)
-      if b and b ~= encoded and SaveSafety.decodeSave(b) then SaveSafety.snapshot(fs, main, b, "orphan") end
-    end
-  elseif prevBytes ~= encoded then
-    if type(live) == "table" and not SaveSafety.samePlaythrough(prev, live) then
-      SaveSafety.snapshot(fs, main, prevBytes, "replaced")
-      Logger.warn("save: %s held a different playthrough; kept a copy", main)
-    elseif knownBytes[main] and knownBytes[main] ~= prevBytes then
-      SaveSafety.snapshot(fs, main, prevBytes, "external")
-      local n = 0
-      if type(live) == "table" then
-        n = SaveSafety.mergeWalker(prev, live, loadedWalkerKeys[main])
-      end
-      if n > 0 and reencode then encoded = reencode() end
-      Logger.warn("save: %s changed on disk while the game had it open; kept a copy%s", main,
-        n > 0 and (" and carried over " .. n .. " Pokewalker deliveries") or "")
-    else
-      SaveSafety.snapshot(fs, main, prevBytes)
-    end
-  end
-  local ok, err = SaveSafety.atomicWrite(fs, main, encoded, { bak = bak, decode = SaveSafety.decodeSave })
-  if ok then
-    knownBytes[main] = encoded
-    if type(live) == "table" then loadedWalkerKeys[main] = SaveSafety.walkerKeys(live) end
-  end
-  return ok, err
-end
-
 function SaveData.save(data, mods)
-  -- a table that is not a playthrough (a freeze or a crash half-way through
-  -- building one) is never written over a save
-  if type(data) ~= "table" or type(data.player) ~= "table" then
-    Logger.error("save refused: the game state has no player table")
-    return false
-  end
   -- write to the file matching this save's own version, not just the active
   -- one, so Blue/Yellow playthroughs land in save_blue.lua / save_yellow.lua
-  local FILENAME, BACKUP_FILENAME = saveNames(data.version)
+  local FILENAME, BACKUP_FILENAME, TMP_FILENAME = saveNames(data.version)
   if data.options then
     SaveData.saveOptions(data.options)
   end
   if mods ~= nil or data.meta == nil then
     data.meta = SaveData.buildMeta(mods, data.meta)
   end
-  local function encode()
-    local gameOnly = {}
-    for k, v in pairs(data) do
-      if k ~= "options" then gameOnly[k] = v end
-    end
-    return SaveSerializer.encode(gameOnly)
+  local gameOnly = {}
+  for k, v in pairs(data) do
+    if k ~= "options" then gameOnly[k] = v end
   end
+  local encoded = SaveSerializer.encode(gameOnly)
   local fs = persistFs(nil)
   -- the active slot may live in saves/<version>/, which must exist before
   -- the .tmp/.bak/main writes land (a no-op for the flat legacy path)
   ensureParentDir(fs, FILENAME)
-  local ok, err = SaveData.commitSave(fs, FILENAME, BACKUP_FILENAME, encode(), data, encode)
+  if fs.getInfo(FILENAME) then
+    local prev = fs.read(FILENAME)
+    if prev then fs.write(BACKUP_FILENAME, prev) end
+  end
+  local ok, err = fs.write(TMP_FILENAME, encoded)
   if not ok then
     Logger.error("save failed: %s", tostring(err))
     return false
   end
-  markOpen(fs, FILENAME)
+  -- love.filesystem has no atomic rename: remove + rewrite, with the
+  -- .tmp copy as the recovery witness in between
+  remove(fs, FILENAME)
+  ok, err = fs.write(FILENAME, encoded)
+  if not ok then
+    Logger.error("save failed: %s", tostring(err))
+    return false
+  end
+  remove(fs, TMP_FILENAME)
   Logger.info("saved game")
   return true
 end
 
 -- ------- read
 
--- Before anything decides whether a save EXISTS (the title screens'
--- CONTINUE gates, the Sinnoh overwrite prompt), a main file that is missing
--- or unreadable while a good copy survives is put back -- once per file per
--- process -- so no menu offers only NEW GAME over a recoverable save.
-function SaveData.ensureRecovered(version)
-  version = version or GameVersion.get()
-  if not knownVersion(version) then return nil end
-  local FILENAME, BACKUP_FILENAME = saveNames(version)
-  if recoveryChecked[FILENAME] then return lastRecovery[FILENAME] end
-  recoveryChecked[FILENAME] = true
-  local fs = persistFs(nil)
-  if not fs then return nil end
-  local ok, data, from, bytes = pcall(SaveSafety.loadBest, fs, FILENAME, BACKUP_FILENAME, extrasFor(version))
-  if ok and data and from then
-    ensureParentDir(fs, FILENAME)
-    if SaveSafety.atomicWrite(fs, FILENAME, bytes, { bak = BACKUP_FILENAME, decode = SaveSafety.decodeSave }) then
-      Logger.warn("%s was missing or unreadable; restored it from the %s copy", FILENAME, tostring(from))
-      lastRecovery[FILENAME] = from
-    end
-  end
-  return lastRecovery[FILENAME]
-end
-
--- returns the parsed save plus where it came from ("tmp", "bak",
--- "bak-<stamp>", "pokewalker backup", ...) when the main file was gone or
--- corrupt and another copy was promoted; Game surfaces the recovery on the
--- load report
+-- returns the parsed save plus "tmp"/"bak" when the main file was gone
+-- or corrupt and a staged/backup copy was promoted; Game surfaces the
+-- recovery on the load report
 function SaveData.load(version)
   -- version defaults to the active game (set at boot from the launcher);
   -- an explicit version lets callers/tests load a specific game's save.
-  local FILENAME, BACKUP_FILENAME = saveNames(version)
-  local v = version or GameVersion.get()
+  local FILENAME, BACKUP_FILENAME, TMP_FILENAME = saveNames(version)
   local fs = persistFs(nil)
-  local data, recovered, bytes, state = SaveSafety.loadBest(fs, FILENAME, BACKUP_FILENAME, extrasFor(v))
-  if data and recovered then
-    Logger.warn("save.lua %s; recovered from %s copy",
-      fs.getInfo(FILENAME) and "corrupt" or "missing", recovered)
-    -- the unreadable main file is kept aside (.corrupt-<stamp>) by the write
-    ensureParentDir(fs, FILENAME)
-    SaveSafety.atomicWrite(fs, FILENAME, bytes, { bak = BACKUP_FILENAME, decode = SaveSafety.decodeSave })
+  local data, err = readTable(fs, FILENAME)
+  local recovered
+  if not data then
+    local tmp = readTable(fs, TMP_FILENAME)
+    if tmp then
+      data, recovered = tmp, "tmp"
+    else
+      local bak = readTable(fs, BACKUP_FILENAME)
+      if bak then data, recovered = bak, "bak" end
+    end
+    if data then
+      Logger.warn("save.lua %s; recovered from %s copy",
+        fs.getInfo(FILENAME) and "corrupt" or "missing", recovered)
+      fs.write(FILENAME, SaveSerializer.encode(data))
+    end
   end
   if not data then
-    if state == "unreadable" then
-      Logger.error("load failed: no copy of %s decodes (every file kept; see Tools -> Restore a Save)",
-        FILENAME)
+    if fs.getInfo(FILENAME) then
+      Logger.error("load failed: %s", tostring(err))
     end
     return nil
   end
-  recovered = recovered or lastRecovery[FILENAME]
-  lastRecovery[FILENAME] = nil
-  knownBytes[FILENAME] = SaveSafety.read(fs, FILENAME) or bytes
-  loadedWalkerKeys[FILENAME] = SaveSafety.walkerKeys(data)
-  markOpen(fs, FILENAME)
   SaveData.runMigrations(data)
   data.options = SaveData.optionsFor(version)
   Logger.info("loaded save")
   return data, recovered
-end
-
--- ------- recovery tool (launcher Tools -> Restore a Save)
-
-local function fileTime(fs, file)
-  local ok, info = pcall(fs.getInfo, file)
-  return ok and info and tonumber(info.modtime) or nil
-end
-
--- Every copy of a slot there is: the current file first, then the rest
--- newest first.  Rows: { label, when (os.time or nil), ok (decodes as a
--- save), name, meta, size, current, read = fn -> bytes }.
-function SaveData.slotBackups(version, slotId)
-  if not (knownVersion(version) and type(slotId) == "string") then return {} end
-  local fs = persistFs(nil)
-  local main, bak, tmp = slotNames(version, slotId)
-  local rows, seenBytes = {}, {}
-  local current
-  local function add(label, read, when, isCurrent)
-    local okR, bytes = pcall(read)
-    if not (okR and type(bytes) == "string" and bytes ~= "") then return end
-    if seenBytes[bytes] then return end
-    seenBytes[bytes] = true
-    local save = SaveSafety.decodeSave(bytes)
-    local okS, name, meta = pcall(SaveData.slotSummary, save, version)
-    local row = { label = label, when = when, ok = save ~= nil, current = isCurrent or nil,
-                  name = okS and name or nil, meta = okS and meta or nil, size = #bytes,
-                  read = function() return bytes end }
-    if isCurrent then current = row else rows[#rows + 1] = row end
-  end
-  local function fsRead(f) return function() return SaveSafety.read(fs, f) end end
-  add("current file", fsRead(main), fileTime(fs, main), true)
-  add("staged write (.tmp)", fsRead(tmp), fileTime(fs, tmp))
-  add("previous save (.bak)", fsRead(bak), fileTime(fs, bak))
-  for _, e in ipairs(SaveSafety.listBackups(fs, main)) do
-    add(e.tag and ("snapshot (" .. e.tag .. ")") or "snapshot", fsRead(e.file), e.t)
-  end
-  if fs.getDirectoryItems then
-    local okD, items = pcall(fs.getDirectoryItems, slotDir(version))
-    for _, item in ipairs(okD and items or {}) do
-      if item:sub(1, #slotId + 13) == slotId .. ".lua.corrupt-" then
-        local f = slotDir(version) .. "/" .. item
-        add("unreadable copy kept aside", fsRead(f), SaveSafety.stampTime(item))
-      end
-    end
-  end
-  for _, e in ipairs(SaveData._slotExtras(version, slotId)) do
-    add(e.label, e.read, e.t or (e.file and love and love.filesystem and fileTime(love.filesystem, e.file)))
-  end
-  table.sort(rows, function(a, b) return (a.when or 0) > (b.when or 0) end)
-  if current then table.insert(rows, 1, current) end
-  return rows
-end
-
--- Put one of slotBackups' rows back as the slot's save.  The current file is
--- snapshotted first ("prerestore"), so a restore can itself be undone.
-function SaveData.restoreBackup(version, slotId, row)
-  if not (knownVersion(version) and type(slotId) == "string") then return false, "unknown slot" end
-  if type(row) ~= "table" or type(row.read) ~= "function" then return false, "no copy chosen" end
-  local bytes = row.read()
-  if not SaveSafety.decodeSave(bytes) then return false, "that copy does not read as a save" end
-  local fs = persistFs(nil)
-  local main, bak = slotNames(version, slotId)
-  ensureParentDir(fs, main)
-  local cur = SaveSafety.read(fs, main)
-  if cur and cur ~= bytes then SaveSafety.snapshot(fs, main, cur, "prerestore") end
-  local ok, err = SaveSafety.atomicWrite(fs, main, bytes, { bak = bak, decode = SaveSafety.decodeSave })
-  knownBytes[main] = nil
-  recoveryChecked[main] = nil
-  return ok, err
-end
-
--- Slots deleted from the launcher (deleteSlot moves them to
--- saves/<version>/deleted/), newest first, as slotBackups-style rows.
-function SaveData.deletedSlots(version)
-  if not knownVersion(version) then return {} end
-  local fs = persistFs(nil)
-  local dir = slotDir(version) .. "/deleted"
-  local rows = {}
-  if not fs.getDirectoryItems then return rows end
-  local ok, items = pcall(fs.getDirectoryItems, dir)
-  for _, item in ipairs(ok and items or {}) do
-    local slot, stamp = item:match("^(slot%d+)%-(%d+%-%d+)%.lua$")
-    if slot then
-      local f = dir .. "/" .. item
-      local bytes = SaveSafety.read(fs, f)
-      if not SaveSafety.decodeSave(bytes) then bytes = SaveSafety.read(fs, f .. ".bak") end
-      local save = SaveSafety.decodeSave(bytes)
-      local okS, name, meta = pcall(SaveData.slotSummary, save, version)
-      rows[#rows + 1] = { label = "deleted " .. slot, slot = slot, when = SaveSafety.stampTime(stamp),
-        ok = save ~= nil, name = okS and name or nil, meta = okS and meta or nil,
-        size = bytes and #bytes or 0, read = function() return bytes end }
-    end
-  end
-  table.sort(rows, function(a, b) return (a.when or 0) > (b.when or 0) end)
-  return rows
-end
-
--- Bring a deleted slot (or any row) back as a NEW slot; returns its id.
-function SaveData.restoreAsNewSlot(version, row, label)
-  if type(row) ~= "table" or type(row.read) ~= "function" then return nil, "no copy chosen" end
-  local save = SaveSafety.decodeSave(row.read())
-  if not save then return nil, "that copy does not read as a save" end
-  local id = SaveData.createSlot(version)
-  if not id then return nil, "could not make a slot" end
-  local ok, err = SaveData.writeSlot(version, id, save)
-  if not ok then return nil, err end
-  if label then pcall(SaveData.renameSlot, version, id, label) end
-  return id
 end
 
 -- ------- validation and quarantine

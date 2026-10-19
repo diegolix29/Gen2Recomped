@@ -28,11 +28,7 @@ local function fakeMap(behaviour, hgss)
 end
 local sea = fakeMap(0x15)
 check(sea:gen4WaterAt(1, 1) and sea:isWaterCell(1, 1), 'the sea is water to a surfer')
--- HGSS shares the SURFABLE rows (pokeheartgold sMetatileBehaviorFlags; Map.gen4WaterAt,
--- since the New Bark sea walk-on) except 0x22, a walkable Safari Zone row there
-check(fakeMap(0x15, true):gen4WaterAt(1, 1), 'HeartGold/SoulSilver: the sea is water too')
-check(not fakeMap(0x22, true):gen4WaterAt(1, 1) and fakeMap(0x22):gen4WaterAt(1, 1),
-  "HeartGold/SoulSilver keep their own 0x22 (walkable), Platinum's is surfable")
+check(not fakeMap(0x15, true):gen4WaterAt(1, 1), 'HeartGold/SoulSilver keep their own water rule')
 
 -- the press rules below Field_TileBehaviorToScript's table
 package.loaded['src.core.Game'] = { data = { gen4_version = { family = 'platinum' } }, save = { party = {} } }

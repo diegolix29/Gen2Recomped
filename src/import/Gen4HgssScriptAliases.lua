@@ -140,14 +140,16 @@ local A = {
   -- THE SHARED TRAINER SCRIPT. ScrCmd_574 <dest, object> is the object's
   -- movement type, Platinum's GetMovementType in the same order; ScrCmd_454
   -- plays an overlay-26 effect on the last-talked object and changes nothing
-  -- a script reads; LoadPhoneDat <trainer, dest> keeps its own name and
-  -- lowers in src/script/HgssPhoneNumbers.lua (the phonebook row; an install
-  -- imported while it was aliased to `setvarfromvalue dest, 255` is lowered
-  -- there too, by its hgssName)
+  -- a script reads; LoadPhoneDat <trainer, dest> is that trainer's phone-
+  -- book entry, and the shared trainer script (scr_seq_0953) tests it
+  -- against 255, NONE -- the answer while this port has no phone, which
+  -- keeps every trainer off the number-swap path (0 is a real entry: Mom)
   scrcmd_574 = "getmovementtype",
   scrcmd_454 = NOOP,
-  -- ScrCmd_462 (clear a contact's rematch "seeking") keeps its own name and
-  -- lowers in src/script/HgssPhoneRematch.lua
+  loadphonedat = { "setvarfromvalue", { 2, { 255 } } },
+  -- clears a rematch's "seeking" flag in the phone state, which nothing
+  -- here keeps
+  scrcmd_462 = NOOP,
   -- Morty's gym: the candle's light follows its medium every frame
   -- (Gen4Commands' ecruteakFollow), so binding it for her walk is a no-op;
   -- EcruteakGymInit and ExtinguishEcruteakGymCandle lower in Gen4ScriptVM
@@ -165,8 +167,9 @@ local A = {
   -- Field_SetWarpXYPos / Field_GetTimeOfDay, Platinum's under other names
   movewarp = "setwarpeventpos",
   scrcmd_379 = "gettimeofday",
-  -- GetPhoneBookRematch <contact, dest> keeps its own name and lowers in
-  -- src/script/HgssPhoneRematch.lua (the seeking state, the rematch ladder)
+  -- GetPhoneBookRematch <contact, dest>: whether a registered trainer wants a
+  -- rematch today -- no phone is built, so never (0)
+  getphonebookrematch = { "setvarfromvalue", { 2, { 0 } } },
   -- GameStats_AddScore: the trainer card's SCORE for a stat (a gym win, ...),
   -- not a game record; this port keeps no score yet
   addspecialgamestat = NOOP,

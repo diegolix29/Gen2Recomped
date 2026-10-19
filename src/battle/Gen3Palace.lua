@@ -41,8 +41,8 @@ Palace.LIKELIHOOD = {
 -- 2 getting into position, 3 growling deeply
 Palace.FLAVOR = { [0] = 0, 1, 2, 1, 1, 2, 0, 1, 2, 3, 3, 1, 0, 2, 0, 2, 3, 0, 0, 3, 2, 1, 3, 3, 0 }
 Palace.FLAVOR_TEXT = { [0] = "TEXT_5CCEF7", [2] = "TEXT_5CCEC0", [3] = "TEXT_5CCEDD" }
-Palace.FLAVOR_FALLBACK = { [0] = "is eager for more!", [1] = Strings.source("A glint appears in\n%s's eyes!"),
-  [2] = Strings.source("is getting into\nposition!"), [3] = "began growling deeply!" }
+Palace.FLAVOR_FALLBACK = { [0] = "is eager for more!", [1] = "A glint appears in\n%s's eyes!",
+  [2] = "is getting into\nposition!", [3] = "began growling deeply!" }
 Palace.INCAPABLE_TEXT = "TEXT_5CCE79"
 
 -- move target bits (Emerald's MOVE_TARGET_*)

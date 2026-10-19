@@ -56,24 +56,24 @@ local MOVE_MODIFIERS = {
 -- .WeatherMessages / .WeatherEndedMessages (core.asm:1770-1782), wording from
 -- data/text/battle.asm BattleText_*.
 local CONTINUE_TEXT = {
-  RAIN = Strings.source("Rain continues to\nfall."),
-  SUN = Strings.source("The sunlight is\nstrong."),
-  SANDSTORM = Strings.source("The SANDSTORM\nrages."),
-  HAIL = Strings.source("Hail continues to\nfall."),
+  RAIN = "Rain continues to\nfall.",
+  SUN = "The sunlight is\nstrong.",
+  SANDSTORM = "The SANDSTORM\nrages.",
+  HAIL = "Hail continues to\nfall.",
 }
 local ENDED_TEXT = {
   RAIN = "The rain stopped.",
-  SUN = Strings.source("The sunlight\nfaded."),
-  SANDSTORM = Strings.source("The SANDSTORM\nsubsided."),
+  SUN = "The sunlight\nfaded.",
+  SANDSTORM = "The SANDSTORM\nsubsided.",
   HAIL = "The hail stopped.",
 }
 
 -- the text each move prints when it lands (DownpourText / SunGotBrightText /
 -- SandstormBrewedText)
 Weather.STARTED_TEXT = {
-  RAIN = Strings.source("A downpour\nstarted!"),
-  SUN = Strings.source("The sunlight got\nbright!"),
-  SANDSTORM = Strings.source("A SANDSTORM\nbrewed!"),
+  RAIN = "A downpour\nstarted!",
+  SUN = "The sunlight got\nbright!",
+  SANDSTORM = "A SANDSTORM\nbrewed!",
   HAIL = "It started to hail!",
 }
 

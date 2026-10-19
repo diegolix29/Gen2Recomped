@@ -44,7 +44,7 @@ function C:draw(name,tick)
   local g=love.graphics
   if not self.colour then self.colour,self.depth=Model.newTarget(256,192) end
   if not (self.colour and self.depth) then return end
-  -- pop restores the bound canvas, depth set included
+  local old={g.getCanvas()}
   g.push('all');g.setCanvas({self.colour,depthstencil=self.depth});g.clear(0,0,0,1,true,true)
   g.origin();g.setScissor();g.setColor(1,1,1,1)
   local angle=0xD602/65536*math.pi*2;local distance=410.922119140625
@@ -58,7 +58,7 @@ function C:draw(name,tick)
   local fog=Model.depthFog;Model.depthFog=nil
   actor.model:draw(vp,pose,require('src.render.Gen4TexAnim').materials(actor.materials,frame))
   Model.depthFog=fog
-  g.pop()
+  g.setCanvas(old[1] and old or nil);g.pop()
   g.setColor(1,1,1,1);g.draw(self.colour,0,0)
 end
 return C

@@ -399,15 +399,16 @@ function SecondScreen.draw(game, body)
   -- so it cannot be a translate: the body is rendered to our own canvas and
   -- `flush` sends it on.  Everything the renderer had set is saved and put
   -- back -- canvas, scissor, colour, blend -- because this runs in the MIDDLE
-  -- of somebody else's frame.  push("all") covers all of it, the canvas
-  -- included (LOVE 11 keeps the render targets on the stack); restoring
-  -- getCanvas()'s answer by hand dropped or choked on a mod's depth set.
-  -- A live scissor is the one that bites hardest if forgotten: it
+  -- of somebody else's frame.  push("all") covers all of it except the canvas
+  -- itself, which is not part of the graphics stack and is restored by hand;
+  -- `getCanvas` answering nil is the default target and a fine thing to
+  -- restore to.  A live scissor is the one that bites hardest if forgotten: it
   -- is in WINDOW space, and left set it clips the canvas to wherever the
   -- renderer happened to be drawing.
   if SecondScreen.mode(game) == "display" or SecondScreen.combined(game) then
     local canvas = surface(game)
     if canvas then
+      local previous = g.getCanvas()
       g.push("all")
       g.setCanvas(canvas)
       g.origin()
@@ -425,6 +426,7 @@ function SecondScreen.draw(game, body)
         g.scale(sw / lw, sh / lh)
       end
       local ok, err = pcall(body)
+      g.setCanvas(previous)
       g.pop()
       game.secondScreenDirty = true
       if not ok then error(err, 0) end

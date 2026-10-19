@@ -720,7 +720,7 @@ function Gen3PartyMenu:transferHpTo(mon)
   local cost=transferCost(donor)
   local maxHp=(mon.stats and mon.stats.hp) or mon.maxHp or 0
   if mon==donor or (mon.hp or 0)<=0 or mon.hp>=maxHp or (donor.hp or 0)<=cost then
-    return self:say(transferText(self.game,"This can’t be used on", Strings.source("This can’t be used on\nthat POKéMON.")))
+    return self:say(transferText(self.game,"This can’t be used on", "This can’t be used on\nthat POKéMON."))
   end
   local oldDonor,oldRecipient=donor.hp,mon.hp
   require("src.core.Sound").play(self.game.data,"Get_Item")
@@ -731,7 +731,7 @@ function Gen3PartyMenu:transferHpTo(mon)
     self:animateTo(mon,oldRecipient,function()
       self.hpTransferFrom=nil
       local name=monName(self.game,mon)
-      local text=transferText(self.game,"HP was restored", Strings.source("{VAR1}’s HP was restored\nby {VAR2} point(s)."))
+      local text=transferText(self.game,"HP was restored", "{VAR1}’s HP was restored\nby {VAR2} point(s).")
       text=text:gsub("{VAR1}",function() return name end)
         :gsub("{VAR2}",tostring(mon.hp-oldRecipient))
       self:say(text)

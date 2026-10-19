@@ -71,21 +71,12 @@ function A.build(x)
   end
   -- the dragon (Black 227 / title_b_01, White 235 / title_w_01) ...
   out.dragon,out.motion=scenePart(white and 235 or 227,white and 234 or 226,'dragon_')
-  -- ... the scene's second skinned object (Black 230 / title_b_02, White 238
-  -- / title_w_02): overlay 88 builds three objects (0x021B9E7C sets the
-  -- frame of all three), title_b_01, _02 and _03
-  local okM,mid,midMotion=pcall(scenePart,white and 238 or 230,white and 237 or 229,'mid_')
-  if okM then out.middle,out.middleMotion=mid,midMotion end
   -- ... and the stage behind it: the checkered floor, the glow and the rays
   -- (Black 232 / title_b_03, White 240 / title_w_03)
   local okB,bg,bgMotion=pcall(scenePart,white and 240 or 232,white and 239 or 231,'stage_')
   if okB then out.stage,out.stageMotion=bg,bgMotion end
-  -- THE TITLE CAMERA (/a/1/6/0): u32 frame count, bytes 4..6 the channel
-  -- flags (0, 1, 1), then per frame six IEEE floats: the ROTATION in degrees
-  -- (x, y, z) and the POSITION. ARM9 0x0201183C reads them (x 4096, fx32);
-  -- 0x02011B8C turns the angles into MTX_RotX * RotY * RotZ (0x020520FC) and
-  -- sets the eye at the position, the target at position + R(0, 0, -1) and
-  -- the up vector R(0, 1, 0) (src/ui/Gen5Title.lua: Title.cameraAt). Black's is member
+  -- THE TITLE CAMERA (/a/1/6/0): u32 frame count, u32 0x00010100, then per
+  -- frame six IEEE floats -- the look-at point and the eye. Black's is member
   -- 233, 5,620 frames like its dragon's `title_b_01` (226); White's is 241,
   -- 5,781 like `title_w_01` (234). (224, 451 frames, is the riza_bridge
   -- scene's, with 217 / 221.)
