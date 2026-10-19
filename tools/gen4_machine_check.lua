@@ -74,7 +74,7 @@ local function loadTable(dir, name)
 end
 local function listDir(dir)
   local out = {}
-  local p = io.popen('ls "' .. dir .. '" 2>' .. (package.config:sub(1, 1) == "\\" and "nul" or "/dev/null"))
+  local p = io.popen('ls "' .. dir .. '" 2>/dev/null')
   if not p then return out end
   for line in p:lines() do out[#out + 1] = line end
   p:close()
@@ -439,12 +439,7 @@ else
   -- left all 67 checks passing while the line on screen read "It contained .".
   do
     local src = code(slurp("src/ui/BagMenu.lua"))
-    -- the arm that reads BAG_TEXT_CONTAINED: BagMenu has other Gen 4 arms
-    -- (the bicycle's silent mount) above the TM one now
-    local arm
-    for body in src:gmatch("isGen4%(%)%s+then(.-)\n      end") do
-      if body:find("BAG_TEXT_CONTAINED", 1, true) then arm = body break end
-    end
+    local arm = src:match("isGen4%(%)%s+then(.-)\n      end")
     ok(arm ~= nil,
        "BagMenu has no Gen 4 arm in useItem, so the bag reads Hoenn's wording")
     if arm then

@@ -52,9 +52,6 @@ function E.season(s, index)
     ripplingSurf = { rate = r(4), slots = slots(s, base, 8 + 164, 5, E.WATER_RATES) },
     superRod = { rate = r(5), slots = slots(s, base, 8 + 184, 5, E.FISH_RATES) },
     ripplingFishing = { rate = r(6), slots = slots(s, base, 8 + 204, 5, E.FISH_RATES) },
-    -- byte 7: the phenomenon cadence (ov21 0x21D8E70): 0 / 1 every 20 steps
-    -- at 10%, 2 every 5 steps at 15% (src/world/Gen5Phenomena.lua)
-    phenomenon = r(7),
   }
 end
 

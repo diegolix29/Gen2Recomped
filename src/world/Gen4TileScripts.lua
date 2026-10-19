@@ -180,19 +180,10 @@ function Gen4TileScripts.hgssFieldMoveRow(ow, behaviour, facing, data, save)
         return row("WATER", 4)
       end
     end
-    return Gen4TileScripts.hgssTreeRow(ow)
+    return nil
   end
   if behaviour == H.WATERFALL then return row("WATERFALL", 5) end
   if behaviour == H.WHIRLPOOL then return row("WHIRLPOOL", 16) end
-  return Gen4TileScripts.hgssTreeRow(ow)
-end
-
--- ...and after every metatile script, the forest itself: a facing tile in a
--- land-0xD0 matrix cell (GetInteractedHeadbuttTreeScript ->
--- FieldSystem_FacingModelIsHeadbuttTree; src/world/HgssHeadbuttTrees.lua)
-function Gen4TileScripts.hgssTreeRow(ow)
-  local okT, isTree = pcall(function() return require("src.world.HgssHeadbuttTrees").facingTree(ow) end)
-  if okT and isTree then return { behaviour = "HEADBUTT_TREE", band = "field_move", index = 14 } end
   return nil
 end
 

@@ -41,7 +41,6 @@
 -- windows the purchase uses.
 local Assets = require('src.render.Assets')
 local Font = require('src.render.Font')
-local Strings = require('src.core.Strings')
 local Bag = require('src.inventory.Bag')
 local T = require('src.import.Gen4Text')
 local Shop = {}
@@ -163,7 +162,7 @@ function Shop:pay(n)
   pcall(function() require('src.pokemon.Gen4GameRecords').add(self.game.save, 35, n) end)
 end
 function Shop:poorLine()
-  if self.frontier then return self:line(37, Strings("I'm sorry.\nYou don't have enough BP.")) end
+  if self.frontier then return self:line(37, "I'm sorry.\nYou don't have enough BP.") end
   return self:line(3, "You don't have enough money.")
 end
 

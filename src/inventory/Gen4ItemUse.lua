@@ -28,8 +28,6 @@
 -- (ITEM_USE_CANNOT_USE_GENERIC): Mulch or the Sprayduck with no patch ahead,
 -- the Azure Flute anywhere but its one event.
 
-local Strings = require("src.core.Strings")
-
 local G = {}
 
 G.BAND_BERRY, G.BAND_VS_SEEKER = "berry_tree_interactions", "vs_seeker"
@@ -85,19 +83,13 @@ function G.rowanLine(data, save)
   local Game = game()
   local T = require("src.import.Gen4Text")
   if Game then pcall(T.buffer, Game, name) end
-  -- BLACK / WHITE: Juniper's words (bag bank 3 line 56). Their bank 213 is
-  -- story text -- line 36 is Alder's Dragonspiral speech, which is what every
-  -- refused item printed in Unova.
-  if require("src.core.GameVersion").isGen5() then
-    return require("src.inventory.Gen5ItemUse").juniper(data, save)
-  end
   local v = data and data.gen4_version
   if v and v.family == "hgss" then
     local oak = Game and T.resolve(data, G.HGSS_BANK_COMMON, G.HGSS_OAKS_WORDS, Game)
-    return oak or Strings("Oak's words echoed...\n%s! There's a time and\nplace for everything! But not now.", name)
+    return oak or ("Oak's words echoed...\n%s! There's a time and\nplace for everything! But not now."):format(name)
   end
   local line = Game and T.resolve(data, G.BANK_COMMON_STRINGS, G.CANT_DO_THAT_RIGHT_NOW, Game)
-  return line or Strings("Rowan's words echoed...\n%s! There's a time and\nplace for everything! But not now.", name)
+  return line or ("Rowan's words echoed...\n%s! There's a time and\nplace for everything! But not now."):format(name)
 end
 
 local function rowan(save)
@@ -202,12 +194,12 @@ function G.use(data, save, id, itemDef, target, battle)
     -- BagContext_FormatUsageMessage's cases (the Repels and Flutes are
     -- ItemEffects' own, from the name)
     if name == "Point Card" then
-      return "failed", { bagLine(data, 97, Strings("Saved Battle Points\n%d BP", save.battlePoints or 0), tostring(save.battlePoints or 0)) }
+      return "failed", { bagLine(data, 97, ("Saved Battle Points\n%d BP"):format(save.battlePoints or 0), tostring(save.battlePoints or 0)) }
     elseif name == "Fashion Case" then
       local acc, bd = 0, 0
       for _, c in pairs((save.gen4Accessories or {})) do acc = acc + (tonumber(c) or 0) end
       for _ in pairs((save.gen4Backdrops or {})) do bd = bd + 1 end
-      return "failed", { bagLine(data, 93, Strings("Accessories: %d\nBackdrops: %d", acc, bd), tostring(acc), tostring(bd)) }
+      return "failed", { bagLine(data, 93, ("Accessories: %d\nBackdrops: %d"):format(acc, bd), tostring(acc), tostring(bd)) }
     elseif name == "Coin Case" then
       return "failed", { bagLine(data, 57, ("Your Coins: %d"):format(save.coins or 0), tostring(save.coins or 0)) }
     end

@@ -942,9 +942,9 @@ return function(Gen3Commands)
     local monName = mon.nickname or (pdef and pdef.name) or tostring(mon.species)
     local moveName = (mdef and mdef.name) or tostring(move)
     local fallback = ({
-      learned = Strings("{VAR1} learned\n{VAR2}!"),
-      alreadyKnows = Strings("{VAR1} already knows\n{VAR2}."),
-      notCompatible = Strings("{VAR1} and {VAR2}\nare not compatible."),
+      learned = "{VAR1} learned\n{VAR2}!",
+      alreadyKnows = "{VAR1} already knows\n{VAR2}.",
+      notCompatible = "{VAR1} and {VAR2}\nare not compatible.",
     })[role] or ""
     local text = lines[role] or fallback
     text = text:gsub("{VAR1}", function() return monName end)

@@ -199,14 +199,7 @@ end
 
 function C.saveState(st, kind)
   if love and love.filesystem then
-    -- atomic: a lost link table makes the next sync treat every slot as new
-    local okS, Safety = pcall(require, "src.core.SaveSafety")
-    if okS then
-      Safety.atomicWrite(love.filesystem, stateFile(kind), SaveSerializer.encode(st),
-        { bak = stateFile(kind) .. ".bak", decode = Safety.decodeAny })
-    else
-      love.filesystem.write(stateFile(kind), SaveSerializer.encode(st))
-    end
+    love.filesystem.write(stateFile(kind), SaveSerializer.encode(st))
   end
 end
 
@@ -283,17 +276,9 @@ local function upload(store, st, version, slotId, cloudId, bytes, label)
   return true, h
 end
 
--- a copy that decodes AND is a playthrough (SaveSafety.looksLikeSave): an
--- empty, cut-short or foreign file never replaces a save on either side
-local SaveSafety = require("src.core.SaveSafety")
-local function isSave(bytes)
-  return SaveSafety.decodeSave(bytes) ~= nil
-end
-C.isSave = isSave
-
 local function writeLocal(version, slotId, bytes)
-  local t = SaveSafety.decodeSave(bytes)
-  if not t then return false, "the cloud copy does not read as a save" end
+  local ok, t = pcall(SaveSerializer.decode, bytes)
+  if not (ok and type(t) == "table") then return false, "the cloud copy does not read as a save" end
   return SaveData.writeSlot(version, slotId, t)
 end
 
@@ -318,12 +303,6 @@ function C.syncSlot(target, st, version, slotId)
   st.links[version] = st.links[version] or {}
   local link = st.links[version][slotId]
   local bytes = localBytes(version, slotId)
-  -- AN UNREADABLE LOCAL FILE IS NEVER UPLOADED.  It used to count as "local
-  -- changed" and replace the cloud copy (rotating the good ones out after two
-  -- syncs).  The slot is left for Tools -> Restore a Save.
-  if bytes and not isSave(bytes) then
-    return nil, "this slot's save file does not read -- restore it from a backup first"
-  end
   if not link then
     if not bytes then return "empty" end
     local cloudId = st.device .. "-" .. slotId
@@ -333,9 +312,6 @@ function C.syncSlot(target, st, version, slotId)
     return "uploaded"
   end
   local cloudBytes = store.read(cloudRel(version, link.cloudId))
-  -- an empty or cut-short cloud copy (a provider mid-sync, a failed upload)
-  -- is treated as missing: the local save goes back up, nothing comes down
-  if cloudBytes and not isSave(cloudBytes) then cloudBytes = nil end
   local localH = bytes and C.hash(bytes) or nil
   local cloudH = cloudBytes and C.hash(cloudBytes) or nil
   local localChanged = localH ~= nil and localH ~= link.hash
@@ -354,15 +330,6 @@ function C.syncSlot(target, st, version, slotId)
     if not ok then return nil, h end
     link.hash = h
     return "uploaded"
-  end
-  -- THE CLOUD COPY IS LESS PLAYED than the one here (another device synced
-  -- an older branch): never a silent replacement -- it comes down as its own
-  -- slot below and the local save goes up
-  if cloudChanged and not localChanged and bytes then
-    local lt, ct = SaveSafety.decodeSave(bytes), SaveSafety.decodeSave(cloudBytes)
-    if lt and ct and SaveSafety.playSeconds(ct) + 60 < SaveSafety.playSeconds(lt) then
-      localChanged = true
-    end
   end
   if cloudChanged and not localChanged then
     rotateLocal(version, slotId)
@@ -394,7 +361,7 @@ function C.pullNew(target, st, version)
     local cloudId = name:match("^(.-)%.lua$")
     if cloudId and not cloudId:match("%.info$") and not linked[cloudId] then
       local bytes = store.read(cloudRel(version, cloudId))
-      if bytes and isSave(bytes) then
+      if bytes then
         local info = readInfo(store, version, cloudId)
         local label = info.label and (info.label .. " (cloud)") or ("Cloud " .. cloudId)
         local id = newLocalSlot(version, bytes, label)

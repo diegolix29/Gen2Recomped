@@ -423,14 +423,6 @@ end
 
 -- the song a map should currently play, honoring the bike/surf overrides
 local function effectiveMapSong(data, song)
-  -- PLATINUM / HGSS: FieldBGM_GetEffective takes the surf song on ANY map
-  -- (Platinum leaves out the Distortion World; HGSS skips it while flag
-  -- 0x99A is set), and mounting stores the bike song as the saved override
-  -- (FieldBGM_SetOverride), which beats every map header until the
-  -- dismount. Gated by outdoor songs, a cave ride kept the cave's theme.
-  local g4, handled = require("src.core.Gen4FieldBgm").effective(data, song, state.onBike,
-                                                         state.surfing, Music.special, songDef)
-  if handled then return g4 end
   if not song or not outdoorSongs(data)[song] then return song end
   if state.onBike then
     local bike = Music.special(data, "bike")

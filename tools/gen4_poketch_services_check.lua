@@ -6,8 +6,7 @@ package.loaded['src.render.Font'] = { draw = function() end, width = function(s)
 package.loaded['src.core.Logger'] = { warn = function() end, info = function() end }
 package.loaded['src.core.Strings'] = function(s) return s end
 package.loaded['src.core.GameVersion'] = { isGen2 = function() return false end,
-  isGen3 = function() return false end, get = function() return 'platinum' end,
-  info = function() return { family = 'platinum', generation = 4 } end }
+  isGen3 = function() return false end, get = function() return 'platinum' end }
 package.loaded['src.ui.SecondScreen'] = { toLocal = function(_, x, y)
   if x >= 0 and x < 256 and y >= 0 and y < 192 then return x, y end
 end }

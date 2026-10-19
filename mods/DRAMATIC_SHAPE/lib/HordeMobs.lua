@@ -197,13 +197,9 @@ local function spawnCells(map, near, far, want)
   return out
 end
 
--- `mover` is the mob asking, and it has to be passed: Collision.occupied
--- skips any entity whose `.of` equals `ignore` (a follower of the mover), so
--- an ignore of nil skipped every plain body on the map and mobs walked
--- straight into each other.
-local function occupiedCell(state, cx, cy, mover)
+local function occupiedCell(state, cx, cy)
   local Collision = require("src.world.Collision")
-  return Collision.occupied(state.entities, cx, cy, mover) ~= nil
+  return Collision.occupied(state.entities, cx, cy, nil) ~= nil
 end
 
 -- One mob, on a cell, on the live map. Returns the roster entry or nil.
@@ -316,7 +312,7 @@ local function stepMob(state, entry)
   for _, pick in ipairs({ best, second }) do
     if pick then
       local dir, tx, ty = pick[1], pick[2], pick[3]
-      if not occupiedCell(state, tx, ty, npc) then
+      if not occupiedCell(state, tx, ty) then
         npc.facing = dir
         npc.targetX, npc.targetY = tx, ty
         npc.moving = true

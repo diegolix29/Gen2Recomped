@@ -447,7 +447,7 @@ function MatchCall.birch(data, save)
     index = math.floor((caught - discount) / step)
     if index > (b.max or 20) then index = b.max or 20 end
   end
-  local join = b.join or "\f"  -- strings: page separator
+  local join = b.join or "\f"
   local body = table.concat({
     b.intro and b.intro[1] or "",
     b.intro and b.intro[2] or "",

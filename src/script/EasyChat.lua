@@ -91,7 +91,7 @@ function EasyChat.phrase(data, words, perLine)
       -- ...and the separator goes AFTER the word rather than before it, so a
       -- phrase that is one word short does not open on a blank line
       if i < #words then
-        out[#out + 1] = (i % perLine == 0) and "\n" or " "  -- strings: word separator
+        out[#out + 1] = (i % perLine == 0) and "\n" or " "
       end
     end
   end

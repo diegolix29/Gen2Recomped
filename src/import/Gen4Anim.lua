@@ -375,61 +375,6 @@ end
 -- anywhere would leave a hole somewhere.
 local HALF = 0x2000
 
--- AN ANIMATED CHANNEL'S INFO WORD (NitroSystem NNS_G3D_JNTANM_TINFO_*):
---   bits 30-31  STEP: 0 a value every frame, 1 every 2nd, 2 every 4th
---   bit  29     FX16ARRAY: the values are s16 (HALF above, on the high u16)
---   bits 16-28  LAST_INTERP: the last frame reached by interpolating; past it
---               the array holds one value a frame again
--- Platinum's 183 animations are all STEP 1 under 8,192 frames, where reading
--- only the high u16 against HALF was the same thing. Black and White's title
--- dragons are not: `title_b_01` (5,620 frames) stores its root's height
--- every 2nd frame as s32 with LAST_INTERP 5,618, so the high u16 (0x55F2)
--- read as "s16" and the height came out 1.93, 0, 1.93, 0 a frame -- the
--- dragon shook. The cartridge (GetTransData_/GetRotData_/GetScaleData_)
--- blends neighbouring samples on the frames between: 1:1 for STEP 2, 3:1,
--- 1:1, 1:3 for STEP 4.
-function Gen4Anim.stepped(info, read, blend)
-  local step = math.floor(info / 2 ^ 30) % 4
-  if step == 0 then return read end
-  local s = step == 1 and 2 or 4
-  local last = math.floor(info / 65536) % 8192
-  return function(f)
-    if f > last then return read(math.floor(last / s) + (f - last)) end
-    local i, r = math.floor(f / s), f % s
-    if r == 0 then return read(i) end
-    return blend(read(i), read(i + 1), r / s)
-  end
-end
-
--- how many values a channel's array holds
-function Gen4Anim.sampleCount(info, frames)
-  local step = math.floor(info / 2 ^ 30) % 4
-  if step == 0 then return frames end
-  local s = step == 1 and 2 or 4
-  local last = math.min(math.floor(info / 65536) % 8192, math.max(0, frames - 1))
-  return math.floor(last / s) + 1 + math.max(0, frames - 1 - last)
-end
-
-local function lerpScalar(a, b, t) return a + (b - a) * t end
-
--- two rotations blended and made orthonormal again (the cartridge normalises
--- the blended rows the same way)
-local function blendRotation(a, b, t)
-  local m = {}
-  for k = 1, 9 do m[k] = a[k] + (b[k] - a[k]) * t end
-  local ax, ay, az = m[1], m[4], m[7]
-  local la = math.sqrt(ax * ax + ay * ay + az * az)
-  if la < 1e-9 then return a end
-  ax, ay, az = ax / la, ay / la, az / la
-  local bx, by, bz = m[2], m[5], m[8]
-  local d = ax * bx + ay * by + az * bz
-  bx, by, bz = bx - d * ax, by - d * ay, bz - d * az
-  local lb = math.sqrt(bx * bx + by * by + bz * bz)
-  if lb < 1e-9 then return a end
-  bx, by, bz = bx / lb, by / lb, bz / lb
-  return { ax, bx, ay * bz - az * by, ay, by, az * bx - ax * bz, az, bz, ax * by - ay * bx }
-end
-
 local function s16at(d, at)
   local v = u16(d, at)
   if not v then return 0 end
@@ -537,14 +482,14 @@ function Gen4Anim.jointMatrices(data, anim)
         at = at + constBytes
         return function() return value end
       end
-      local info = u32(data, at) or 0
-      local half = isSet(info, 29)
+      local word = u16(data, at + 2) or 0
+      local half = word >= HALF
       local offset = u32(data, at + 4) or 0
       at = at + 8
       if half then
-        return Gen4Anim.stepped(info, function(f) return s16at(data, base + offset + f * 2) / Gen4Anim.FX end, lerpScalar)
+        return function(f) return s16at(data, base + offset + f * 2) / Gen4Anim.FX end
       end
-      return Gen4Anim.stepped(info, function(f) return s32at(data, base + offset + f * 4) / Gen4Anim.FX end, lerpScalar)
+      return function(f) return s32at(data, base + offset + f * 4) / Gen4Anim.FX end
     end
 
     local tx = scalar(4, isSet(flags, 3), isSet(flags, 1), 0)
@@ -560,13 +505,12 @@ function Gen4Anim.jointMatrices(data, anim)
       local fixed = Gen4Anim.rotationAt(data, base, pivotAt, matrixAt, value)
       rotation = function() return fixed end
     else
-      local info = u32(data, at) or 0
       local offset = u32(data, at + 4) or 0
       at = at + 8
-      rotation = Gen4Anim.stepped(info, function(f)
+      rotation = function(f)
         return Gen4Anim.rotationAt(data, base, pivotAt, matrixAt,
                                    u16(data, base + offset + f * 2) or 0)
-      end, blendRotation)
+      end
     end
 
     -- A scale channel is eight bytes whether it is constant or not: constant
@@ -580,14 +524,14 @@ function Gen4Anim.jointMatrices(data, anim)
         at = at + 8
         return function() return value end
       end
-      local info = u32(data, at) or 0
-      local half = isSet(info, 29)
+      local word = u16(data, at + 2) or 0
+      local half = word >= HALF
       local offset = u32(data, at + 4) or 0
       at = at + 8
       if half then
-        return Gen4Anim.stepped(info, function(f) return s16at(data, base + offset + f * 4) / Gen4Anim.FX end, lerpScalar)
+        return function(f) return s16at(data, base + offset + f * 4) / Gen4Anim.FX end
       end
-      return Gen4Anim.stepped(info, function(f) return s32at(data, base + offset + f * 8) / Gen4Anim.FX end, lerpScalar)
+      return function(f) return s32at(data, base + offset + f * 8) / Gen4Anim.FX end
     end
 
     local sx = axis(isSet(flags, 11), isSet(flags, 9))
@@ -714,15 +658,14 @@ function Gen4Anim.valueExtents(data, anim, limit)
     local function channel(constBytes, constant, absent, elem)
       if absent then return end
       if constant then at = at + constBytes return end
-      local info = u32(data, at) or 0
+      local word = u16(data, at + 2) or 0
       local offset = u32(data, at + 4) or 0
-      -- a rotation's index is u16 whatever bit 29 says
-      local width = (elem ~= 2 and isSet(info, 29)) and (elem / 2) or elem
+      local width = (word >= HALF) and (elem / 2) or elem
       at = at + 8
       if offset < lowest then lowest = offset end
       if not seen[offset] then
         seen[offset] = true
-        intervals[#intervals + 1] = { offset, offset + Gen4Anim.sampleCount(info, frames) * width }
+        intervals[#intervals + 1] = { offset, offset + frames * width }
       end
     end
     for k = 0, 2 do channel(4, isSet(flags, 3 + k), isSet(flags, 1), 4) end

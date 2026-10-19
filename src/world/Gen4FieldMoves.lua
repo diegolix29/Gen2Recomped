@@ -98,23 +98,7 @@ function F.weatherOffers(save, name)
   return W.nameFor(save and save.gen4WeatherActive) == row.weather
 end
 
--- Field_TrySetMapConnection (pokeplatinum overlay005/field_control.c;
--- pokeheartgold FieldSystem_TrySetMapConnection, field/field_control.c): the
--- special spawn Escape Rope and Dig return to is written on EVERY warp from a
--- map on the main matrix (matrix 0, `layout` here) to one that is not,
--- whatever either header's flags say -- so a cave entered through a gate or a
--- building records nothing new, and a building entered from a route does.
--- A cache whose defs carry no matrix falls back to the header flags.
 function F.recordsEscape(from,dest)
-  if not (from and dest) then return false end
-  local a,b=tonumber(from.layout),tonumber(dest.layout)
-  if a~=nil and b~=nil then return a==0 and b~=0 end
-  return from.allowFly==true and dest.allowEscapeRope==true or false
-end
--- ...stored as the player's tile and facing, one row further south when
--- facing north (Field_SetMapConnection)
-function F.escapeCell(x,y,facing)
-  if facing=='up' then y=y+1 end
-  return x,y
+  return from and dest and from.allowFly==true and dest.allowEscapeRope==true or false
 end
 return F

@@ -426,14 +426,10 @@ do
     bag:update(1 / 60)
   end
   check(stack:top() ~= bag, "the ball is thrown without input")
-  -- leaving battle pushes Transition.battleReturn (the fade-in from white,
-  -- MapEntryAfterBattle) and onFinish fires when that fade is done, so
-  -- drive whatever is on top rather than the battle alone
   for _ = 1, 2000 do
     if finished then break end
     pressed.a = true
-    local top = stack:top() or demo
-    top:update(1 / 60)
+    demo:update(1 / 60)
   end
   pressed.a = false
   check(finished, "the throw ends the demo battle")

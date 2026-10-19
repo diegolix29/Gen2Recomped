@@ -110,7 +110,7 @@ function BattleHud.build(src)
     frostW, frostH = w, h
   end
 
-  love.graphics.push("all")   -- the pop restores the bound canvas, depth set included
+  local prevCanvas = love.graphics.getCanvas()
   local prevBlend, prevAlpha = love.graphics.getBlendMode()
   local prevFilter = { src:getFilter() }
   src:setFilter("linear", "linear")
@@ -134,7 +134,11 @@ function BattleHud.build(src)
   end)
 
   love.graphics.setShader()
-  love.graphics.pop()
+  if prevCanvas then
+    love.graphics.setCanvas(prevCanvas)
+  else
+    love.graphics.setCanvas()
+  end
   love.graphics.setBlendMode(prevBlend or "alpha", prevAlpha)
   src:setFilter(prevFilter[1] or "nearest", prevFilter[2] or "nearest")
   frame = frame + 1
@@ -157,7 +161,7 @@ local function sampleLuma(key, fx, fy, fw, fh)
   if not (frost and probe and frostW > 0) then return hit and hit.value end
   if fw <= 0 or fh <= 0 then return hit and hit.value end
 
-  love.graphics.push("all")   -- the pop restores the bound canvas, depth set included
+  local prevCanvas = love.graphics.getCanvas()
   local prevBlend, prevAlpha = love.graphics.getBlendMode()
   local value = hit and hit.value or 1
   local ok = pcall(function()
@@ -173,7 +177,11 @@ local function sampleLuma(key, fx, fy, fw, fh)
     value = 0.299 * r + 0.587 * g + 0.114 * b
   end)
 
-  love.graphics.pop()
+  if prevCanvas then
+    love.graphics.setCanvas(prevCanvas)
+  else
+    love.graphics.setCanvas()
+  end
   love.graphics.setBlendMode(prevBlend or "alpha", prevAlpha)
   if not ok then return hit and hit.value end
 
@@ -336,7 +344,7 @@ function BattleHud.flipGlyphs(w, h, fn)
     if not layer then return fn() end
   end
 
-  love.graphics.push("all")   -- the pop restores the bound canvas, depth set included
+  local prevCanvas = love.graphics.getCanvas()
   local prevBlend, prevAlpha = love.graphics.getBlendMode()
   local ok, err = pcall(function()
     love.graphics.setCanvas(layer)
@@ -344,7 +352,11 @@ function BattleHud.flipGlyphs(w, h, fn)
     love.graphics.setBlendMode("alpha")
     fn()
   end)
-  love.graphics.pop()
+  if prevCanvas then
+    love.graphics.setCanvas(prevCanvas)
+  else
+    love.graphics.setCanvas()
+  end
   love.graphics.setBlendMode(prevBlend or "alpha", prevAlpha)
   if not ok then error(err, 0) end
 
@@ -380,7 +392,7 @@ function BattleHud.layerTexture(w, h, dark, fn)
     if not hudLayer then return nil end
   end
   local g = love.graphics
-  g.push("all")   -- the pop restores the bound canvas, depth set included
+  local prevCanvas = g.getCanvas()
   local prevBlend, prevAlpha = g.getBlendMode()
   local ok, err = pcall(function()
     g.setCanvas(hudLayer)
@@ -391,7 +403,7 @@ function BattleHud.layerTexture(w, h, dark, fn)
     -- whitened result into whatever is bound, which is this canvas
     if dark then BattleHud.flipGlyphs(w, h, fn) else fn() end
   end)
-  g.pop()
+  if prevCanvas then g.setCanvas(prevCanvas) else g.setCanvas() end
   g.setBlendMode(prevBlend or "alpha", prevAlpha)
   g.setColor(1, 1, 1, 1)
   if not ok then error(err, 0) end

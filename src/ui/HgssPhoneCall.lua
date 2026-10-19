@@ -308,12 +308,12 @@ function Call:advance()
   local span = self.spans[self.pos]
   if not span then return false end
   local ch = self.text:sub(span.from, span.to)
-  if ch == "\n" then  -- strings: comparing against a control code
+  if ch == "\n" then
     self.row = self.row + 1
     self.lines[self.row] = ""
   elseif ch == "\v" then
     self.wait = "clear"       -- 0x25BC: wait, clear, back to the top
-  elseif ch == "\f" then  -- strings: comparing against a control code
+  elseif ch == "\f" then
     self.wait = "scroll"      -- 0x25BD: wait, scroll one line, same row
   else
     self.lines[self.row] = (self.lines[self.row] or "") .. ch

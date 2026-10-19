@@ -1230,31 +1230,11 @@ local MARKER_PATH = "rom-cache.complete"
 -- The marker a finished import writes for a version: the generation tag plus
 -- that version's ROM hash, so both a format bump and a swapped ROM invalidate.
 local function markerFor(version)
-  -- platinum-field-fx-v1: gen4_pt_field_fx (Gen4PtFieldFx), the Cut / Rock
-  -- Smash obstacle animations and the HM cut-in's art
-  local revision = version == "platinum" and "platinum-geometry-v17:platinum-field-fx-v1:" or ""
+  local revision = version == "platinum" and "platinum-geometry-v17:" or ""
   -- gen5-trades-v5: constants.gen5Trades, gen5_trade_art and the trade
   -- commands' operands in map_scripts (Gen5Trades / Gen5TradeArt)
   -- gen5-starter-v6: gen5_starter_art, the gift box app (Gen5StarterArt)
-  -- gen5-moveanim-v2: gen5_move_anims / gen5_particles (Gen5MoveAnimData);
-  -- v2 adds all 25 balls' particle sets and the ball OBJ (`ballObj`)
-  -- gen5-facilities-v1: constants.gen5Subway / gen5Stadium / gen5Musical and
-  -- the prop pictures (Gen5Subway, Gen5Facilities, Gen5MusicalData), the
-  -- facility commands' operands in map_scripts (0x15A, 0x1F3-0x1F8, 0x25C,
-  -- 0x167-0x16E, 0x05D now four bytes wide)
-  -- gen5-field-fx-v1: gen4_emotes / gen5_field_effects / the fldeff set from
-  -- /a/0/7/5 (Gen5FieldEffects), the bike / surf / rod player forms, the
-  -- zones' field flags (gen5Flags) and the wild tables' phenomenon byte
-  -- gen5-title-v1: gen5_boot_art's title scene with its second object
-  -- (title_b_02 / _w_02) and the joint animations re-read with their STEP 2
-  -- channels (Gen4Anim.stepped), the camera read as rotation + position
-  -- gen5-naming-v1: gen5_naming_art, BW's own keyboard (Gen5NamingArt)
-  -- gen5-maps-v1: warps keep their transition type (Gen5Events, taken by
-  -- Gen5Warps), Black City / White Forest's RD chunks and pieces
-  -- (Gen5DynamicCity) and White's zone swap to White Forest
-  -- gen5-battle-bag-v1: gen5_battle_bag (Gen5BattleBagArt, /a/0/9/9), the four-pocket
-  -- battle bag; without it the battle opens the field bag instead
-  if version == "black" or version == "white" then revision = "gen5-starter-v6:gen5-moveanim-v2:gen5-facilities-v1:gen5-field-fx-v1:gen5-title-v1:gen5-naming-v1:gen5-maps-v1:gen5-battle-bag-v1:" end
+  if version == "black" or version == "white" then revision = "gen5-starter-v6:" end
   -- emerald-trade-scene-v3 / firered-trade-scene-v1: the in-game trade
   -- sequence's art (extractTradeScene, gen3_trade_art) -- without it special
   -- 257 falls back to the bare swap, so both Gen 3 caches re-import once
@@ -1277,11 +1257,7 @@ local function markerFor(version)
   -- hgss-summary-v2: gen4_hgss_summary_art gains the egg / bare-ribbon pages
   -- (14 / 11) and /a/0/3/9's status, marking, shiny, Pokerus and ribbon
   -- sprites (Gen4HgssSummaryArt.pstImages)
-  -- hgss-effect-bg-v1: gen4_graphics.effects from HGSS's own move-background
-  -- table (Gen4HgssBattle.EFFECT_BG_MEMBERS) -- 84 pictures, not 22
-  -- hgss-field-fx-v1: gen4_hgss_field_fx (Cut / Rock Smash / Headbutt, /a/1/3/4)
-  -- and gen4_hgss_mart_art again (installs updated stage by stage never got it)
-  if version == "heartgold" or version == "soulsilver" then revision = "hgss-gear-dex-v1:hgss-summary-v2:hgss-effect-bg-v1:hgss-field-fx-v1:" end
+  if version == "heartgold" or version == "soulsilver" then revision = "hgss-gear-dex-v1:hgss-summary-v2:" end
   -- Include version-specific field encounters, sleep, swarm and rate tables.
   -- Only these three caches need rebuilding; other markers remain stable.
   -- v8: field.gen2TradeAnim, GSC's own trade movie art (Gen2TradeArt).
@@ -4355,12 +4331,13 @@ function RomImporter:chooseMod()
     local rel = RomImporter.mtpHintPath(saveDir)
     if rel ~= "" and rel:sub(-1) ~= "/" then rel = rel .. "/" end
     self.modNotice = { ok = true, text =
-      Strings("Copy your mod .zip into:\n%s/imports/mods/\nDBI MTP -> 1: SD Card/%simports/mods/", saveDir, rel) }
+      "Copy your mod .zip into:\n" .. saveDir .. "/imports/mods/\n"
+      .. "DBI MTP -> 1: SD Card/" .. rel .. "imports/mods/" }
     return
   end
   self.modNotice = { ok = false,
-    text = Strings("No file picker here. Copy a mod .zip into:\n%s",
-      love.filesystem.getSaveDirectory()) }
+    text = "No file picker here. Copy a mod .zip into:\n"
+      .. love.filesystem.getSaveDirectory() }
 end
 
 -- ---------------------------------------------------------------------------
@@ -4417,7 +4394,7 @@ function RomImporter:_installModImport(modId, source, bytes)
                  .. " for " .. tostring(row.name)
     -- ...and if the file was too big to checksum on this device, SAY so
     -- rather than implying it was verified.
-    if notes then text = text .. "\n" .. tostring(notes) end  -- strings: joins two built lines
+    if notes then text = text .. "\n" .. tostring(notes) end
     self.modNotice = { ok = true, text = text }
     self:_refreshMods()
   else
@@ -4468,8 +4445,8 @@ function RomImporter:chooseModImport(modId)
     end
     self.modImportPending = nil
     self.modNotice = { ok = false,
-      text = Strings("Could not open the file picker. Copy the file into:\n%s/imports/",
-        love.filesystem.getSaveDirectory()) }
+      text = "Could not open the file picker. Copy the file into:\n"
+        .. love.filesystem.getSaveDirectory() .. "/imports/" }
     return
   end
 
@@ -4483,8 +4460,9 @@ function RomImporter:chooseModImport(modId)
   if rel ~= "" and rel:sub(-1) ~= "/" then rel = rel .. "/" end
   local want = table.concat(exts, "/")
   self.modNotice = { ok = true, text =
-    Strings("Copy your %s (.%s) into:\n%s/imports/\nDBI MTP -> 1: SD Card/%simports/",
-      tostring(entry.name), want, saveDir, rel) }
+    ("Copy your %s (.%s) into:"):format(tostring(entry.name), want)
+    .. "\n" .. saveDir .. "/imports/\n"
+    .. "DBI MTP -> 1: SD Card/" .. rel .. "imports/" }
 end
 
 -- Which game a dropped .sav imports into: a .sav has no version signature of
@@ -4583,12 +4561,13 @@ function RomImporter:chooseSaveImport(version)
     local rel = RomImporter.mtpHintPath(saveDir)
     if rel ~= "" and rel:sub(-1) ~= "/" then rel = rel .. "/" end
     self.saveNotice[version] = { ok = true, text =
-      Strings("Copy your .sav into:\n%s/imports/saves/\nDBI MTP -> 1: SD Card/%simports/saves/", saveDir, rel) }
+      "Copy your .sav into:\n" .. saveDir .. "/imports/saves/\n"
+      .. "DBI MTP -> 1: SD Card/" .. rel .. "imports/saves/" }
     return
   end
   self.saveNotice[version] = { ok = false,
-    text = Strings("No file picker here. Copy a .sav into:\n%s",
-      love.filesystem.getSaveDirectory()) }
+    text = "No file picker here. Copy a .sav into:\n"
+      .. love.filesystem.getSaveDirectory() }
 end
 
 -- "Export save" button: write the active slot back out to a raw .sav in the save
@@ -4761,7 +4740,7 @@ function RomImporter:choose(version)
     self.notice = {
       version = self.chooseVersion,
       status = "Copy your .gb/.gbc into:",
-      detail = Strings("%s/imports/\nDBI MTP -> 1: SD Card/%simports/", saveDir, rel),
+      detail = saveDir .. "/imports/\nDBI MTP -> 1: SD Card/" .. rel .. "imports/",
     }
     return
   end
@@ -5397,7 +5376,6 @@ function RomImporter:_resetFrameRects()
   -- version with no panel drawn this frame) cannot inherit last frame's rows.
   self.slotRects = nil
   self.slotEditRects = nil
-  self.slotRestoreRects = nil
   self.slotDeleteRects = nil
   self.newSlotRect = nil
   -- Rebuilt only by the mods panel; nil elsewhere so a game tab cannot inherit
@@ -6264,7 +6242,7 @@ function RomImporter:draw()
   love.graphics.scale(tiltCodeScale,tiltCodeScale)
   love.graphics.setFont(self.warningFont)
   col(PAL.ink)
-  printfB(Strings("Use code\nGEN2RECOMP"),0,0,tiltTargetW / tiltCodeScale,"center")
+  printfB("Use code\nGEN2RECOMP",0,0,tiltTargetW / tiltCodeScale,"center")
   love.graphics.pop()
   end
 
@@ -9646,7 +9624,6 @@ function RomImporter:_drawSaveSlotPanel(version, x, y, w, h, paged)
     self.slotDeleteRects = {}
     self.slotEditRects = {}
     self.slotSyncRects = {}
-    self.slotRestoreRects = {}
   elseif listH > 0 then
     -- clamp scroll against the current content extent, and stash the max so the
     -- wheel handler (which has no geometry) can clamp against the same value.
@@ -9662,7 +9639,6 @@ function RomImporter:_drawSaveSlotPanel(version, x, y, w, h, paged)
     self.slotDeleteRects = {}
     self.slotEditRects = {}
     self.slotSyncRects = {}
-    self.slotRestoreRects = {}
     -- Paged, the page viewport's scissor is already set and nothing here
     -- overflows the card, so leave it alone rather than replace and clear it.
     if not paged then
@@ -9707,21 +9683,6 @@ function RomImporter:_drawSaveSlotPanel(version, x, y, w, h, paged)
           rightReserve = rightReserve + edW + btnGap + 6 * s
         end
 
-        -- an unreadable slot: Restore opens its copies in Tools -> Restore a
-        -- Save (src/import/LauncherRestore.lua handles the press)
-        if slot.unreadable and not slot.exists then
-          local rsW = self.hintFont:getWidth(Strings("Restore")) + 24 * s
-          local rsrect = self:_chipButton(delX - btnGap - rsW, delY, "Restore", {
-            w = rsW, h = chipBtnH, id = slot.id, kind = "accent",
-          })
-          local rvy, rvy2 = math.max(rsrect.y, listTop), math.min(rsrect.y + rsrect.height, listBottom)
-          if rvy2 > rvy then
-            self.slotRestoreRects[#self.slotRestoreRects + 1] =
-              { x = rsrect.x, y = rvy, width = rsrect.width, height = rvy2 - rvy, id = slot.id, version = version }
-          end
-          rightReserve = rightReserve + rsW + btnGap + 6 * s
-        end
-
         -- Sync (cloud saves, src/import/CloudSync.lua), left of Edit
         if slot.exists and self._sbSyncSlot then
           local syW = self.hintFont:getWidth("Sync") + 24 * s
@@ -9750,26 +9711,21 @@ function RomImporter:_drawSaveSlotPanel(version, x, y, w, h, paged)
         end
 
         love.graphics.setFont(self.slotNameFont)
-        col(slot.unreadable and PAL.chooseTop or PAL.ink)
+        col(PAL.ink)
         -- a custom label (#205) wins over the player name; both ellipsize
-        local name = slot.label or slot.name
-          or (slot.unreadable and Strings("SAVE NEEDS RESTORE")) or Strings("NEW GAME")
+        local name = slot.label or slot.name or Strings("NEW GAME")
         printB(ellipsize(self.slotNameFont, name, rw - 24 * s - math.max(pillW, rightReserve)),
           rx + 12 * s, ry + rowPadV)
 
         local metaTxt
-        if slot.unreadable then
-          -- files are there but none decodes: NOT an empty slot (a click on
-          -- Play must not read as "start over here")
-          metaTxt = Strings("unreadable - Restore picks a backup")
-        elseif slot.exists and slot.meta then
+        if slot.exists and slot.meta then
           metaTxt = Strings("%d badges - %s - %d caught", slot.meta.badges or 0, slot.meta.timeText or "0:00",
             slot.meta.dexCount or 0)
         else
           metaTxt = "empty slot"
         end
         love.graphics.setFont(self.labelFont)
-        col(slot.unreadable and PAL.chooseTop or PAL.warning)
+        col(PAL.warning)
         love.graphics.print(ellipsize(self.labelFont, metaTxt, rw - 24 * s - rightReserve),
           rx + 12 * s, ry + rowPadV + nameH + 4 * s)
 
@@ -9856,16 +9812,6 @@ function RomImporter:_refreshMods()
     end
   end
   self.mods = LauncherMods.list() or {}
-  -- A ZIP IN mods/ IS NOT A MOD THE GAME LOADS, and a copy that will not load
-  -- beside one that will is how players end up with two: said once, when
-  -- nothing more urgent is on the notice line (LauncherMods.copiesReport).
-  if not self.modNotice and not self.modCopiesNoticed then
-    self.modCopiesNoticed = true
-    local okR, lines = pcall(LauncherMods.copiesReport)
-    if okR and lines and lines[1] then
-      self.modNotice = { ok = false, text = table.concat(lines, "\n") }
-    end
-  end
   self:_syncModUpdateInfo(false)
 end
 
@@ -11645,8 +11591,5 @@ require("src.import.LauncherSidebar").install(RomImporter)
 -- Android's "All files access" for a chosen GAME DATA FOLDER, asked again
 -- whenever the folder is unusable for want of it (src/import/AndroidStorage.lua)
 require("src.import.AndroidStorage").install(RomImporter)
--- Tools -> Restore a Save: every backup of a slot, with a Restore button
--- (src/import/LauncherRestore.lua, docs/save-safety.md)
-require("src.import.LauncherRestore").install(RomImporter)
 
 return RomImporter

@@ -27,8 +27,8 @@
 -- src/world/VsSeeker.lua uses), holding the BASE id; the rung is worked out
 -- when the trainer is talked to, as the cartridge does.
 --
--- Armed trainers spin on the spot (V.spin, MOVEMENT_TYPE_VS_SEEKER_SPIN)
--- until talked to. Not drawn: the player's Vs. Seeker pose.
+-- Approximated: armed trainers keep their own movement (no spin) and wait to
+-- be talked to; the player's Vs. Seeker pose is not drawn.
 
 local V = {}
 
@@ -460,45 +460,9 @@ function V.clear(save, ow, npc)
   if not (ow and npc and npc.def and ow.map) then return end
   local armed = store(save)
   armed[key(ow, npc)] = nil
-  npc.vsSeekerReady, npc.vsSeekerSpin = nil, nil
+  npc.vsSeekerReady = nil
   local second = partnerOf(ow, npc)
-  if second then armed[key(ow, second)] = nil; second.vsSeekerReady, second.vsSeekerSpin = nil, nil end
-end
-
--- MOVEMENT_TYPE_VS_SEEKER_SPIN (pokeplatinum unk_0206450C.c sub_02064AF0 /
--- sub_02064AFC, Unk_020EE870): an armed trainer turns on the spot -- face the
--- way it is looking (a turn action), wait for it, hold 24 frames, then the
--- next way round the compass, clockwise N E S W to begin with (mode 3, the
--- second table); each time it comes back to its initial facing the turn
--- reverses (Direction_GetOpposite: N W S E). Two engine ticks a field frame.
-V.SPIN_HOLD = 24
-V.SPIN_TICKS = (V.SPIN_HOLD + 1) * 2
-V.SPIN_CW = { up = "right", right = "down", down = "left", left = "up" }
-V.SPIN_CCW = { up = "left", left = "down", down = "right", right = "up" }
-local INITIAL = { [0] = "up", [1] = "down", [2] = "left", [3] = "right" }
-
--- the next facing and direction flag after a hold (sub_02064B74)
-function V.spinNext(facing, ccw, initial)
-  local ring = ccw and V.SPIN_CCW or V.SPIN_CW
-  local nextFacing = ring[facing] or "down"
-  if nextFacing == initial then ccw = not ccw end
-  return nextFacing, ccw
-end
-
--- NPC:update's hook for an armed trainer: true while the spin owns it
-function V.spin(npc)
-  if not npc.vsSeekerReady then return false end
-  local s = npc.vsSeekerSpin
-  if not s then
-    local d = npc.def and tonumber(npc.def.direction)
-    s = { ccw = false, timer = V.SPIN_TICKS, initial = INITIAL[d] or npc.facing }
-    npc.vsSeekerSpin = s
-  end
-  s.timer = s.timer - 1
-  if s.timer > 0 then return true end
-  npc.facing, s.ccw = V.spinNext(npc.facing, s.ccw, s.initial)
-  s.timer = V.SPIN_TICKS
-  return true
+  if second then armed[key(ow, second)] = nil; second.vsSeekerReady = nil end
 end
 
 return V

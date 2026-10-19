@@ -71,7 +71,7 @@ Ev.EVENTS = {
   -- appears only when BattleTowerAction's CheckGSBall says $0B)
   { id = "gs_ball", kind = "key", name = "GS Ball", games = { "crystal" }, price = 2000,
     event = "Mobile System GB GS Ball (Japan, 2001) / 3DS Virtual Console (2018)",
-    about = "GOLDENROD POKE CENTER -- GS BALL, then CELEBI",
+    about = "GOLDENROD POKE CENTER -- the GS BALL; Kurt, then CELEBI at the Ilex Forest shrine",
     handler = "gsball", src = "pokecrystal maps/GoldenrodPokecenter1F.asm; engine/events/battle_tower" },
   -- Emerald: the SS Tidal's four island rows (constants.gen3SSTidal)
   { id = "eon_ticket_e", kind = "key", name = "Eon Ticket", games = { "emerald" }, price = 2000,
@@ -153,7 +153,7 @@ Ev.EVENTS = {
     mon = { species = 7, level = 5, egg = true, moves = { "Tackle", "Tail Whip", "Zap Cannon" }, friendship = 120 } },
   { id = "pcny_chikorita", kind = "mon", name = "Chikorita Egg", event = "Pokemon Center New York egg (2002)", games = { "gold", "silver", "crystal" }, price = 500, src = "Project Pokemon EventsGallery: GSC - Petal Dance Chikorita (ENG).pk2",
     mon = { species = 152, level = 5, egg = true, moves = { "Tackle", "Growl", "Petal Dance" }, friendship = 120 } },
-  { id = "jirachi_wishmkr", kind = "mon", name = "Jirachi", event = "Colosseum bonus disc WISHMKR Jirachi (US, 2003)", games = { "firered", "emerald" }, price = 1500, src = "Project Pokemon EventsGallery: RSEFL - WISHMKR Jirachi (1910) (ENG).pk3",
+  { id = "jirachi_wishmkr", kind = "mon", name = "Jirachi", event = "Pokemon Colosseum bonus disc WISHMKR Jirachi (US, 2003)", games = { "firered", "emerald" }, price = 1500, src = "Project Pokemon EventsGallery: RSEFL - WISHMKR Jirachi (1910) (ENG).pk3",
     mon = { species = 385, level = 5, ot = "WISHMKR", tid = 20043, sid = 0, otFemale = false, pid = 0x7a0df4bc, ivs = { 26, 13, 8, 1, 4, 13 }, abilityBit = 0, moves = { "Wish", "Confusion", "Rest" }, item = "Salac Berry", ball = "Poke Ball", friendship = 70, lang = 2, metLevel = 5, metGame = 2 } },
   { id = "jirachi_channel", kind = "mon", name = "Shiny Jirachi", event = "Pokemon Channel Jirachi (EU, 2004)", games = { "firered", "emerald" }, price = 2200, src = "Project Pokemon EventsGallery: RS - Shiny CHANNEL Jirachi (3B03D5CF) (ENG).pk3",
     mon = { species = 385, level = 5, ot = "CHANNEL", tid = 40122, sid = 54611, otFemale = true, pid = 0x5eea1706, shiny = true, ivs = { 29, 30, 29, 29, 31, 28 }, abilityBit = 0, moves = { "Wish", "Confusion", "Rest" }, item = "Salac Berry", ball = "Poke Ball", friendship = 70, lang = 2, metLevel = 0, metGame = 2 } },
@@ -167,11 +167,11 @@ Ev.EVENTS = {
     mon = { species = 375, level = 30, ot = "ROCKS", tid = 2005, sid = 0, otFemale = false, pid = 0x269d9bfc, ivs = { 15, 20, 25, 23, 23, 30 }, abilityBit = 0, moves = { "Take Down", "Confusion", "Metal Claw", "Refresh" }, ball = "Poke Ball", friendship = 70, ribbons3 = 0x1000000, lang = 2, metLevel = 30, metGame = 2 } },
   { id = "hooh_mattle", kind = "mon", name = "Ho-Oh", event = "Pokemon Colosseum Mt. Battle Ho-Oh (2004)", games = { "firered", "emerald" }, price = 1800, src = "Project Pokemon EventsGallery: RSEFL - MATTLE Ho-Oh (ENG).pk3",
     mon = { species = 250, level = 70, ot = "MATTLE", tid = 10048, sid = 0, otFemale = false, pid = 0x2c77f0d7, ivs = { 7, 16, 26, 31, 2, 23 }, abilityBit = 0, moves = { "Recover", "Fire Blast", "Sunny Day", "Swift" }, ball = "Poke Ball", friendship = 70, lang = 2, metLevel = 70, metGame = 1 } },
-  { id = "lugia_10anniv", kind = "mon", name = "Lugia", event = "10th Anniversary distribution (US, 2006)", games = { "firered", "emerald" }, price = 1800, src = "Project Pokemon EventsGallery: RSEFL - 10ANNIV Lugia (ENG).pk3",
+  { id = "lugia_10anniv", kind = "mon", name = "Lugia", event = "Pokemon 10th Anniversary distribution (US, 2006)", games = { "firered", "emerald" }, price = 1800, src = "Project Pokemon EventsGallery: RSEFL - 10ANNIV Lugia (ENG).pk3",
     mon = { species = 249, level = 70, ot = "10ANNIV", tid = 6227, sid = 0, otFemale = true, pid = 0x828027a9, ivs = { 26, 19, 19, 30, 28, 17 }, abilityBit = 0, moves = { "Recover", "Hydro Pump", "Rain Dance", "Swift" }, ball = "Poke Ball", friendship = 0, lang = 2, metLevel = 70, metGame = 2 } },
-  { id = "hooh_10anniv", kind = "mon", name = "Ho-Oh", event = "10th Anniversary distribution (US, 2006)", games = { "firered", "emerald" }, price = 1800, src = "Project Pokemon EventsGallery: RSEFL - 10ANNIV Ho-Oh (ENG).pk3",
+  { id = "hooh_10anniv", kind = "mon", name = "Ho-Oh", event = "Pokemon 10th Anniversary distribution (US, 2006)", games = { "firered", "emerald" }, price = 1800, src = "Project Pokemon EventsGallery: RSEFL - 10ANNIV Ho-Oh (ENG).pk3",
     mon = { species = 250, level = 70, ot = "10ANNIV", tid = 6227, sid = 0, otFemale = false, pid = 0x63e92b5f, ivs = { 31, 27, 11, 10, 29, 11 }, abilityBit = 0, moves = { "Recover", "Fire Blast", "Sunny Day", "Swift" }, ball = "Poke Ball", friendship = 0, lang = 2, metLevel = 70, metGame = 2 } },
-  { id = "pikachu_10anniv", kind = "mon", name = "Pikachu", event = "10th Anniversary distribution (US, 2006)", games = { "firered", "emerald" }, price = 600, src = "Project Pokemon EventsGallery: RSEFL - 10ANNIV Pikachu (ENG).pk3",
+  { id = "pikachu_10anniv", kind = "mon", name = "Pikachu", event = "Pokemon 10th Anniversary distribution (US, 2006)", games = { "firered", "emerald" }, price = 600, src = "Project Pokemon EventsGallery: RSEFL - 10ANNIV Pikachu (ENG).pk3",
     mon = { species = 25, level = 70, ot = "10ANNIV", tid = 6227, sid = 0, otFemale = true, pid = 0x9dac4d51, ivs = { 1, 8, 14, 25, 26, 31 }, abilityBit = 0, moves = { "Thunderbolt", "Agility", "Thunder", "Light Screen" }, item = "Light Ball", ball = "Poke Ball", friendship = 70, lang = 2, metLevel = 70, metGame = 2 } },
   { id = "pikachu_fly", kind = "mon", name = "Flying Pikachu", event = "Party of the Decade (US, 2006)", games = { "firered", "emerald" }, price = 700, src = "Project Pokemon EventsGallery: RSEFL - 10 ANIV Fly Pikachu (9DB1) (ENG).pk3",
     mon = { species = 25, level = 70, ot = "10 ANIV", tid = 6808, sid = 0, otFemale = true, pid = 0x1835349d, ivs = { 27, 16, 17, 28, 0, 16 }, abilityBit = 0, moves = { "Thunderbolt", "Fly", "Thunder", "Light Screen" }, item = "Light Ball", ball = "Poke Ball", friendship = 70, lang = 2, metLevel = 70, metGame = 2 } },
@@ -197,17 +197,17 @@ Ev.EVENTS = {
     mon = { species = 149, level = 50, ot = "TRU", tid = 11088, sid = 47337, otFemale = false, pid = 0xe2cfbfc, moves = { "Draco Meteor", "Thunderbolt", "Outrage", "Dragon Dance" }, item = "Yache Berry", ball = "Cherish Ball", friendship = 35, fateful = true, ribbons4 = { 0x0, 0x0, 0x0 }, metLocation = 3002 } },
   { id = "pikachu_nzone", kind = "mon", name = "Pikachu", event = "Nintendo Zone Pikachu (US, 2008)", games = { "platinum", "heartgold", "soulsilver" }, price = 600, src = "Project Pokemon EventsGallery: 013 DP - Nzone Pikachu (ENG).wc4",
     mon = { species = 25, level = 20, ot = "Nzone", tid = 10278, sid = 59322, otFemale = false, pid = 0x21acda5a, moves = { "Present", "Quick Attack", "Thunder Shock", "Tail Whip" }, item = "Light Ball", ball = "Cherish Ball", friendship = 70, fateful = true, ribbons4 = { 0x0, 0x0, 0x0 }, metLocation = 3002 } },
-  { id = "shaymin_tru", kind = "mon", name = "Shaymin", event = "Giratina & the Sky Warrior movie (US, 2009)", games = { "platinum", "heartgold", "soulsilver" }, price = 1700, src = "Project Pokemon EventsGallery: 014 DP - Movie Shaymin (NA) (ENG).wc4",
+  { id = "shaymin_tru", kind = "mon", name = "Shaymin", event = "Giratina and the Sky Warrior Shaymin (US, 2009)", games = { "platinum", "heartgold", "soulsilver" }, price = 1700, src = "Project Pokemon EventsGallery: 014 DP - Movie Shaymin (NA) (ENG).wc4",
     mon = { species = 492, level = 50, ot = "TRU", tid = 2089, sid = 14103, otFemale = false, moves = { "Seed Flare", "Aromatherapy", "Substitute", "Energy Ball" }, item = "Micle Berry", ball = "Cherish Ball", friendship = 100, fateful = true, ribbons4 = { 0x4000000, 0x0, 0x0 }, metLocation = 3002 } },
   { id = "regigigas_tru", kind = "mon", name = "Regigigas", event = "Toys\"R\"Us Regigigas (US, 2009)", games = { "platinum", "heartgold", "soulsilver" }, price = 1800, src = "Project Pokemon EventsGallery: 015 DP - Movie Regigigas (NA) (ENG).wc4",
     mon = { species = 486, level = 100, ot = "TRU", tid = 3089, sid = 29347, otFemale = false, moves = { "Iron Head", "Rock Slide", "Icy Wind", "Crush Grip" }, item = "Custap Berry", ball = "Cherish Ball", friendship = 0, fateful = true, ribbons4 = { 0x0, 0x0, 0x0 }, metLocation = 3002 } },
-  { id = "arceus_tru", kind = "mon", name = "Arceus", event = "Arceus & the Jewel of Life movie (US, 2009)", games = { "platinum", "heartgold", "soulsilver" }, price = 2500, src = "Project Pokemon EventsGallery: 019 DPPt - Movie Arceus (NA) (ENG).wc4",
+  { id = "arceus_tru", kind = "mon", name = "Arceus", event = "Arceus and the Jewel of Life Arceus (US, 2009)", games = { "platinum", "heartgold", "soulsilver" }, price = 2500, src = "Project Pokemon EventsGallery: 019 DPPt - Movie Arceus (NA) (ENG).wc4",
     mon = { species = 493, level = 100, ot = "TRU", tid = 11079, sid = 62276, otFemale = false, moves = { "Judgment", "Roar of Time", "Spacial Rend", "Shadow Force" }, item = "Rowap Berry", ball = "Cherish Ball", friendship = 0, fateful = true, ribbons4 = { 0x4000000, 0x0, 0x0 }, metLocation = 3002 } },
   { id = "pichu_gamestop", kind = "mon", name = "Shiny Pichu", event = "GameStop Pikachu-colored Pichu (US, 2009)", games = { "platinum", "heartgold", "soulsilver" }, price = 1100, src = "Project Pokemon EventsGallery: 021 DPPt - Pikachu-Colored Pichu (NA) (ENG).wc4",
     mon = { species = 172, level = 30, ot = "GAMESTP", tid = 1300, sid = 52721, otFemale = true, pid = 0x450e8dea, shiny = true, moves = { "Charge", "Volt Tackle", "Endeavor", "Endure" }, item = "Everstone", ball = "Cherish Ball", friendship = 70, fateful = true, ribbons4 = { 0x4000000, 0x0, 0x0 }, metLocation = 3002 } },
-  { id = "darkrai_almia", kind = "mon", name = "Darkrai", event = "Ranger: Shadows of Almia Darkrai (2009)", games = { "platinum", "heartgold", "soulsilver" }, price = 1800, src = "Project Pokemon EventsGallery: 022 DPPtHGSS - Almia Darkrai (ENG).wc4",
+  { id = "darkrai_almia", kind = "mon", name = "Darkrai", event = "Pokemon Ranger: Shadows of Almia Darkrai (2009)", games = { "platinum", "heartgold", "soulsilver" }, price = 1800, src = "Project Pokemon EventsGallery: 022 DPPtHGSS - Almia Darkrai (ENG).wc4",
     mon = { species = 491, level = 50, ot = "Almia", tid = 3208, sid = 46999, otFemale = false, moves = { "Dark Void", "Dark Pulse", "Shadow Ball", "Double Team" }, ball = "Poke Ball", friendship = 0, fateful = true, ribbons4 = { 0x4000000, 0x0, 0x0 }, metLocation = 3002 } },
-  { id = "riolu_kyle", kind = "mon", name = "Riolu", event = "Ranger: Shadows of Almia Riolu (2009)", games = { "platinum", "heartgold", "soulsilver" }, price = 800, src = "Project Pokemon EventsGallery: 023 DPPtHGSS - Kyle Riolu (ENG).wc4",
+  { id = "riolu_kyle", kind = "mon", name = "Riolu", event = "Pokemon Ranger: Shadows of Almia Riolu (2009)", games = { "platinum", "heartgold", "soulsilver" }, price = 800, src = "Project Pokemon EventsGallery: 023 DPPtHGSS - Kyle Riolu (ENG).wc4",
     mon = { species = 447, level = 30, ot = "Kyle", tid = 3208, sid = 64847, otFemale = false, pid = 0x6a6d188, moves = { "Aura Sphere", "Shadow Claw", "Bullet Punch", "Drain Punch" }, ball = "Poke Ball", friendship = 70, fateful = true, ribbons4 = { 0x4000000, 0x0, 0x0 }, metLocation = 3002 } },
   { id = "jirachi_gamestop", kind = "mon", name = "Jirachi", event = "GameStop Jirachi (US, 2009)", games = { "platinum", "heartgold", "soulsilver" }, price = 1600, src = "Project Pokemon EventsGallery: 024 DPPt - Gamestop Jirachi (ENG).wc4",
     mon = { species = 385, level = 5, ot = "GAMESTP", tid = 2270, sid = 54369, otFemale = true, moves = { "Wish", "Confusion", "Rest", "Draco Meteor" }, item = "Liechi Berry", ball = "Cherish Ball", friendship = 100, fateful = true, ribbons4 = { 0x4000000, 0x0, 0x0 }, metLocation = 3002 } },
@@ -225,7 +225,7 @@ Ev.EVENTS = {
     mon = { species = 251, level = 50, ot = "GAMESTP", tid = 2271, sid = 10415, otFemale = true, moves = { "Leaf Storm", "Recover", "Nasty Plot", "Healing Wish" }, item = "Jaboca Berry", ball = "Cherish Ball", friendship = 100, fateful = true, ribbons4 = { 0x4000000, 0x0, 0x0 }, metLocation = 3002 } },
   { id = "pikachu_ash", kind = "mon", name = "Ash's Pikachu", event = "Ash's Pikachu (US, 2010)", games = { "platinum", "heartgold", "soulsilver" }, price = 900, src = "Project Pokemon EventsGallery: 065 DPPtHGSS - Ash's Pikachu (ENG).wc4",
     mon = { species = 25, level = 50, ot = "Ash", tid = 1301, sid = 35254, otFemale = false, pid = 0x37a47a8a, moves = { "Volt Tackle", "Iron Tail", "Quick Attack", "Thunderbolt" }, item = "Light Ball", ball = "Cherish Ball", friendship = 70, fateful = true, ribbons4 = { 0x4000000, 0x0, 0x0 }, metLocation = 3002 } },
-  { id = "victini_movie14", kind = "mon", name = "Victini", event = "Movie14 Victini, Black / White movie (US, 2012)", games = { "black", "white" }, price = 1800, src = "Project Pokemon EventsGallery: 0032 BW - Movie14 Victini (ENG).pgf",
+  { id = "victini_movie14", kind = "mon", name = "Victini", event = "Movie14 Victini, Pokemon the Movie: Black / White (US, 2012)", games = { "black", "white" }, price = 1800, src = "Project Pokemon EventsGallery: 0032 BW - Movie14 Victini (ENG).pgf",
     mon = { species = 494, level = 50, ot = "Movie14", tid = 12031, sid = 0, notShiny = true, abilityType = 0, moves = { "V-create", "Fusion Flare", "Fusion Bolt", "Searing Shot" }, item = "Fire Gem", ball = "Cherish Ball", fateful = true, ribbons5 = 0x400, metLevel = 50, metLocation = 40069 } },
   { id = "darkrai_2011win", kind = "mon", name = "Darkrai", event = "Winter 2011 Darkrai (US, 2011)", games = { "black", "white" }, price = 1800, src = "Project Pokemon EventsGallery: 0028 BW - 2011WIN Darkrai (ENG).pgf",
     mon = { species = 491, level = 50, ot = "2011WIN", tid = 11011, sid = 0, otFemale = false, notShiny = true, abilityType = 0, moves = { "Dark Void", "Ominous Wind", "Feint Attack", "Nightmare" }, item = "Enigma Berry", ball = "Cherish Ball", fateful = true, ribbons5 = 0x10, metLevel = 50, metLocation = 40059 } },
@@ -247,13 +247,13 @@ Ev.EVENTS = {
     mon = { species = 616, level = 50, ot = "SMR2011", tid = 6011, sid = 0, otFemale = false, notShiny = true, abilityType = 3, moves = { "Encore", "Giga Drain", "Body Slam", "Bug Buzz" }, item = "Bug Gem", ball = "Cherish Ball", fateful = true, ribbons5 = 0x10, metLevel = 50, metLocation = 40059 } },
   { id = "pikachu_smr2012", kind = "mon", name = "Pikachu", event = "Summer 2012 Pikachu (US, 2012)", games = { "black", "white" }, price = 900, src = "Project Pokemon EventsGallery: 0071 BW - SMR2012 Pikachu (ENG).pgf",
     mon = { species = 25, level = 100, ot = "SMR2012", tid = 7012, sid = 0, otFemale = false, gender = "female", abilityType = 0, moves = { "Volt Tackle", "Thunder", "Grass Knot", "Quick Attack" }, item = "Light Ball", ball = "Cherish Ball", fateful = true, ribbons5 = 0x40, metLevel = 100, metLocation = 40059 } },
-  { id = "raikou_gamestop_bw", kind = "mon", name = "Shiny Raikou", event = "GameStop shiny beasts (US, 2010), Poke Transfer", games = { "black", "white" }, price = 1600, about = "LOSTLORN FOREST -- ZOROARK", src = "Project Pokemon EventsGallery: 059 DPPtHGSS - GameStop Raikou (ENG).wc4",
+  { id = "raikou_gamestop_bw", kind = "mon", name = "Shiny Raikou", event = "GameStop shiny legendary beasts (US, 2010), via Poke Transfer", games = { "black", "white" }, price = 1600, about = "LOSTLORN FOREST -- ZOROARK", src = "Project Pokemon EventsGallery: 059 DPPtHGSS - GameStop Raikou (ENG).wc4",
     mon = { species = 243, level = 30, ot = "GAMESTP", tid = 1031, sid = 21889, otFemale = false, pid = 0x36d46750, shiny = true, moves = { "Zap Cannon", "Aura Sphere", "Extreme Speed", "Weather Ball" }, item = "Micle Berry", ball = "Cherish Ball", friendship = 35, fateful = true, ribbons4 = { 0x4000000, 0x0, 0x0 }, metLocation = 30001, origin = 7, transfer = true } },
-  { id = "entei_gamestop_bw", kind = "mon", name = "Shiny Entei", event = "GameStop shiny beasts (US, 2010), Poke Transfer", games = { "black", "white" }, price = 1600, about = "LOSTLORN FOREST -- ZOROARK", src = "Project Pokemon EventsGallery: 060 DPPtHGSS - GameStop Entei (ENG).wc4",
+  { id = "entei_gamestop_bw", kind = "mon", name = "Shiny Entei", event = "GameStop shiny legendary beasts (US, 2010), via Poke Transfer", games = { "black", "white" }, price = 1600, about = "LOSTLORN FOREST -- ZOROARK", src = "Project Pokemon EventsGallery: 060 DPPtHGSS - GameStop Entei (ENG).wc4",
     mon = { species = 244, level = 30, ot = "GAMESTP", tid = 1171, sid = 52447, otFemale = false, pid = 0x7d5bb510, shiny = true, moves = { "Flare Blitz", "Howl", "Extreme Speed", "Crush Claw" }, item = "Custap Berry", ball = "Cherish Ball", friendship = 35, fateful = true, ribbons4 = { 0x4000000, 0x0, 0x0 }, metLocation = 30001, origin = 7, transfer = true } },
-  { id = "suicune_gamestop_bw", kind = "mon", name = "Shiny Suicune", event = "GameStop shiny beasts (US, 2010), Poke Transfer", games = { "black", "white" }, price = 1600, about = "LOSTLORN FOREST -- ZOROARK", src = "Project Pokemon EventsGallery: 061 DPPtHGSS - GameStop Suicune (ENG).wc4",
+  { id = "suicune_gamestop_bw", kind = "mon", name = "Shiny Suicune", event = "GameStop shiny legendary beasts (US, 2010), via Poke Transfer", games = { "black", "white" }, price = 1600, about = "LOSTLORN FOREST -- ZOROARK", src = "Project Pokemon EventsGallery: 061 DPPtHGSS - GameStop Suicune (ENG).wc4",
     mon = { species = 245, level = 30, ot = "GAMESTP", tid = 1311, sid = 64410, otFemale = false, pid = 0x42fcbc7e, shiny = true, moves = { "Sheer Cold", "Air Slash", "Extreme Speed", "Aqua Ring" }, item = "Rowap Berry", ball = "Cherish Ball", friendship = 35, fateful = true, ribbons4 = { 0x4000000, 0x0, 0x0 }, metLocation = 30001, origin = 7, transfer = true } },
-  { id = "celebi_gamestop_bw", kind = "mon", name = "Celebi", event = "GameStop Celebi (US, 2010), Poke Transfer", games = { "black", "white" }, price = 1600, about = "CASTELIA CITY -- ZORUA", src = "Project Pokemon EventsGallery: 062 DPPtHGSS - GameStop Celebi (ENG).wc4",
+  { id = "celebi_gamestop_bw", kind = "mon", name = "Celebi", event = "GameStop Celebi (US, 2010), via Poke Transfer", games = { "black", "white" }, price = 1600, about = "CASTELIA CITY -- ZORUA", src = "Project Pokemon EventsGallery: 062 DPPtHGSS - GameStop Celebi (ENG).wc4",
     mon = { species = 251, level = 50, ot = "GAMESTP", tid = 2271, sid = 10415, otFemale = true, moves = { "Leaf Storm", "Recover", "Nasty Plot", "Healing Wish" }, item = "Jaboca Berry", ball = "Cherish Ball", friendship = 100, fateful = true, ribbons4 = { 0x4000000, 0x0, 0x0 }, metLocation = 30001, origin = 7, transfer = true } },
 }
 
@@ -386,14 +386,6 @@ end
 
 local function readSave(version, slotId)
   local SaveData = require("src.core.SaveData")
-  -- refused while a game in another window has the slot open (see
-  -- WalkerLink's readSave)
-  local okO, open, age = pcall(SaveData.slotOpenElsewhere, version, slotId)
-  if okO and open then
-    return nil, ("that save is open in a running game -- save and quit it first"
-      .. " (if no game is running, try again in %d min)")
-      :format(math.max(1, math.ceil((SaveData.OPEN_FRESH - (age or 0)) / 60)))
-  end
   local path = SaveData.slotDiskPath(version, slotId)
   local f = path and io.open(path, "rb")
   if not f then return nil, "no save in that slot" end
@@ -415,11 +407,7 @@ end
 function Ev.statusFor(version, slotId)
   local save = readSave(version, slotId)
   local out = {}
-  -- (not `save and blocked(...) or "no save"`: an event that is NOT blocked
-  -- answers nil, and that idiom turned every buyable one into "no save")
-  for _, ev in ipairs(Ev.forGame(version)) do
-    if save then out[ev.id] = Ev.blocked(ev, save, version) else out[ev.id] = "no save" end
-  end
+  for _, ev in ipairs(Ev.forGame(version)) do out[ev.id] = save and Ev.blocked(ev, save, version) or "no save" end
   return out
 end
 
@@ -468,16 +456,10 @@ local function itemKey(data, name, gen)
   return findKey(data.items, name, gen >= 4 or nil)
 end
 
--- names a dataset spells the older way (Gen 3-5 cartridges say "Faint
--- Attack", "ExtremeSpeed", "ThunderShock" ...; norm() already drops spaces)
-local MOVE_ALIAS = { ["Feint Attack"] = "Faint Attack", ["Hi Jump Kick"] = "High Jump Kick",
-                     ["Smelling Salts"] = "SmellingSalt" }
-
 local function moveList(data, names, gen)
   local out = {}
   for _, n in ipairs(names or {}) do
     local k = findKey(data.moves, n, gen >= 4 or nil)
-      or (MOVE_ALIAS[n] and findKey(data.moves, MOVE_ALIAS[n], gen >= 4 or nil))
     local def = k and data.moves[k]
     if def then out[#out + 1] = { id = k, pp = def.pp or 0 } end
   end

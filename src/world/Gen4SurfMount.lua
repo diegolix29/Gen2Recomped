@@ -34,16 +34,6 @@ M.SPRITE_Y, M.SPRITE_Z = 7, 4
 -- bobs the same 1..4 by 1/4 and places the mount the same, but lifts the
 -- sprite by 4 + yOffset (`lsl r0, #0xe` added to yOffset), not 7
 M.HGSS_SPRITE_Y = 4
--- BLACK / WHITE's own (ov21, the `sea_ride` effect's grid task 0x21ACDC4,
--- created by 0x21ACB38 with member 0x31): the same bob -- yOffset from 1 by
--- 0x400 between 0x1000 and 0x4000, reversing at either end -- and the mount
--- the same, at the player's position yOffset - 1 up (0x21ACE7C); but the
--- player's sprite is lifted by (0, 1 + yOffset, 5), not Platinum's
--- (0, 7 + yOffset, 4), and by 8 + yOffset while the sprite is the rod pose
--- (sprite ids 0xA0 / 0xA1, /a/0/4/9 members 156 / 157: fishing from the
--- water). The rail task (0x21ACFF8, a player on rails) turns its offset with
--- the rail and is not used here.
-M.BW_SPRITE_Y, M.BW_SPRITE_Z, M.BW_ROD_Y = 1, 5, 8
 M.ANGLE = { down = 0, up = 180, left = 270, right = 90 }
 
 local function Game() return package.loaded["src.core.Game"] end
@@ -253,12 +243,7 @@ function M.tick(ow)
   local mode = active(ow)
   if p.spriteOffset == nil or p.spriteOffset == st.offset then
     if mode == "field" then
-      if require("src.core.GameVersion").isGen5() then
-        st.offset.lift = (p.gen4Fish and M.BW_ROD_Y or M.BW_SPRITE_Y) + st.y
-        st.offset.oz = M.BW_SPRITE_Z
-      else
-        st.offset.lift, st.offset.oz = (isHgss() and M.HGSS_SPRITE_Y or M.SPRITE_Y) + st.y, M.SPRITE_Z
-      end
+      st.offset.lift, st.offset.oz = (isHgss() and M.HGSS_SPRITE_Y or M.SPRITE_Y) + st.y, M.SPRITE_Z
       p.spriteOffset = st.offset
     else
       p.spriteOffset = nil
@@ -285,9 +270,7 @@ local function where(ow, ground)
   local p = ow.player
   local gx = (p.px or 0) + 8
   local gz = (p.py or 0) + 8
-  -- (HGSS's waterfall ride carries the mount at its own height)
-  local ride = ow.gen4Waterfall and require("src.world.Gen4WaterfallRide").currentY(ow)
-  local y = (ow.dwPose and ow.dwPose.y) or ride or ground.surfaceBaseY or ground:groundY(gx, gz)
+  local y = (ow.dwPose and ow.dwPose.y) or ground.surfaceBaseY or ground:groundY(gx, gz)
   return gx, gz, y + (ow.surfMount.y or 1) - 1
 end
 

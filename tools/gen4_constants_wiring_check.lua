@@ -141,7 +141,7 @@ do
                  "src/core", "src/render", "src/mods" }
   local files = {}
   for _, dir in ipairs(dirs) do
-    local pipe = io.popen('ls "' .. dir .. '"/*.lua 2>' .. (package.config:sub(1, 1) == "\\" and "nul" or "/dev/null"))
+    local pipe = io.popen('ls "' .. dir .. '"/*.lua 2>/dev/null')
     if pipe then
       for line in pipe:lines() do files[#files + 1] = line end
       pipe:close()
@@ -206,7 +206,7 @@ do
   local pipe = io.popen('grep -rhoE "constants[a-zA-Z()a-z]*\\.gen4[A-Za-z0-9_]+'
                         .. '|\\.constants\\.gen4[A-Za-z0-9_]+" '
                         .. 'src/world src/pokemon src/battle src/ui src/script '
-                        .. 'src/core 2>' .. (package.config:sub(1, 1) == "\\" and "nul" or "/dev/null"))
+                        .. 'src/core 2>/dev/null')
   if pipe then
     local seen = {}
     for line in pipe:lines() do

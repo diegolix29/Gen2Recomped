@@ -74,13 +74,6 @@ function Flags.hasPokedex(save)
   if version == "heartgold" or version == "soulsilver" then
     return type(flags) == "table" and flags.FLAG_G4_006B == true
   end
-  -- BLACK / WHITE: system flag 0x962. Juniper's lab (script member 792) does
-  -- `setflag 0x962` before "obtained the Pokedex!", and the cartridge's field
-  -- overlay (ov10 0x0216F746) asks EventWork_CheckFlag(0x962) when it builds
-  -- the field menu; the title's CONTINUE panel (ov88 0x021BAEF4) asks it too.
-  if okV and GameVersion and GameVersion.isGen5 and GameVersion.isGen5() then
-    return type(flags) == "table" and flags.FLAG_G4_0962 == true
-  end
   if okV and GameVersion and GameVersion.isGen4 and GameVersion.isGen4() then
     local dex = type(save) == "table" and save.pokedex or nil
     if type(dex) ~= "table" then return false end

@@ -165,22 +165,12 @@ local GEN4_MODULES = {
 local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
                         "gen4_naming", "gen4_dex", "gen4_models",
                         "gen4_terrain", "gen4_distortion_world",
-                        "gen4_weather_sys", "gen4_mail_gra", "gen4_voltorb_flip", "gen4_follow_mon", "gen5_battle_ui", "gen5_battle_bag", "gen5_battle_scene", "gen5_evolution", "gen4_hgss_menu_art", "gen4_hgss_bag_art", "gen4_hgss_summary_art", "gen5_menu_art", "gen5_bag_art", "gen5_summary_art", "gen4_hgss_dex_art", "gen4_hgss_box_art", "gen5_dex_art", "gen5_box_art", "gen4_hgss_pokegear_art", "gen4_legend_art", "gen4_hgss_safari", "gen4_alph_puzzle", "gen4_hgss_field_moves", "gen4_hgss_certificates",
-                        "gen4_species_sprites", "gen4_hgss_starter_art", "gen4_hgss_oak_art", "gen4_hgss_boot_art", "gen4_hgss_title_art", "gen5_boot_art", "gen5_main_menu_art", "gen5_juniper_art", "gen5_naming_art", "gen5_opening",
+                        "gen4_weather_sys", "gen4_mail_gra", "gen4_voltorb_flip", "gen4_follow_mon", "gen5_battle_ui", "gen5_battle_scene", "gen5_evolution", "gen4_hgss_menu_art", "gen4_hgss_bag_art", "gen4_hgss_summary_art", "gen5_menu_art", "gen5_bag_art", "gen5_summary_art", "gen4_hgss_dex_art", "gen4_hgss_box_art", "gen5_dex_art", "gen5_box_art", "gen4_hgss_pokegear_art", "gen4_legend_art", "gen4_hgss_safari", "gen4_alph_puzzle", "gen4_hgss_field_moves", "gen4_hgss_certificates",
+                        "gen4_species_sprites", "gen4_hgss_starter_art", "gen4_hgss_oak_art", "gen4_hgss_boot_art", "gen4_hgss_title_art", "gen5_boot_art", "gen5_main_menu_art", "gen5_juniper_art", "gen5_opening",
                         "gen4_move_anims", "gen4_particles",
                         "gen4_cellactors",
                         -- HGSS scripted Pokegear calls (Gen4HgssPhoneCall)
                         "gen4_hgss_phone_call",
-                        -- HGSS's Cut / Rock Smash / Headbutt obstacle
-                        -- animations (Gen4HgssFieldFx, /a/1/3/4)
-                        "gen4_hgss_field_fx",
-                        -- the Poke Mart's BUY touch screen (Gen4HgssMartArt):
-                        -- written by the importer but never loaded, so
-                        -- HgssMartBuy always fell back to its see-through box
-                        "gen4_hgss_mart_art",
-                        -- ...and Platinum's, with its HM cut-in
-                        -- (Gen4PtFieldFx: hiden_effect + field_cutin)
-                        "gen4_pt_field_fx",
                         -- the name -> archive member hop for `var_0`..`var_f`;
                         -- see the paragraph above for what its absence cost
                         "gen4_overworld",
@@ -296,9 +286,6 @@ local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
                         "gen5_trade_art",
                         -- Black / White's gift box starter app (Gen5StarterArt)
                         "gen5_starter_art",
-                        -- Black / White's move animations: the effect VM's
-                        -- programs and their particles (Gen5MoveAnimData)
-                        "gen5_move_anims", "gen5_particles",
                         -- Black / White's field effects: phenomena, the rod's
                         -- lure, ripples (Gen5FieldEffects, /a/0/7/5)
                         "gen5_field_effects",
@@ -377,12 +364,6 @@ local OPTIONAL = { "audio", "palettes", "icons", "unown_puzzle", "unown_dex",
                    -- the in-game trade sequence's art and tables
                    -- (Emerald/FireRed, src/import/Gen3TradeArt.lua)
                    "gen3_trade_art" }
-
--- Gen 3's own optional tables. On a Gen 4 / Black-White cache nothing writes
--- them, and the additive overlay would hand the root cache's copy (another
--- cartridge's) to the Sinnoh dataset -- the `icons` bug's shape
--- (tools/gen4_party_icon_check.lua section 6) -- so they are not even asked.
-local GEN3_ONLY = { "gen3_frontier_speech", "gen3_trade_art" }
 
 -- Vanilla defaults for rules exposed through the constants registry.  A
 -- value has to exist before a mod can patch it; each one matches the
@@ -2273,9 +2254,6 @@ function Data:load()
   -- these than Gen 3 does.
   if isGen3Cache or isGen4Cache then
     for _, name in ipairs(CLASSIC_ONLY) do blocked[name] = true end
-  end
-  if isGen4Cache then
-    for _, name in ipairs(GEN3_ONLY) do blocked[name] = true end
   end
   for _, name in ipairs(OPTIONAL) do
     if isRequired[name] then goto continue end

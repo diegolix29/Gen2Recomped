@@ -19,7 +19,6 @@
 -- carrying the fateful-encounter mark 0x220 reads.
 
 local MysteryGift = {}
-local Strings = require("src.core.Strings")
 
 MysteryGift.GIFTS = {
   { key = "liberty_pass", itemName = "Liberty Pass", about = "LIBERTY GARDEN -- VICTINI" },
@@ -99,7 +98,7 @@ function MysteryGift.give(game, g)
   end
   local okB, Boxes = pcall(require, "src.pokemon.Boxes")
   if okB and Boxes and Boxes.deposit then pcall(Boxes.deposit, save, mon) end
-  return Strings("%s received %s!\nIt was sent to the PC.", player, name)
+  return ("%s received %s!\nIt was sent to the PC."):format(player, name)
 end
 
 -- Offer as many as are owed, one pick at a time; `carryOn` is called exactly
@@ -140,7 +139,7 @@ function MysteryGift.offer(game, carryOn)
     game.stack:push(Menu.new(game, items, { noSound = true, onCancel = finish }))
   end
   if MysteryGift.owed(save) < 1 or #MysteryGift.available(save) == 0 then return finish() end
-  game.stack:push(TextBox.new(game, Strings("A MYSTERY GIFT is available!\nChoose one to receive."), pick))
+  game.stack:push(TextBox.new(game, "A MYSTERY GIFT is available!\nChoose one to receive.", pick))
 end
 
 return MysteryGift
