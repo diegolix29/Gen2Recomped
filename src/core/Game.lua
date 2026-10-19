@@ -45,7 +45,15 @@ function Game:load()
   -- then pressed Play on the SECOND mod load in the process -- a mod that
   -- wraps engine functions once behind an "already wrapped" flag kept the
   -- dead first load's wraps (DRAMATIC_SHAPE's 3D battles drew a white screen).
-  self.mods = ModLoader.new(self.loadWithoutMods and { noMods = true } or nil)
+  --
+  -- The launcher's initial boot also sets `loadWithoutMods` so no mods load
+  -- during the launcher's intro preview. Mods only load when the actual game
+  -- launches (Play button).
+  local loaderOpts = nil
+  if self.loadWithoutMods then
+    loaderOpts = { noMods = true }
+  end
+  self.mods = ModLoader.new(loaderOpts)
   self.mods:load(Data)
   self.modStatus = self.mods:status()
   -- AND THE MAP EDITOR'S OVERLAY AGAIN, ON TOP OF THE MERGE.

@@ -364,7 +364,20 @@ local function bootGame(version)
   end
   
   Game = require("src.core.Game")
+  -- Global flag to track if we've done the initial launcher boot
+  local initialLauncherBoot = _G.GEN2REC_INITIAL_LAUNCHER_BOOT_DONE
+  -- When this is the Play button (not initial boot), reload with mods enabled
+  local reloadWithMods = initialLauncherBoot
+  if reloadWithMods then
+    _G.GEN2REC_INITIAL_LAUNCHER_BOOT_DONE = nil
+  else
+    _G.GEN2REC_INITIAL_LAUNCHER_BOOT_DONE = true
+  end
+  -- Initial load: NO mods should load during launcher boot/intro preview
+  -- Mods only load when the actual game launches (Play button)
+  Game.loadWithoutMods = not reloadWithMods
   Game:load()
+  Game.loadWithoutMods = nil
   BootTrace.booted()
   if os.getenv("POKEPORT_AUTOPILOT") then
     autopilot = require("tests.autopilot")

@@ -223,6 +223,9 @@ function Loader:_discover()
   -- touching the user's saved enable flags
   if os.getenv("POKEPORT_NO_MODS") == "1" then return end
 
+  -- NOTE: Both "mods" and "bundlemods" are scanned here. The launcher only
+  -- scans "mods" (see LauncherMods.lua), so bundlemods only load when the
+  -- game actually launches, not in the mods panel.
   local roots = { "mods", "bundlemods" }
 
   -- THE SAME CONFINEMENT THE LAUNCHER APPLIES. When the player has chosen a
@@ -251,22 +254,53 @@ function Loader:_discover()
   -- "symlink" and is scanned like a directory.
   local ModCopies = require("src.mods.ModCopies")
   local fs = self.fs
-  local scan = ModCopies.scan(fs, {
-    root = roots[1],
-    decode = function(raw, path)
-      local data, decodeErr = Json.decode(raw)
-      if not data then return nil, decodeErr end
-      local ok, manifest = pcall(Manifest.validate, data, path)
-      if not ok then return nil, manifest end
-      return manifest
-    end,
-    -- with a chosen game-data folder only it and the game's own source
-    -- count, decided per copy so a stale save-directory copy in front of
-    -- the chosen folder's cannot hide it
-    allowReal = confine and require("src.mods.ModCopies").confinedTo(confine) or nil,
-    -- peeking inside a zip needs the real filesystem
-    peekZip = (love and love.filesystem and fs == love.filesystem) and nil or false,
-  })
+
+  -- Scan all roots (mods and bundlemods) and merge the results
+  local mergedScan = { winners = {}, ignored = {}, zips = {}, notes = {}, invalid = {} }
+  for _, root in ipairs(roots) do
+    local scan = ModCopies.scan(fs, {
+      root = root,
+      decode = function(raw, path)
+        local data, decodeErr = Json.decode(raw)
+        if not data then return nil, decodeErr end
+        local ok, manifest = pcall(Manifest.validate, data, path)
+        if not ok then return nil, manifest end
+        return manifest
+      end,
+      -- with a chosen game-data folder only it and the game's own source
+      -- count, decided per copy so a stale save-directory copy in front of
+      -- the chosen folder's cannot hide it
+      allowReal = confine and require("src.mods.ModCopies").confinedTo(confine) or nil,
+      -- peeking inside a zip needs the real filesystem
+      peekZip = (love and love.filesystem and fs == love.filesystem) and nil or false,
+    })
+    -- Merge winners - ModCopies.pick will handle duplicates across roots
+    for id, copy in pairs(scan.winners) do
+      mergedScan.winners[id] = copy
+    end
+    for _, row in ipairs(scan.ignored) do
+      mergedScan.ignored[#mergedScan.ignored + 1] = row
+    end
+    for _, z in ipairs(scan.zips) do
+      mergedScan.zips[#mergedScan.zips + 1] = z
+    end
+    for _, note in ipairs(scan.notes) do
+      mergedScan.notes[#mergedScan.notes + 1] = note
+    end
+    for _, bad in ipairs(scan.invalid) do
+      mergedScan.invalid[#mergedScan.invalid + 1] = bad
+    end
+  end
+  -- Re-run pick to resolve duplicates across the merged set
+  local allCopies = {}
+  for id, copy in pairs(mergedScan.winners) do
+    allCopies[#allCopies + 1] = copy
+  end
+  local finalWinners, finalIgnored = ModCopies.pick(allCopies)
+  mergedScan.winners = finalWinners
+  mergedScan.ignored = finalIgnored
+
+  local scan = mergedScan
   for id, copy in pairs(scan.winners) do
     self.mods[id] = { manifest = copy.manifest, path = copy.path,
                       home = copy.home, where = copy.where }
@@ -1157,7 +1191,10 @@ function Loader:load(data)
   -- a mod's register collides with the engine's and has to say override
   require("src.mods.Builtins").install(self.content, data)
   self:_loadState()
-  self:_discover()
+  -- Skip discovery when noMods is set (launcher backdrop/initial boot)
+  if not self.noMods then
+    self:_discover()
+  end
   -- Experimental mods stay off until the player opts in: a missing
   -- options.mods entry normally means enabled, but experimental flips that.
   do
