@@ -638,45 +638,40 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
   if BattleMenuUI and BattleMenuUI.install then BattleMenuUI.install() end
   if not (mod and mod.hooks and type(mod.hooks.wrap)=="function") then return false end
   -- Use a higher priority to run after other mods like XD_BATTLE_ENVIRONMENTS
+  -- DISABLED: TERRARIUM BATTLES start menu injection disabled to prevent errors
+  -- Replace with a no-op hook that just returns items unchanged
   mod.hooks:wrap("ui.start_menu.items",function(next,game,items)
     local out=next(game,items)
     if type(out)~="table" then out=items end
+    -- Remove any existing TERRARIUM BATTLES entries without id field
+    local filtered={}
     for _,entry in ipairs(out) do
-      if entry.__terrariumBattleEntry then return out end
+      if entry.__terrariumBattleEntry then
+        -- Skip this entry
+      elseif entry.id or (entry.label and type(entry.label)=="string") then
+        filtered[#filtered+1]=entry
+      end
     end
-    local at=#out+1
-    for i,entry in ipairs(out) do
-      if isOptionsLabel(entry.label) then at=i;break end
-    end
-    table.insert(out,at,{label="TERRARIUM BATTLES",__terrariumBattleEntry=true,onSelect=function()
-      -- Gen 1's generic StartMenu pops before invoking onSelect. Gold's
-      -- injected-row arm intentionally does not. Keep a live Gold parent on
-      -- the stack; a synthetic replacement lacks onChoose/onClose and is dead.
-      local parent=game and game.stack and type(game.stack.top)=="function" and game.stack:top() or nil
-      local returnId=(parent and (parent.screenId==GEN1_START or parent.screenId=="Gen2StartMenu"))
-        and parent.screenId or startMenuId()
-      local returnParent=(parent and parent.screenId==returnId) and parent or nil
-      openBattleMenu(game,returnId,returnParent)
-    end})
-    return out
+    return #filtered>0 and filtered or out
   end,200) -- Run after XD_BATTLE_ENVIRONMENTS (priority 115) but before other high-priority mods
 
+  -- DISABLED: Gen4StartMenuHook installation disabled to prevent TERRARIUM BATTLES injection
   -- Install Gen4StartMenuHook for Platinum/HGSS/Black-White start menus
-  local okHook, Gen4StartMenuHook = pcall(require, "lib.Gen4StartMenuHook")
-  if okHook and Gen4StartMenuHook and type(Gen4StartMenuHook.install) == "function" then
-    Gen4StartMenuHook.install(function(game)
-      return {
-        label = "TERRARIUM BATTLES",
-        onSelect = function()
-          local parent = game and game.stack and type(game.stack.top) == "function" and game.stack:top() or nil
-          local returnId = (parent and (parent.screenId == GEN1_START or parent.screenId == "Gen2StartMenu"))
-            and parent.screenId or startMenuId()
-          local returnParent = (parent and parent.screenId == returnId) and parent or nil
-          openBattleMenu(game, returnId, returnParent)
-        end
-      }
-    end)
-  end
+  -- local okHook, Gen4StartMenuHook = pcall(require, "lib.Gen4StartMenuHook")
+  -- if okHook and Gen4StartMenuHook and type(Gen4StartMenuHook.install) == "function" then
+  --   Gen4StartMenuHook.install(function(game)
+  --     return {
+  --       label = "TERRARIUM BATTLES",
+  --       onSelect = function()
+  --         local parent = game and game.stack and type(game.stack.top) == "function" and game.stack:top() or nil
+  --         local returnId = (parent and (parent.screenId == GEN1_START or parent.screenId == "Gen2StartMenu"))
+  --           and parent.screenId or startMenuId()
+  --         local returnParent = (parent and parent.screenId == returnId) and parent or nil
+  --         openBattleMenu(game, returnId, returnParent)
+  --       end
+  --     }
+  --   end)
+  -- end
 
   installed=true
   return true
