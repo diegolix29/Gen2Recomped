@@ -33,12 +33,13 @@
 -- HOW IT DRAWS
 --
 -- For each land near the camera the placed buildings (Gen4Ground:objectsFor)
--- are walked; every shape that wears a glass texture is copied, PLACED, into one
--- mesh per texture. The mesh is drawn over the engine's building with the
--- texture's glass-only copy as both the texture and the mask: non-glass texels
--- are alpha 0 and the scene shader discards them, so only the panes are drawn.
--- `pull` nudges the overlay toward the eye so it never z-fights the surface it
--- sits on. Outdoors only, exactly like the Gen 1-3 glass.
+-- are walked; every TRIANGLE of a shape that wears a glass texture AND whose
+-- UVs touch a glass texel is copied, PLACED, into one mesh per texture. The mesh
+-- is drawn over the engine's building with the texture's glass-only copy as both
+-- the texture and the mask: non-glass texels are alpha 0 and the scene shader
+-- discards them, so only the panes are drawn. `pull` nudges the overlay toward
+-- the eye so it never z-fights the surface it sits on. Outdoors only, exactly
+-- like the Gen 1-3 glass.
 --
 -- By default only the NIGHT lamps are drawn (the overlay's lit colour does not
 -- depend on how the engine shaded the wall, so nothing can mismatch). The day
@@ -46,14 +47,45 @@
 -- guaranteed to match the engine's shading of the same wall, so it is off until
 -- it has been looked at in play.
 --
+-- PERFORMANCE (what changed from version 1, and the knobs)
+--
+--   * Only triangles that can show glass are kept. Version 1 copied every
+--     triangle of a glass-bearing shape (roofs, side walls...) and let the pixel
+--     shader throw them away, and Gen4Light then lit the same full meshes again.
+--     The test is conservative: a triangle is kept when its UV bounding box
+--     covers any glass texel (a summed-area table makes that O(1)), so a pane is
+--     never dropped, only needless geometry is.
+--   * The land window is WINDOW = 2 (5x5 lands, was 3 = 7x7) and is also bounded
+--     by Gen4Distance (the G4 DRAW DIST row), so NEAR / MID / FAR also shrink or
+--     grow the glass. The haze has swallowed anything further anyway.
+--   * By day nothing is built (BUILD_BY_DAY = false). Lands fill in over the first
+--     dusk frames, spread by Gen4Budget, while the lamps are still fading in.
+--   * Pieces are drawn grouped by texture, so the glass uniforms are sent once per
+--     texture instead of once per piece.
+--   * The pane light list, the wall piece list and the hour's brightness are
+--     cached instead of being rebuilt, sorted and re-queried several times a frame.
+--   * Texel tests read a Lua table instead of pcall(ImageData:getPixel).
+--
+-- BRIGHTNESS knobs (all live, nothing needs a restart):
+--
+--   PANE_BRIGHTNESS  scales the lamp colour the panes are painted with. 1.0 is the
+--                    old look (a flat, full-strength lamp colour); lower is dimmer.
+--   SCREEN_POWER     how strongly a pane lights the road and wall around it.
+--   SCREEN_RADIUS    how far that light reaches, in world units.
+--   SCREEN_LIMIT     how many pane sources are handed on (Gen4Light, Gen4Tint).
+--   (Gen4Light.PANE_STRENGTH / PANE_LIMIT / WALL_LIGHTS and Gen4Tint.TOWN_FLOOR
+--    are the matching knobs on the receiving side.)
+--
 -- TUNING: with LOG on, every texture analysed writes one line (grep
 -- "Gen4Glass:") giving its names, size, glass texel count and verdict. A white
 -- wall that lights up like a lamp is a texture to add to DENY_NAMES; a window
 -- that never lights is a texture to add to ALLOW.
 --
--- NOT VERIFIED: written without a ROM or a LOVE runtime to hand. It is isolated
--- the way the other Gen 4 passes are (Bridge disables an effect that throws).
--- Bridge.setEffect("glass", false) turns it off.
+-- NOT VERIFIED IN GAME: written without a ROM or a LOVE runtime to hand. The pure
+-- logic (texel masks, triangle filtering, clustering, nearest-light selection) is
+-- exercised by a stub harness; the drawing itself has not been looked at. It is
+-- isolated the way the other Gen 4 passes are (Bridge disables an effect that
+-- throws). Bridge.setEffect("glass", false) turns it off.
 
 local V = ...
 local Voxel3D = V.require("Voxel3D")
@@ -66,7 +98,10 @@ end
 
 local DayNight = optional("DayNight")
 local Budget = optional("Gen4Budget") or { allow = function() return true end, charge = function() end }
+local Distance = optional("Gen4Distance")
 local clock = (love and love.timer and love.timer.getTime) or os.clock
+
+local floor, min, max, sqrt, abs = math.floor, math.min, math.max, math.sqrt, math.abs
 
 local Glass = {
   enabled = true,
@@ -84,12 +119,15 @@ local Glass = {
   WHITE = 0.88,-- every channel at least this: the palette's white
   MIN_TEXELS = 4,       -- fewer glass texels than this is noise, not a pane
   MAX_FRACTION = 0.45,  -- more of the picture than this and it is not a window
+  MAX_SAT_TEXELS = 262144, -- bigger textures skip the fast triangle test (all kept)
 
-  WINDOW = 3,           -- lands each way around the camera
+  WINDOW = 2,           -- lands each way around the camera (was 3)
+  REACH_SLACK = 0.35,   -- chunks past Gen4Distance's reach a land is still kept
   PULL = 0.6,           -- toward the eye, world units: the overlay's depth bias
   SHADE = 0.1,          -- the overlay's own vertex shade (day glint's base only)
 
   NIGHT_MIN = 0.02,     -- below this the lamps are out and nothing is drawn
+  BUILD_BY_DAY = false, -- true: build the meshes by day so dusk never builds anything
   DAY_GLINT = false,    -- see the header
   GLINT_RATE = 0.05,    -- radians of sweep per world unit travelled
   GLINT_IN = 0.12,      -- strength gained per moving frame
@@ -97,9 +135,15 @@ local Glass = {
   GLINT_MIN = 0.02,
 
   BUILDS_PER_FRAME = 3,
-  MAX_RESIDENT = 24,
+  MAX_RESIDENT = 30,
   MAX_VERTS = 60000,    -- split a mesh before it needs 32-bit indices
   LOG = true,
+
+  -- BRIGHTNESS (see the header)
+  PANE_BRIGHTNESS = 0.7,  -- 1.0 = the old, full-strength lamp colour on the panes
+  SCREEN_POWER = 0.3,     -- pane light on roads / walls (was 0.4)
+  SCREEN_RADIUS = 100,    -- ...and its reach in world units (was 192)
+  SCREEN_LIMIT = 16,      -- pane sources handed on per frame (was 32)
 
   -- Point lights from the glass MASK itself (pane centroids, not the land
   -- centre). The shader only has eight lamp slots, shared with street lamps.
@@ -108,7 +152,7 @@ local Glass = {
   LIGHT_CLUSTER = 20,   -- merge pane samples this close (one window, one flame)
 
   stats = { textures = 0, glassTextures = 0, lands = 0, shapes = 0 },
-  version = 1,
+  version = 2,
 }
 
 local FX16, UV_UNITS = 4096, 16
@@ -132,10 +176,107 @@ local function hasAny(name, list)
   return false
 end
 
+-- Modules that are looked up every frame are looked up once.
+local Mat4
+local function mat4()
+  if not Mat4 then Mat4 = V.require("Mat4") end
+  return Mat4
+end
+
+local spawnMod
+local function spawn()
+  if spawnMod == nil then spawnMod = optional("Gen4Spawn") or false end
+  return spawnMod or nil
+end
+
+-- The hour changes over minutes; asking DayNight for it (a table of phase
+-- weights each time) five times a frame bought nothing. 0.1 s is invisible.
+local HOUR_TTL = 0.1
+local nightAt, nightVal = -1, 0
+local function nightNow()
+  if not DayNight then return 0 end
+  local t = clock()
+  if t < nightAt or t - nightAt > HOUR_TTL then
+    local ok, n = pcall(DayNight.windowLight)
+    nightVal = ok and tonumber(n) or 0
+    nightAt = t
+  end
+  return nightVal
+end
+
+local lampAt, lampVal = -1, nil
+local function lampNow()
+  local t = clock()
+  if t < lampAt or t - lampAt > HOUR_TTL or not lampVal then
+    local c
+    if DayNight then
+      local ok, got = pcall(DayNight.lampColor)
+      if ok and type(got) == "table" then c = got end
+    end
+    lampVal = c or Voxel3D.lampColor or { 1.0, 0.84, 0.5 }
+    lampAt = t
+  end
+  return lampVal
+end
+
 -- ------------------------------------------------------- the texture masks --
 
--- image path -> { image, w, h, texels } for a texture with glass in it, or
--- false for one without (or unreadable: a verdict for the session, no retry loop)
+-- Summed-area table of the glass texels, so "is there any glass in this
+-- rectangle of the picture" is four reads. sat[y * (w + 1) + x + 1] holds the
+-- number of glass texels with texel x' < x and y' < y.
+local function buildSat(bits, w, h)
+  local W1 = w + 1
+  local sat = {}
+  for i = 1, W1 * (h + 1) do sat[i] = 0 end
+  for y = 1, h do
+    local rowSum = 0
+    local rowBase = (y - 1) * w
+    for x = 1, w do
+      if bits[rowBase + x] then rowSum = rowSum + 1 end
+      sat[y * W1 + x + 1] = sat[(y - 1) * W1 + x + 1] + rowSum
+    end
+  end
+  return sat
+end
+
+-- glass texels in the inclusive texel rectangle [x0..x1] x [y0..y1]
+local function satCount(sat, w, x0, x1, y0, y1)
+  local W1 = w + 1
+  return sat[(y1 + 1) * W1 + x1 + 2] - sat[(y1 + 1) * W1 + x0 + 1]
+       - sat[y0 * W1 + x1 + 2] + sat[y0 * W1 + x0 + 1]
+end
+
+-- The texels a span [lo, hi] (texel units, repeat wrap) touches: one or two
+-- inclusive ranges (c = -1 when there is only one). A span of a whole picture
+-- or more is every texel.
+local function texelSpan(lo, hi, n)
+  local a, b = floor(lo), floor(hi)
+  if b - a + 1 >= n then return 0, n - 1, -1, -1 end
+  a, b = a % n, b % n
+  if a <= b then return a, b, -1, -1 end
+  return a, n - 1, 0, b
+end
+
+-- Could a triangle whose UVs span this box (normalised, repeat wrap) show any
+-- glass? Conservative: true whenever the BOX covers a glass texel, so a pane is
+-- never dropped (the cost of a wrong yes is a few triangles drawn for nothing).
+local function boxHasGlass(entry, u0, u1, v0, v1)
+  if entry.whole or not entry.sat then return true end
+  local sat, w, h = entry.sat, entry.w, entry.h
+  local xa, xb, xc, xd = texelSpan(u0 * w, u1 * w, w)
+  local ya, yb, yc, yd = texelSpan(v0 * h, v1 * h, h)
+  if satCount(sat, w, xa, xb, ya, yb) > 0 then return true end
+  if yc >= 0 and satCount(sat, w, xa, xb, yc, yd) > 0 then return true end
+  if xc >= 0 then
+    if satCount(sat, w, xc, xd, ya, yb) > 0 then return true end
+    if yc >= 0 and satCount(sat, w, xc, xd, yc, yd) > 0 then return true end
+  end
+  return false
+end
+
+-- image path -> { image, w, h, texels, bits, sat, whole } for a texture with
+-- glass in it, or false for one without (or unreadable: a verdict for the
+-- session, no retry loop)
 local textures = {}
 
 local function analyse(path, textureName, materialName)
@@ -166,18 +307,22 @@ local function analyse(path, textureName, materialName)
                 or hasAny(tex, Glass.GLASS_NAMES) or hasAny(mat, Glass.GLASS_NAMES)
   local white = Glass.WHITE
   local out = love.image.newImageData(w, h)
+  local bits = (not whole) and {} or nil     -- which texels are glass, 1-based
   local count = 0
   for y = 0, h - 1 do
+    local row = y * w + 1
     for x = 0, w - 1 do
       local r, g, b, a = data:getPixel(x, y)
       if a >= 0.5 and (whole or (r >= white and g >= white and b >= white)) then
         out:setPixel(x, y, r, g, b, 1)
         count = count + 1
+        if bits then bits[row + x] = true end
       else
         out:setPixel(x, y, 0, 0, 0, 0)
       end
     end
   end
+  pcall(data.release, data)
 
   local fraction = count / (w * h)
   local keep = count >= Glass.MIN_TEXELS and (whole or fraction <= Glass.MAX_FRACTION)
@@ -186,16 +331,22 @@ local function analyse(path, textureName, materialName)
          tex, mat, w, h, count, fraction * 100, whole and ", whole pane" or "",
          keep and "GLASS" or "no glass")
   end
-  if not keep then return nil end
+  if not keep then
+    pcall(out.release, out)
+    return nil
+  end
 
   local okImg, image = pcall(love.graphics.newImage, out)
+  pcall(out.release, out)                    -- the GPU has its own copy now
   if not (okImg and image) then
     note("img:" .. path, "%s: could not make the glass image", tostring(path))
     return nil
   end
   image:setFilter("nearest", "nearest")
   image:setWrap("repeat", "repeat")       -- Gen 4 UVs run far past 0..1
-  local entry = { image = image, mask = out, w = w, h = h, texels = count, whole = whole }
+  local sat = (bits and w * h <= Glass.MAX_SAT_TEXELS) and buildSat(bits, w, h) or nil
+  local entry = { image = image, bits = bits, sat = sat, w = w, h = h,
+                  texels = count, whole = whole }
   textures[path] = entry
   Glass.stats.glassTextures = Glass.stats.glassTextures + 1
   return entry
@@ -230,52 +381,77 @@ local function placementOf(object)
 end
 
 local function newBucket(entry)
-  return { entry = entry, verts = {}, map = {}, meshes = {}, lightPts = {} }
+  return { entry = entry, verts = {}, n = 0, map = {}, mapN = 0,
+           meshes = {}, lightPts = {} }
 end
 
 -- True when this UV lands on a glass texel of the mask (repeat wrap).
 local function glassAt(entry, u, v)
   if not entry then return false end
-  if entry.whole or not entry.mask then return true end
-  u = u - math.floor(u)
-  v = v - math.floor(v)
-  if u < 0 then u = u + 1 end
-  if v < 0 then v = v + 1 end
+  if entry.whole or not entry.bits then return true end
+  u = u - floor(u)
+  v = v - floor(v)
   local w, h = entry.w, entry.h
-  local x = math.min(w - 1, math.max(0, math.floor(u * w)))
-  local y = math.min(h - 1, math.max(0, math.floor(v * h)))
-  local ok, _, _, _, a = pcall(entry.mask.getPixel, entry.mask, x, y)
-  return ok and (a or 0) >= 0.5
+  local x = min(w - 1, max(0, floor(u * w)))
+  local y = min(h - 1, max(0, floor(v * h)))
+  return entry.bits[y * w + x + 1] == true
 end
 
+local function cellKey(cx, cz) return cx * 100003 + cz end
+
+-- Merge samples closer than `radius` into one point each (a window is one
+-- flame, not one per triangle). Greedy from the first unused sample, like the
+-- plain pairwise version it replaces, but through a grid so a land with
+-- thousands of pane triangles does not cost thousands squared.
 local function clusterPoints(pts, radius)
-  local out, used = {}, {}
+  local n = #pts
+  if n == 0 then return {} end
   local r2 = radius * radius
-  for i, p in ipairs(pts) do
+  local grid, cxs, czs = {}, {}, {}
+  for i = 1, n do
+    local p = pts[i]
+    local cx, cz = floor(p[1] / radius), floor(p[3] / radius)
+    cxs[i], czs[i] = cx, cz
+    local k = cellKey(cx, cz)
+    local list = grid[k]
+    if not list then list = {}; grid[k] = list end
+    list[#list + 1] = i
+  end
+  local out, used = {}, {}
+  for i = 1, n do
     if not used[i] then
-      local sx, sy, sz, n = p[1], p[2], p[3], 1
+      local p = pts[i]
       used[i] = true
-      for j = i + 1, #pts do
-        if not used[j] then
-          local q = pts[j]
-          local dx, dz = q[1] - p[1], q[3] - p[3]
-          if dx * dx + dz * dz <= r2 then
-            used[j] = true
-            sx, sy, sz, n = sx + q[1], sy + q[2], sz + q[3], n + 1
+      local sx, sy, sz, c = p[1], p[2], p[3], 1
+      for ox = -1, 1 do
+        for oz = -1, 1 do
+          local list = grid[cellKey(cxs[i] + ox, czs[i] + oz)]
+          if list then
+            for li = 1, #list do
+              local j = list[li]
+              if not used[j] then
+                local q = pts[j]
+                local dx, dz = q[1] - p[1], q[3] - p[3]
+                if dx * dx + dz * dz <= r2 then
+                  used[j] = true
+                  sx, sy, sz, c = sx + q[1], sy + q[2], sz + q[3], c + 1
+                end
+              end
+            end
           end
         end
       end
-      out[#out + 1] = { x = sx / n, y = sy / n, z = sz / n }
+      out[#out + 1] = { x = sx / c, y = sy / c, z = sz / c }
     end
   end
   return out
 end
 
 local function seal(bk)
-  if #bk.verts == 0 then return end
+  if bk.n == 0 then return end
   local mesh = Voxel3D.newMesh(bk.verts, bk.map)
   if mesh then bk.meshes[#bk.meshes + 1] = mesh end
-  bk.verts, bk.map = {}, {}
+  bk.verts, bk.map, bk.n, bk.mapN = {}, {}, 0, 0
 end
 
 -- One packed shape, placed, into its texture's bucket. Layout (Gen4ModelPack):
@@ -302,7 +478,7 @@ local function readTerrainPos(ground, s, posScale)
   end
   local count = s.vertexCount or 0
   if not vdata or count < 3 then return nil end
-  local stride = math.floor(#vdata / count)
+  local stride = floor(#vdata / count)
   if stride < 10 then return nil end
   local pos = {}
   for i = 1, count do
@@ -316,61 +492,85 @@ local function readTerrainPos(ground, s, posScale)
   return pos
 end
 
+-- texel -> 0..1 of THIS picture (no V flip: Gen4Model does none)
+local function uvOf(vdata, stride, idx, tw, th)
+  local at = idx * stride
+  return s16(vdata, at + 6) / UV_UNITS / tw, s16(vdata, at + 8) / UV_UNITS / th
+end
+
+-- A shape vertex, placed, into the bucket (once per shape: `remap` is the
+-- shape's own index -> the bucket's index).
+local function placeVertex(bk, vdata, stride, idx, posScale, m, tw, th, remap)
+  local hit = remap[idx]
+  if hit then return hit end
+  local at = idx * stride
+  local x = s16(vdata, at) / FX16 * posScale
+  local y = s16(vdata, at + 2) / FX16 * posScale
+  local z = s16(vdata, at + 4) / FX16 * posScale
+  local n = bk.n + 1
+  bk.n = n
+  bk.verts[n] = {
+    m[1] * x + m[2] * y + m[3] * z + m[4],
+    m[5] * x + m[6] * y + m[7] * z + m[8],
+    m[9] * x + m[10] * y + m[11] * z + m[12],
+    s16(vdata, at + 6) / UV_UNITS / tw,
+    s16(vdata, at + 8) / UV_UNITS / th,
+    Glass.SHADE, 0,
+  }
+  remap[idx] = n
+  return n
+end
+
+-- Only the triangles that can show a pane are kept. Version 1 kept them all and
+-- let the pixel shader discard the rest: every roof and side wall of a
+-- glass-bearing shape was rasterised (and, in Gen4Light, lit by a per-pixel loop
+-- over the lamps) for nothing.
 local function addShape(bk, s, posScale, m)
   local vdata, idata = s.vertices, s.indices
   if type(vdata) ~= "string" or type(idata) ~= "string" then return false end
   local count, tris = s.vertexCount or 0, s.triangleCount or 0
   if count < 3 or tris < 1 then return false end
-  local stride = math.floor(#vdata / count)
+  local stride = floor(#vdata / count)
   if stride ~= 14 and stride ~= 16 then return false end
-  local tw, th = bk.entry.w, bk.entry.h
-  local base = #bk.verts
-  for i = 0, count - 1 do
-    local at = i * stride
-    local x = s16(vdata, at) / FX16 * posScale
-    local y = s16(vdata, at + 2) / FX16 * posScale
-    local z = s16(vdata, at + 4) / FX16 * posScale
-    bk.verts[base + i + 1] = {
-      m[1] * x + m[2] * y + m[3] * z + m[4],
-      m[5] * x + m[6] * y + m[7] * z + m[8],
-      m[9] * x + m[10] * y + m[11] * z + m[12],
-      s16(vdata, at + 6) / UV_UNITS / tw,     -- texel -> 0..1 of THIS picture
-      s16(vdata, at + 8) / UV_UNITS / th,     -- (no V flip: Gen4Model does none)
-      Glass.SHADE, 0,
-    }
-  end
-  for t = 0, tris * 3 - 1 do
-    local a, b = idata:byte(t * 2 + 1, t * 2 + 2)
-    if not b then break end
-    bk.map[#bk.map + 1] = base + a + b * 256 + 1
-  end
-  -- One sample per triangle that actually hits the mask: the overlay's
-  -- own verts, so the flame sits on the pane rather than on the land.
+  local entry = bk.entry
+  local tw, th = entry.w, entry.h
+  local remap, kept = {}, 0
+  local map, verts = bk.map, bk.verts
   for t = 0, tris - 1 do
-    local a1, a2 = idata:byte(t * 6 + 1, t * 6 + 2)
-    local b1, b2 = idata:byte(t * 6 + 3, t * 6 + 4)
-    local c1, c2 = idata:byte(t * 6 + 5, t * 6 + 6)
+    local a1, a2, b1, b2, c1, c2 = idata:byte(t * 6 + 1, t * 6 + 6)
     if not c2 then break end
-    local va = bk.verts[base + a1 + a2 * 256 + 1]
-    local vb = bk.verts[base + b1 + b2 * 256 + 1]
-    local vc = bk.verts[base + c1 + c2 * 256 + 1]
-    if va and vb and vc then
-      local ua, va2 = va[4], va[5]
-      local ub, vb2 = vb[4], vb[5]
-      local uc, vc2 = vc[4], vc[5]
-      if glassAt(bk.entry, ua, va2) or glassAt(bk.entry, ub, vb2)
-         or glassAt(bk.entry, uc, vc2)
-         or glassAt(bk.entry, (ua + ub + uc) / 3, (va2 + vb2 + vc2) / 3) then
-        bk.lightPts[#bk.lightPts + 1] = {
-          (va[1] + vb[1] + vc[1]) / 3,
-          (va[2] + vb[2] + vc[2]) / 3,
-          (va[3] + vb[3] + vc[3]) / 3,
-        }
+    local ia, ib, ic = a1 + a2 * 256, b1 + b2 * 256, c1 + c2 * 256
+    if ia < count and ib < count and ic < count then
+      local ua, va = uvOf(vdata, stride, ia, tw, th)
+      local ub, vb = uvOf(vdata, stride, ib, tw, th)
+      local uc, vc = uvOf(vdata, stride, ic, tw, th)
+      if boxHasGlass(entry, min(ua, ub, uc), max(ua, ub, uc),
+                     min(va, vb, vc), max(va, vb, vc)) then
+        local A = placeVertex(bk, vdata, stride, ia, posScale, m, tw, th, remap)
+        local B = placeVertex(bk, vdata, stride, ib, posScale, m, tw, th, remap)
+        local C = placeVertex(bk, vdata, stride, ic, posScale, m, tw, th, remap)
+        local mn = bk.mapN
+        map[mn + 1], map[mn + 2], map[mn + 3] = A, B, C
+        bk.mapN = mn + 3
+        kept = kept + 1
+        -- One sample per triangle that actually hits the mask: the overlay's
+        -- own verts, so the flame sits on the pane rather than on the land.
+        local pa, pb, pc = verts[A], verts[B], verts[C]
+        if glassAt(entry, pa[4], pa[5]) or glassAt(entry, pb[4], pb[5])
+           or glassAt(entry, pc[4], pc[5])
+           or glassAt(entry, (pa[4] + pb[4] + pc[4]) / 3, (pa[5] + pb[5] + pc[5]) / 3) then
+          bk.lightPts[#bk.lightPts + 1] = {
+            (pa[1] + pb[1] + pc[1]) / 3,
+            (pa[2] + pb[2] + pc[2]) / 3,
+            (pa[3] + pb[3] + pc[3]) / 3,
+          }
+        end
       end
     end
   end
+  if kept == 0 then return false end
   Glass.stats.shapes = Glass.stats.shapes + 1
-  if #bk.verts > Glass.MAX_VERTS then seal(bk) end
+  if bk.n > Glass.MAX_VERTS then seal(bk) end
   return true
 end
 
@@ -468,16 +668,62 @@ local function release(entry)
   end
 end
 
+-- How far, in world units, a land may be from the eye and still be kept: the
+-- G4 DRAW DIST row (Gen4Distance) plus a little slack, never past the window.
+local function reachFor(px)
+  local cap = (Glass.WINDOW + 0.5) * px
+  if not (Distance and Distance.reach) then return cap end
+  local ok, r = pcall(Distance.reach, px)
+  r = ok and tonumber(r) or cap
+  return min(r + Glass.REACH_SLACK * px, cap)
+end
+
+-- Is a square land (centre cx, cz; side px) within `reach` of the eye? The
+-- distance is to the NEAREST POINT of the land.
+local function inReach(ex, ez, cx, cz, px, reach)
+  local h = px * 0.5
+  local dx = max(abs(ex - cx) - h, 0)
+  local dz = max(abs(ez - cz) - h, 0)
+  return dx * dx + dz * dz <= reach * reach
+end
+
+-- Everything the frame needs from the window, laid out once when the window
+-- changes instead of rebuilt every frame:
+--   groups  the pieces by texture, so the glass uniforms go out once a texture
+--   walls   { mesh, x, z } for Gen4Light
+--   flat    every pane flame in world space, for the nearest-N pick
+local function index(win)
+  local groups, byEntry, walls, flat = {}, {}, {}, {}
+  for _, item in ipairs(win.list) do
+    for _, piece in ipairs(item.entry.pieces or {}) do
+      local g = byEntry[piece.entry]
+      if not g then
+        g = { entry = piece.entry, n = 0 }
+        byEntry[piece.entry] = g
+        groups[#groups + 1] = g
+      end
+      g.n = g.n + 1
+      g[g.n] = { mesh = piece.mesh, item = item }
+      walls[#walls + 1] = { mesh = piece.mesh, x = item.x, z = item.z }
+    end
+    for _, p in ipairs(item.entry.lights or {}) do
+      flat[#flat + 1] = { x = p.x + item.x, y = p.y or 0, z = p.z + item.z }
+    end
+  end
+  win.groups, win.walls, win.flat = groups, walls, flat
+end
+
 local function prepare(ground, view)
   local grid, px, half = ground.grid, ground.chunkPx, ground.half
   if not (grid and px and half and ground.terrain) then window = {} return end
   local cache = perGround[ground]
   if not cache then cache = { lands = {}, resident = 0 } perGround[ground] = cache end
 
-  local camCx, camCy = math.floor(view.x / px), math.floor(view.z / px)
-  local qx, qy = math.floor(view.x * 4 / px), math.floor(view.z * 4 / px)
+  local reach = reachFor(px)
+  local camCx, camCy = floor(view.x / px), floor(view.z / px)
+  local qx, qy = floor(view.x * 4 / px), floor(view.z * 4 / px)
   if window.done and window.ground == ground and window.qx == qx and window.qy == qy
-     and window.version == Glass.version then
+     and window.version == Glass.version and window.reach == reach then
     return
   end
   tick = tick + 1
@@ -488,7 +734,7 @@ local function prepare(ground, view)
     for cx = camCx - W, camCx + W do
       if cx >= 0 and cy >= 0 and cx < grid.width and cy < grid.height then
         local land = grid.land[cy * grid.width + cx + 1]
-        if land then
+        if land and inReach(view.x, view.z, cx * px + half, cy * px + half, px, reach) then
           local dx, dz = cx - camCx, cy - camCy
           want[#want + 1] = { dx * dx + dz * dz, cx, cy, land }
         end
@@ -543,7 +789,8 @@ local function prepare(ground, view)
   end
 
   window = { ground = ground, qx = qx, qy = qy, list = list,
-             done = (pending == 0), version = Glass.version }
+             done = (pending == 0), version = Glass.version, reach = reach }
+  index(window)
 end
 
 -- ------------------------------------------------------------ the lighting --
@@ -554,32 +801,66 @@ local glint = { x = nil, z = nil, phase = 0, amp = 0 }
 -- phase is fed by the camera's own travel, the strength dies when it stops.
 local function glintStep(x, z)
   local dist = 0
-  if glint.x then dist = math.abs(x - glint.x) + math.abs(z - glint.z) end
+  if glint.x then dist = abs(x - glint.x) + abs(z - glint.z) end
   glint.x, glint.z = x, z
   if dist > 64 then dist = 0 end            -- a warp is not travel
   glint.phase = (glint.phase + dist * Glass.GLINT_RATE) % (2 * math.pi)
   if dist > 0.05 then
-    glint.amp = math.min(1, glint.amp + Glass.GLINT_IN)
+    glint.amp = min(1, glint.amp + Glass.GLINT_IN)
   else
-    glint.amp = math.max(0, glint.amp - Glass.GLINT_OUT)
+    glint.amp = max(0, glint.amp - Glass.GLINT_OUT)
   end
 end
 
 -- Under the open sky? Gen4Spawn.isOutdoor is the real answer on Platinum
 -- (Map.isOutdoor reads Gen 1/2 header fields); `ground.outdoors` is the
--- engine's own reading of the same fact.
+-- engine's own reading of the same fact. The answer is a fact about the map, so
+-- it is asked twice a second, not every frame.
+local outdoorCache = { map = nil, ground = nil, at = -1, value = false }
+local OUTDOOR_TTL = 0.5
+
 local function outdoorNow(ground)
   if ground.outdoors == false then return false end
   local map = ground.terrariumMap
-  local Spawn = optional("Gen4Spawn")
+  local Spawn = spawn()
   if map and Spawn and Spawn.isOutdoor then
+    local c, t = outdoorCache, clock()
+    if c.map == map and c.ground == ground and t >= c.at and t - c.at < OUTDOOR_TTL then
+      return c.value
+    end
     local ok, r = pcall(Spawn.isOutdoor, map)
-    if ok then return r and true or false end
+    if ok then
+      c.map, c.ground, c.at, c.value = map, ground, t, (r and true or false)
+      return c.value
+    end
   end
   return ground.outdoors == true
 end
 
+-- The `limit` flames nearest (wx, wz), nearest first, without sorting them all:
+-- ids into `flat` and their squared distances, and how many.
+local function nearest(flat, wx, wz, limit)
+  local ids, d2s, n = {}, {}, 0
+  for i = 1, #flat do
+    local p = flat[i]
+    local dx, dz = p.x - wx, p.z - wz
+    local d = dx * dx + dz * dz
+    if n < limit or d < d2s[n] then
+      local pos = (n < limit) and (n + 1) or n
+      while pos > 1 and d2s[pos - 1] > d do
+        ids[pos], d2s[pos] = ids[pos - 1], d2s[pos - 1]
+        pos = pos - 1
+      end
+      ids[pos], d2s[pos] = i, d
+      if n < limit then n = n + 1 end
+    end
+  end
+  return ids, d2s, n
+end
+
 -- -------------------------------------------------------------------- draw --
+
+local dimLamp = { 1, 0.84, 0.5 }          -- reused every frame: the lamp, scaled
 
 function Glass.draw(scene)
   if not (Glass.enabled and DayNight and scene and scene.ground and scene.view) then return end
@@ -588,58 +869,75 @@ function Glass.draw(scene)
 
   glintStep(scene.eye[1], scene.eye[3])
 
-  -- built whatever the hour, so the first dusk does not hitch the frame
-  prepare(ground, view)
-  local list = window.list
-  if not list or #list == 0 then return end
-
-  local okN, night = pcall(DayNight.windowLight)
-  night = okN and tonumber(night) or 0
+  local night = nightNow()
   local wantNight = night > Glass.NIGHT_MIN
   local wantGlint = Glass.DAY_GLINT and glint.amp > Glass.GLINT_MIN
-  if not (wantNight or wantGlint) then return end     -- by day: nothing drawn
+  -- By day nothing is drawn, so by day nothing is built either (see the header).
+  if not (wantNight or wantGlint or Glass.BUILD_BY_DAY) then return end
 
-  local lamp
-  do
-    local okL, c = pcall(DayNight.lampColor)
-    lamp = okL and c or nil
-  end
+  prepare(ground, view)
+  local groups, list = window.groups, window.list
+  if not groups or #groups == 0 or not list then return end
+  if not (wantNight or wantGlint) then return end
 
-  local Mat4 = V.require("Mat4")
+  -- which lands are on screen, once, not once per texture
   local visible = scene.sphereVisible
   local radius = (ground.chunkPx or 512) * 0.72 + 80
+  local any = false
+  for _, item in ipairs(list) do
+    local v = (not visible) or visible(item.x, 0, item.z, radius)
+    item.vis = v and true or false
+    if v then any = true end
+  end
+  if not any then return end
 
+  -- the lamp colour the panes are painted with, scaled by PANE_BRIGHTNESS
+  local lamp = lampNow()
+  local k = Glass.PANE_BRIGHTNESS
+  dimLamp[1], dimLamp[2], dimLamp[3] = lamp[1] * k, lamp[2] * k, lamp[3] * k
+
+  local M = mat4()
   Voxel3D.seams(false)
   Voxel3D.glass(true)
   scene.blend()
-  if wantNight and lamp then
-    Voxel3D.flatten(lamp, math.min(1, 0.50 + 0.50 * night))
+  if wantNight then
+    Voxel3D.flatten(dimLamp, min(1, 0.50 + 0.50 * night))
   end
+  local phase, glintAmp = glint.phase, wantGlint and glint.amp or 0
+  local nightArg = wantNight and night or 0
   local drawn = 0
-  for _, item in ipairs(list) do
-    if (not visible) or visible(item.x, 0, item.z, radius) then
-      local model = item.model
-      if not model then
-        model = Mat4.translate(item.x, 0, item.z)
-        item.model = model
-      end
-      for _, piece in ipairs(item.entry.pieces) do
-        -- the glass-only copy is both the texture (non-glass texels are alpha 0
-        -- and discarded) and the mask (alpha 1 on every pane texel)
-        Voxel3D.glassPass(piece.entry.image, wantNight and night or 0, lamp,
-                          glint.phase, wantGlint and glint.amp or 0)
-        Voxel3D.draw(piece.mesh, piece.entry.image, model, Glass.PULL, nil, 0, false)
+  for gi = 1, #groups do
+    local g = groups[gi]
+    local image = g.entry.image
+    local bound = false
+    for i = 1, g.n do
+      local d = g[i]
+      local item = d.item
+      if item.vis then
+        if not bound then
+          -- the glass-only copy is both the texture (non-glass texels are alpha 0
+          -- and discarded) and the mask (alpha 1 on every pane texel); sent once
+          -- for all the pieces of this texture
+          Voxel3D.glassPass(image, nightArg, dimLamp, phase, glintAmp)
+          bound = true
+        end
+        local model = item.model
+        if not model then
+          model = M.translate(item.x, 0, item.z)
+          item.model = model
+        end
+        Voxel3D.draw(d.mesh, image, model, Glass.PULL, nil, 0, false)
         drawn = drawn + 1
       end
     end
   end
-  if wantNight and lamp then Voxel3D.flatten(nil) end
+  if wantNight then Voxel3D.flatten(nil) end
   scene.opaque()
   Voxel3D.glassPass(nil)                  -- the blank mask and the scene's own light
   Voxel3D.seams(true)
   Voxel3D.glass(true)
-  
-  -- Log once per frame when glass is drawn
+
+  -- Log once when glass is first drawn
   if drawn > 0 and Glass.LOG then
     note("draw", "drew %d glass piece(s) at night=%.2f", drawn, night)
   end
@@ -652,81 +950,74 @@ end
 function Glass.lights(wx, wz, limit)
   if not (Glass.enabled and DayNight) then return {} end
 
-  local okN, night = pcall(DayNight.windowLight)
-  night = okN and tonumber(night) or 0
+  local night = nightNow()
   if night <= Glass.NIGHT_MIN then return {} end
 
-  local list = window.list
-  if not list or #list == 0 then return {} end
+  local flat = window.flat
+  if not flat or #flat == 0 then return {} end
 
   wx, wz = tonumber(wx) or 0, tonumber(wz) or 0
-  limit = math.max(1, math.min(Glass.LIGHT_LIMIT, limit or Glass.LIGHT_LIMIT))
+  limit = max(1, min(Glass.LIGHT_LIMIT, limit or Glass.LIGHT_LIMIT))
   local flame = Voxel3D.lampHeight or Voxel3D.LAMP_HEIGHT or 19
 
+  local ids, d2s, n = nearest(flat, wx, wz, limit)
   local out = {}
-  for _, item in ipairs(list) do
-    for _, p in ipairs(item.entry.lights or {}) do
-      local x, z = p.x + item.x, p.z + item.z
-      local dx, dz = x - wx, z - wz
-      out[#out + 1] = {
-        x = x,
-        y = (p.y or 0) - flame,
-        z = z,
-        radius = Glass.LIGHT_RADIUS,
-        power = night * 0.75,
-        d2 = dx * dx + dz * dz,
-      }
-    end
+  for i = 1, n do
+    local p = flat[ids[i]]
+    out[i] = {
+      x = p.x,
+      y = (p.y or 0) - flame,
+      z = p.z,
+      radius = Glass.LIGHT_RADIUS,
+      power = night * 0.75,
+      d2 = d2s[i],
+    }
   end
-
-  table.sort(out, function(a, b) return a.d2 < b.d2 end)
-  for i = #out, limit + 1, -1 do out[i] = nil end
   return out
 end
 
 -- Pane + building-wall light sources for Gen4Light (the world-space receiver on
--- Platinum's own roads and walls), nearest first. y is the pane itself; the
--- receiver lights from there, so a window lights the wall around it and the
--- street below it, not the sky above.
+-- Platinum's own roads and walls) and Gen4Tint, nearest first. y is the pane
+-- itself; the receiver lights from there, so a window lights the wall around it
+-- and the street below it, not the sky above.
+--
+-- Called by Gen4Bridge AND Gen4Light every frame with the same camera, so the
+-- answer is kept until the camera, the hour or the window changes. The returned
+-- list is shared: read it, do not edit it.
 function Glass.screenLights(wx, wz)
   if not (Glass.enabled and DayNight) then return {} end
-  local okN, night = pcall(DayNight.windowLight)
-  night = okN and tonumber(night) or 0
+  local night = nightNow()
   if night <= Glass.NIGHT_MIN then return {} end
-  local list = window.list
-  if not list or #list == 0 then return {} end
+  local flat = window.flat
+  if not flat or #flat == 0 then return {} end
   wx, wz = tonumber(wx) or 0, tonumber(wz) or 0
-  local out = {}
-  for _, item in ipairs(list) do
-    for _, p in ipairs(item.entry.lights or {}) do
-      local x, z = p.x + item.x, p.z + item.z
-      local dx, dz = x - wx, z - wz
-      out[#out + 1] = {
-        x = x, y = p.y or 0, z = z,
-        radius = (Glass.LIGHT_RADIUS or 48) * 4,
-        power = night * 0.4,
-        d2 = dx * dx + dz * dz,
-      }
-    end
+
+  local c = window.sl
+  if c and c.wx == wx and c.wz == wz and c.night == night
+     and c.limit == Glass.SCREEN_LIMIT and c.power == Glass.SCREEN_POWER
+     and c.radius == Glass.SCREEN_RADIUS then
+    return c.out
   end
-  table.sort(out, function(a, b) return a.d2 < b.d2 end)
-  for i = #out, 33, -1 do out[i] = nil end
+
+  local limit = max(1, Glass.SCREEN_LIMIT)
+  local ids, d2s, n = nearest(flat, wx, wz, limit)
+  local power, radius = night * Glass.SCREEN_POWER, Glass.SCREEN_RADIUS
+  local out = {}
+  for i = 1, n do
+    local p = flat[ids[i]]
+    out[i] = { x = p.x, y = p.y or 0, z = p.z, radius = radius, power = power, d2 = d2s[i] }
+  end
+  window.sl = { wx = wx, wz = wz, night = night, out = out, limit = Glass.SCREEN_LIMIT,
+                power = Glass.SCREEN_POWER, radius = Glass.SCREEN_RADIUS }
   return out
 end
 
 -- The glass-bearing building meshes of the lands around the camera, with their
 -- land origin: { { mesh, x, z }, ... }. Gen4Light draws these (additive, depth
--- tested) so a lit window lights the WALL it is in, not just the pane.
+-- tested) so a lit window lights the WALL it is in, not just the pane. Built
+-- once per window; shared, so read it, do not edit it.
 function Glass.wallPieces()
-  local out = {}
-  local list = window.list
-  if not list then return out end
-  for _, item in ipairs(list) do
-    for _, piece in ipairs(item.entry.pieces or {}) do
-      if piece.mesh then out[#out + 1] = { mesh = piece.mesh, x = item.x, z = item.z } end
-    end
-  end
-  return out
+  return window.walls or {}
 end
 
 -- Called from Gen4Bridge before the scene opens, so the first night frame
@@ -753,6 +1044,8 @@ function Glass.invalidate()
     textures[path] = nil
   end
   window = {}
+  outdoorCache.map, outdoorCache.ground, outdoorCache.at = nil, nil, -1
+  nightAt, lampAt, lampVal = -1, -1, nil
   Glass.version = Glass.version + 1
 end
 
@@ -765,5 +1058,15 @@ function Glass.report()
   table.sort(out, function(a, b) return a.path < b.path end)
   return out
 end
+
+-- Named for the suite (tools/test_gen4_glass.lua): the pure parts.
+Glass._buildSat = buildSat
+Glass._boxHasGlass = boxHasGlass
+Glass._clusterPoints = clusterPoints
+Glass._nearest = nearest
+Glass._glassAt = glassAt
+Glass._addShape = addShape
+Glass._newBucket = newBucket
+Glass._analyse = analyse
 
 return Glass

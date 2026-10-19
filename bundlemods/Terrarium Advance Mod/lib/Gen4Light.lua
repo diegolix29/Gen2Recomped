@@ -37,6 +37,16 @@
 --
 -- Everything is pcall-guarded. If the shader does not compile, `ok` stays
 -- false and Gen4Tint keeps painting its old screen-space discs.
+--
+-- COST / BRIGHTNESS KNOBS (live):
+--   PANE_LIMIT, WALL_LIGHTS   how many window / wall sources are lit (cost)
+--   PANE_STRENGTH             how bright a window's light is
+--   POST_LIMIT, POST_STRENGTH the same for street posts
+--   WALLS = false             no wall pass at all (the cheapest setting)
+--   GROUND = false            no road pools at all
+-- The meshes the wall pass draws come from Gen4Glass.wallPieces(); since
+-- Gen4Glass version 2 they hold only the triangles that carry a pane, so the
+-- per-pixel light loop no longer runs over roofs and blank side walls.
 
 local V = ...
 local Voxel3D = V.require("Voxel3D")
@@ -59,10 +69,15 @@ local Light = {
   WALLS = true,            -- light the building walls
 
   POST_LIMIT = 8,          -- street posts lit per frame (nearest first)
-  PANE_LIMIT = 8,          -- lit windows (nearest first)
-  WALL_LIGHTS = 8,         -- the shader's array size: sources a wall may take
+  PANE_LIMIT = 4,          -- lit windows (nearest first). Was 8: each one is a
+                           -- ground sheet drawn with the full light shader.
+  WALL_LIGHTS = 4,         -- sources a wall may take, nearest to the camera of
+                           -- posts AND panes together (was the first 8 of the
+                           -- list, i.e. posts first). The shader loops over
+                           -- this many lights per wall pixel, so it is the cost
+                           -- knob for the wall pass (1..8).
   POST_STRENGTH = 1.0,
-  PANE_STRENGTH = 0.8,
+  PANE_STRENGTH = 0.55,    -- how bright a window's light is (was 0.8)
 
   CELL = 12,               -- ground sheet quad edge, map px
   LIFT = 0.6,              -- sheet float above the ground (z-fight guard)
@@ -404,7 +419,12 @@ function Light.draw(scene)
       local pieces = Glass and Glass.wallPieces and Glass.wallPieces() or nil
       if pieces and #pieces > 0 then
         local near = {}
-        for i = 1, math.min(#lights, Light.WALL_LIGHTS) do near[i] = lights[i] end
+        do
+          local byDistance = {}
+          for i = 1, #lights do byDistance[i] = lights[i] end
+          table.sort(byDistance, function(a, b) return (a.d2 or 0) < (b.d2 or 0) end)
+          for i = 1, math.min(#byDistance, Light.WALL_LIGHTS, MAXL) do near[i] = byDistance[i] end
+        end
         sendLights(sh, near, lamp)
         pcall(sh.send, sh, "pull", Light.WALL_PULL)
         local reach = (ground.chunkPx or 512) * 0.75
