@@ -136,6 +136,7 @@ function M.install()
       if alreadyPresent(out) then return out end
 
       local row = {
+        id = "modSettings",
         label = "MOD SETTINGS",
         desc = { "Voxel / 3D", "mod settings" },
         _stadium2DirectModSettings = true,

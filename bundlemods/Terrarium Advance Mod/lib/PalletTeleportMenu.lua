@@ -85,6 +85,7 @@ function M.install()
       local away = type(Twin.excursionIsActive) == "function"
         and Twin.excursionIsActive() == true
       local row = {
+        id = "palletTeleport",
         label = away and "RETURN TO JOHTO" or "KANTO FREE ROAM",
         desc = away and { "Return to", "Gold location" }
           or { "Yellow Kanto", "Free roam" },

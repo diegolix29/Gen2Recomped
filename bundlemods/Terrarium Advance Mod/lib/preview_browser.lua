@@ -659,6 +659,7 @@ function PreviewBrowser:register()
     if not Config.devOverlay(mod) then return out end
     if mod.ui and type(mod.ui.insertBefore) == "function" then
       return mod.ui.insertBefore(out, "SAVE", {
+        id = "testSpawn",
         label = "TEST SPAWN",
         onSelect = function()
           mod.ui.push(game, PreviewBrowser.SCREEN)
@@ -666,6 +667,7 @@ function PreviewBrowser:register()
       })
     end
     out[#out + 1] = {
+      id = "testSpawn",
       label = "TEST SPAWN",
       onSelect = function()
         mod.ui.push(game, PreviewBrowser.SCREEN)

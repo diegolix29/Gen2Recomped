@@ -79,6 +79,7 @@ function M.install()
         if type(item) == "table" and item._stadium2KantoField then return out end
       end
       local row = {
+        id = "kantoField",
         label = "KANTO FIELD",
         desc = { "Bike / Fishing / Flash", "Dig / Teleport" },
         _stadium2KantoField = true,

@@ -1,33 +1,35 @@
--- Gen4StartMenuHook: puts the TERRARIUM BATTLES row on Platinum's start menu.
+-- Gen4StartMenuHook: puts the TERRARIUM BATTLES row on Platinum's start menu,
+-- and keeps HeartGold / SoulSilver / Black-White from crashing on hooked rows.
 --
--- WHY IT WAS MISSING
+-- WHY HGSS CRASHED
 --
--- Every other version's start menu runs its finished row list through the
--- engine's `ui.start_menu.items` hook, which is how BattleSettings adds
--- TERRARIUM BATTLES (src/ui/StartMenu.lua, src/ui/Gen3StartMenu.lua). Gen 4's
--- menu (src/ui/Gen4StartMenu.lua) builds its rows from the cartridge's own list
--- and never calls the hook, so the mod's row simply never appeared there.
+-- The engine's Gen 4 menu now runs `ui.start_menu.items`. Game Boy-style rows
+-- from that seam have a label and onSelect, but no `id`. HgssStartMenu.new
+-- (and Gen5StartMenu.new) then do `keep[row.id] = true` and Lua throws
+-- "table index is nil".
+--
+-- HGSS / BW also rebuild the list from a cartridge ORDER after Gen4StartMenu.new
+-- returns, so a row injected there is dropped unless we inject again afterwards.
 --
 -- WHAT THIS DOES (engine files untouched)
 --
---   * new    after the engine builds the menu, insert the row before OPTIONS,
---            the same place the Game Boy menus put it.
---   * select the injected row pops the menu and runs its onSelect, exactly as
---            Gen 1's generic StartMenu does, so BattleSettings' own return
---            logic (BACK -> reopen the start menu) works unchanged.
---   * layout Platinum's panel is sized for its seven rows and its short labels:
---            an eighth row would run off the 192px screen, and a long label
---            would run off the right edge. So the panel widens leftwards to fit
---            the widest label, and once there are more rows than fit the list
---            scrolls with the cursor.
+--   * sanitize  give every hooked row a non-nil id before HGSS/BW index it.
+--   * new       after Platinum builds the menu, insert TERRARIUM BATTLES
+--               before OPTIONS.
+--   * hgss/bw   wrap those constructors so the row is put back after they
+--               rebuild, using the extra icon slot the way MODS does.
+--   * select    the injected row pops the menu and runs its onSelect.
+--   * layout    Platinum's panel widens / scrolls when the extra row does not
+--               fit. HGSS has eight icon buttons; MODS waits if they are full.
 --
--- The hook is deliberately NOT the general `ui.start_menu.items` seam: other
--- mods on that hook add rows meant for the Game Boy games (fly menus, teleport
--- lists), which do not belong on a Platinum menu.
+-- The dedicated inject is still used (rather than relying only on
+-- `ui.start_menu.items`) because HGSS/BW throw away unknown ids.
 
 local Hook = { installed = false, factory = nil }
 
 local SCREEN_H = 192
+local HGSS_SLOTS = 8
+local ROW_ID = "terrariumBattles"
 
 local function log(level, fmt, ...)
   local ok, Logger = pcall(require, "src.core.Logger")
@@ -39,6 +41,28 @@ local function isGen4()
   if not (ok and GameVersion and GameVersion.generation) then return false end
   local okGen, value = pcall(GameVersion.generation)
   return okGen and tonumber(value) == 4
+end
+
+local function isTerrariumRow(row)
+  return type(row) == "table" and (
+    row.id == ROW_ID
+    or row.__terrariumBattleEntry == true
+    or (type(row.entry) == "table" and row.entry.__terrariumBattleEntry == true)
+  )
+end
+
+-- HgssStartMenu.new / Gen5StartMenu.new: `keep[row.id] = true`. A nil key
+-- raises "table index is nil" and takes down the field menu.
+local function sanitize(self)
+  for i, row in ipairs(self.rows) do
+    if type(row) == "table" and row.id == nil then
+      if row.__terrariumBattleEntry then
+        row.id = ROW_ID
+      else
+        row.id = "modrow_" .. i
+      end
+    end
+  end
 end
 
 -- How many rows fit below the panel's top edge at this layout.
@@ -74,10 +98,30 @@ local function widen(self)
   self.layout = L
 end
 
+local function makeRow(entry)
+  entry.__terrariumBattleEntry = true
+  return {
+    id = ROW_ID,
+    label = entry.label,
+    icon = nil,
+    entry = entry,
+    onSelect = entry.onSelect,
+    __terrariumBattleEntry = true,
+  }
+end
+
+local function insertBeforeOptions(self, row)
+  local at = #self.rows + 1
+  for i, existing in ipairs(self.rows) do
+    if existing.id == "options" then at = i break end
+  end
+  table.insert(self.rows, at, row)
+end
+
 local function inject(self)
   if not (Hook.factory and isGen4()) then return end
   for _, row in ipairs(self.rows) do
-    if row.entry and row.entry.__terrariumBattleEntry then return end
+    if isTerrariumRow(row) then return end
   end
   local ok, entry = pcall(Hook.factory, self.game)
   if not (ok and type(entry) == "table" and type(entry.label) == "string"
@@ -85,14 +129,69 @@ local function inject(self)
     log("warn", "gen4 start menu hook: no usable battle entry (%s)", tostring(entry))
     return
   end
-  local at = #self.rows + 1
-  for i, row in ipairs(self.rows) do
-    if row.id == "options" then at = i break end
-  end
-  table.insert(self.rows, at, {
-    id = "terrariumBattles", label = entry.label, icon = nil, entry = entry,
-  })
+  insertBeforeOptions(self, makeRow(entry))
   widen(self)
+end
+
+-- HGSS's touch panel has eight icon buttons. MODS already takes the spare
+-- slot; if RETIRE (or this row) fills the grid, MODS waits, same as the
+-- engine's own HgssStartMenu.new.
+local function capHgss(self)
+  if #self.rows <= HGSS_SLOTS then return end
+  for i = #self.rows, 1, -1 do
+    if self.rows[i] and self.rows[i].id == "mods" then
+      table.remove(self.rows, i)
+      if #self.rows <= HGSS_SLOTS then return end
+    end
+  end
+  while #self.rows > HGSS_SLOTS do table.remove(self.rows) end
+end
+
+local function injectHgss(self)
+  if not (Hook.factory and isGen4()) then return end
+  for _, row in ipairs(self.rows) do
+    if isTerrariumRow(row) then capHgss(self) return end
+  end
+  local ok, entry = pcall(Hook.factory, self.game)
+  if not (ok and type(entry) == "table" and type(entry.label) == "string"
+          and type(entry.onSelect) == "function") then
+    return
+  end
+  insertBeforeOptions(self, makeRow(entry))
+  capHgss(self)
+end
+
+local function wrapNew(Menu, after)
+  local original = Menu.new
+  Menu.new = function(...)
+    local self = original(...)
+    if type(self) == "table" and type(self.rows) == "table" then
+      local okRun, err = pcall(after, self)
+      if not okRun then log("warn", "gen4 start menu hook failed: %s", tostring(err)) end
+    end
+    return self
+  end
+  return original
+end
+
+-- Draw TERRARIUM BATTLES with the same spare-button art MODS uses (HGSS has
+-- no cartridge icon for it). Temporarily treat the row as mods for drawPanel.
+local function wrapHgssDraw(Hgss)
+  local original = Hgss.drawPanel
+  if type(original) ~= "function" then return nil end
+  Hgss.drawPanel = function(self, ...)
+    local restored = {}
+    for _, row in ipairs(self.rows or {}) do
+      if row.id == ROW_ID then
+        row.id = "mods"
+        restored[#restored + 1] = row
+      end
+    end
+    local ok, err = pcall(original, self, ...)
+    for _, row in ipairs(restored) do row.id = ROW_ID end
+    if not ok then error(err, 0) end
+  end
+  return original
 end
 
 function Hook.install(factory)
@@ -108,6 +207,7 @@ function Hook.install(factory)
   Menu.new = function(...)
     local self = Hook.original.new(...)
     if type(self) == "table" and type(self.rows) == "table" then
+      sanitize(self)
       local okInject, err = pcall(inject, self)
       if not okInject then log("warn", "gen4 start menu hook failed: %s", tostring(err)) end
     end
@@ -146,6 +246,13 @@ function Hook.install(factory)
     if not ok then error(err, 0) end
   end
 
+  local okH, Hgss = pcall(require, "src.ui.HgssStartMenu")
+  if okH and type(Hgss) == "table" and type(Hgss.new) == "function" then
+    Hook.Hgss = Hgss
+    Hook.original.hgssNew = wrapNew(Hgss, injectHgss)
+    Hook.original.hgssDrawPanel = wrapHgssDraw(Hgss)
+  end
+
   Hook.installed = true
   return true
 end
@@ -154,6 +261,8 @@ function Hook.uninstall()
   if not Hook.installed then return end
   local M, o = Hook.Menu, Hook.original
   M.new, M.select, M.drawPanel = o.new, o.select, o.drawPanel
+  if Hook.Hgss and o.hgssNew then Hook.Hgss.new = o.hgssNew end
+  if Hook.Hgss and o.hgssDrawPanel then Hook.Hgss.drawPanel = o.hgssDrawPanel end
   Hook.installed = false
 end
 

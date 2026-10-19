@@ -27429,6 +27429,7 @@ return function(mod)
       end
     end
     local row={
+      id="ui",
       label="UI",
       keepOpen=true,
       __gen3uiUIEntry=true,

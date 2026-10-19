@@ -637,7 +637,22 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
   modRef,Trainer,Music,ArenaCatalog,BattleMenuUI,CacheManager,TrainerRoster,Compat,AudioFidelity=mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trainerRoster,compat,audioFidelity
   if BattleMenuUI and BattleMenuUI.install then BattleMenuUI.install() end
   if not (mod and mod.hooks and type(mod.hooks.wrap)=="function") then return false end
-  -- Use a higher priority to run after other mods like XD_BATTLE_ENVIRONMENTS
+  -- Outermost on this seam (higher priority runs first, then post-processes
+  -- next()'s result). UIMain (500), fly menus, MOD SETTINGS, TEST SPAWN all
+  -- insert Game Boy rows with no `id`. HgssStartMenu/Gen5StartMenu then do
+  -- `keep[row.id] = true` and crash. Stamp an id on every row after they run.
+  mod.hooks:wrap("ui.start_menu.items",function(next,game,items)
+    local out=next(game,items)
+    if type(out)~="table" then return out end
+    for i,row in ipairs(out) do
+      if type(row)=="table" and row.id==nil then
+        row.id=row.__terrariumBattleEntry and "terrariumBattles" or ("modrow_"..i)
+      end
+    end
+    return out
+  end,1e9)
+  -- Use a higher priority than XD_BATTLE_ENVIRONMENTS (115), but below the
+  -- id-stamper, so HGSS/BW still receive this row with an id.
   mod.hooks:wrap("ui.start_menu.items",function(next,game,items)
     local out=next(game,items)
     if type(out)~="table" then out=items end
@@ -648,7 +663,7 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
     for i,entry in ipairs(out) do
       if isOptionsLabel(entry.label) then at=i;break end
     end
-    table.insert(out,at,{label="TERRARIUM BATTLES",__terrariumBattleEntry=true,onSelect=function()
+    table.insert(out,at,{id="terrariumBattles",label="TERRARIUM BATTLES",__terrariumBattleEntry=true,onSelect=function()
       -- Gen 1's generic StartMenu pops before invoking onSelect. Gold's
       -- injected-row arm intentionally does not. Keep a live Gold parent on
       -- the stack; a synthetic replacement lacks onChoose/onClose and is dead.
@@ -659,11 +674,16 @@ function S.install(mod,trainer,music,arenaCatalog,battleMenuUI,cacheManager,trai
       openBattleMenu(game,returnId,returnParent)
     end})
     return out
-  end,200) -- Run after XD_BATTLE_ENVIRONMENTS (priority 115) but before other high-priority mods
+  end,200)
 
-  -- Install Gen4StartMenuHook for Platinum/HGSS/Black-White start menus
-  local okHook, Gen4StartMenuHook = pcall(require, "lib.Gen4StartMenuHook")
-  if okHook and Gen4StartMenuHook and type(Gen4StartMenuHook.install) == "function" then
+  -- Mod libs are not on package.path (`require("lib.Gen4StartMenuHook")`
+  -- fails silently). Load through the Colosseum namespace / voxelRequire.
+  local Gen4StartMenuHook = V and V.Gen4StartMenuHook
+  if not Gen4StartMenuHook and V and type(V.voxelRequire)=="function" then
+    local okHook, loaded = pcall(V.voxelRequire, "Gen4StartMenuHook")
+    if okHook then Gen4StartMenuHook = loaded end
+  end
+  if Gen4StartMenuHook and type(Gen4StartMenuHook.install)=="function" then
     Gen4StartMenuHook.install(function(game)
       return {
         label = "TERRARIUM BATTLES",
