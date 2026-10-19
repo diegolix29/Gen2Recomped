@@ -446,10 +446,6 @@ local function discover()
   -- is cached and idempotent.
   CacheFs.root()
 
-  -- NOTE: The launcher scans both "mods" and "bundlemods" to show them in the
-  -- panel. However, bundlemods are only loaded during actual game launch
-  -- (see Loader.lua with noBundleMods flag), not during the launcher's
-  -- intro/preview backdrop.
   local roots = { "mods", "bundlemods" }
   local seen = {}
 
@@ -474,45 +470,10 @@ local function discover()
   -- one the game then loaded, so the panel could show one version while the
   -- game ran another.  A dev-linked mod dir (ln -s) reports type "symlink"
   -- and is scanned like a directory.
-  --
-  -- Scan all roots (mods and bundlemods) and merge the results so both
-  -- appear in the launcher panel. They will only load during actual game
-  -- launch (when noMods is not set).
-  local ModCopies = require("src.mods.ModCopies")
-  local mergedScan = { winners = {}, ignored = {}, zips = {}, notes = {}, invalid = {} }
-  for _, root in ipairs(roots) do
-    local scan = ModCopies.scan(fs, {
-      root = root,
-      decode = decodeManifest,
-      allowReal = confine and ModCopies.confinedTo(confine) or nil,
-    })
-    -- Merge winners - ModCopies.pick will handle duplicates across roots
-    for id, copy in pairs(scan.winners) do
-      mergedScan.winners[id] = copy
-    end
-    for _, row in ipairs(scan.ignored) do
-      mergedScan.ignored[#mergedScan.ignored + 1] = row
-    end
-    for _, z in ipairs(scan.zips) do
-      mergedScan.zips[#mergedScan.zips + 1] = z
-    end
-    for _, note in ipairs(scan.notes) do
-      mergedScan.notes[#mergedScan.notes + 1] = note
-    end
-    for _, bad in ipairs(scan.invalid) do
-      mergedScan.invalid[#mergedScan.invalid + 1] = bad
-    end
-  end
-  -- Re-run pick to resolve duplicates across the merged set
-  local allCopies = {}
-  for id, copy in pairs(mergedScan.winners) do
-    allCopies[#allCopies + 1] = copy
-  end
-  local finalWinners, finalIgnored = ModCopies.pick(allCopies)
-  mergedScan.winners = finalWinners
-  mergedScan.ignored = finalIgnored
-
-  local scan = mergedScan
+  local scan = require("src.mods.ModCopies").scan(fs, {
+    decode = decodeManifest,
+    allowReal = confine and require("src.mods.ModCopies").confinedTo(confine) or nil,
+  })
   LauncherMods._lastScan = scan
   local ids = {}
   for id in pairs(scan.winners) do ids[#ids + 1] = id end
