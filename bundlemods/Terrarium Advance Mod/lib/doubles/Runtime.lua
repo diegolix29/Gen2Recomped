@@ -178,6 +178,23 @@ function D.tryBegin(screen,generation)
     screen.showEnemyTrainer=false;screen.showPlayerBack=false;screen.showPlayerTrainer=false;screen.introBalls=nil
     screen.startHuds=nil;screen.ballRows={player=false,enemy=false};screen.showEnemyHud=false;screen.showPlayerHud=false
   end
+  -- FireRed only: the cartridge intro (BattleIntroSlide1) opens the battle as a
+  -- black "window" that grows out of the middle of the screen. Gen3Battle.draw
+  -- paints those black bars every frame while frlgIntro.t < 60, and frlgIntro.t
+  -- is advanced ONLY by BattleState:updateFx -- which runs from the native
+  -- BattleState:update. While this takeover owns the screen (phase
+  -- 'cbe_doubles') D.update replaces that update, so the clock never ticks and
+  -- the bars stay at t=0: a solid black layer over the whole arena, with only
+  -- the doubles HUD drawn on top. Ruby/Sapphire/Emerald have no such mask,
+  -- which is why only FireRed was affected. The doubles presenter owns the
+  -- whole opening, so retire the native mask now. Only the mask clock is
+  -- touched (introSlide is deliberately left alone: it is what keeps the native
+  -- HUD/pics slid out of the way, exactly as on the other Gen 3 cartridges).
+  local frlg=screen.frlgIntro
+  if type(frlg)=='table' then
+    s.frlgIntroBackup={t=frlg.t,hold=frlg.hold,light=frlg.light}
+    frlg.t=math.max(60,tonumber(frlg.t) or 0);frlg.hold=0
+  end
   screen.__cbeDoublesActive=true;host.__cbeDoublesActive=true
   D.byState[screen]=s;D.byState[host]=s;D.active=s
   screen.phase='cbe_doubles'
@@ -229,6 +246,11 @@ function D.abort(s)
   end
   s.screen.phase='menu';s.screen.__cbeDoublesDecision=false
   if s.openingState then for key,row in pairs(s.openingState)do s.screen[key]=row.value end end
+  -- Put FireRed's intro mask clock back so the native intro replays correctly.
+  if s.frlgIntroBackup and type(s.screen.frlgIntro)=='table' then
+    local fi=s.screen.frlgIntro;local b=s.frlgIntroBackup
+    fi.t=b.t;fi.hold=b.hold;fi.light=b.light
+  end
   D.close(s);log('Encounter restored to its initial single-battle command state after test abort')
   return true
 end
