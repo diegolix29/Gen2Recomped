@@ -64,17 +64,30 @@ local FORBIDDEN = "<>*+#~=@^{}|`$"
 -- Game Boy screen is in scope the moment it is added, and a new Gen 3 or Gen 4
 -- one is out of it, because the name says which.
 local function gameBoyReachable(name)
-  return not (name:match("^Gen3") or name:match("^Gen4"))
+  -- Gen5* (Black/White) and Hgss* (HeartGold/SoulSilver) screens are DS-only too
+  return not (name:match("^Gen3") or name:match("^Gen4") or name:match("^Gen5")
+              or name:match("^Hgss"))
 end
 
 local function listDir(dir)
   local out = {}
   local p = io.popen('ls "' .. dir .. '" 2>/dev/null')
-  if not p then return out end
-  for line in p:lines() do
-    if line:match("%.lua$") then out[#out + 1] = line end
+  if p then
+    for line in p:lines() do
+      if line:match("%.lua$") then out[#out + 1] = line end
+    end
+    p:close()
   end
-  p:close()
+  -- io.popen runs cmd.exe on Windows, which has no `ls`: list with `dir /b`
+  if #out == 0 and package.config:sub(1, 1) == "\\" then
+    p = io.popen('dir /b "' .. dir:gsub("/", "\\") .. '" 2>nul')
+    if p then
+      for line in p:lines() do
+        if line:match("%.lua$") then out[#out + 1] = line end
+      end
+      p:close()
+    end
+  end
   return out
 end
 

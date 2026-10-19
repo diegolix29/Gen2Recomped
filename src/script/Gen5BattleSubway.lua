@@ -378,7 +378,10 @@ function M.battle(ctx, w)
   local BattleState = require("src.battle.BattleState")
   local multi = M.isMulti(w.mode)
   local double = multi or w.mode % 5 == M.DOUBLE
-  local key = register(game, "GEN5_SUBWAY", foe, double)
+  -- a Multi train's first foe is not itself a double trainer: built as one,
+  -- the battle sends out two of the player's own before the partner
+  -- (setAlly below) can take the right-hand place
+  local key = register(game, "GEN5_SUBWAY", foe, double and not multi)
   local keyB = multi and w.opponents[2] and register(game, "GEN5_SUBWAY_B", w.opponents[2], true) or nil
   local ally
   local partner = multi and w.partners[w.partnerType]
@@ -490,11 +493,13 @@ M.F = F
 
 -- general functions (0x00-0x2D): no work needed
 F[0x00] = function(ctx) -- the platform's line
-  local Gen4 = G4()
-  local mapId = ctx.save and ctx.save.player and ctx.save.player.map
-  local def = mapId and ctx.game.data.maps and ctx.game.data.maps[mapId]
+  -- the loaded zone (the overworld's map first: the save's own field names
+  -- it only once the game is saved)
+  local ow = ctx.overworld
+  local def = ow and ow.map and ow.map.def
+  local mapId = (ow and ow.map and ow.map.id) or (ctx.save and ctx.save.player and (ctx.save.player.map or ctx.save.player.mapId))
+  def = def or (mapId and ctx.game.data.maps and ctx.game.data.maps[mapId])
   local zone = tonumber(def and def.header) or tonumber(tostring(mapId or ""):match("%d+")) or 0
-  local _ = Gen4
   return M.ZONE_MODE[zone] or 0
 end
 F[0x01] = function() return nil end                      -- a reset (Save and quit)

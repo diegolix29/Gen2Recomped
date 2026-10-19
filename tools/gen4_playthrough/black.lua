@@ -44,7 +44,10 @@ local function trainUpWith(move, level, species)
     party[1] = mon
   end
 end
-local trainUp = trainUpWith(58, 60)   -- Ice Beam: nothing is immune (N's Purrloin is to Psychic)
+-- at 100, not 60: since BW move effects, abilities and held items work
+-- (foes' status moves, Heat Crash, Sturdy...), a lone 60 lost about half its
+-- runs at Twist Mountain (Cheren's Pignite) and Dragonspiral
+local trainUp = trainUpWith(58, 100)   -- Ice Beam: nothing is immune (N's Purrloin is to Psychic)
 -- ...and, on the long dungeons, the party healed between maps (a Pokemon
 -- Center visit, said as a cheat: a run of trainers wore the lead down)
 -- (HP and status only: the cheat's first move keeps its 64 PP)

@@ -68,8 +68,20 @@ if h then
   check(h.gen4_main_menu_art and h.gen4_main_menu_art.frame_focused and h.gen4_main_menu_art.scroll_down,
     'HGSS main menu frames and arrows extracted from native archives')
   local mons = h.pokemon or {}
-  check(h.gen4_move_anims and h.gen4_move_anims.count == 501 and h.gen4_move_anims.skipped == 5,
-    '496 HGSS animation programs decode; five using HGSS-only opcodes remain unsupported')
+  -- ALL 501 NOW: Gen4MoveAnim decodes HGSS's three extra opcodes (85
+  -- brightnessflash, 86 switchbgoffset, 87 jumpifanimflag), so the five
+  -- programs that use them -- 192 Zap Cannon, 224 Megahorn, 226 Baton Pass,
+  -- 231 Iron Tail, 276 Superpower -- are no longer skipped
+  local progs = h.gen4_move_anims and h.gen4_move_anims.programs or {}
+  local hgssOps = 0
+  for _, id in ipairs({ 192, 224, 226, 231, 276 }) do
+    for _, ins in ipairs((progs[id] and progs[id].code) or {}) do
+      if ins[1] and ins[1] >= 85 then hgssOps = hgssOps + 1 break end
+    end
+  end
+  check(h.gen4_move_anims and h.gen4_move_anims.count == 501 and h.gen4_move_anims.skipped == 0
+        and hgssOps == 5,
+    'all 501 HGSS animation programs decode, the five using HGSS-only opcodes included')
   check(h.gen4_particles and h.gen4_particles.textures > 0, 'HGSS move particles extracted')
   check(h.constants.martCommon and #h.constants.martCommon == 19, 'HGSS badge-tier mart stock extracted')
   check(h.gen4_trainer_sprites.backs[0] and h.gen4_trainer_sprites.backs[1], 'Ethan and Lyra back sprites extracted')

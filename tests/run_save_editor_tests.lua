@@ -69,7 +69,18 @@ do
   local path = SaveIO.defaultPath()
   check(type(path) == "string" and #path > 0, "defaultPath nonempty")
   check(path:match("save%.lua$"), "defaultPath ends with save.lua")
-  check(path:match("pokemon%-love2d"), "defaultPath uses game identity folder")
+  -- with LOVE up, its own save directory is the answer (the stub's here)
+  check(path == love.filesystem.getSaveDirectory() .. "/save.lua"
+        or path == love.filesystem.getSaveDirectory() .. "\\save.lua",
+        "defaultPath uses LOVE's save directory")
+  -- headless (no getSaveDirectory), the reconstruction names the game's
+  -- identity folder: conf.lua's desktop "Gen2Recomp" or POKEPORT_IDENTITY
+  local gsd = love.filesystem.getSaveDirectory
+  love.filesystem.getSaveDirectory = nil
+  local fallback = SaveIO.defaultPath()
+  love.filesystem.getSaveDirectory = gsd
+  local ident = (os.getenv("POKEPORT_IDENTITY") or "Gen2Recomp"):gsub("%p", "%%%0")
+  check(fallback:match(ident), "defaultPath uses game identity folder")
   local sys = ""
   if package.config:sub(1, 1) ~= "\\" then
     -- no uname on Windows; the macOS-only check below just skips there

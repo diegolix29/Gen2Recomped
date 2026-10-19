@@ -302,6 +302,8 @@ do
     if OPTIONAL and CLASSIC then
       local blocked = {}
       for _, n in ipairs(CLASSIC) do blocked[n] = true end
+      -- Data.lua's GEN3_ONLY is blocked on a Gen 4 cache as well
+      for _, n in ipairs(list("GEN3_ONLY") or {}) do blocked[n] = true end
       -- what this cache actually writes
       local written = {}
       for _, n in ipairs(OPTIONAL) do

@@ -533,13 +533,13 @@ function Gen4BattleBag:refusal(row)
       local ok, list = pcall(b.foesOf, b, b.player or (b.activeOn and b:activeOn(1)))
       foes = ok and #list or 0
     end
-    if foes > 1 then return self:text(T.twoPokemon, "It's no good! It's impossible to aim\nwhen there are two Pokémon!") end
+    if foes > 1 then return self:text(T.twoPokemon, Strings.source("It's no good! It's impossible to aim\nwhen there are two Pokémon!")) end
     local foe = b.enemy
     if foe and foe.invulnerable then
-      return self:text(T.hidden, "It's no good! It's impossible to aim\nat a Pokémon that's not in sight!")
+      return self:text(T.hidden, Strings.source("It's no good! It's impossible to aim\nat a Pokémon that's not in sight!"))
     end
     if foe and (tonumber(foe.substituteHP) or 0) > 0 then
-      return self:text(T.substitute, "It's no good! It's impossible to aim\nat a Pokémon that's not in sight!")
+      return self:text(T.substitute, Strings.source("It's no good! It's impossible to aim\nat a Pokémon that's not in sight!"))
     end
   end
   return nil

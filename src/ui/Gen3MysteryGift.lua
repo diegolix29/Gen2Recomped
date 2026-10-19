@@ -31,6 +31,7 @@
 -- time.  Nothing new is stored: the entitlement is derived from two numbers
 -- that were both already in the save.
 local Gen3MysteryGift = {}
+local Strings = require("src.core.Strings")
 
 -- What is on each island.  The names and the flags are the cartridge's; these
 -- one-liners are this port's, so the menu says what a choice is FOR rather
@@ -178,8 +179,8 @@ function Gen3MysteryGift.offer(game, carryOn)
             choice = function(yes)
               if not yes then return end
               Gen3MysteryGift.unlock(game, row)
-              textBox(game, ("Received the %s!\n%s is open."):format(
-                        row.item:gsub("_", " "), row.name), function()
+              textBox(game, Strings("Received the %s!\n%s is open.",
+                        (row.item:gsub("_", " ")), row.name), function()
                 -- more owed and more to take: leave the list up for another
                 if Gen3MysteryGift.owed(game) >= 1
                    and #Gen3MysteryGift.lockedRows(game) > 0 then
@@ -199,7 +200,7 @@ function Gen3MysteryGift.offer(game, carryOn)
     }))
   end
 
-  textBox(game, "A MYSTERY GIFT event is available!\nChoose one to unlock.",
+  textBox(game, Strings("A MYSTERY GIFT event is available!\nChoose one to unlock."),
           pick)
 end
 

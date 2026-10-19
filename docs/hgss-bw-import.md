@@ -2078,3 +2078,513 @@ and the list colours are drawn with plain fallbacks.
   - `h2`: old and new heights compared;
   - `walls`, `z006`: walking into walls;
   - `modbat`: the battles with the mod loaded.
+
+## Move animations: Black/White's effect VM, HGSS effect backgrounds (October 18, 2026)
+
+**Black/White now play their own move animations.** `src/battle/Gen5MoveAnimPlayer.lua`
+runs the cartridge's effect VM (overlay 94, `btlv_effvm.c`; research in
+`G:/Gen2Recomped/scratch_claude/bwanim/`), and it sits in the same battle slot as the
+Sinnoh player (`battle.gen4Anim`), so BattleState starts it, holds the queue for its
+measured length, and reads its battler channels without a second code path.
+
+- Import: `src/import/Gen5MoveAnimData.lua` (stage `extractMoveAnims`, run by
+  `RomExtractorGen5:run`) writes `gen5_move_anims` (the 560 move programs of `/a/0/6/6`
+  and the 98 shared effects of `/a/0/6/7`, decoded, jumps resolved; the BG3 pictures of
+  `/a/0/9/5`) and `gen5_particles` (the SPA files of `/a/0/0/6` the programs name --
+  Platinum's format, so `Gen4ParticleSystem` simulates them). BW markers gain
+  `gen5-moveanim-v1:`. An existing install can be topped up with
+  `CACHE_ROOT=G:/Gen2Recomped VERSION=black STAGE_ONLY=extractMoveAnims ROM=... lovec tools/gen4_hgss_import_harness`.
+- Implemented: camera moves / coordinate moves / shakes / save (drawn as a zoom of the
+  field, battlers and effects -- see the player's header for the mapping), particle
+  load and every emitter-create form (static, explicit xyz, screen-space, moving with
+  the six path types, orbiting), MCSS move / orbit offset / sine offset / scale /
+  rotate / alpha / mosaic / palette fade / vanish / animation stop, BG3 load + scroll,
+  scene palette fades and vanish, SE and cry events (through the existing `onSound`
+  seam), WAIT / WAIT_FOR / SET_YIELD, the jumps, CALL/RETURN/GOTO_EFFECT.
+- Not implemented (reported by `missing()`): trainer-slot ops 32/33 (only the battle
+  intro / outro effects 562, 563, 572, 574 and 624 use them, and the port runs its own
+  intro), MCSS ops 25/65, op 44. Op 45 (an OBJ from a resource set) is in no program.
+- Harness: `tools/gen5_move_anim_harness` (`MOVES=`, `SIDE=`, `ROM=` decodes in memory,
+  `FIGHT=1` drives a real battle through the menus, `DRY=1` runs every effect and lists
+  gaps and lengths -- all 1,314 runs finish under the 900-frame budget, in the doubles
+  layout too with `DOUBLE=1`). Also `DOUBLE=1` (`ATK` / `DEF` positions),
+  `TRAINER=n INTRO=1` (an intro sheet), `CATCH=caught:shakes:item`, `PMOVES=`.
+
+### Black/White doubles, the capture throw, Transform (October 18, 2026)
+
+- **Doubles** (`src/battle/Gen5BattleLayout.lua`): overlay 94 holds the MCSS homes for
+  every rule (0x0220A050 single, 0x0220A080 double, 0x0220A158 triple, 0x0220A1A0
+  rotation) and the HP gauges' screen points (0x0220AADC double, 0x0220AB0C triple,
+  0x0220AB2C rotation). A double's four battlers (BattleState position p -> MCSS p + 2)
+  stand at their homes projected through the cartridge's camera and carried onto the
+  port's by-eye field with the move-animation map (`Gen5MoveAnimPlayer.anchorsFor` /
+  `toScreen`), sized by its perspective. The four boxes use the doubles cells
+  (`healthbox_*_doubles`, no number strip) at the gauge table's points, offset per side
+  by the singles box's measured difference. Move effects in a double run on the
+  attacker's and defender's own slots (`Player:setLayout`, set by BattleState before
+  each move): homes, the doubles camera views 2..5 and wide view 14, and the battler
+  channels follow `battler.position`, so the partner is left alone. A double's right
+  flanks stay hidden through the trainer intro (`Gen4Battle.battlerHidden`, all DS
+  games), and the send-out ball flies to the left flank. Triples and rotation are not
+  fielded by the engine; their tables are kept for when they are.
+- **The capture** (`src/battle/Gen5BallAnim.lua`): BW throw from shared effect 570, run
+  on a private player in the `gen4Ball` slot: the throw (EMITTER_MOVE from (0, -2, 10),
+  35 frames, arc 5), the camera easing in, the open burst, the absorb, the OBJ ball
+  (op 69) dropping 40 px and bouncing, the rocks (OBJ animations 1-3, 65 / 70 / 75
+  frames apart), then the click and stars or the break-out. The battle sets vars 12
+  (shakes), 13 (caught) and 14 (critical; never set, since the port has no critical
+  capture). OBJ ops 46-50 / 69 and GAUGE_VANISH (op 51: the boxes hide for the throw)
+  are implemented. The OBJ art is /a/0/9/5 129 (cells), 130 (animations) and
+  129 + 2b / 130 + 2b (ball b, 1..17; the Dream Ball's 25 draws as 17), imported as
+  `gen5_move_anims.ballObj`.
+- **Ball types**: PARTICLE_LOAD remaps 46-49 by the ball, + (b - 1) * 4 (0x021FE38C), so
+  each of the 25 balls has its own four SPA files (46..145), and 3 / 29 by the same value
+  when no battler is named. All are imported now (marker `gen5-moveanim-v2`). The
+  send-out ball (still `Gen4BallAnim`'s path and timing) draws its own ball's frames
+  (`Gen5BallArt`).
+- **Transform**: effect 144 starts with END, so its mosaic / MCSS_COPY body is never
+  reached on the cartridge. `src/battle/Gen5Transform.lua` swaps the user's live
+  animation, still and feet species with the move's effect; op 66 is wired to it too.
+  BW keeps move effects as numbers (Gen 4's numbering); Transform (57) is now the
+  BW_TRANSFORM record of the whole table (see "Black/White move effects" below).
+- **CAMERA_ORBIT** (op 2): the camera's pitch and yaw about its target are stepped and
+  its distance kept (0x021F7108).
+
+**HGSS move backgrounds.** HGSS's `sBgNarcIndices` is its own (59 rows, overlay 7);
+Platinum's table through the renumbering view composed 22 of 84 pictures and its
+16-colour slot move blanked the rest, so Whirlpool, Psychic, Nightmare ... played on
+black. `Gen4HgssBattle.EFFECT_BG_MEMBERS` is the cartridge's table, read from /a/0/0/7
+directly; HGSS markers gain `hgss-effect-bg-v1:`.
+
+**Gen 4 extras now drawn:** ScrollSwitchedBg's per-scanline offsets (`bgLayerState().rows`)
+and FakeOutCurtain's window 0 (`player.effectWindow`). Still drawn as approximations:
+Extrasensory's per-row wave (whole-battler shift), Superpower's OBJ window, Dig's
+partial-draw clip.
+
+## Black/White move effects (October 18, 2026)
+
+Every BW status move answered "But, it failed!" and every damaging move ran as a bare
+hit: a BW move record keeps its effect as the cartridge's number and `effectRecord`
+looked numbers up among names. `src/battle/Gen5MoveEffects.lua` fixes it at runtime
+(no re-import, no marker bump):
+
+- **Numbering.** Joined to Platinum by move name, 465 of the 467 shared moves keep
+  Platinum's effect number; only Growth (13 -> 316) and Tail Glow (53 -> 321) moved.
+  BW = Gen 4's 0..276 plus its own 277..337.
+- **Data-driven records.** `attach` (BattleState's constructor) renames each move's
+  effect to a `BW_*` record (number kept as `move.bwEffect`) and stamps multiHit
+  (2-5 = 35/35/15/15), highCrit, protect/contact/sound/snatch/reflectable/bypass-sub
+  flags, Platinum range bits. Stat moves read the record's own stat list (Growl, Coil,
+  Quiver Dance, Shell Smash's kin...), status moves its condition byte, damaging moves
+  their condition/stat/flinch chance, recoil/drain percent, heal percent, crit stage.
+  ~90 effects have their own code (Protect family, Counter/Mirror Coat/Metal Burst,
+  binding, hazards, screens, switching moves, Psyshock, Foul Play, Heavy Slam...).
+- **Text** is the cartridge's: `src/battle/Gen5BattleText.lua` (system banks 13 "used",
+  14 btl_set with player / wild / foe variants and the 7-way two-Pokemon lines, 15
+  btl_std). The engine's own English is translated at `BattleState:startMessage`.
+- **Also turned on for BW:** species ability names (from `abilityIds`, Gen 4 names +
+  Gen 5's 124..164) so Abilities.lua's hooks apply; the `gen5_bw` ruleset (Platinum's
+  numbers, sleep 1..3) replaces the save's default `gen1_faithful`; Tailwind through
+  `TurnOrder.effectiveSpeed`; entry hazards / Healing Wish in `abilitySwitchIn`;
+  Struggle is move 165.
+- **The turn-level rules** (`src/battle/Gen5MoveRules.lua`, installed over the
+  records at the end of Gen5MoveEffects; hooks in BattleState `resolveTurn` /
+  `executeAction` / the move menu / `menuLockedAction` / `resolveSwitch` /
+  `openParty` / `accuracyRoll` / `computeDamage`, `Targeting.resolve`,
+  `Damage.compute`): Rollout / Ice Ball (five turns, doubling, locked in through
+  the engine's rampage lock -- no menu, no PP), Uproar (three turns, locked,
+  #703 / #706 / #715 / #718), Pursuit (hits a switching Pokemon first at double
+  power, in a single's switch and in the turn order), Future Sight / Doom Desire
+  (damage worked out when it lands), Beat Up (one strike per able, unstatused
+  member at 5 + its base Attack / 10), Follow Me / Rage Powder (redirect the other
+  side's single-target moves), Helping Hand, Ally Switch (#1137), Nature Power by
+  the battle's terrain (`battle.gen5Terrain`, set by the field's wild battles:
+  Tri Attack indoors, Earthquake on plain ground / sand, Seed Bomb in grass, Hydro
+  Pump on water, Mud Bomb in a puddle, Rock Slide in a cave, Blizzard on snow, Ice
+  Beam on ice -- Bulbapedia's Gen V table; the cartridge's own table was not found
+  in the overlays), Imprison (#589 at the menu and on the foe's action), Embargo
+  (the bag refuses, bank 18 #105), Gravity (x5/3 accuracy, Flying / Levitate /
+  Magnet Rise grounded with #1083, Fly / Bounce / Jump Kick... refused with
+  #1086), Sucker Punch (reads the target's chosen move), Wonder Room (Defense /
+  Sp. Def swapped), Magic Room (held items, Fling, Natural Gift), Telekinesis
+  (every move hits), Sky Drop (the target lifted and held, dropped next turn,
+  fails on 200 kg), Me First (the target's chosen move first at x1.5), the thaw
+  flag (#303 "X's Move melted the ice!"), Mimic (Gen V: the last move at its full
+  PP until the user leaves). BW's `target` byte is an enum, not Hoenn's bits:
+  `Targeting.kindOf` maps it (Surf had hit ONE random foe in a BW double).
+- **Check:** `tools/gen5_move_effects_check` (LOVE app, `POKEPORT_DATA_DIR=<black
+  cache>`): every move both ways in a wild 1v1, ability/item hooks, the turn-level
+  rules (doubles included), bank text, coverage summary -- 316 of 316 effect ids
+  full (559 moves), 1180/1180.
+
+## Black/White: Nimbasa's facilities -- Battle Subway, Big Stadium / Small Court, the Musical (October 18, 2026)
+
+All three run from the cartridge's own scripts; the commands they call are lowered
+in `Gen5ScriptLink.ALIASES` and handled by one module each. Data is read from the
+ROM at import into `constants` (`RomExtractorGen5:extractConstants`), BW markers
+gain `gen5-facilities-v1:`. `tools/gen5_facility_harness` relinks the script pool
+and decodes the tables in memory, so an older install can be tested unchanged.
+
+**Battle Subway** (`src/import/Gen5Subway.lua` -> `constants.gen5Subway`,
+`src/script/Gen5BattleSubway.lua`, committed earlier): 0x15A's switch, 0x157-0x159,
+trainers / sets / regulations / ranges / BP from `/a/2/1/5`, `/a/2/1/4`, `/a/1/0/5`,
+ov21, ov10. This pass: the platform's line (0x15A fn 0) is read from the loaded zone
+-- every platform had answered Single; the Multi train's first foe is no longer built
+as a double trainer, so the partner (Hilda / Hilbert, trainers 300-305) takes the
+right-hand place instead of the player's second Pokemon; the importer now writes the
+record (it had only been decoded by the harness). Checked: Single (7-car streak,
+3 BP), Double, Multi (partner chosen, 14 trainers, two foes per car).
+
+**Big Stadium / Small Court** (`src/import/Gen5Facilities.lua` -> `constants.gen5Stadium`,
+`src/script/Gen5Stadium.lua`): `/a/2/0/9` member 0 is 107 rows { slot, tier, sprite,
+trainer } (ov10 0x0215F2F0). The field's init (zones 81-83, 86-87) dresses its
+objects: 0x1F6 <slot, object, tier> = trainer 3000 + t, 0x1F3 a double pair
+(3000 + t / 5000 + t), 0x1F7 three daily visitors (rows 55-106, sprite too), 0x25C
+draws the six visitors, 0x1F8 clears the rows' trainer flags (the lobby's once-a-day
+reset behind flag 0xAB9). The template is rewritten and the live object rebuilt, so
+talk, sight and the beaten check follow. The lobby's clock: 0x0CF weekday (football /
+baseball / soccer by day), 0x0D1 hour / minute (flag 286, a game in progress); 0x0BF
+is the walk onto the field (0x0BE's warp). `BW_CLOCK="wday:hour:min"` fakes the clock.
+BW's daily flags have no general reset here: flag 0xAB9 is cleared on the first
+weekday query of a new day.
+
+**Pokemon Musical** (`src/import/Gen5MusicalData.lua` -> `constants.gen5Musical`,
+`src/script/Gen5Musical.lua`, `src/ui/Gen5MusicalDressUp.lua`, `Gen5MusicalStage.lua`,
+`Gen5MusicalArt.lua`). Read from the ROM: the 100 props (`/a/0/4/5` member 101: size,
+offsets, position mask, kind, type, appeal; textures members 0-99; names system banks
+79 / 282; words bank 75), the four shows (`/a/1/1/1-4` member 0: type weights, bonus
+pool, six NPC performers with species, unlock points and props), the species that can
+take part (`/a/0/4/8`, byte 2 -- 40 species cannot), the fans' thresholds and gift
+lists (ov10 0x0216FF14 / 0x0216FF28), the new-game props (arm9 0x0200A544). The rules
+are overlay 10's: the program's weights plus the bonus dealt in 5s (0x02157028), NPCs
+unlocked by points earned, each type's weight shared among all props of that type on
+stage (0x02157174), a held prop's appeal adding its value again (ov132 0x021F99F4),
+fans by threshold with a score-% chance of a gift (0x02156530), the record (0x02156420:
+played, won, points, type counts). Commands: 0x167 (show / photo), 0x168 (Dress Up
+alone), 0x169 (all 0x28 queries), 0x16A-0x16E, 0x05D (now 4 bytes wide -- the theater
+receptionist decoded askew before). Fan flags 670-674 / 752-756 and flag 326 are set
+as Z078's curtain-call script would.
+- Not the cartridge's yet: the per-species prop points (props sit on the front
+  sprite's box), the touch drag and Dress Up's time limit, the stage's choreography
+  (member 2 of each show), its 3D stage, lights and audience, the NPCs' appeal timing,
+  the Z078 walk-out scene itself, wireless / downloaded shows, the save's block 0x2A
+  in `Gen5Save` export.
+- Harness switches: `BW_MUSICAL_AUTOPICK`, `BW_MUSICAL_AUTODRESS="ids"`,
+  `MUSICAL_POINTS`, `MUSICAL_FANS="i:state:prop"`, `BW_MUSICAL_TRACE`; `BW_SAY_NO="text"`
+  answers NO to the yes / no after that text (the Multi train's "with a friend?").
+
+## Black/White: the title camera, stepped animations, the Pokédex row (2026-10-18)
+
+- **Title camera** (`/a/1/6/0` 233 Black, 241 White): each record is a rotation in degrees and a position, not a look-at point and an eye. ARM9 0x0201183C reads the floats; 0x02011B8C builds RotX·RotY·RotZ (0x020520FC) and sets eye = position, target = position + R(0,0,−1), up = R(0,1,0). Overlay 88's projection (0x021B9C2C) uses sine-table entry 341, so the vertical FOV is 59.94°, with near 0.1 and far 2048. `Gen5Title.cameraAt` follows this at 60 Hz, one record per frame (0x021B9DD0 advances the camera and the three objects by FX32_ONE per frame). It blends fractional frames unless the two records are a cut.
+- **Joint animation info word** (NNS_G3D_JNTANM_TINFO): bits 30–31 STEP, bit 29 FX16, bits 16–28 LAST_INTERP. `Gen4Anim.stepped` reads every-2nd and every-4th-frame channels and blends between samples. The title dragon's root height had been read as s16, giving 1.93 and 0 on alternate frames (the jitter); it is now 17.93. All BCA animations still tile: Platinum 181/181, HGSS 285/285, `/a/1/6/0` 52/52.
+- **Title flow** (ov88 0x021B95CC / 0x021B965C): the logo comes in at frame 666 with a white fade. A, B or START jumps the scene to frame 5301 (the title pose). From there the camera loops 5301..5619 (White 5779), and A or START opens the menu. The object `title_b_02` / `_w_02` is now imported (`middle`). Marker: `gen5-title-v1`.
+- **Pokédex row**: system flag 0x962 (the lab's `setflag 0x962`; field ov10 0x0216F746 and title ov88 0x021BAEF4 both check it), in `Flags.hasPokedex` and `Gen4MainMenu:hasPokedex`.
+- Not done: the eye-blink BTP (228 / 236), the screen swap during the attract (POWCNT1 bit 15), and the 4680-frame return to the opening (here it goes to the pose instead).
+
+## Black/White field features: the "!", phenomena, fishing, bike, surf, Repel, hidden items, Dowsing (2026-10-18)
+
+All addresses are Pokémon Black (US). The field overlay is ov21 (base 0x2187F00); RE notes are in `scratch_claude/bw_field/re/`.
+
+**The field-effect archive `/a/0/7/5`** is read by `src/import/Gen5FieldEffects.lua`. It has 151 members:
+- 0–46: grass rustle, tall grass, footprints and ripples (BTX0).
+- 47: shadow. 48: running dust. 49: `sea_ride`. 50–53: the bubbles.
+- 60–71: grass by season. 72–74: ripples. 75: bird shadow. 76: soil smoke. 84: fishing lure.
+- 96–150: animations.
+
+It writes three things:
+- `gen4_emotes`: "!", "?", the note and "..." (members 50–53), as raw RGBA in Gen4Emotes' record shape.
+- `gen5_field_effects`: the billboard pictures, the BTP tables, and the BTA/BCA per-frame tracks.
+- `gen4_models.sets.fldeff`: the `sea_ride` surf mount.
+
+These are wired through `RomExtractorGen5:extractField`. `Data.lua` lists `gen5_field_effects`.
+
+**Import marker: `gen5-field-fx-v1`.**
+
+**The "!"** (ov21 0x21BB4BC/0x21BB808; table 0x21D9A6C = {50, 51, 52, 53}):
+- The bounce is Platinum's: 6, 10, 12, 12, 10, 6, 0, then 30 frames held.
+- The anchor is the owner + (0, 22 + bounce, 0) turned by the camera, so it is straight up the screen. This is handled in `Gen4EmoteDraw`'s `bw` family (`D.BW_LIFT`).
+- It runs at the field's 30 fps (`Gen4Emotes.ticksFor` = 2 on BW).
+- Sound: SE 0x678 `SEQ_SE_FLD_07`.
+
+**Phenomena** are handled by `src/world/Gen5Phenomena.lua`, from 0x21AA80C, 0x21AA944, 0x21AABF4 and 0x21AB018/070.
+- Spawn rate comes from the encounter table's byte 7 (`Gen5Encounters` now keeps it as `phenomenon`). Types 0 and 1 roll every 20 steps at 10%. Type 2 rolls every 5 steps at 15%.
+- The spawn window is half of an 11×11 square, picked at random; type 2 uses the whole square. It is clamped to the player's 32×32 block.
+- Kinds come from the behaviour table. A bridge tile always qualifies; any other tile needs the encounter bit.
+- A spot is never placed on a person, and only one spot exists at a time.
+- Stepping on a spot always gives a battle from the phenomenon list, or from the rippling-surf list on water. Exceptions:
+  - The dust cloud gives an item 60% of the time: 85% a Gem, 10% a stone, 5% an Everstone.
+  - The bird shadow gives an item 80% of the time: a Wing.
+  - A Repel cancels the battle if the Pokémon is below the lead's level.
+- Pictures come from resources 0x21DE094:
+  - Grass: 60 + season + 4·kind, swaying by BTA 134+. Tall grass uses 68+.
+  - Dust: 76, turned by BTA 147 and scaled by BCA 119.
+  - Ripples: 72/74, two rings scaled by BCA 115/117.
+  - Shadow: 75.
+- The sound plays each time the animation loops, with volume {127, 90, 60, 40} by distance.
+- The flat-camera placement is `Gen4EmoteDraw.groundSpot`.
+
+**Fishing** (task 0x21C5DF4) runs on `Gen4FishingTask` with BW values:
+- `fieldUse` 18 is the Super Rod (`Gen4Fishing.rodFor`).
+- The wait is rand(90)+30 frames. The hook window is 30 frames.
+- The lines come from story bank 263: 3 landed, 4 nibble, 5 too quickly, 6 too late.
+- Cast SE is `SEQ_SE_FLD_19`.
+- The lure is `src/world/Gen5FishingLure.lua`. It sits on the tile ahead, or one tile further over behaviour 0x41/0x44.
+- A lure on a ripple spot fishes the rippling list and always bites. A missed fish there clears the spot.
+- The rod pose is `/a/0/4/9` members 156/157: 64×64 frames, four per facing, with right mirrored (`Gen4FishingTask.BW_POSE`, `SpriteRenderer:drawFixedFrame` flip).
+
+**Player sheets** (`src/world/Gen5PlayerForms.lua`; the importer now writes these too):
+- Sprite-table rows 2/5 are the BICYCLE (sheets 7/10). The importer had been using rows 3/6, which are the seated SURF rider (sheets 8/11, four frames, up/down/left/right).
+- `sea_ride` (member 49) is drawn under the surf rider by `Gen4SurfMount`. Its BW renderer is not decoded, so it uses Platinum's bob and lift.
+
+**Zone flags**: zone header +0x1E is kept as `gen5Flags`.
+- Bit 0x0400 (ARM9 0x2013C20) allows the bike. It is read by the Bicycle check at ov10 0x2164508 and by the forced dismount at ov21 0x2188418.
+- Bit 0x4000 (0x2013C30) lets `SEQ_BGM_BICYCLE` (1012) or `SEQ_BGM_NAMINORI` (1013) replace the zone's BGM.
+- `OverworldState:bikeAllowed` has a BW arm.
+- `Gen5ItemUse.markOutdoorSongs` fills `audio.outdoorSongs` from these flags; Gen5Audio had written it empty.
+- Mount SE: `SEQ_SE_BICYCLE`.
+
+**Bag USE**: `src/inventory/Gen5ItemUse.lua` dispatches on BW's `fieldUse` ahead of Platinum's dispatch:
+- 4: Bicycle.
+- 18: rod.
+- 19: the three Repels, with system bank 3 lines 63/64.
+- 25: Dowsing MCHN.
+
+**Repel wearing off**: script 10130 prints story bank 263 #0 "Repel's effect wore off..." and offers nothing more (the "use another?" prompt is a Black 2 / White 2 feature).
+
+**Hidden items**:
+- They are kind-2 background events with scripts 8000–8799. Their flag is 900 + (script − 8000), from the table at ov10 0x2171534.
+- `Map:signAtCell` hides one once its flag is set.
+- The shared script sets the flag through var 0x8002. `Gen4ScriptVM`'s BW `setflag`, `clearflag` and `checkflag` now resolve an operand ≥ 0x4000 as a var. All BW uses are 0x8002–0x8024. Before this, every hidden item could be picked up again.
+
+**Dowsing MCHN** (`src/world/Gen5Dowsing.lua`, overlay 33): it picks the nearest unpicked hidden item in an x −15..+16, y −11..+12 window by squared distance, leaving out zones 0x121–0x13C. The reading is drawn over the field. The touch screen's own direction grid (arc 0xC3 member 0xD) is not drawn.
+
+**Harness options**:
+- `BW_FIELD_ROM=<nds>` reads all of the above into an older install (`tools/gen4_hgss_overworld_harness/bw_field_rom.lua`; it writes the two `sea_ride` PNGs into the install).
+- `BW_SPOT="x,y[,kind]"` places a spot. `BW_SPOT_TRACE=1` logs rolls.
+- `EMOTE_AT=tick` shows a "!" over the player.
+
+**Verified**: `gen5_import_check` passes 103/103, including new checks on emotes, pictures and tracks, the surf mount and the zone flags. Pictures are in `scratch_claude/bw_field/shots/`:
+- `emo_strip` (the "!").
+- `ow_spg2_*` (shaking grass), `ow_spw_00030` (ripple), `ow_spd_00020` (dust), `ow_spe_00400` (Audino from shaking grass).
+- `fish2` / `fishs` (rod pose, lure, "!", "Landed a Pokémon!").
+- `surf2` (sea_ride), `bk` (bicycle), `hid` (hidden item), `ow_dow_00030` (Dowsing), `ow_rep2_00070` (Repel).
+
+**Not done**:
+- Seasons on the terrain. Area sets come four to a place (4k..4k+3), but which index is which season is not established, and only the referenced sets are extracted. The season already drives the encounter tables, the phenomenon grass and the music.
+- The BW surf-mount offsets.
+- The Dowsing touch-screen art.
+- The waterfall effects (55–59).
+- Footprints.
+
+## Black/White scripted NPC movement (2026-10-18)
+
+Reported from play: "NPCs dont move properly in events in black and white".
+
+**The action table, from the cartridge.** `applymovement` (0x64) lists had been played through Platinum's table (Gen4Movement). Overlay 21 (field, 0x02187F00) holds BW's own: pointers at 0x021D5F58, one list of thumb functions per action, ending at 0x02197F5D. Reading each action's init (`src/import/Gen5Movement.lua` has the map):
+- 0x00-0x4B agree with Platinum: face, walks in 32/16/8/4/2 frames, on-the-spot in the same five, jumps (on the spot 16/8 frames, one cell in 8, two in 16), waits 1/2/4/8/15/16/32, hide/show, lock/unlock facing, "!".
+- After that they differ: 0x4C/0x50/0x60/0xA3/0xA7 walks on a speed table (6/3/7/6/12 frames), 0x54 (1 frame), 0x58 (run, 4 frames, not Platinum's 2), 0x9B (16), side jumps 0x5C-0x5F (0x5E/5F are three cells), 0x75-0x78 three-cell jumps; emotes 0x67/0x99 "!", 0x9F "?", 0xA0 note, 0xA1 "..."; 0x64 and 0xB5-0xBB play the character's model animation; 0x66/0x68/0xA2 hold an arm pose 40/40/12 frames.
+
+**The executor** (`src/script/Gen5MoveExec.lua`, entered from `Commands.g4_move` on a `def.gen5` map):
+- Every step takes the action's own frames x 2 ticks, NPC and player alike. NPCs never read `stepFramesCur`, so every BW rush walked at one pace (now `NPC.scriptStepLen`). The player's free step is 8 ticks against an NPC's 16, so scripted walks used to send the player ahead of the people walking with them.
+- Locked facing (0x47/0x48, 288 uses) is kept: `47 0C 48` is a step back still facing forward. This fixes the Accumula grunts' formation round Ghetsis.
+- Jumps arc (NPC:pose uses Gen4Jump, like the player). Marking time walks on the spot (NPCs). Waits are field frames.
+- An instant action (turn, hide, show, lock) lasts one field frame, so the Striaton triplets' and Castelia dancers' `02 00 03 01` spins show.
+- 0x9F/0xA0/0xA1 carry their bubble's name (`ow.emote.bubble = "question"` ...); the renderer uses it when `gen4_emotes` has that record.
+
+**The zone line is not a wall.** A BW walker may be scripted past its zone's box (`updateScriptMoves`), and a scripted walk that leaves the player in another zone's chunk hands over once the scene ends (`gen5SeamPending`). Nuvema's "step onto Route 1 together" now walks Cheren and Bianca beside the player, and they arrive for Juniper's demonstration.
+
+**Runner:** `activecoord` also ends when a script starts with the player on the trigger. Accumula's counter trigger (Z398 (7,13)) moves the player off without touching its var, and the runner had walked back onto it in a loop.
+
+Not played: 0x43/0x44 (warp up/down, unused in Black), 0x69-0x98's walk-with-second-direction actions (unused), 0x9A and 0xAB-0xB4/0xBC (a handful of one-off animations). The model animations' real lengths (16 frames stands in).
+
+## Map prop animations on the field clock (2026-10-18)
+
+The prop animation chain (`Gen4HgssPropAnim`: `/a/1/0/7` / `/a/1/0/8` lists
+-> `/a/1/0/6` animations, ov01_021E8F3C's attach rule, time-of-day states) and
+its joint player (`src/render/Gen4PropClock.lua`) were in place; New Bark's
+`wk_sp1` turns its rotor 40 degrees a frame and swings its head on node 1.
+What changed:
+
+- **The rate.** `MapPropAnimation_AdvanceFrame` (run from ov01_02204350 in
+  the field update) steps every attached animation by FX32_ONE per FIELD
+  frame, and the field is 30 Hz. `Gen4PropClock.fieldFrame(clock)` halves the
+  engine clock for the joint poses and for `Gen4Ground:propMaterials` (BTA0 /
+  BTP0 / BMA0), on both games, as Gen4TerrainAnim already did for HGSS's
+  water. The door one-shots (`Gen4PropOneShot.advance`) step at 30 a second
+  too, so an 8-frame door takes 0.27 s.
+- **Platinum's looping joints.** Its cache has no `loop` stamp, so
+  `Gen4PropClock.PLATINUM_LOOPS` names the BCA0 members claimed only by
+  flags-0 `bm_anime_list` records: 25 (Valley Windworks' windmills), 26, 49,
+  65, 66, 67, 69, 70, 73, 76, 80, 81, 93, 96.
+  `tools/gen4_prop_clock_check.lua <Platinum .nds> <HeartGold .nds>`
+  re-derives that set from the cartridge.
+- Harness: `HOUR=n` makes the wall clock read hour n, for the time-of-day props
+  (Olivine's lighthouse lamp, Violet's lanterns).
+
+Checked in the harness: New Bark's windmills, Ecruteak's rotating Mart sign
+(`en_fs`), Goldenrod's fountains, Olivine's flags, the lighthouse lamp at
+12/18/22 h, Violet's lanterns by day and night, and Valley Windworks.
+Not played: the `held` records (flags 2: gym gimmicks, Platinum's Honey Tree),
+which a script attaches. Platinum's script-owned texture members outside the
+door set (escalators 15/16, `ev_o01` 35/36) still loop on the clock.
+
+
+## Platinum / HGSS field features: an audit against the decomps (2026-10-18)
+
+The Gen 4 counterpart of the Black/White field pass above. Each feature was read against pokeheartgold (`/tmp/phg`) and pokeplatinum. The check is `python tools/run_lua_check.py tools/gen4_field_check.lua` (50 checks; 110 after the second pass below).
+
+**Fixed:**
+- **Scripted NPC speed.** `applymovement`'s WALK_FAST / WALK_FASTER / WALK_SLOW reached `stepFramesCur`, which only Player reads. NPCs now get `scriptStepLen` per step, the field the BW executor introduced (`src/script/Gen4MoveExec.lua`, called from `Commands.g4_move`).
+- **Movement waits in field frames.** Delay1..Delay32 count 30 fps field frames. They had run in 60 Hz ticks, so every cutscene wait was half length. Each wait is now frames × 2 ticks.
+- **Fishing timing** (`Gen4FishingTask`). In both games the cast's last frame already runs the wait (`FishingTask_CastRod` returns TRUE), and the bite frame already spends the first frame of the hook window (HGSS `ov01_021FC88C`). A is now accepted on N−1 frames after the "!". BW is unchanged.
+- **Feebas** (Platinum). The level is rolled from 10 to 20, where it had been pinned at 10. It now uses the ordinary generator over five Feebas slots, so lead abilities apply.
+- **Rods** refuse with a partner (Platinum bag line 111; HGSS msg_0010 #118) and in the HGSS Rocket disguise (#119). See `src/inventory/Gen4FieldChecks.lua`.
+- **Headbutt / Rock Smash** (HGSS) go through `FieldSystem_GenerateRegularEncounter` (`src/script/Gen4FieldEncounters.lua`):
+  - Magnet Pull and Static work, Hustle sets the level, and Keen Eye / Intimidate apply.
+  - Rock Smash's rate also passes `ApplyAbilityEffectToEncounterRate`.
+  - Repel no longer applies: `isRepel` is set only by the step check.
+- **HGSS Dowsing MCHN** (`src/world/HgssDowsing.lua`). Using it had done nothing: the bag answered `hgss_dowsing` and nothing caught it. It is now the touch-screen mode-4 search (`AllocAndFetchNearbyHiddenItems`):
+  - It looks at unflagged type-2 bg events within ±17 tiles.
+  - It picks the nearest by |dx|+|dz|.
+  - Its readings are tiers 8 / 12 / 17 → states 4 / 3 / 2 (`ov28_0225E1A4`).
+  - It is drawn over the field. The touch-screen art is not decoded.
+- **Bike and surf music** (`src/core/Gen4FieldBgm.lua`, from `Music`). `FieldBGM_GetEffective` gives the surf song on every map, except Platinum's Distortion World and HGSS while flag 0x99A is set. Mounting stores the bike song as the override, so it plays in caves too. It had been limited to Fly-allowed maps' songs.
+- **Escape Rope / Dig point** (`Gen4FieldMoves.recordsEscape`, `rememberDigWarp`). `Field_TrySetMapConnection` records on every warp from the main matrix (`layout` 0) to anywhere else. It stores the warp tile and facing, with +1 row when facing north. The arrival stands there; there is no door step-out.
+- **HGSS phone rematches** (`src/script/HgssPhoneRematch.lua`). `GetPhoneBookRematch` and `ScrCmd_462` had been aliased to constants at import (0 and a no-op). They now keep their names and run `PhoneBookTrainerGetRematchInfo` with the full `sTrainerRematchSets` ladder, including the unlock flags 0x97B + rung and Kenji's daytime rule. **This needs a re-import of HeartGold / SoulSilver.**
+- **Sweet Scent / Honey.**
+  - The player's own tile decides: off grass and off water nothing is found.
+  - The failure line is HGSS msg_0040 #57, "There appears to be nothing here...".
+  - The party menu no longer refuses the move up front (`FieldMove_CheckSweetScent` refuses only in the Union Room, Colosseum and Pal Park).
+- **HGSS party-menu checks.**
+  - Fly, Surf, Rock Climb, Teleport and Dig answer NOT_NOW (msg_0300 #181) in the Rocket disguise.
+  - Rock Smash is no longer refused while surfing (that check is Platinum's only).
+
+**Verified as already matching:**
+- Platinum's 3rd/4th gear on B, slopes and ramps; HGSS's gearless bike.
+- No-bike headers and Cycling Road's forced riding.
+- Repel steps and level rule. Neither game offers "use another?" when Repel wears off: the wear-off scripts only print.
+- Hidden-item flags: Platinum 0x2DA + n, HGSS 800 + n, set through the from-var opcodes, so nothing can be picked up twice.
+- Platinum's Pokétch Dowsing app.
+- Platinum's Vs. Seeker (`Gen4VsSeeker.lua` is complete and wired in).
+- Fishing:
+  - Rod odds, bite rates, and HGSS night-fishing and swarm slots.
+  - Hook windows 45 / 30 / 15, plus the HGSS follower bonus.
+- Honey trees and the Poké Radar's chain, shiny and ring rules.
+- Headbutt tree selection, Rock Smash items, badges per move, Flash / Defog by weather.
+
+**Still missing:**
+- Platinum's Cut and Rock Smash animations (its `StartDestroyObstacleAnimation` still only sets its result; HGSS's are drawn, see the second pass below).
+- The Poké Radar patch is drawn, not the ROM's model.
+- The "What's Fishing" TV record.
+
+### Second pass (2026-10-18): the field gaps the audit left
+
+The check is the same file, now 110 checks.
+
+- **Cycling Road roll** (`src/world/Gen4CyclingRoad.lua`), Platinum Route 206 and HGSS Route 17. Neither map marks a slope. The roll is pokeplatinum's `PlayerAvatar_IsOnCyclingRoadBridge` (HGSS `sub_0205E078`, the same test): no direction held, cycling, the avatar's bit 3 set by the road's map scripts (`forcebicycling` / `SetBikeStateLock`, kept in `save.forcedBike`), and the map object's bridge bit with a bridge tile underfoot. The bridge bit is set on BRIDGE_START (0x70) and cleared off the bridge (HGSS 0x71..0x73; Platinum's 13 bridge kinds). The roll is one bike step south, or a turn south against a wall. A and B do not brake. Coming up from the south gate never sets the bit, so the climb is free, as on the cartridge.
+- **HGSS waterfalls** (`src/world/Gen4WaterfallRide.lua`). Surfing south into TILE_BEHAVIOR_WATERFALL rides down with no prompt (`ov01_021F24F4` -> `ov01_021F28EC`). The HM ride up (`ScrCmd_Waterfall` -> `CallFieldTask_Waterfall`) is the same task with the cut-in first and SEQ_SE_DP_FW463. Both go two tiles in 96 field frames on the ROM's profile (`ov01_022069A8` / `ov01_022069BC`):
+  - up: 32 frames rising, then rising and moving
+  - down: 32 frames moving, then dropping and moving
+  The surf mount and the camera ride the same height.
+- **Ruins of Alph walls** (`src/world/HgssAlphChambers.lua`, from `alph_checks.c`). At (6,3) facing north:
+  - Flash in D24R0204 runs that map's script 3 (`Task_UseFlashInField`).
+  - The Escape Rope in D24R0202 and the Water Stone in D24R0206 run their map's script 3 (`ExitMenuAndJumpToAlphChamberReaction`). The rope is not used up.
+  The chambers' headers carry weather 0; they are not dark. The dark HGSS maps are the ten with weather 11: Rock Tunnel 1F/B1F, Whirl Islands 1F/B1F, Dark Cave (both sides), Cerulean Cave 1F/2F/B1F. Battle Arcade is 13.
+- **HGSS Flash light.** `ScrCmd_FlashEffect` sets weather 12 (WEATHER_FLASH_2). That is still darkness: the light object is scaled 4.0 instead of 1.0 (`ov01_021ED924`), growing over 24 frames (`ov01_021ED710`). It had opened the cave fully. `Gen4FlashDark.update(.., lit)`.
+- **Headbutt on the border forest** (`src/world/HgssHeadbuttTrees.lua`). `MapModel_IsHeadbuttTree` is `mapModelNo == 0xd0`, the matrix cell's LAND DATA id. Land 208 is the solid-forest filler chunk around the routes. 339 walkable cells face one (e.g. Route 43's west edge). Pressing A there runs std_field_headbutt (after the metatile scripts, even past this map's edge), and the party menu's HEADBUTT accepts it. No headbutt-table tree lies in land 208, so the encounter check finds nothing, as on the cartridge.
+- **Obstacle animations** (`src/import/Gen4HgssFieldFx.lua` -> `gen4_hgss_field_fx`, from the `hgss_screens` stage; `src/world/Gen4FieldFx.lua`). `ScrCmd_560` builds its 3D object from /a/1/3/4 (`ov02_0224D0C8`):
+  - Cut: model 3, animations 0..2, SEQ_SE_DP_FW015
+  - Rock Smash: model 8, animations 4..7, SEQ_SE_DP_FW088
+  - Headbutt: model 19, animations 17..18, SEQ_SE_GS_ZUTUKI
+  Each sits on the facing tile at the player's height. Its var is written when the animations end, which is when the script's `Wait 1` loop lets go. Headbutt also jolts the camera 8 units toward the facing, two frames on and two off, twice (`ov02_0224DB9C`). **Needs a re-import** (or the `fxrun` scratch app) for the art; without it the var is written at once, as before.
+- **Phone numbers** (`src/script/HgssPhoneNumbers.lua`). The shared trainer script scr_seq_0953 does the asking. What it needed:
+  - LoadPhoneDat: the `pmtel_book.dat` row by trainer id. It kept that row as the caller entry.
+  - GetPhoneContactMsgIds: the contact's bank (`sPhoneMessageGmm`, already read as `gen4_hgss_pokegear_art.contacts`) and line n + 1.
+  - GetPhoneContactRandomGiftBerry and GetPhoneContactGiftItem.
+  The import alias that made LoadPhoneDat `setvarfromvalue dest, 255` is dropped. An install imported with it is lowered by its `hgssName`, with the trainer taken from the var written just before (all six sites). So no re-import is needed. Joey on Route 30 asks, and YES registers contact 10.
+- **Platinum's Vs. Seeker spin** (`Gen4VsSeeker.spin`, hooked in `NPC:update`). This is MOVEMENT_TYPE_VS_SEEKER_SPIN (`sub_02064AFC`): a turn, a 24-frame hold, and the next way round, N E S W. It reverses each time it comes back to the initial facing.
+- **Platinum's honey tree shake** (`Gen4HoneyTrees.shakeTick`). A tree ready to give a Pokémon wears the honey_tree prop's animation `shakes - 1`, looping (`DoTreeShakingAnimation`). Its animations are bm_anime members 1..3 (`treeeff01`..`03`), claimed by build_model 26. They are played as a one-shot slot restarted at its end. The motion is the ROM's: one unit.
+
+Screenshots are in `scratch_claude/hgss_field2/shots/`: `ow_hgbike17_00150`, `ow_ptbike206_00100`, `ow_hgfalldown_*`, `ow_hgfallup_*`, `ow_hgalphflash_*`, `ow_hgalphrope_*`, `ow_hgdarkflash_00095` / `_00480`, `ow_hgforest_00070`, `ow_hgheadbutt_*`, `ow_hgrocksmash_*`, `ow_hgcut_*`, `ow_hgjoey_*`, `ow_ptspin_*`, `ow_pthoney_*`.
+
+Screenshots are in `scratch_claude/gen4_field/shots/`:
+- `ow_hgdow_00060` (Dowsing)
+- `ow_hgesc_00500` (Escape Rope out of Dark Cave)
+- `ow_hgbike_00100` (bike in Ice Path; MUSIC_TRACE cues SEQ_GS_BICYCLE)
+- `ow_plfish_00400` (Platinum Super Rod, "Landed a Pokémon!")
+
+### Platinum's field-move pictures (2026-10-18)
+
+Checked against pokeplatinum; `tools/gen4_field_check.lua` has the Platinum cases (137 checks).
+
+- **Cut / Rock Smash** (`src/import/Gen4PtFieldFx.lua` -> `gen4_pt_field_fx.parts`, drawn by `Gen4FieldFx`). `StartDestroyObstacleAnimation` (0x29E) -> `ov6_0224899C` builds its object from `/graphic/hiden_effect.narc`, whose members 0..14 are byte for byte HGSS's `/a/1/3/4` 0..14: kind 0 Cut (model 3, anims 0..2, SEQ_SE_DP_FW015), kinds 1 / 2 Rock Smash (model 8, anims 4..7, SEQ_SE_DP_FW088), on the facing tile at the player's height. The var is written when the animations end; the script's `WaitTime 7` / `10` then `RemoveObject` and its `WaitTime 1` loop do the rest.
+- **The HM cut-in** (`src/world/Gen4HMCutIn.lua`; art `gen4_pt_field_fx.cutIn` from `/data/field_cutin.narc`). `HMCutIn_StartTask`'s 14 states, one a field frame: window W0 (BG3 + OBJ inside), the gold band (members 0/1/2 on palette 12), the player holding up a ball (13/14/15 male, 16/17/18 female, anim 6), the Pokémon's front picture sliding in to x 128 with its cry, 26 wind streaks drawn only inside the window's rows. 59 field frames. It replaces the Gen 3 sweep for `PlayHMCutIn` (Cut, Rock Smash, Strength, Defog, Flash) and is now played first by Surf, Waterfall and Rock Climb (`NewMonRideCutIn`). HGSS keeps the old stand-in.
+- **Strength** (`src/world/Gen4StrengthPush.lua`). `ov5_021DFFBC`: SEQ_SE_DP_UG_023, the boulder WALK_SLOW, the player walking on the spot, and no dust. The puff and SFX_CUT were Gen 2's and are no longer drawn on Platinum.
+- **Rock Climb** (`src/world/Gen4RockClimbRide.lua`). `FieldTask_UseRockClimb`: the cut-in, the `rock_ride` mount (fldeff 82) on the facing tile, a JUMP_NEAR_FAST on, WALK_FAST up the wall, a JUMP_NEAR_FAST off, and the Rock Smash debris every fifth frame (`ov6_0224892C`) until the hop off.
+- **Fog / Defog** (`src/world/Gen4FogWeather.lua`). FOG (14) is `ov5_021DAEC0`: the 3D fog (slope 6, offset 30037, white) and the white BG2 layer (weather_sys 51/45/47, `gen4_pt_field_fx.fogLayer`) blended at 9/16 over the 3D. It had been drawn with Hoenn's FOG_HORIZONTAL. Defog's `ScrCmd_0C4` fades the layer 9 -> 0 over 30 frames and thins the density table over 127 frames, then the fog is switched off. `Gen4Model`'s shader takes the table's shift (`depthFogShift`).
+- Import marker: `platinum-field-fx-v1`.
+
+Screenshots: `scratch_claude/pt_fieldfx/shots/` (`ow_ptcut_*`, `ow_ptrock_*`, `ow_ptstr_*`, `ow_ptrc_*`, `ow_ptdefog_*`, `ow_ptsurf_*`).
+
+## Black/White maps: the bridge, Black City and White Forest, seasons, the surf mount (2026-10-18)
+
+All addresses are Pokémon Black (US). The check `tools/gen4_arrival_exit_check.lua` no longer excuses anything on a BW map.
+
+**Warp kinds: contact direction and transition type.**
+- A warp record's byte +4 (the `kind` the importer kept) is the CONTACT DIRECTION, compared with the facing by ov10 0x21626B8: 2 up, 1 down, 4 left, 3 right, 0 none. Byte +5 is the TRANSITION type (ov10 0x21626E8), which had not been kept.
+- After a completed step the field asks the warp under the player (ov21 0x218ACD0, from the step handler 0x2189C56, after the coord events). It takes the warp when the type is 0, 5 or 6 (0x218AEAC: `1 << type & 0x61`). Every other warp waits for a press that matches its contact direction (0x218AED4).
+- Step-onto warps are rare: 23 Entralink warps (type 6, zones 289..316) and the sand that drops the player a floor (type 5: Relic Castle Z081..Z087, one in Z121).
+- `Gen5Events` now keeps `transition`; `src/world/Gen5Warps.lua` names the rule; `OverworldController` takes such a warp when a step ends on it (never on the landing, through the existing arrival guard).
+
+**Marvelous Bridge.** Z303 is the Entralink's copy of the bridge (matrix 135, the same chunks as the real bridge Z263). Its deck was already open (behaviour 0x20, collision clear) from (10,31) to (165,36). Its only exits are the two type-6 warps on the deck: (14,33) west to the Route 16 copy (Z314) and (161,33) east to the Route 15 copy (Z313). With the step-onto rule, the bridge is walked end to end and left at either deck end. The real bridge Z263 keeps its gate doors (type 3, pressed up).
+
+**Black City and White Forest: RD chunks.**
+- Their eight chunks (/a/0/0/8 228..235) are the cartridge's only "RD" chunks. ov21's chunk table at 0x21D3E0C gives their loaders (0x2193629 / 0x2193791). An RD permission tile is 24 bytes: two constant records, then the 8-byte WB record. `Gen5Maps.chunk` had no RD branch, so every tile fell back to blocked.
+- The chunk is only the streets. The loader then lays a PIECE over each 8 x 8-tile block. A piece is /a/1/5/6[id] (arc 0x9C): 24-byte permission tiles copied over the block (0x21C93E4), and a building from the area's pack, placed at the piece's first block (0x21C9450).
+- The 8 x 8 block grid comes from a template, /a/1/5/4[30] (Black City) or [31] (White Forest). Each template entry gives the piece type and the step back to its first block. At +0x80, per type, there are 2 variants x 8 levels of piece ids (0x2194128).
+- The level is residents x 8 / 10 + rand, capped at 7. A new game fills all ten resident slots (ov20 0x21860D4), so every piece stands at level 7. The variant depends on which residents were drawn; the import takes 0.
+- Result: every Black City shop door (43,36) (11,37) (27,38) (19,45) (35,45) is a wall with its warp, as on the cartridge. `src/import/Gen5DynamicCity.lua` builds this; the template is chosen by the piece buildings the matrix's building pack holds (18 for Black City, 47 for White Forest).
+- **Version:** every zone lookup passes through ARM9 0x2013A94. While the save's city byte is 1 (set from the version: ov20 0x21861F4), it swaps zone 0 for 424 and 294 for 295 (pairs at 0x20A72A8). A White import therefore points every warp into Black City at White Forest (the Black Gate's Z375 / Z379 lead to Z424).
+- Not modelled: the city changing as residents come and go, the residents themselves, and the LCG's variant draw.
+
+**Seasons on the terrain.**
+- ARM9 0x201407C loads an area's 10-byte record from /a/0/1/3 at (area + season) x 10 when 2 <= area < 210 (0x20140E8). The season comes from 0x202E83C.
+- Each record's +2 is its /a/0/1/4 texture set (equal to its index in both cartridges); +7 is a light that cycles 32..35.
+- Every one of the 126 seasonal zones names 4k + 2, the spring record. The other three seasons are +1 summer, +2 autumn, +3 winter. Striaton's sets 6..9 show this: pink flowers, then deep green, orange trees, and pale snowy grass (`season_textures_striaton.png`).
+- All of /a/0/1/4 was already in the cache. `src/render/Gen5Seasons.lua` picks the set when `Gen4Ground.forMap` builds a BW ground. Merged sets (a map showing its neighbours' chunks) are re-merged from each area's season record.
+- The season is `Gen5FieldRules.season`: (month - 1) % 4, or the save's `gen5Season`, or `BW_SEASON`.
+- Not done: the seasonal light (+7).
+
+**Surf mount.**
+- The `sea_ride` effect (/a/0/7/5 member 0x31) is created by ov21 0x21ACB38. Its grid task 0x21ACDC4 bobs as Platinum does: from 1 by 1/4 between 1 and 4. It places the mount at the player's position yOffset - 1 up.
+- It lifts the sprite by (0, 1 + yOffset, 5), not Platinum's (0, 7 + yOffset, 4). In the rod pose (sprite ids 0xA0 / 0xA1) the lift is 8 + yOffset.
+- `Gen4SurfMount` has BW's constants. The rail variant (0x21ACFF8) is not used.
+
+**Import marker:** `gen5-maps-v1` (warps' transition types, RD chunks and pieces, White's zone swap).
+
+## Black/White items in battle: the bag, the capture, held items (2026-10-18)
+
+**The reported bug** ("using items like pokeballs in black and white they play a weird message and don't let you throw the balls"): a BW item record kept neither its battle pocket nor its party block, so the bag never knew a Poké Ball was a ball or a Potion was a medicine. Every item fell through to the engine's refusal. `Gen4ItemUse.rowanLine` then printed Platinum's common_strings bank 213 line 36, which in Black's bank 213 is Alder's Dragonspiral speech. That was the weird message.
+
+- **Records** (`src/import/Gen5Data.lua`, `src/inventory/Gen5Items.lua`). In the u16 at +0x08, bits 11..15 are the battle pocket mask (Platinum's five bits: balls, battle items, HP/PP, status, PP), kept as `battleMask`. +0x0C is `partyUse`, and +0x10..+0x23 is `partyUseParam`, Platinum's ItemPartyParam laid out byte for byte (253 is BW's "a quarter", the Sitrus Berry). +0x0D is the item kind, filed earlier as `battlePocket`. For an older cache, `Gen5Items.ensure` fills in the 124 records that carry a mask or block; the importer agrees with that table on all 627 items. This also fixes field medicine (Potion etc. from the BW field bag).
+- **Refusal text:** `rowanLine` on BW is Juniper's (bag bank 3 #56). In battle it is bank 17 #50.
+- **The battle bag** (`src/battle/Gen5BagUse.lua`, hooked at the top of `BagMenu.useItem` for BW battles):
+  - **Balls** (battle use 1). Refused when two wild foes stand (17 #44), when the foe is out of sight (17 #47), or when the party and every box are full (17 #45). Against a trainer's Pokémon the trainer blocks it (15 #67) and the turn is spent. Otherwise the ball is thrown with Gen V's sum (`src/battle/Gen5Catching.lua`: the ball modifiers, a thick-grass modifier when the battle sets `gen5ThickGrass`, status ×2.5 / ×1.5, critical capture by the number caught, and 3 shake checks or 1 on a critical capture). The animation is shared effect 570 via `gen4BallChain`, with var 14 set on a critical capture. Lines: the throw (15 #35), the breakouts (15 #61–64), and "Gotcha!" (15 #65). The ball is written on the caught mon; a Heal Ball heals it and a Friend Ball sets friendship to 200.
+  - **Medicine** goes through the party picker, then the party block (revive, HP, status bits, PP). Lines: bank 15 #33, then bank 157 (#44 HP, #45–48 and #71 statuses, #51 all, #49 PP, #50 revive). An item that would do nothing stays in the bag ("It won't have any effect.", 157 #81).
+  - **Battle items** apply to the Pokémon choosing: X items +1 stage, Dire Hit, and Guard Spec. (Mist on the side).
+  - **Poké Doll / Fluffy Tail / Poké Toy** end a wild battle (15 #72).
+  - The catch's Pokédex and PC lines are translated through `Gen5BattleText.PATTERNS` (15 #66, 234 #176). The nickname question uses 234 #175.
+- **Held items** (`src/battle/Gen5HoldItems.lua`). The hold effect is Platinum's number; BW's own items share effect 147 and are told apart by item id (538 Eviolite … 547 Eject Button, 548–564 gems). Seams:
+  - `HoldItems.attackMultiplier`, `defenceMultiplier`, `accuracyMultiplier`, `critStages`, `quickClawChance` and `flinchChance`
+  - `Damage.compute`, after the type chart (`modifyDamage`)
+  - `TurnOrder.effectiveSpeed`
+  - `BattleState:holdItemTrigger`, `focusBandHolds`, `shellBellDrain` (`afterHit`) and the BW switch-in
+  - `HeldItems.canEscape`
+
+  Lines come from bank 14 (908/914 heal, 917–935 cures, 938+ stat raises, 1001, 1007 hung on, 1010, 1013 Life Orb, 1031 Jaboca/Rowap, 1038 hurt by its item, 219 resist berry, 240/258 orbs, 408/411 balloon, 414 Eject Button, 417 Red Card, 424 Rocky Helmet) and 15 #182 (gem).
+- **Also wired** (Gen5HoldItems' bottom half, used by Gen5MoveRules): the Choice lock (menu #905; a trainer's other pick is bent back), the weather rocks (a weather move lasts 5 + the rock's 3), Grip Claw (seven turns) and Binding Band (an eighth a turn; binding is now 4-5 turns of damage), Power Herb (#1022, the charge moves charge themselves now), Float Stone (Low Kick / Heavy Slam weights), Ring Target (and Gravity / Smack Down / Iron Ball: an immunity lifted in `Damage.compute`), Destiny Knot (#330, Attract and Cute Charm), Shed Shell (switching while bound / trapped / Shadow Tag; otherwise bank 18 #88 "can't be switched out!"), Custap (#1025, first in the bracket, a quarter -- half with Gluttony), Micle (#1028, the next move x1.2), Quick Claw (#1025, first in its priority bracket, Gen V), Smoke Ball (#1004).
+- **Thick grass:** the field rolls BW's dark grass list (it never had: `land` was always the plain grass), sets `gen5ThickGrass` (the capture's grass modifier) and makes the battle a DOUBLE 40% of the time when two party Pokemon can battle -- ov21 0x021A9462: encounter kind 1, able count >= 2, `Random() / 656 < 0x28` (`src/world/Gen5WildTables.lua prepareBattle`).
+- **The battle bag screen** (`src/ui/Gen5BattleBag.lua`, art `gen5_battle_bag` from /a/0/9/9 by `src/import/Gen5BattleBagArt.lua`; `tools/gen5_battle_bag_art` writes it into an existing install): the four pockets (HP/PP RESTORE, POKe BALLS, STATUS RESTORE, BATTLE ITEMS by the battle-pocket mask), LAST USED ITEM, six items a page with the arrows and "n/m", the USE screen; keys, taps and the mouse; USE goes through Gen5BagUse (refusals are printed over the bag). Opened by `Gen4Battle.bagScreenId` for every BW battle. The cursor's look is the port's (BW's cursor OBJ is not imported).
+- **Checks:**
+  - `tools/gen5_items_check` (LÖVE app, `POKEPORT_DATA_DIR=<black cache>`): the records, the capture sum, the bag's uses and refusals, the throw through the queue, 40 held-item scenarios, the turn's held items, thick grass and the battle bag screen. Result: 155/155.
+  - `tools/gen5_move_anim_harness`: `BAG=4,17 [BAG_HURT=1] [BAG_PSN=1] [SPECIES=129]` uses the bag for real and writes `bag_<TAG>.png`.

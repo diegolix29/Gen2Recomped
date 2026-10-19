@@ -17,6 +17,8 @@ A full-screen app in the launcher's sidebar (**Pokéwalker**, under Games). It w
 | `src/pokewalker/WalkerEconomy.lua` | Watts besides steps, the rewards API for the minigames, the login streak, achievements, leaderboards and Watt Shop purchases (see "Economy"). |
 | `src/pokewalker/WalkerShop.lua` | The Watt Shop's shelves: items per generation, the daily Pokémon stock, the weekly Mystery Gifts, cosmetics. |
 | `src/ui/WalkerEconomyPages.lua` | The Watt Shop, Awards and Leaderboard pages, installed into the screen. |
+| `src/pokewalker/WalkerEvents.lua` | The Watt Shop's **Events** shelf: the real per-game event distributions (key items and event Pokémon) and their delivery. |
+| `src/ui/WalkerEventsPage.lua` | The Events tab (game chips, key events, event Pokémon). |
 
 ## Rules carried over from the original
 
@@ -191,6 +193,27 @@ There's a **Watt Shop** tile. Purchases go to a game and save chosen through the
 - **Pokémon:** six a day for the target game, drawn deterministically from its own dex range with no legendaries. Each sells once a day. Level is 5–25 and price is 40 + BST/4 (doubled at BST 580+).
 - **Mystery Gifts:** four a week (two Pokémon, two rare items), each claimable once a week. Examples are Mew, Celebi, Jirachi, Shaymin, Victini, Master Ball and Rare Candy x5. A gift the target game can't hold is marked and can't be bought for it.
 - **Cosmetics:** walk-scene backgrounds, shell colours (they frame the hero and colour the selected tile), sound sets (button beeps at the Sound setting; tap a set to hear it), and the seven event courses (500 W, plus 100 W for each further one). Event courses now have an unlock path.
+
+### Events shelf (2026-10-18)
+
+The **Events** tab sells the real distributions, per game, once per save. A row of chips lists every imported game with a save. Tapping another game asks which of its saves to deliver to.
+
+- **Key events**, delivered the way the cartridge's own Mystery Gift left them:
+  - Crystal: GS Ball. This sets `save.gen2MobileEvent = $0B`, the Mobile Adapter byte that `CheckGSBall` reads, so the Goldenrod receptionist hands it over.
+  - Emerald: Eon Ticket, MysticTicket, AuroraTicket and Old Sea Map. These go through `Gen3MysteryGift.unlock` (the SS Tidal row's flag, the ticket, and var `0x403F` for the Eon Ticket), plus the Wonder Card's `FLAG_RECEIVED_*`.
+  - FireRed: MysticTicket (flags `0x84A`, `0x2A8`) and AuroraTicket (flags `0x84B`, `0x2A7`). These need the National Pokédex.
+  - Platinum: Member Card, Oak's Letter, Secret Key, Azure Flute and the Manaphy Egg.
+  - HeartGold/SoulSilver: Enigma Stone and the Manaphy Egg.
+  - Gen 4 gifts wait with the Poké Mart deliveryman (`Gen4MysteryGift`), whose handlers set the distribution magic.
+  - Black/White: Liberty Pass.
+- **Event Pokémon** use the real event's OT, ID, level, moves, held item, ball, ribbons, fateful mark, and the personality and IVs where these were fixed. The facts were read from the Project Pokémon Events Gallery dumps, and each entry names its source.
+  - Gen 4 Pokémon wait with the deliveryman.
+  - Pokémon from other generations join the party, or the PC when the party is full.
+  - HGSS Celebi, Arceus and Shaymin trigger their own ROM checks.
+  - The BW Poké Transfer beasts and Celebi open Zoroark and Zorua.
+- A purchase is queued in `save.walkerEvents.pending`. `WalkerEvents.apply` runs when the save loads, called from `WalkerInbox.apply`. `claimed` stops a second sale.
+- Bought events don't use up the port's own Hall-of-Fame or game-clear picks.
+- Check: `GAME=<v> "C:/Program Files/LOVE/lovec.exe" tools/walker_events_check`. It uses scratch saves only. For every event it checks the bag, flags, vars and the engine's port of the ROM check. It builds the PK3/PK4/PK5 record, checks the checksum and ribbons, and round-trips the whole save through export and import.
 
 ### Awards and Leaderboards
 

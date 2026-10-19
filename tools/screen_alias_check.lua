@@ -53,7 +53,7 @@ local function slurp(p)
 end
 local function listDir(dir)
   local out = {}
-  local p = io.popen('ls "' .. dir .. '" 2>/dev/null')
+  local p = io.popen('ls "' .. dir .. '" 2>' .. (package.config:sub(1, 1) == "\\" and "nul" or "/dev/null"))
   if not p then return out end
   for line in p:lines() do
     if line:match("%.lua$") then out[#out + 1] = line end

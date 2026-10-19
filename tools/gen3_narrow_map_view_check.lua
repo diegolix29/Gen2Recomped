@@ -51,6 +51,12 @@ love = {
 }
 
 local Renderer = require("src.render.Renderer")
+-- SINCE 2026-10-05 THE CLAMP IS GEN 4'S ONLY (Renderer:worldViewSize): Gen 1-3
+-- draw the cartridge's own border tiles past the map, and capping their view
+-- changed the player's zoom on every door. Sections 1-6 and 8 measure the clamp
+-- itself, so they run under a Gen 4 version; section 7 now asserts the split.
+local GameVersion = require("src.core.GameVersion")
+GameVersion.set("platinum")
 
 local function renderer(uiW, uiH)
   local r = setmetatable({}, { __index = Renderer })
@@ -359,13 +365,26 @@ do
 end
 
 -- ---------------------------------------------------------------------------
-section("7. one rule, not a Gen 4 rule")
+section("7. Gen 1-3 keep the player's zoom; the clamp is Gen 4's")
 -- ---------------------------------------------------------------------------
--- Both halves above were already correct and already shipped -- inside
--- `if isGen4()`.  That is this port's recurring shape: a fix written where it
--- was noticed and never published in the other generations' terms.  These two
--- assertions are what stops it being re-split, and they are source-level
--- because the behaviour they forbid is "ask which cartridge this is".
+-- This section used to forbid the generation gate. The gate came back on
+-- purpose (Renderer.lua, worldViewSize's comment): Gen 1-3 draw native border
+-- and neighbour tiles beyond the map, so their view is never capped and never
+-- enlarged in presentation. Measured, then the source shape.
+do
+  GameVersion.set("emerald")
+  WIN.w, WIN.h = 1280, 720
+  local r = renderer(GBA_W, GBA_H)
+  local fw, fh = r:worldViewSize()
+  r:setWorldBounds(GYM_W, GYM_H)
+  local gw, gh = r:worldViewSize()
+  ok(gw == fw and gh == fh, "a Gen 3 map's bounds changed the view from %dx%d to "
+     .. "%dx%d -- the player's zoom moves on every door", fw, fh, gw, gh)
+  local sp = require("src.render.Zoom").scale(r:fitScale())
+  ok(r:worldPresentationScale(sp, 1280, 720, gw, gh) == sp,
+     "a Gen 3 canvas was enlarged in presentation, which undoes the zoom")
+  GameVersion.set("platinum")
+end
 do
   local src = (function()
     local f = io.open("src/render/Renderer.lua", "rb")
@@ -376,16 +395,16 @@ do
   local sizeFn = src:match("function Renderer:worldViewSize%(%).-\nend")
   ok(sizeFn ~= nil, "could not find Renderer:worldViewSize")
   if sizeFn then
-    ok(sizeFn:find("isGen4", 1, true) == nil,
-       "worldViewSize asks which generation it is again; the clamp is one rule "
-       .. "and a split is how the black bars got there")
+    ok(sizeFn:find("isGen4", 1, true) ~= nil,
+       "worldViewSize no longer keeps the clamp to Gen 4, so Gen 1-3's zoom "
+       .. "changes on every building / route transition")
   end
   local scaleFn = src:match("function Renderer:worldPresentationScale%(.-\nend")
   ok(scaleFn ~= nil, "could not find Renderer:worldPresentationScale")
   if scaleFn then
-    ok(scaleFn:find("isGen4", 1, true) == nil,
-       "worldPresentationScale asks which generation it is again, so every "
-       .. "generation but Gen 4 goes back to being centred in black")
+    ok(scaleFn:find("isGen4", 1, true) ~= nil,
+       "worldPresentationScale enlarges every generation's canvas again, which "
+       .. "undoes Gen 1-3's selected zoom on small maps")
     -- ...but the Tilt exclusion is NOT the same kind of gate and must stay:
     -- tilt grows the view on purpose and filling would undo the growth.
     ok(scaleFn:find("Tilt.active", 1, true) ~= nil,

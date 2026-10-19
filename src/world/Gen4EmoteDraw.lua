@@ -114,6 +114,15 @@ function D.flatSpot(ground, npc, cam, w, h, up)
   return math.floor(cx - w / 2 + 0.5), math.floor(bottom - h + 0.5)
 end
 
+-- groundSpot(ground, px, py, cam) -> the screen x of a tile's centre and the
+-- screen y of its ground, in the same flat space (a field effect standing on
+-- the cell whose map pixel corner is px, py: Gen5Phenomena, the rod's lure)
+function D.groundSpot(ground, px, py, cam)
+  local fake = { px = px, py = py }
+  local camY = cam.y + riseOf(ground, fake, cam)
+  return math.floor(px - cam.x) + 8, math.floor(py - camY) + 12
+end
+
 -- draw(ow, ground, npc, cam, record, img, age) -- one bubble
 function D.draw(ow, ground, npc, cam, record, img, age)
   local g = love.graphics

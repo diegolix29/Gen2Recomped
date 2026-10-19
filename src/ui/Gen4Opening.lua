@@ -136,10 +136,11 @@ function Opening.models(intro,f)
  local distance=0x29aec1/4096
  local eye={target[1]+distance*math.cos(pitch)*math.sin(yaw),target[2]-distance*math.sin(pitch),target[3]+distance*math.cos(pitch)*math.cos(yaw)}
  local vp=Model.multiply(flip,Model.multiply(Model.perspective(fov*math.pi*4/65536,256/192,1,4000),Model.lookAt(eye,target)))
- local g=love.graphics;local previous={g.getCanvas()}
+ -- push('all')/pop restores the bound canvas (a saved getCanvas() list crashed under a mod's depth set)
+ local g=love.graphics;g.push('all')
  g.setCanvas({intro.movieColour,depthstencil=intro.movieDepth});g.clear(1,1,1,1,true,true)
  for _,rec in ipairs(intro.openingModels) do if rec.name:match('^op_map'..group..'_') then rec.model:draw(vp) end end
- g.setCanvas(previous[1] and previous or nil);g.setColor(1,1,1,1);g.draw(intro.movieColour)
+ g.pop();g.setColor(1,1,1,1);g.draw(intro.movieColour)
 end
 function Opening.draw(intro,bottom)
  local g=love.graphics;local f=intro.openingFrame or 0
@@ -204,11 +205,11 @@ end
 function Opening.drawPair(intro)
  local g=love.graphics
  intro.moviePanels=intro.moviePanels or {g.newCanvas(256,192),g.newCanvas(256,192)}
- local previous={g.getCanvas()}
+ g.push('all')
  for index,canvas in ipairs(intro.moviePanels) do
   g.setCanvas(canvas);g.clear();Opening.draw(intro,index==2)
  end
- g.setCanvas(previous[1] and previous or nil)
+ g.pop()
  g.setColor(0,0,0,1);g.rectangle('fill',0,0,256,192);g.setColor(1,1,1,1)
  for index,canvas in ipairs(intro.moviePanels) do g.draw(canvas,64,(index-1)*96,0,.5,.5) end
 end

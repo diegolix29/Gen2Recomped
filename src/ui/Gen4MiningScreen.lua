@@ -278,7 +278,7 @@ function Gen4MiningScreen:obtainedLine(objId, constant)
   end
   name = name:gsub("^%l", string.upper)
   Gen4MiningScreen.buffer(self.game, "", "", name)
-  return self:text("itemObtained") or (name .. "\n" .. Strings("was obtained."))
+  return self:text("itemObtained") or (name .. "\n" .. Strings("was obtained."))  -- strings: line-break glue, the prose is wrapped
 end
 
 -- The pages of a message: the cartridge's scroll/clear marks (\v, \f) split it.

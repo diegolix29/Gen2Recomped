@@ -405,22 +405,22 @@ end
 -- bag's (gen3ItemText, swept beside the bag's action labels).  Each falls
 -- back to this port's English only when the cache predates the sweep.
 local PC_FALLBACK = {
-  withdrawPrompt = "Withdraw how many\n{VAR1}(s)?",
-  withdrew       = "Withdrew {VAR2}\n{VAR1}(s).",
+  withdrawPrompt = Strings.source("Withdraw how many\n{VAR1}(s)?"),
+  withdrew       = Strings.source("Withdrew {VAR2}\n{VAR1}(s)."),
   noItems        = "There are no items.",
-  bagFull        = "There is no more\nroom in the BAG.",
+  bagFull        = Strings.source("There is no more\nroom in the BAG."),
   cancel         = "CANCEL",
   title          = "ITEM STORAGE",
 }
 local BAG_FALLBACK = {
-  depositPrompt = "Deposit how many\n{VAR1}(s)?",
-  deposited     = "Deposited {VAR2}\n{VAR1}(s).",
-  noRoomStore   = "There's no room to\nstore items.",
-  cantStore     = "Important items\ncan't be stored in\nthe PC!",
-  tossImportant = "That's much too\nimportant to toss\nout!",
-  tossHowMany   = "Toss out how many\n{VAR1}(s)?",
-  tossedMany    = "Threw away {VAR2}\n{VAR1}(s).",
-  tossConfirm   = "Is it okay to\nthrow away {VAR2}\n{VAR1}(s)?",
+  depositPrompt = Strings.source("Deposit how many\n{VAR1}(s)?"),
+  deposited     = Strings.source("Deposited {VAR2}\n{VAR1}(s)."),
+  noRoomStore   = Strings.source("There's no room to\nstore items."),
+  cantStore     = Strings.source("Important items\ncan't be stored in\nthe PC!"),
+  tossImportant = Strings.source("That's much too\nimportant to toss\nout!"),
+  tossHowMany   = Strings.source("Toss out how many\n{VAR1}(s)?"),
+  tossedMany    = Strings.source("Threw away {VAR2}\n{VAR1}(s)."),
+  tossConfirm   = Strings.source("Is it okay to\nthrow away {VAR2}\n{VAR1}(s)?"),
 }
 
 function Gen3BagMenu.pcWord(game, key)
@@ -436,12 +436,12 @@ function Gen3BagMenu.pcWord(game, key)
     return type(word) == "string" and word or PC_FALLBACK.title
   end
   local said = type(pc.text) == "table" and pc.text[key] or nil
-  return type(said) == "string" and said or PC_FALLBACK[key]
+  return type(said) == "string" and said or Strings(PC_FALLBACK[key] or "")
 end
 
 local function bagWord(game, key)
   local said = ((game.data.constants or {}).gen3ItemText or {})[key]
-  return type(said) == "string" and said or BAG_FALLBACK[key]
+  return type(said) == "string" and said or Strings(BAG_FALLBACK[key] or "")
 end
 
 -- {VAR1} is the item, {VAR2} the count -- which is how the cartridge writes

@@ -268,13 +268,13 @@ function Gen2CardFlip:update()
         self.deck = shuffle()
         self.discarded = {}
         self.played = 0
-        self.message = text(self, "_CardFlipShuffledText", "The cards have\nbeen shuffled.")
+        self.message = text(self, "_CardFlipShuffledText", Strings.source("The cards have\nbeen shuffled."))
         self.stage = "shuffled"
         return
       end
       self.stage = "again"
       self.yesno = 1
-      self.message = text(self, "_CardFlipPlayAgainText", "Want to play\nagain?")
+      self.message = text(self, "_CardFlipPlayAgainText", Strings.source("Want to play\nagain?"))
     end
     return
   end
@@ -283,7 +283,7 @@ function Gen2CardFlip:update()
     if input:wasPressed("a") or input:wasPressed("b") then
       self.stage = "again"
       self.yesno = 1
-      self.message = text(self, "_CardFlipPlayAgainText", "Want to play\nagain?")
+      self.message = text(self, "_CardFlipPlayAgainText", Strings.source("Want to play\nagain?"))
     end
   end
 end

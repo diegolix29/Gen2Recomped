@@ -356,6 +356,11 @@ table.insert(package.searchers, 1, function(name)
   if name:sub(1, 4) ~= "src." then return nil end
   return function() return inert end
 end)
+-- Gen4ScriptVM (section 1) now pulls in the real src.script.Commands through
+-- its HGSS / BW command modules, so drop the cached copies or the stub above
+-- never sees a single handler
+package.loaded["src.script.Commands"] = nil
+package.loaded["src.script.Gen4Commands"] = nil
 local Gen4Commands = require("src.script.Gen4Commands")
 local setVar, getVar = Gen4Commands.setVar, Gen4Commands.getVar
 do  -- harness canary first

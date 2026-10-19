@@ -72,8 +72,15 @@ function E.parse(d)
   at = at + nn * 36
   for i = 0, nw - 1 do
     local o = at + i * 20
+    -- +4 `kind` is the CONTACT DIRECTION (ov10 0x21626B8 against the
+    -- facing: 2 up, 1 down, 4 left, 3 right, 0 none) and +5 the TRANSITION
+    -- type (ov10 0x21626E8). Types 0, 5 and 6 are taken by STEPPING ONTO the
+    -- cell once a step ends (ov21 0x218AEAC, mask 0x61, run from 0x218ACD0
+    -- after the coord events); every other type by a press that matches
+    -- the contact direction (0x218AED4).
     out.warps[i + 1] = { index = i, destZone = u16(d, o), destWarp = u16(d, o + 2),
-      kind = d:byte(o + 5), x = math.floor(u16(d, o + 8) / 16), y = math.floor(u16(d, o + 12) / 16),
+      kind = d:byte(o + 5), transition = d:byte(o + 6),
+      x = math.floor(u16(d, o + 8) / 16), y = math.floor(u16(d, o + 12) / 16),
       width = math.max(u16(d, o + 14), 1), height = math.max(u16(d, o + 16), 1), rail = railAt(d, o, 6) }
   end
   at = at + nw * 20
@@ -142,7 +149,7 @@ function E.attach(def, ev, spriteFor)
   for _, w in ipairs(ev.warps) do
     def.warps[#def.warps + 1] = { index = w.index + 1, x = w.x - ox, y = w.y - oy,
       destMap = ("Z%03d"):format(w.destZone), destHeader = w.destZone, destWarp = w.destWarp + 1,
-      kind = w.kind, width = w.width, height = w.height, rail = w.rail }
+      kind = w.kind, transition = w.transition, width = w.width, height = w.height, rail = w.rail }
   end
   -- (`destWarp` is 1-based, as the engine indexes `warps[destWarp]` and the
   -- Gen 4 importer writes it; the cartridge's number is 0-based.)
@@ -157,7 +164,7 @@ function E.attach(def, ev, spriteFor)
           def.warps[#def.warps + 1] = { index = #def.warps + 1, extentOf = w.index + 1,
             x = w.x - ox + dx, y = w.y - oy + dy, destMap = ("Z%03d"):format(w.destZone),
             destHeader = w.destZone, destWarp = w.destWarp + 1, kind = w.kind,
-            rail = w.rail, railDX = dx, railDY = dy }
+            transition = w.transition, rail = w.rail, railDX = dx, railDY = dy }
         end
       end
     end

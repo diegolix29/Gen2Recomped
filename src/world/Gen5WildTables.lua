@@ -46,6 +46,62 @@ function W.view(def, save)
   return view
 end
 
+-- THE WILD BATTLE THE FIELD STARTS (OverworldState's step encounter):
+--
+--   * the terrain under it, for Nature Power (src/battle/Gen5MoveRules.lua):
+--     water while surfing, grass, sand, a cave floor, else plain ground;
+--   * DARK GRASS: the battle is a thick-grass one (`gen5ThickGrass`, the
+--     capture's grass modifier in src/battle/Gen5Catching.lua), and it is a
+--     DOUBLE 40% of the time when the party has two Pokemon able to battle.
+--     ov21 0x021A9462: for encounter kind 1 (dark grass, the classifier at
+--     0x021AA35C), `0x0201AA50(party) >= 2` (the able count) and
+--     `0x021A9DC8() < 0x28` (Random() / 656, 0..99) set the double flag
+--     (0x20); [+0x15] = flag + 1 Pokemon are drawn, each from the dark grass
+--     list, and the flag is dropped again if the second draw comes back
+--     empty (0x021AA056).
+W.DOUBLE_PERCENT = 40
+
+local function terrainOf(map, cx, cy, onWater)
+  if onWater then return "water" end
+  local b = Rules.behaviour(map, cx, cy)
+  if b == nil then return "plain" end
+  if Rules.GRASS[b] then return "grass" end
+  if b == 0x0C or b == 0x23 then return "sand" end
+  if Rules.CAVE_FLOOR[b] then return "cave" end
+  return "plain"
+end
+W.terrainOf = terrainOf
+
+local function ableCount(party)
+  local n = 0
+  for _, mon in ipairs(party or {}) do
+    if (tonumber(mon.hp) or 0) > 0 and not mon.isEgg and not mon.egg then n = n + 1 end
+  end
+  return n
+end
+
+function W.prepareBattle(state, battle, view, dark, onWater, rng)
+  if not battle then return end
+  rng = rng or love.math.random
+  local map, p = state and state.map, state and state.player
+  battle.gen5Terrain = terrainOf(map, p and p.cellX, p and p.cellY, onWater)
+  if not dark then return end
+  battle.gen5ThickGrass = true
+  local Game = state.game or require("src.core.Game")
+  local save = Game.save
+  if ableCount(save and save.party) < 2 or rng(0, 99) >= W.DOUBLE_PERCENT then return end
+  local Encounter = require("src.world.Encounter")
+  local enc2 = view and view.darkGrass and Encounter.chooseTable(view.darkGrass, rng)
+  if not (enc2 and enc2.species) then return end
+  local BattleState = require("src.battle.BattleState")
+  local tmp = BattleState.newWild(Game, enc2.species, enc2.level,
+    (enc2.nature or enc2.gender) and { nature = enc2.nature, gender = enc2.gender } or nil)
+  local second = tmp and tmp.enemy and tmp.enemy.mon
+  if not second then return end
+  battle:makeWildDouble(second)
+  battle.gen5ThickGrassDouble = true
+end
+
 -- landFor(view, map, cx, cy) -> the grass-shaped table for this tile: dark
 -- grass rolls its own list (ov21 0x021AB250's behaviours)
 function W.landFor(view, map, cx, cy)

@@ -177,6 +177,9 @@ uniform vec2 zKeep;
 uniform vec4 depthFogA;
 uniform vec4 depthFogB;
 uniform vec3 depthFogC;
+// the density table's shift as Platinum's weather thins it (ov5_021D7534:
+// entry i > s is (i - s) * 4, the rest keep the 4 they last had); 0 = full
+uniform float depthFogShift;
 vec4 effect(vec4 colour, Image tex, vec2 uv, vec2 screen)
 {
     if (vModelY <= yCut) { discard; }
@@ -209,7 +212,9 @@ vec4 effect(vec4 colour, Image tex, vec2 uv, vec2 screen)
             dz = (rf + rn) / (rf - rn) - 2.0 * rf * rn / ((rf - rn) * max(d, 1.0));
         }
         float depth = (dz * 0.5 + 0.5) * 32767.0;
-        float dens = clamp((depth - depthFogB.z) / depthFogB.w * 4.0 / 127.0, 0.0, 124.0 / 127.0);
+        float e = clamp((depth - depthFogB.z) / depthFogB.w, 0.0, 31.0);
+        float dens = e > depthFogShift ? (e - depthFogShift) * 4.0 / 127.0
+                   : (depthFogShift > 0.0 && e >= 1.0 ? 4.0 / 127.0 : e * 4.0 / 127.0);
         c.rgb = mix(c.rgb, depthFogC, dens);
     }
     return c;
@@ -2607,6 +2612,7 @@ function Gen4Model:draw(viewProjection, pose, materials, yCut, spread, depthComp
     if fog then
       shader:send("depthFogB", fog.b)
       shader:send("depthFogC", fog.c)
+      shader:send("depthFogShift", fog.shift or 0)
     end
   end
   -- SENT ON EVERY DRAW, for the reason `yCut` and `heightSpread` are: an unset

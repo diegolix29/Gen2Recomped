@@ -51,6 +51,7 @@
 -- shader, since a front sprite is stored in colour.
 
 local Music = require("src.core.Music")
+local Strings = require("src.core.Strings")
 local Sound = require("src.core.Sound")
 local Font = require("src.render.Font")
 local Logger = require("src.core.Logger")
@@ -1211,14 +1212,14 @@ end
 -- text
 -- ---------------------------------------------------------------------------
 local FALLBACK_TEXT = {
-  sending = "{VAR2} will be\nsent to {VAR1}.",
+  sending = Strings.source("{VAR2} will be\nsent to {VAR1}."),
   goodbye = "Bye-bye, {VAR2}!",
   arrived = "{VAR1} sent over {VAR3}.",
   takeCare = "Take good care of {VAR3}!",
 }
 
 function Gen3TradeAnim:say(role)
-  local text = (self.art.text or {})[role] or FALLBACK_TEXT[role] or ""
+  local text = (self.art.text or {})[role] or Strings(FALLBACK_TEXT[role] or "")
   local vars = self.vars
   -- a function replacement is used verbatim, so a nickname with a percent
   -- sign needs no escaping here

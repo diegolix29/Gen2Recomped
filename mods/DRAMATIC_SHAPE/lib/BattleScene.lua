@@ -502,6 +502,11 @@ end
 -- sprite standing in a lit world. Held well short of 1, the mon's own
 -- shading still reads through the flash: it looks struck rather than
 -- deleted.
+-- How much further toward the eye a mon's card is depth-tested on a local
+-- stage (see render): the grass pass's own pull at this rig's pitch is 6,
+-- and a cell is 16, so 22 clears the tufts of the mon's cell and the next.
+BattleScene.NEAR_PULL = 22
+
 BattleScene.FLASH_COLOR = { 1, 1, 1 }
 BattleScene.FLASH_STRENGTH = 0.5
 
@@ -679,8 +684,15 @@ function BattleScene.render(state, arena, textures, token)
     for _, card in ipairs(monCards(arena, groundY, textures)) do
       -- the sun stored this card snugged (castShadows), so its own shadow
       -- lookup must read the same snugged transform -- see ShadowMap.snug
+      -- ...pulled a tile and a bit further toward the eye on a stage laid
+      -- where the encounter happened (BattleArena.findLocal), which may be
+      -- IN the tall grass: the tufts of the mon's own cell and the one in
+      -- front of it would otherwise bury it to the eyes, while anything
+      -- standing further forward -- a tree, a wall -- still covers it
+      local pull = BattleBillboard.PULL
+                   + ((arena.near and BattleScene.NEAR_PULL) or 0)
       Voxel3D.draw(BattleBillboard.mesh(), card.tex, card.model,
-                   BattleBillboard.PULL, ShadowMap.snug(card.model))
+                   pull, ShadowMap.snug(card.model))
     end
     Voxel3D.glass(true)
     Voxel3D.seams(true)
