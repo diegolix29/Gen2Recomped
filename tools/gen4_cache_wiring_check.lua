@@ -417,17 +417,6 @@ do
     if name then readers[name] = (readers[name] or 0) + 1 end
   end
   if p then p:close() end
-  -- no ripgrep on the PATH (a stock Windows / Git Bash machine): grep -o
-  if next(readers) == nil then
-    local null = package.config:sub(1, 1) == "\\" and "nul" or "/dev/null"
-    p = io.popen('grep -rhoE "data\\.gen4_[a-z_]+" --include=*.lua "'
-                 .. (root ~= "" and root or "./") .. '../src" 2>' .. null)
-    for line in (p and p:lines() or function() return nil end) do
-      local name = line:match("data%.(gen4_[a-z_]+)")
-      if name then readers[name] = (readers[name] or 0) + 1 end
-    end
-    if p then p:close() end
-  end
   local n = 0
   for name in pairs(readers) do
     n = n + 1

@@ -505,9 +505,7 @@ return function(Extras)
   -- (the effect layer shows only inside it) while the base BG palettes fade
   -- to white (0 -> 16, PaletteData_StartFade with delay 0) and, once that
   -- fade and the curtain are done, back. The fades are this port's
-  -- `fadebg` arithmetic on the "base" group; the window is `player.effectWindow`
-  -- ({ x1, x2 }: the columns the effect layer still shows), which
-  -- Gen4Battle.drawEffectBackground scissors to.
+  -- `fadebg` arithmetic on the "base" group; the window is not drawn.
   -- -------------------------------------------------------------------------
 
   local FAKE_OUT_CURTAIN_START_X = 127
@@ -522,12 +520,9 @@ return function(Extras)
   end
 
   Extras.FUNCS[41] = function(player)
+    H.note(player, "FakeOutCurtain: window 0 curtain over the effect layer")
     H.task(player, function(p, t)
       local st = t.state
-      if t.curtain then
-        local x = math.max(0, t.curtain.x or 0)
-        p.effectWindow = { 128 - x, 128 + x + 1 }
-      end
       if st == 0 then
         t.curtain = Gen4AnimMath.posLerp(FAKE_OUT_CURTAIN_START_X, FAKE_OUT_CURTAIN_END_X,
                                          0, 0, FAKE_OUT_CURTAIN_MOVE_FRAMES)
@@ -549,7 +544,6 @@ return function(Extras)
       elseif st == 4 then
         if not paletteBusy(p) then t.state = 5 end
       else
-        p.effectWindow = nil
         t.done = true
       end
     end)

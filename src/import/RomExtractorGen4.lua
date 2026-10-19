@@ -1877,9 +1877,7 @@ function RomExtractorGen4:composeJob(arc, job)
   -- exception -- one sixteen-colour palette that the game loads into slot 9, with
   -- tilemap cells that name slot 9 -- and composing those at slot 0 produces a
   -- blank picture rather than a wrong one.
-  -- (HGSS ships the effect palettes as ten whole sub-palettes, slot 9 already
-  -- in place -- moving its first sixteen to slot 9 drew the wrong colours)
-  if palette and job.paletteSlot and job.paletteSlot ~= 0 and #palette <= 16 then
+  if palette and job.paletteSlot and job.paletteSlot ~= 0 then
     palette = Gen4Graphics.paletteAtSlot(palette, job.paletteSlot)
   end
   -- ...AND A JOB MAY ASK FOR THE GREY VERSION OF ITS COLOURS. `SetBgGrayscale`
@@ -2221,10 +2219,6 @@ function RomExtractorGen4:extractGraphics()
     -- members and every key that resolves to it points at that file.
     index.effects = {}
     local byArt, effectsWritten = {}, 0
-    -- HGSS reads its move backgrounds from /a/0/0/7 at its OWN member
-    -- numbers (Gen4HgssBattle.EFFECT_BG_MEMBERS), not through the view that
-    -- renumbers that archive to Platinum's
-    local effArc = (Gen4Battle.EFFECT_BG_ARCHIVE and self:archiveAt(Gen4Battle.EFFECT_BG_ARCHIVE)) or bgArc
     for bg = 0, Gen4Battle.EFFECT_BG_COUNT - 1 do
       for _, variant in ipairs(Gen4Battle.EFFECT_VARIANTS) do
         local spec = Gen4Battle.effectBackground(bg, variant)
@@ -2232,7 +2226,7 @@ function RomExtractorGen4:extractGraphics()
         if spec and key then
           local entry = byArt[spec.art]
           if entry == nil then
-            local image = self:composeJob(effArc, {
+            local image = self:composeJob(bgArc, {
               tiles = spec.tiles, palette = spec.palette,
               tilemap = spec.tilemap, paletteSlot = spec.slot,
             })
@@ -4784,9 +4778,6 @@ function RomExtractorGen4:extractField()
       firstArrival = row.firstArrival,
       -- HGSS rows: the flypoint flag index and the fly-point bit (Gen4Fly)
       flagIdx = row.flagIdx, isFlyPoint = row.isFlyPoint,
-      -- ...and whether entering the blackout map makes it the whiteout spawn
-      -- (src/world/Gen4Blackout.lua); nil on Platinum's rows
-      isBlackoutSpawn = row.isBlackoutSpawn,
     }
   end
 
@@ -5855,12 +5846,6 @@ function RomExtractorGen4:extractTerrain(names)
   self:emotes()
   self:moveButtons()
   self:encounterEffects()
-  -- Cut / Rock Smash obstacle animations and the HM cut-in (Gen4PtFieldFx)
-  do
-    local okFx, fx = pcall(require("src.import.Gen4PtFieldFx").build, self)
-    if okFx and fx then self:write("gen4_pt_field_fx", fx)
-    else print("gen4_pt_field_fx failed: " .. tostring(fx)) end
-  end
   self:specialEncounters()
   self:townMap()
   self:areaPopup()
@@ -7216,8 +7201,6 @@ RomExtractorGen4.STAGE_CHAIN = {
                              { "src.import.Gen4HgssAlphPuzzle", "gen4_alph_puzzle" },
                              -- Headbutt trees and Rock Smash item odds, per map
                              { "src.import.Gen4HgssFieldMoves", "gen4_hgss_field_moves" },
-                             -- Cut / Rock Smash / Headbutt obstacle animations
-                             { "src.import.Gen4HgssFieldFx", "gen4_hgss_field_fx" },
                              -- ShowCertificate's three diplomas
                              { "src.import.Gen4HgssCertificates", "gen4_hgss_certificates" },
                              -- the Pokegear's scripted calls: phonebook, script

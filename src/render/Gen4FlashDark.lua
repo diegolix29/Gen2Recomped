@@ -25,26 +25,9 @@ local function now() return D.frame end
 
 -- Called every frame the overworld draws, with the map and whether its
 -- weather is the darkness right now. Answers whether anything is to be drawn.
--- HEARTGOLD / SOULSILVER do not light the cave up: Flash (ScrCmd_FlashEffect)
--- turns weather 11 into 12, WEATHER_FLASH_2, and that is still the dark with a
--- light at the player -- the light object scaled 4.0 (ov01_021ED924) where the
--- dark cave's is 1.0, grown over 24 frames (ov01_021ED710: 1 + 3n/24 until it
--- reaches 4). `lit` is that weather.
-D.HGSS_LIT_SCALE, D.HGSS_GROW_FRAMES = 4, 24
-
-function D.update(mapId, dark, frame, lit)
+function D.update(mapId, dark, frame)
   D.frame = tonumber(frame) or D.frame
   local st = D.state
-  if lit then
-    local target = D.SMALL * D.HGSS_LIT_SCALE
-    if not st or st.map ~= mapId or st.to ~= target then
-      -- a map that loads already lit does not grow
-      local from = (st and st.map == mapId) and D.radius() or target
-      D.state = { map = mapId, from = from, to = target, t0 = now(), closing = true,
-                  frames = D.HGSS_GROW_FRAMES }
-    end
-    return true
-  end
   if dark then
     if not st or st.map ~= mapId or not st.closing then
       -- a dark map loaded (or the previous one was too): close in
@@ -66,7 +49,7 @@ end
 function D.radius()
   local st = D.state
   if not st then return D.LARGE end
-  local k = math.min(1, math.max(0, now() - st.t0) / (st.frames or D.FRAMES))
+  local k = math.min(1, math.max(0, now() - st.t0) / D.FRAMES)
   return st.from + (st.to - st.from) * k
 end
 

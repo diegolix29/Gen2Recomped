@@ -295,12 +295,12 @@ end
 -- frame objects (polished's cut trees) and one whole tile too low for
 -- Emerald's berry trees, whose cell is 16x32.  Both offsets are zero on a
 -- 16x16 sheet, so nothing that worked moves.
-function SpriteRenderer:drawFixedFrame(px, py, camX, camY, frame, flip)
+function SpriteRenderer:drawFixedFrame(px, py, camX, camY, frame)
   local x = math.floor(px - camX) - (self.offsetX or 0)
   local y = math.floor(py - camY) + (self.cellYBias or -4) - (self.offsetY or 0)
   local image, redraw = self:resolveModeImage(x, y)
   local quad = self.frames[frame] or self.frames[0]
-  if quad then blitFrame(image, quad, x, y, flip or false, redraw, flip and select(3, quad:getViewport()) or nil) end
+  if quad then blitFrame(image, quad, x, y, false, redraw) end
 end
 
 function SpriteRenderer:draw(px, py, camX, camY, facing, walkPhase, stepFlip, topHalf)

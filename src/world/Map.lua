@@ -1769,12 +1769,7 @@ function Map:signAtCell(cx, cy)
     for _, s in ipairs(leveled) do if s.gen5Level == self.gen5Level then return s end end
     return nil
   end
-  local s = self.signAt[cy * self.widthCells + cx]
-  -- BLACK / WHITE's hidden items: gone once their flag (900 + index) is set
-  -- (ov10 0x2162980 skips the record; src/world/Gen5Dowsing.lua)
-  if s and s.kind == 2 and self.def and self.def.gen5
-     and require("src.world.Gen5Dowsing").taken(s) then return nil end
-  return s
+  return self.signAt[cy * self.widthCells + cx]
 end
 
 function Map:connection(dir)

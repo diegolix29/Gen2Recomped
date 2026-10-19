@@ -18,7 +18,6 @@
 -- (the launcher pages its column and places its footer on that number).
 
 local W = require("src.pokewalker.Walker")
-local Strings = require("src.core.Strings")
 local E = require("src.pokewalker.WalkerEconomy")
 local Shop = require("src.pokewalker.WalkerShop")
 
@@ -257,7 +256,7 @@ function M.install(P)
     self:rect(x, y0, w, used, function() end)
     local mw = math.min(w - 20, 520)
     local bh = f.body:getHeight() + 24
-    local body = Strings("%s\n\nYou have %d W; after this, %d W.", c.text, self.st.watts or 0, (self.st.watts or 0) - c.price)
+    local body = ("%s\n\nYou have %d W; after this, %d W."):format(c.text, self.st.watts or 0, (self.st.watts or 0) - c.price)
     local th = wrapH(f.body, body, mw - 40)
     local mh = 20 + f.head:getHeight() + 10 + th + 20 + bh + 20
     local mx = x + (w - mw) / 2

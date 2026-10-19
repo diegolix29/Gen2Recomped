@@ -32,7 +32,7 @@ end
 --
 -- Callers rely on push returning an instance, so this always returns one.
 local function noticeScreen(game, id, err)
-  local text = ("SCREEN FAILED\n\n%s\n\n%s"):format(tostring(id), tostring(err))  -- strings: developer crash notice
+  local text = ("SCREEN FAILED\n\n%s\n\n%s"):format(tostring(id), tostring(err))
   return {
     screenId = id,
     isOpaque = true,
@@ -459,8 +459,6 @@ function Screens.resolveId(game, id, arg)
           local own = {
             Gen4Pokedex = data.gen4_hgss_dex_art and "HgssPokedex" or data.gen5_dex_art and "Gen5Pokedex",
             Gen4BoxMenu = data.gen4_hgss_box_art and "HgssBoxMenu" or data.gen5_box_art and "Gen5BoxMenu",
-            -- BW's own keyboard (src/ui/Gen5NamingScreen.lua, overlay 194)
-            Gen4NamingScreen = data.gen5_naming_art and "Gen5NamingScreen" or nil,
           }
           local to = own[gen4.id]
           if to and pcall(builtinFor, to) then return to, arg end

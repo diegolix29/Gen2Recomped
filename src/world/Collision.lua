@@ -218,13 +218,6 @@ local function verdict(map, entities, mover, dir, tx, ty)
       return false, "tile"
     end
   end
-  -- A DS MAP'S RAISED FLOORS: a step between grounds 20 units apart is a
-  -- wall (src/world/Gen4HeightRule.lua -- Falkner's walkway, every tower,
-  -- ledge and platform on both cartridges); nothing off Gen 4
-  if map.def and map.def.generation == 4
-     and require("src.world.Gen4HeightRule").blocks(map, mover, tx, ty) then
-    return false, "height"
-  end
   -- THE OTHER HALF OF A GEN 3 MAP CELL.
   --
   -- Collision alone does not keep anyone out of the water in Hoenn: the sea

@@ -259,9 +259,7 @@ if bs then
      .. "thing and will drift from the button path", presses)
   ok(bs:find('input:overlayPressed("b")', 1, true) ~= nil,
      "the cancel bar does not raise a B press")
-  -- Gen 5 (Black / White) battles share the DS layout and its touch screen
-  ok(bs:find("if not GameVersion.isGen4() then return false end", 1, true) ~= nil
-     or bs:find("if not (GameVersion.isGen4() or GameVersion.isGen5()) then return false end", 1, true) ~= nil,
+  ok(bs:find("if not GameVersion.isGen4() then return false end", 1, true) ~= nil,
      "the battle touch handler is not gated to Gen 4")
 end
 local ss = slurp("src/ui/SecondScreen.lua")

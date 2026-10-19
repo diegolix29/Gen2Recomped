@@ -34,18 +34,6 @@ Data.load = function(self, ...)
     for k, v in pairs(extra or {}) do entry[k] = v end
     return entry
   end
-  -- the zones' field permissions (Gen5Maps fieldFlags -> def.gen5Flags)
-  do
-    local Narc = require("src.import.NarcArchive")
-    local zb = rom and rom:read("/a/0/1/2")
-    local zones = zb and require("src.import.Gen5Maps").zones(Narc.parse(zb):get(0)) or {}
-    local n = 0
-    for id, z in pairs(zones) do
-      local def = self.maps and self.maps[("Z%03d"):format(id)]
-      if type(def) == "table" and z.fieldFlags then def.gen5Flags = z.fieldFlags; n = n + 1 end
-    end
-    print(("BW_FIELD_ROM: %d zone(s) given their field flags"):format(n))
-  end
   local fx = rom and require("src.import.Gen5FieldEffects").build(rom, saveImage)
   if fx then
     if fx.emotes then self.gen4_emotes = fx.emotes end

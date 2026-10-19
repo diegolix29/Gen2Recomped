@@ -20,8 +20,8 @@
 --   60-67  short_grass_sp..wi2  68-71 long_grass_sp..wi (seasons)
 --   72-74  freshwater_in/out (a surfer's ripples)   75 bird_shadow
 --   76  soil_smoke  77 iwakudaki (Rock Smash)       84 fishing_lure
---   93-95  mv_hide_tsuchi / mv_hide_kusa / shibuki (unused by the phenomena,
---          which draw 60-76: src/world/Gen5Phenomena.lua)
+--   93  mv_hide_tsuchi (DUST CLOUD)  94 mv_hide_kusa (SHAKING GRASS)
+--   95  shibuki (RIPPLING WATER)
 --   96-150 the animations: 96 hero_kemu, 103 fishing_lure, 104 / 105 / 106
 --          the three phenomena (BTP0), 107.. BCA0 / BTA0 / BMA0
 --
@@ -56,9 +56,7 @@ E.EMOTE_SOUND = { exclamation = 0x678, question = 0x730, note = 0x731 }
 E.EMOTE_LIFT = 22
 
 -- members whose pictures the field draws as billboards
--- (93-95, the mv_hide_* models, are never loaded by the phenomenon code --
--- 0x21DE094's records name the grass, ripple, smoke and shadow models)
-E.BILLBOARDS = { 47, 48, 50, 51, 52, 53, 54, 72, 73, 74, 75, 76, 77, 84,
+E.BILLBOARDS = { 47, 48, 50, 51, 52, 53, 54, 72, 73, 74, 75, 76, 77, 84, 93, 94, 95,
                  60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 45, 46 }
 -- members packed as 3D models
 E.MODELS = { 49 }
@@ -196,47 +194,6 @@ function E.modelSet(arc, saveImage)
   return set
 end
 
--- THE PHENOMENA'S MOTION (ov21 0x21DE094's resource records name these):
--- the grass sways by its BTA0 texture translation (134..145), the dust turns
--- by its BTA0 rotation (147) and breathes by its BCA0 scale (119), the
--- ripples' two rings breathe by BCA0 scale (115 / 117), the bird's shadow by
--- 118 and its texture drift 146. Kept as per-frame arrays:
--- { [member] = { name, frames, srt = { tS, tT, rc, rs }, joints = { { sx, sz } } } }
-E.ANIMS = { 115, 117, 118, 119, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147 }
-
-function E.anims(arc)
-  local Anim = require("src.import.Gen4Anim")
-  local out = {}
-  for _, member in ipairs(E.ANIMS) do
-    local b = bytesOf(arc, member)
-    local okP, parsed = pcall(Anim.parse, b)
-    local an = okP and parsed and parsed.animations and parsed.animations[1]
-    if an then
-      local rec = { name = an.name, frames = an.frames, kind = parsed.kind }
-      if parsed.kind == "BTA0" then
-        local ok, srt = pcall(Anim.textureSrt, b, an)
-        local t = ok and srt and srt[1]
-        if t then
-          rec.srt = { tS = t.translateS, tT = t.translateT, rc = t.rotationCos, rs = t.rotationSin,
-                      target = t.name }
-        end
-      elseif parsed.kind == "BCA0" then
-        local ok, joints = pcall(Anim.jointMatrices, b, an)
-        rec.joints = {}
-        for _, j in ipairs(ok and joints or {}) do
-          local sx, sz = {}, {}
-          for f, m in ipairs(j.track or {}) do
-            if type(m) == "table" then sx[f], sz[f] = m[1], m[11] end
-          end
-          rec.joints[#rec.joints + 1] = { sx = sx, sz = sz }
-        end
-      end
-      out[member] = rec
-    end
-  end
-  return out
-end
-
 -- build(rom, saveImage) -> { emotes, effects, modelSet } (any may be nil)
 function E.build(rom, saveImage)
   local bytes = rom and rom:read(E.ARCHIVE)
@@ -244,9 +201,7 @@ function E.build(rom, saveImage)
   if not arc then return nil, "no " .. E.ARCHIVE end
   local emotes = E.emotes(arc)
   local pictures, n = E.billboards(arc)
-  local okA, anims = pcall(E.anims, arc)
-  local effects = { source = "ROM:/a/0/7/5", textures = pictures, count = n, patterns = E.patterns(arc),
-                    anims = okA and anims or {} }
+  local effects = { source = "ROM:/a/0/7/5", textures = pictures, count = n, patterns = E.patterns(arc) }
   local okM, set = pcall(E.modelSet, arc, saveImage)
   return { emotes = emotes, effects = effects, modelSet = okM and set or nil }
 end

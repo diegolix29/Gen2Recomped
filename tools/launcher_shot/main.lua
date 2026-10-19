@@ -127,9 +127,6 @@ function love.load()
         st.log[#st.log + 1] = { t = os.time(), text = "Day 4 of your streak! Daily bonus +20 W" }
         Importer.walker.boardGame = os.getenv("WALKER_BOARD")
         Importer.walker.shopTab = os.getenv("WALKER_SHOP")
-        -- WALKER_TARGET=crystal/slot1: where purchases go (the Events shelf reads that save, never writes)
-        local tv, ts = (os.getenv("WALKER_TARGET") or ""):match("^(%w+)/(%w+)$")
-        if tv then e.shopTarget = { version = tv, slot = ts } end
         if os.getenv("WALKER_CONFIRM") then
           Importer.walker.shopConfirm = { text = "Rare Candy for HeartGold. It will be in the bag the next time you play.", price = 200, y = 400, fn = function() end }
         end
@@ -149,76 +146,6 @@ function love.load()
     Importer._cloudFlow = { name="Google Drive", flow={kind="pending"},
       auth={cancel=function() end}, hint="Contacting the sign-in service...",
       task={poll=function() end, cancel=function() end} }
-  end
-  -- RESTORE=<version>[/<slot>]: Tools -> Restore a Save on that game (and
-  -- that slot's copies).  RESTORE_FIXTURE=1 first seeds the save directory
-  -- with slots for it: slot1 with a corrupt main file and a pile of backups,
-  -- slot2 that nothing decodes (SAVE NEEDS RESTORE), slot3 fine, one deleted
-  -- slot.  The save directory MUST be a scratch one: run with
-  -- APPDATA=<scratch> (LOVE builds its save dir from %APPDATA% on Windows);
-  -- the fixture refuses to write under the real profile.  RESTORE_DATA=<dir>
-  -- puts a game-data folder into the scratch options (to list imported games).
-  -- RESTORE_ISOLATE=1: only the isolation below (e.g. with GAME=, to see the
-  -- fixture's slots on the game page)
-  if (os.getenv("RESTORE") or "") ~= "" or os.getenv("RESTORE_FIXTURE") or os.getenv("RESTORE_ISOLATE") then
-    local SaveData = require("src.core.SaveData")
-    -- read-only fallbacks into the real install would mix real copies in
-    SaveData._setOtherLocations({})
-    local rv, rslot = (os.getenv("RESTORE") or "crystal"):match("^(%w+)/?(%w*)$")
-    if os.getenv("RESTORE_FIXTURE") then
-      local dir = love.filesystem.getSaveDirectory():gsub("\\", "/"):lower()
-      local home = (os.getenv("USERPROFILE") or "C:/Users"):gsub("\\", "/"):lower()
-      assert(dir:sub(1, #home) ~= home and not dir:find("appdata/roaming", 1, true),
-        "RESTORE_FIXTURE refuses the real save directory " .. dir .. " (set APPDATA to a scratch folder)")
-      local Ser = require("src.core.SaveSerializer")
-      local lfs = love.filesystem
-      local function save(name, badges, secs, caught)
-        local owned = {}
-        for i = 1, caught do owned[i] = true end
-        return Ser.encode({ version = rv, player = { name = name, id = 4242, badges = badges }, party = {},
-                            pokedex = { owned = owned }, playTime = secs })
-      end
-      local opts = SaveData.loadOptions()
-      opts.saveSlots = opts.saveSlots or {}
-      opts.saveSlots[rv] = { list = { "slot1", "slot2", "slot3" }, active = "slot3", names = { slot3 = "Nuzlocke run" } }
-      if os.getenv("RESTORE_DATA") then opts.dataDir = os.getenv("RESTORE_DATA") end
-      SaveData.saveOptions(opts)
-      local d = "saves/" .. rv
-      lfs.createDirectory(d .. "/deleted")
-      lfs.createDirectory("pokewalker_backups/" .. rv)
-      local bad = "return { player = { name = \"GOLD\", party = {"   -- cut short mid-write
-      lfs.write(d .. "/slot1.lua", bad)
-      lfs.write(d .. "/slot1.lua.bak", save("GOLD", 7, 151200, 180))
-      lfs.write(d .. "/slot1.lua.bak-20261016-213005", save("GOLD", 7, 149000, 176))
-      lfs.write(d .. "/slot1.lua.bak-20261015-190112", save("GOLD", 6, 131000, 150))
-      lfs.write(d .. "/slot1.lua.bak-20261012-080000-prerestore", save("GOLD", 5, 99000, 120))
-      lfs.write(d .. "/slot1.lua.bak-20261001-120000-replaced", save("KRIS", 2, 30000, 41))
-      lfs.write(d .. "/slot1.lua.corrupt-20261017-221500", "return { player = { na")
-      lfs.write("pokewalker_backups/" .. rv .. "/slot1_20261014_101500_walk.lua", save("GOLD", 6, 120000, 140))
-      lfs.write(d .. "/slot2.lua", "\0\0\0garbage that is not a save")
-      lfs.write(d .. "/slot3.lua", save("ETHAN", 3, 41000, 62))
-      lfs.write(d .. "/deleted/slot4-20261011-170000.lua", save("LYRA", 1, 9000, 12))
-      print("RESTORE_FIXTURE seeded " .. dir)
-    end
-    if (os.getenv("RESTORE") or "") ~= "" then
-      local Sidebar = require("src.import.LauncherSidebar")
-      Importer:_sbGo("tools")
-      for _, t in ipairs(Sidebar.TOOLS) do
-        if t.id == "restore" then Importer.toolFlow = { tool = t, label = t.label, version = rv } end
-      end
-      if rslot ~= "" then Importer.toolFlow.slot = rslot end
-      -- RESTORE_ARM=n: the n-th row armed (its "click again" ask showing)
-      if os.getenv("RESTORE_ARM") then
-        Importer.toolFlow.armed = (rslot ~= "" and "copy:" or "deleted:") .. os.getenv("RESTORE_ARM")
-      end
-      -- RESTORE_NOTICE=ok|fail: the line a restore leaves at the top
-      if os.getenv("RESTORE_NOTICE") then
-        local ok = os.getenv("RESTORE_NOTICE") == "ok"
-        Importer.toolFlow.notice = ok and "Restored slot1 from the previous save (.bak) copy."
-          or "Could not restore: that copy does not read as a save"
-        Importer.toolFlow.noticeOk = ok
-      end
-    end
   end
   if os.getenv("TOOL") then
     local Sidebar = require("src.import.LauncherSidebar")

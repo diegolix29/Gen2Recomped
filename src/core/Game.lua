@@ -1478,12 +1478,7 @@ function Game:keypressed(key)
     return
   end
   if key == "f1" then
-    -- QUICK SAVE ONLY FROM FREE ROAM.  Mid-battle (or under any menu or
-    -- cutscene) the save table is half way through a change, and a frozen
-    -- battle is exactly when a player mashes keys.
-    if self.overworld and self.stack:top() == self.overworld then
-      self:writeSave()
-    end
+    self:writeSave()
     return
   elseif key == "f2" then
     local loaded, recovered = SaveData.load()

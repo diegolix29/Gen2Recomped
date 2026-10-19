@@ -26,7 +26,6 @@
 -- effect module's (0, 0, 13) with a 30-degree view, by eye beyond that.
 
 local Base = require("src.ui.Gen3EvolutionState")
-local Strings = require("src.core.Strings")
 local State = {}; State.__index = State
 setmetatable(State, { __index = Base }); State.isOpaque = true
 
@@ -50,14 +49,14 @@ end
 
 local TEXT = { evolving = 0, stopped = 1, congratulations = 2 }
 local FALLBACK = {
-  evolving = Strings.source("What?\n{VAR1} is evolving!"),
-  stopped = Strings.source("Huh? {VAR1}\nstopped evolving!"),
-  congratulations = Strings.source("Congratulations! Your {VAR1}\nevolved into {VAR2}!"),
+  evolving = "What?\n{VAR1} is evolving!",
+  stopped = "Huh? {VAR1}\nstopped evolving!",
+  congratulations = "Congratulations! Your {VAR1}\nevolved into {VAR2}!",
 }
 
 function State.text(game, role, one, two)
   local key = ("TEXT_G5S_0172_%05d"):format(TEXT[role])
-  local s = ((game.data or {}).text or {})[key] or Strings(FALLBACK[role] or "")
+  local s = ((game.data or {}).text or {})[key] or FALLBACK[role]
   local function safe(v) return (tostring(v or ""):gsub("%%", "%%%%")) end
   s = s:gsub("{VAR1}", safe(one)):gsub("{VAR2}", safe(two))
   return (s:gsub("{[^}]*}", ""))

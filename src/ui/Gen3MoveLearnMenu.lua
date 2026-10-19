@@ -45,20 +45,20 @@ end
 -- extractMoveLearnText existed keeps the same eight under the same names, so
 -- the screen is never wordless.
 local FALLBACK = {
-  tryingToLearn = Strings.source("{VAR1} wants to learn the\nmove {VAR2}.\fHowever, {VAR1} already\n"
+  tryingToLearn = "{VAR1} wants to learn the\nmove {VAR2}.\fHowever, {VAR1} already\n"
                   .. "knows four moves.\fShould a move be deleted and\n"
-                  .. "replaced with {VAR2}?"),
-  stopTeaching = Strings.source("Stop trying to teach\n{VAR2}?"),
-  didNotLearn = Strings.source("{VAR1} did not learn the\nmove {VAR2}."),
+                  .. "replaced with {VAR2}?",
+  stopTeaching = "Stop trying to teach\n{VAR2}?",
+  didNotLearn = "{VAR1} did not learn the\nmove {VAR2}.",
   whichForget = "Which move should be forgotten?",
-  forgot = Strings.source("1, 2, and… … … Poof!\f{VAR1} forgot how to\nuse {VAR2}.\fAnd…"),
-  learned = Strings.source("{VAR1} learned\n{VAR2}!"),
+  forgot = "1, 2, and… … … Poof!\f{VAR1} forgot how to\nuse {VAR2}.\fAnd…",
+  learned = "{VAR1} learned\n{VAR2}!",
 }
 
 function Gen3MoveLearnMenu.line(game, role)
   local c = game and game.data and game.data.constants
   local r = c and c.gen3MoveLearn
-  local line = (type(r) == "table" and r[role]) or Strings(FALLBACK[role] or "")
+  local line = (type(r) == "table" and r[role]) or FALLBACK[role]
   return line or ""
 end
 

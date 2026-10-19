@@ -327,7 +327,7 @@ end
 -- round trip: draw it 1:1 into a canvas and read that back.
 --
 -- This runs inside the world pass, with the pipeline's own canvas bound, so
--- the previous target is put back (by push/pop) rather than unbound -- the
+-- the previous target is captured and put back rather than unbound -- the
 -- usual setCanvas() would drop the rest of the frame on the floor. One
 -- readback per map, cached with the entry it feeds; the atlas is a couple
 -- of hundred pixels square, so the GPU sync costs far less than the mesh
@@ -338,8 +338,7 @@ local function readback(image)
           and love.graphics.getCanvas) then
     return nil
   end
-  -- the push('all')/pop restores the bound canvas; setCanvas(getCanvas())
-  -- would drop the depth the scene canvas is bound with
+  local prev = love.graphics.getCanvas()
   love.graphics.push('all')
   local ok, data = pcall(function()
     local w, h = image:getDimensions()
@@ -366,13 +365,15 @@ local function readback(image)
     love.graphics.draw(image, 0, 0)
     love.graphics.setBlendMode("alpha", "alphamultiply")
     -- LOVE refuses newImageData on the currently-active canvas, so the
-    -- copy has to be unbound BEFORE the read; the pop puts the target back
-    love.graphics.setCanvas()
+    -- previous target has to come back BEFORE the read, not just after
+    love.graphics.setCanvas(prev)
     local out = canvas:newImageData()
     if canvas.release then canvas:release() end
     return out
   end)
+  love.graphics.setCanvas(prev)
   love.graphics.pop()
+  pcall(love.graphics.setCanvas, prev)
   return ok and data or nil
 end
 

@@ -18,11 +18,6 @@
 -- Every message box is printed as [msg] and every screen pushed as [screen];
 -- BW_SUBWAY_TRACE prints each 0x15A call. BP=n starts with n Battle Points;
 -- SUBWAY_STREAK="mode:streak:stage" seeds a line's record (to reach a boss).
--- The Musical: BW_MUSICAL_AUTOPICK, BW_MUSICAL_AUTODRESS="prop ids",
--- MUSICAL_POINTS=n, MUSICAL_FANS="i:state:prop", BW_MUSICAL_TRACE; the
--- stadiums: BW_CLOCK="wday:hour:min". BW_SAY_NO="text" answers NO to the
--- yes / no after a box with that text; BW_FAC_NOALIAS="0x0BF,..." leaves
--- commands unlowered (a bisect). Prop pictures are decoded into memory.
 
 io.stdout:setvbuf("line")
 local install = assert(os.getenv("INSTALL"), "set INSTALL to the version's folder")
@@ -42,16 +37,6 @@ local function extractor()
       self._banks[bank] = Text.bank(system:get(bank)) or false
     end
     return self._banks[bank] and self._banks[bank][index]
-  end
-  -- pictures kept in memory (the installed cache is never written)
-  function x:saveImage(_, image, extra)
-    local okD, d = pcall(love.image.newImageData, image.width, image.height, "rgba8", image.rgba)
-    if not okD then return nil end
-    local img = love.graphics.newImage(d)
-    img:setFilter("nearest", "nearest")
-    local entry = { image = img, width = image.width, height = image.height }
-    for k, v in pairs(extra or {}) do entry[k] = v end
-    return entry
   end
   return x
 end
@@ -85,10 +70,6 @@ Data.load = function(self, ...)
   local ver = self.gen5_version or dofile(gen .. "gen5_version.lua")
   local Narc = require("src.import.NarcArchive")
   local Link = require("src.import.Gen5ScriptLink")
-  -- BW_FAC_NOALIAS="0x0CF,0x5D": leave those commands unlowered (a bisect)
-  for op in tostring(os.getenv("BW_FAC_NOALIAS") or ""):gmatch("0x(%x+)") do
-    Link.ALIASES[tonumber(op, 16)] = nil
-  end
   -- the widths measured by hand since the cache was made (0x137)
   for op, w in pairs(require("src.import.Gen5ScriptOps").HAND_WIDTHS or {}) do scripts.widths[op] = w end
   local t0 = os.clock()
@@ -105,21 +86,7 @@ end
 -- every message box, printed
 local TextBox = require("src.render.TextBox")
 local new = TextBox.new
--- BW_SAY_NO="friend|...": the yes / no after a box with that text answers NO
-local lastMsg = ""
-do
-  local Commands = require("src.script.Commands")
-  require("src.script.Gen4Commands")
-  local yesno = Commands.g4_from_yesno
-  Commands.g4_from_yesno = function(ctx, ...)
-    for pat in tostring(os.getenv("BW_SAY_NO") or ""):gmatch("[^|]+") do
-      if lastMsg:find(pat, 1, true) then ctx.lastCheck = false print("[harness] NO to: " .. pat) end
-    end
-    return yesno(ctx, ...)
-  end
-end
 TextBox.new = function(game, text, ...)
-  if tostring(text) ~= "" then lastMsg = tostring(text) end
   print(("[msg] %s"):format(tostring(text):gsub("\n", " / ")))
   return new(game, text, ...)
 end
@@ -136,14 +103,6 @@ local adopt = Game.adoptSave
 Game.adoptSave = function(self, save, ...)
   local r = { adopt and adopt(self, save, ...) }
   if os.getenv("BP") then require("src.pokemon.Gen4BattleTower").addBP(save, tonumber(os.getenv("BP")) or 0) end
-  -- MUSICAL_POINTS=n: the Musical's points earned so far (unlocks performers, fans)
-  if os.getenv("MUSICAL_POINTS") then
-    require("src.script.Gen5Musical").save(save).points = tonumber(os.getenv("MUSICAL_POINTS")) or 0
-  end
-  -- MUSICAL_FANS="0:1:59,...": fan i of show type 0 in state s with prop p
-  for i, st, p in tostring(os.getenv("MUSICAL_FANS") or ""):gmatch("(%d+):(%d+):(%d+)") do
-    require("src.script.Gen5Musical").save(save).fans[tonumber(i)] = { type = 0, state = tonumber(st), prop = tonumber(p) }
-  end
   for mode, streak, stage in tostring(os.getenv("SUBWAY_STREAK") or ""):gmatch("(%d+):(%d+):(%d+)") do
     local S = require("src.script.Gen5BattleSubway")
     local s = S.score(save)

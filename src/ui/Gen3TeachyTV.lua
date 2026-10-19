@@ -40,27 +40,27 @@ local RETURN_WIPE_FRAMES = 64
 local LESSONS = {
   {
     key = "battle", textKey = "battle", label = "Teach me how to battle.",
-    text = Strings.source("POKéDUDE: Welcome!\fIn battle, choose FIGHT, then pick a move.\nLower the foe's HP to win.\fWatch your own HP, too. If every POKéMON faints,\nyou'll black out."),
+    text = "POKéDUDE: Welcome!\fIn battle, choose FIGHT, then pick a move.\nLower the foe's HP to win.\fWatch your own HP, too. If every POKéMON faints,\nyou'll black out.",
   },
   {
     key = "status", textKey = "status", label = "What are status problems?",
-    text = Strings.source("POKéDUDE: Status problems can change a battle.\fPOISON and BURN drain HP. PARALYSIS can stop a move.\nSLEEP and FREEZE keep a POKéMON from acting.\fItems and POKéMON CENTERS can cure these conditions."),
+    text = "POKéDUDE: Status problems can change a battle.\fPOISON and BURN drain HP. PARALYSIS can stop a move.\nSLEEP and FREEZE keep a POKéMON from acting.\fItems and POKéMON CENTERS can cure these conditions.",
   },
   {
     key = "matchups", textKey = "matchups", label = "What are type matchups?",
-    text = Strings.source("POKéDUDE: Every move has a type.\fSome types are super effective, some are not very effective,\nand some do nothing at all.\fTry different moves and learn which matchups give you the edge!"),
+    text = "POKéDUDE: Every move has a type.\fSome types are super effective, some are not very effective,\nand some do nothing at all.\fTry different moves and learn which matchups give you the edge!",
   },
   {
     key = "catch", textKey = "catch", label = "I want to catch POKéMON.",
-    text = Strings.source("POKéDUDE: First weaken a wild POKéMON without knocking it out.\fThen open the BAG and throw a POKé BALL.\nStatus problems can make a catch easier, too."),
+    text = "POKéDUDE: First weaken a wild POKéMON without knocking it out.\fThen open the BAG and throw a POKé BALL.\nStatus problems can make a catch easier, too.",
   },
   {
     key = "tms", textKey = "tms", label = "Teach me about TMs.", needsTMCase = true,
-    text = Strings.source("POKéDUDE: TMs teach moves to compatible POKéMON.\fOpen the TM CASE, choose a TM, then choose the POKéMON.\nA TM is used up after teaching; HMs are kept."),
+    text = "POKéDUDE: TMs teach moves to compatible POKéMON.\fOpen the TM CASE, choose a TM, then choose the POKéMON.\nA TM is used up after teaching; HMs are kept.",
   },
   {
     key = "register", textKey = "register", label = "How do I register an item?", needsTMCase = true,
-    text = Strings.source("POKéDUDE: Important KEY ITEMS can be registered for quick use.\fIn the BAG, choose a KEY ITEM and select REGISTER.\nYou can change the registered item whenever you like."),
+    text = "POKéDUDE: Important KEY ITEMS can be registered for quick use.\fIn the BAG, choose a KEY ITEM and select REGISTER.\nYou can change the registered item whenever you like.",
   },
 }
 
@@ -87,13 +87,13 @@ end
 local function romLesson(data, lesson)
   local r = record(data)
   local texts = r and r.texts
-  if type(texts) ~= "table" then return Strings(lesson.text), nil end
+  if type(texts) ~= "table" then return lesson.text, nil end
   local before = texts[lesson.textKey .. "Before"]
   local after = texts[lesson.textKey .. "After"]
   if type(before) == "string" and before ~= "" then
     return before, (type(after) == "string" and after ~= "" and after or nil)
   end
-  return Strings(lesson.text), nil
+  return lesson.text, nil
 end
 
 local function rgb(c, fallback)
@@ -494,9 +494,9 @@ function TeachyTV:runTMCaseDemo(onDone)
   local TMCase = require("src.ui.Gen3TMCase")
   local texts = (record(self.game.data) or {}).texts or {}
   local typeText = texts.tmTypes or
-    Strings("POKé DUDE: TMs also come in types.\fCheck the type and teach it to a POKéMON that matches up well.")
+    "POKé DUDE: TMs also come in types.\fCheck the type and teach it to a POKéMON that matches up well."
   local descText = texts.tmDescription or
-    Strings("Don't just look at the type, read the description, too.\fIt contains hints about what POKéMON might learn the move.")
+    "Don't just look at the type, read the description, too.\fIt contains hints about what POKéMON might learn the move."
 
   local tm
   tm = TMCase.new(self.game, {

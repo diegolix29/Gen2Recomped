@@ -67,9 +67,9 @@ local function sh(c) return os.execute(c) end
 local function kindOf(p)
   -- DIRECTORY FIRST: fopen() succeeds on a directory on Linux, so an io.open
   -- probe calls every folder a file.
-  local d = sh('test -d "' .. p .. '" 2>' .. (package.config:sub(1, 1) == "\\" and "nul" or "/dev/null"))
+  local d = sh('test -d "' .. p .. '" 2>/dev/null')
   if d == true or d == 0 then return "directory" end
-  local f = sh('test -f "' .. p .. '" 2>' .. (package.config:sub(1, 1) == "\\" and "nul" or "/dev/null"))
+  local f = sh('test -f "' .. p .. '" 2>/dev/null')
   if f == true or f == 0 then return "file" end
   return nil
 end
@@ -171,7 +171,7 @@ local function install(opt)
   end
   fs.remove = function(rel)
     local full = saveDir .. "/" .. rel
-    if kindOf(full) == "directory" then sh('rmdir "' .. full .. '" 2>' .. (package.config:sub(1, 1) == "\\" and "nul" or "/dev/null")); return true end
+    if kindOf(full) == "directory" then sh('rmdir "' .. full .. '" 2>/dev/null'); return true end
     return os.remove(full) and true or false
   end
   fs.getDirectoryItems = function(rel)
@@ -180,7 +180,7 @@ local function install(opt)
     for _, m in ipairs(mounts) do roots[#roots + 1] = m.dir end
     for _, r in ipairs(roots) do
       local d = (rel == nil or rel == "") and r or (r .. "/" .. rel)
-      local pipe = io.popen('ls -A "' .. d .. '" 2>' .. (package.config:sub(1, 1) == "\\" and "nul" or "/dev/null"))
+      local pipe = io.popen('ls -A "' .. d .. '" 2>/dev/null')
       if pipe then
         for line in pipe:lines() do
           if not seen[line] then seen[line] = true; out[#out + 1] = line end
@@ -259,9 +259,9 @@ local function install(opt)
   local ffi = { os = (osName == "Windows") and "Windows" or "Linux",
                 NULL = setmetatable({}, {}) }
   local C = {}
-  C.mkdir = function(p) sh('mkdir "' .. p .. '" 2>' .. (package.config:sub(1, 1) == "\\" and "nul" or "/dev/null")); return 0 end
+  C.mkdir = function(p) sh('mkdir "' .. p .. '" 2>/dev/null'); return 0 end
   C.CreateDirectoryA = C.mkdir
-  C.rmdir = function(p) sh('rmdir "' .. p .. '" 2>' .. (package.config:sub(1, 1) == "\\" and "nul" or "/dev/null")); return 0 end
+  C.rmdir = function(p) sh('rmdir "' .. p .. '" 2>/dev/null'); return 0 end
   C.RemoveDirectoryA = C.rmdir
   if opt.ffiMount ~= false then
     C.PHYSFS_mount = function(dir, point, append)
@@ -585,7 +585,7 @@ local SWEEP_ALLOWED = {
 local function sweep()
   local offenders, scanned = {}, 0
   for _, dir in ipairs(SWEEP_DIRS) do
-    local pipe = io.popen('ls "' .. dir .. '" 2>' .. (package.config:sub(1, 1) == "\\" and "nul" or "/dev/null"))
+    local pipe = io.popen('ls "' .. dir .. '" 2>/dev/null')
     if pipe then
       for name in pipe:lines() do
         if name:sub(-4) == ".lua" then
