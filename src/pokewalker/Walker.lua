@@ -81,15 +81,9 @@ W.live = nil
 
 function W.load()
   if W.live then return W.live end
-  -- the state file, then its staged and previous copies: a phone killing the
-  -- app mid-write must not cost the walking Pokemon (it left its PC box when
-  -- it was sent) -- SaveSafety.atomicWrite in W.save keeps both
-  for _, name in ipairs({ W.FILE, W.FILE .. ".tmp", W.FILE .. ".bak" }) do
-    local okT, t = false, nil
-    if love and love.filesystem and love.filesystem.getInfo(name) then
-      okT, t = pcall(serializer().decode, love.filesystem.read(name) or "")
-    end
-    if okT and type(t) == "table" then
+  if love and love.filesystem and love.filesystem.getInfo(W.FILE) then
+    local ok, t = pcall(serializer().decode, love.filesystem.read(W.FILE) or "")
+    if ok and type(t) == "table" then
       local fresh = W.newState()
       for k, v in pairs(fresh) do if t[k] == nil then t[k] = v end end
       W.live = t
@@ -104,15 +98,7 @@ function W.reload() W.live = nil return W.load() end
 
 function W.save(st)
   if st then W.live = st end
-  if love and love.filesystem then
-    local okS, Safety = pcall(require, "src.core.SaveSafety")
-    if okS then
-      Safety.atomicWrite(love.filesystem, W.FILE, serializer().encode(st),
-        { bak = W.FILE .. ".bak", decode = Safety.decodeAny })
-    else
-      love.filesystem.write(W.FILE, serializer().encode(st))
-    end
-  end
+  if love and love.filesystem then love.filesystem.write(W.FILE, serializer().encode(st)) end
 end
 
 -- the walker's own finds (Dowsing, the Poke Radar, a find): three of each, as

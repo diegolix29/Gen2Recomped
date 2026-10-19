@@ -119,15 +119,11 @@ function Gen4WildLead.choose(data, save, slots, kind, rod, rng)
     local s = slots[index] or slots[1]
     level = tonumber(s.maxLevel or s.level) or 1
   else
-    if rod == "hgss" or rod == "uniform" or type(rod) == "table" then
-      -- HGSS chains the two checks with `!a && !b`: Magnet Pull is kept.
-      -- A table is the slot odds of another HGSS kind run through
-      -- FieldSystem_GenerateRegularEncounter (Headbutt 50/15/15/10/5/5,
-      -- Rock Smash 80/20)
+    if rod == "hgss" or rod == "uniform" then
+      -- HGSS chains the two checks with `!a && !b`: Magnet Pull is kept
       index = typeSlot(lead, data, slots, "STEEL", "MAGNET_PULL", rng)
         or typeSlot(lead, data, slots, "ELECTRIC", "STATIC", rng)
-        or (rod == "uniform" and rng(1, #slots))
-        or pick(type(rod) == "table" and rod or ROD.hgss, rng)
+        or (rod == "uniform" and rng(1, #slots)) or pick(ROD.hgss, rng)
     else
     typeSlot(lead, data, slots, "STEEL", "MAGNET_PULL", rng)   -- spent, then lost
     index = typeSlot(lead, data, slots, "ELECTRIC", "STATIC", rng)

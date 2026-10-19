@@ -527,8 +527,7 @@ function Gen4StarterSelect:drawScene()
   if self.noDepth then return nil end
 
   local g = love.graphics
-  -- push("all")/pop restores the bound canvas, a mod's depth set included
-  g.push("all")
+  local previous = { g.getCanvas() }
   g.setCanvas({ self.colour, depthstencil = self.depth })
   g.clear(0, 0, 0, 0, true, true)
 
@@ -585,7 +584,7 @@ function Gen4StarterSelect:drawScene()
     self.scene:draw(viewProjection, pose)
   end
 
-  g.pop()
+  g.setCanvas(previous[1] and previous or nil)
   return self.colour
 end
 

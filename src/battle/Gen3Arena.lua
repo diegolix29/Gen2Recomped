@@ -42,16 +42,16 @@ Arena.TEXT = {
   tied = "TEXT_5CD170", forfeitAsk = "TEXT_5CD1EC", forfeited = "TEXT_5CD221",
 }
 Arena.FALLBACK = {
-  commence = Strings.source("REFEREE: {KUN} VS {RIVAL}!\nCommence battling!"),
-  thatsIt = Strings.source("REFEREE: That's it! We will now go to\njudging to determine the winner!"),
-  mind = Strings.source("REFEREE: Judging category 1, Mind!\nThe POKéMON showing the most guts!"),
-  skill = Strings.source("REFEREE: Judging category 2, Skill!\nThe POKéMON using moves the best!"),
-  body = Strings.source("REFEREE: Judging category 3, Body!\nThe POKéMON with the most vitality!"),
-  draw = Strings.source("REFEREE: Judgment: 3 to 3!\nWe have a draw!"),
-  defeated = Strings.source("{KUN} defeated the opponent\n{RIVAL} in a REFEREE's decision!"),
-  lost = Strings.source("{KUN} lost to the opponent\n{RIVAL} in a REFEREE's decision!"),
-  tied = Strings.source("{KUN} tied the opponent\n{RIVAL} in a REFEREE's decision!"),
-  forfeitAsk = Strings.source("Would you like to forfeit the match\nand quit now?"),
+  commence = "REFEREE: {KUN} VS {RIVAL}!\nCommence battling!",
+  thatsIt = "REFEREE: That's it! We will now go to\njudging to determine the winner!",
+  mind = "REFEREE: Judging category 1, Mind!\nThe POKéMON showing the most guts!",
+  skill = "REFEREE: Judging category 2, Skill!\nThe POKéMON using moves the best!",
+  body = "REFEREE: Judging category 3, Body!\nThe POKéMON with the most vitality!",
+  draw = "REFEREE: Judgment: 3 to 3!\nWe have a draw!",
+  defeated = "{KUN} defeated the opponent\n{RIVAL} in a REFEREE's decision!",
+  lost = "{KUN} lost to the opponent\n{RIVAL} in a REFEREE's decision!",
+  tied = "{KUN} tied the opponent\n{RIVAL} in a REFEREE's decision!",
+  forfeitAsk = "Would you like to forfeit the match\nand quit now?",
   forfeited = "forfeited the match!",
 }
 
@@ -64,7 +64,7 @@ end
 -- (B_OPPONENT_MON1_NAME) filled in
 function Arena.line(battle, key)
   local text = battle.data and battle.data.text and battle.data.text[Arena.TEXT[key]]
-  text = text or Strings(Arena.FALLBACK[key])
+  text = text or Arena.FALLBACK[key]
   text = text:gsub("\012$", ""):gsub("\012", "\n")
   text = text:gsub("{KUN}", function() return nameOf(battle.player) end)
   text = text:gsub("{RIVAL}", function() return nameOf(battle.enemy) end)

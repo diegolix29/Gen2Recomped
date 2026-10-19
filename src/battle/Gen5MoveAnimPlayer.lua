@@ -64,16 +64,6 @@ M.VIEWS = {
 }
 -- MCSS home positions, singles (0x0220A050); slot 0 is the player's
 M.HOME = { [0] = { 0.5, 0.4, 7.0 }, [1] = { 0.3, 0.4, -10.0 } }
--- a double's slots 2..5 and the rest (src/battle/Gen5BattleLayout.lua)
-local Layout = require("src.battle.Gen5BattleLayout")
--- the doubles views 2..5 (0x0220AD78 / 0x0220ADA8) and the wide view 14
-M.VIEWS_DOUBLE = {
-  [2] = { pos = { 2.7, 5.2, 17.3 }, target = { -4.0, 1.1, 0.0 } },
-  [3] = { pos = { 8.599, 6.950, 6.905 }, target = { 2.101, 2.850, -10.396 } },
-  [4] = { pos = { 6.7, 5.2, 17.3 }, target = { 0.0, 1.1, 0.0 } },
-  [5] = { pos = { 4.599, 6.950, 6.905 }, target = { -2.101, 2.850, -10.396 } },
-  [14] = { pos = { 8.7, 7.7, 23.8 }, target = { 2.0, 3.6, 6.5 } },
-}
 M.EMITTER_Z = 0.3125   -- added to an emitter's origin and target z
 M.LCD_W, M.LCD_H = 256, 192
 -- the ortho particle system of the SCREEN ops: x -4..4, y -3..3
@@ -165,12 +155,7 @@ function Stepper:tick()
     local all = true
     for i = 1, #self.value do
       local v, d, sp = self.value[i] + self.speed[i], self.dest[i], self.speed[i]
-      -- reached, overshot, or (rounding) no longer moving toward it
-      if (sp >= 0 and v >= d) or (sp < 0 and v <= d) or abs(d - v) < 1e-6 or abs(sp) < 1e-9 then
-        v = d
-      else
-        all = false
-      end
+      if (sp >= 0 and v >= d) or (sp < 0 and v <= d) then v = d else all = false end
       self.value[i] = v
     end
     if all then self.done = true end
@@ -228,38 +213,17 @@ function Player:missing()
   return out
 end
 
-local function freshState(isPlayer, slot, rule)
-  slot = slot or (isPlayer and 0 or 1)
+local function freshState(isPlayer)
+  local slot = isPlayer and 0 or 1
   return {
-    slot = slot, pos = copy3(Layout.home(rule, slot)), offset = { 0, 0, 0 },
+    slot = slot, pos = copy3(M.HOME[slot]), offset = { 0, 0, 0 },
     sx = 1, sy = 1, rot = 0, alpha = 31, mosaic = 0, evy = 0, colour = 0,
     hidden = false, tasks = {},
   }
 end
 
--- setLayout(rule, attackerPos, targetPos): a double's BattleState positions
--- (0..3) for the next start(), so the attacker and the defender stand on
--- their own MCSS slots (p + 2) rather than on the singles pair. Kept until
--- the next call; any other rule clears it.
-function Player:setLayout(rule, attackerPos, targetPos)
-  if rule ~= "double" or attackerPos == nil then self.pendingLayout = nil; return end
-  local a = (tonumber(attackerPos) or 0) + 2
-  local d = targetPos ~= nil and (tonumber(targetPos) or 0) + 2 or nil
-  -- the defender must stand on the other side for the side-keyed channels; a
-  -- move at the partner (or with no target) faces the foe's left flank
-  if d == nil or d % 2 == a % 2 then d = (a % 2 == 0) and 3 or 2 end
-  self.pendingLayout = { rule = rule, attacker = a, defender = d }
-end
-
 function Player:reset()
-  local L = self.layout
-  if L then
-    local atk = self.attackerIsPlayer and true or false
-    self.state = { [atk] = freshState(atk, L.attacker, L.rule),
-                   [not atk] = freshState(not atk, L.defender, L.rule) }
-  else
-    self.state = { [true] = freshState(true), [false] = freshState(false) }
-  end
+  self.state = { [true] = freshState(true), [false] = freshState(false) }
   self.cam = camera(copy3(M.CAMERA.pos), copy3(M.CAMERA.target))
   self.camTask, self.shakeTask = nil, nil
   self.shake = { 0, 0, 0 }
@@ -267,9 +231,6 @@ function Player:reset()
   self.emitters = {}
   self.slots = {}
   self.vars = {}
-  self.typeSource, self.gaugesHidden = nil, false
-  for k, v in pairs(self.presetVars or {}) do self.vars[k] = v end
-  self.objs = {}
   self.work = 0
   self.waitFrames = 0
   self.waitKind = nil
@@ -289,9 +250,6 @@ function Player:start(effectId, attackerIsPlayer)
   if not prog then self.playing = false; return false end
   self.moveId = id
   self.attackerIsPlayer = attackerIsPlayer and true or false
-  -- the layout setLayout() last named (BattleState names one before every
-  -- move: nil in a single)
-  self.layout = self.pendingLayout
   self:reset()
   self.code, self.to = prog.code, prog.to
   self.pc = (prog.seq and prog.seq[0]) or 1
@@ -327,13 +285,6 @@ function Player:sideOf(code)
   if code == 16 then return not self.attackerIsPlayer end
   if code == 0 then return true end
   if code == 1 then return false end
-  -- a double's slots 2..7: whoever of the two stands there
-  if code >= 2 and code <= 7 and self.layout then
-    for _, side in ipairs({ true, false }) do
-      local s = self.state[side]
-      if s and s.slot == code then return side end
-    end
-  end
   return nil   -- partners, the other doubles slots, the trainer slots
 end
 
@@ -346,11 +297,7 @@ function Player:targets(code)
   return { s }
 end
 
-function Player:homeOf(side)
-  local s = self.state and self.state[side and true or false]
-  if s and s.slot and s.slot > 1 and self.layout then return Layout.home(self.layout.rule, s.slot) end
-  return M.HOME[side and 0 or 1]
-end
+function Player:homeOf(side) return M.HOME[side and 0 or 1] end
 
 -- emitter position codes (0x021FD1CC)
 function Player:emitterPoint(code, explicit)
@@ -363,9 +310,6 @@ function Player:emitterPoint(code, explicit)
   elseif code == 12 then side, flip = not self.attackerIsPlayer, true
   elseif code == 0 then side = true
   elseif code == 1 then side = false
-  elseif code >= 2 and code <= 7 and self.layout then
-    -- a double's slot by number, standing or not
-    return copy3(Layout.home(self.layout.rule, code)), false
   else return nil, false end
   return copy3(self:homeOf(side)), flip
 end
@@ -416,11 +360,7 @@ function Player:busy(kind)
     end
     return false
   end
-  local function objs()
-    for _, o in pairs(self.objs or {}) do if next(o.tasks) then return true end end
-    return false
-  end
-  if kind == 0 then return camera() or mcss() or particles() or bg() or fades(nil) or objs() end
+  if kind == 0 then return camera() or mcss() or particles() or bg() or fades(nil) end
   if kind == 1 then return camera() end
   if kind == 2 then return particles() end
   if kind == 3 or kind == 4 then return mcss() end
@@ -493,17 +433,6 @@ end
 -- ---------------------------------------------------------------------------
 
 function Player:stepTasks()
-  -- the OBJs: their move / scale / fade tasks and their cell animation
-  for _, o in pairs(self.objs or {}) do
-    for k, t in pairs(o.tasks) do
-      if t.stepper then
-        local live = t.stepper:tick()
-        t.apply(t.stepper)
-        if not live then o.tasks[k] = nil end
-      elseif not t.tick() then o.tasks[k] = nil end
-    end
-    o.seqT = (o.seqT or 0) + 1
-  end
   -- camera move
   local ct = self.camTask
   if ct then
@@ -516,11 +445,7 @@ function Player:stepTasks()
       end
     end
     local v = ct.stepper.value
-    if ct.orbit then
-      self.cam = camera(M.orbitPos(ct.orbit.target, ct.orbit.d, v[1], v[2]), copy3(ct.orbit.target))
-    else
-      self.cam = camera({ v[1], v[2], v[3] }, { v[4], v[5], v[6] })
-    end
+    self.cam = camera({ v[1], v[2], v[3] }, { v[4], v[5], v[6] })
     if not busy then self.camTask = nil end
   end
   local st = self.shakeTask
@@ -628,22 +553,7 @@ OPS[0] = function(self, a)
   elseif code == 11 or code == 12 then view = M.VIEWS[self.attackerIsPlayer and 1 or 0]
   elseif code == 13 then view = self.savedCam
   elseif code == 18 or code == 19 then view = M.VIEWS[code]
-  else view = nil end   -- 14/15/16/20: no move in singles
-  -- A DOUBLE looks at the slots' own views (0x021F9AB8): 2..5 by number,
-  -- the attacker's / defender's slot, the wide view 14 for 14 and 20, and
-  -- 21 the attacker's slot only when the attacker is a foe
-  local L = self.layout
-  if L and L.rule == "double" then
-    local slotView = function(p) return M.VIEWS_DOUBLE[p] end
-    local atk, def = self.state[self.attackerIsPlayer] or {}, self.state[not self.attackerIsPlayer] or {}
-    if code >= 2 and code <= 5 then view = slotView(code)
-    elseif code == 9 or code == 10 then view = slotView(atk.slot)
-    elseif code == 11 or code == 12 then view = slotView(def.slot)
-    elseif code == 14 or code == 20 then view = M.VIEWS_DOUBLE[14]
-    elseif code == 21 then view = (atk.slot or 0) % 2 == 1 and slotView(atk.slot) or M.VIEWS_DOUBLE[14]
-    end
-  end
-  if not view then return end   -- 15/16 (the side views): not read yet
+  else return end   -- 14/15/16/20: no move in singles
   if not view then return end
   self:moveCamera(a(1), view.pos, view.target, a(3), a(4), a(5))
 end
@@ -671,34 +581,7 @@ OPS[1] = function(self, a)
   self:moveCamera(mode == 0 and 0 or 1, pos, tgt, a(8), a(9), a(10))
 end
 
--- 2 CAMERA_ORBIT(mode 0 snap / else move, dPitch, dYaw, frames, wait, brake):
--- the camera's spherical angles about its target are added to, its distance
--- kept (0x021F7108: pos = target + d (cos p cos y, sin p, cos p sin y));
--- angles in 65536ths of a turn. The move steps the ANGLES, so the camera
--- swings round the target rather than cutting across.
-local function sphere(pos, tgt)
-  local dx, dy, dz = pos[1] - tgt[1], pos[2] - tgt[2], pos[3] - tgt[3]
-  local d = sqrt(dx * dx + dy * dy + dz * dz)
-  if d < 1e-6 then return 0, 0, 0 end
-  return d, math.asin(max(-1, min(1, dy / d))), math.atan2(dz, dx)
-end
-function M.orbitPos(tgt, d, p, y)
-  return { tgt[1] + d * cos(p) * cos(y), tgt[2] + d * sin(p), tgt[3] + d * cos(p) * sin(y) }
-end
-OPS[2] = function(self, a)
-  local tgt = copy3(self.cam.target)
-  local d, p0, y0 = sphere(self.cam.pos, tgt)
-  if d == 0 then return end
-  local turn = 2 * pi / 65536
-  local p1, y1 = p0 + a(2) * turn, y0 + a(3) * turn
-  if a(1) == 0 or a(4) <= 0 then
-    self.cam = camera(M.orbitPos(tgt, d, p1, y1), tgt)
-    self.camTask = nil
-    return
-  end
-  self.camTask = { stepper = M.stepper(1, { p0, y0 }, { p1, y1 }, a(4), a(5), 1), brake = a(6),
-                   orbit = { target = tgt, d = d } }
-end
+OPS[2] = function(self) self:note("CAMERA_ORBIT") end
 
 -- 3 CAMERA_SHAKE(axis 1 = x / else y, amplitude fx, unused, framesPerSwing, wait, cycles)
 OPS[3] = function(self, a)
@@ -710,44 +593,9 @@ OPS[4] = function() end   -- MCSS projection mode; no visible effect here
 OPS[5] = function(self) self.savedCam = { pos = copy3(self.cam.pos), target = copy3(self.cam.target) } end
 
 -- 6 PARTICLE_LOAD(spa)
--- The ids PARTICLE_LOAD remaps (0x021FE38C): 46-49 by the BALL -- 4 files a
--- ball, (ball - 1) * 4 on -- and 3 / 29 by a 0..24 value of the battler op68
--- names (a type; not modelled, they load as named). The slot keeps the id
--- the program wrote, which is the id its emitters name.
-function M.remapParticle(id, ballId, typeSource)
-  id = tonumber(id) or 0
-  local b = tonumber(ballId) or 4
-  if b < 1 or b > 25 then b = 4 end
-  if id >= 46 and id <= 49 then
-    return id + (b - 1) * 4
-  end
-  -- 3 / 29 read the same value when no battler was named (op68 unset or 8:
-  -- the item, i.e. the ball): 3 + v, and 29 + v folded (v + 1 = 25 -> 16,
-  -- v + 1 >= 16 -> 3)
-  if (id == 3 or id == 29) and (typeSource == nil or typeSource == 8) and ballId then
-    local v = b - 1
-    if id == 3 then return 3 + v end
-    if v + 1 == 25 then v = 16 elseif v + 1 >= 16 then v = 3 end
-    return 29 + v
-  end
-  return id
-end
-
--- the item id of a ball -> its ball id (1..25): 1..16 are their own items,
--- the Apricorn balls 492..500 are 17..25 (Gen 4's numbering) and BW's Dream
--- Ball (576) is 25; anything else throws as a Poke Ball (4)
-function M.ballIdFor(itemId)
-  local n = tonumber(itemId)
-  if not n then return 4 end
-  if n >= 1 and n <= 16 then return n end
-  if n >= 492 and n <= 499 then return n - 475 end
-  if n == 576 or n == 500 then return 25 end
-  return 4
-end
-
 OPS[6] = function(self, a)
   local id = a(1)
-  local entry = self.effects["spa_" .. tostring(M.remapParticle(id, self.ballId, self.typeSource))]
+  local entry = self.effects["spa_" .. tostring(id)]
   if not entry then self:note("spa " .. tostring(id)) end
   self.slots[id] = entry or false
 end
@@ -1019,67 +867,8 @@ OPS[43] = function(self, a)
   else self.platformsHidden = hide end
 end
 OPS[44] = function(self) self:note("bg op44") end
--- THE OBJ COMMANDS (0x021FB6F4..0x021FB8F4, the CLACT unit at 0x02201AF8):
--- a 2D sprite created at a battler's projected spot, then moved, scaled,
--- animated and palette-faded in screen pixels. Only the ball OBJ's art is
--- imported (op 69 below); op 45's resource sets are noted and skipped.
--- An OBJ keeps its WORLD anchor and a pixel offset, so it rides the port's
--- map from the cartridge's screen like everything else.
-OPS[45] = function(self) self:note("OBJ op45") end
--- 46 OBJ_MOVE(slot, type, dx, dy, frames, wait, count): the stepper's kinds
-OPS[46] = function(self, a)
-  local o = self.objs and self.objs[a(1)]
-  if not o then return end
-  local kind, x, y = a(2), a(3), a(4)
-  local apply = function(t) o.dx, o.dy = t.value[1], t.value[2] end
-  local start = { o.dx, o.dy }
-  if kind == 0 then o.dx, o.dy = x, y; o.tasks.move = nil
-  elseif kind == 2 or kind == 3 then
-    o.tasks.move = { stepper = M.stepper(kind, start, { x, y }, a(5), a(6), a(7)), apply = apply }
-  elseif kind == 4 then
-    o.tasks.move = { stepper = M.stepper(1, start, { x, y }, a(5), a(6), 1), apply = apply }
-  else
-    o.tasks.move = { stepper = M.stepper(1, start, { o.dx + x, o.dy + y }, a(5), a(6), 1), apply = apply }
-  end
-end
--- 47 OBJ_SCALE(slot, type, sx fx, sy fx, frames, wait, count)
-OPS[47] = function(self, a)
-  local o = self.objs and self.objs[a(1)]
-  if not o then return end
-  local kind, sx, sy = a(2), fxv(a(3)), fxv(a(4))
-  local apply = function(t) o.sx, o.sy = t.value[1], t.value[2] end
-  if kind == 0 then o.sx, o.sy = sx, sy; o.tasks.scale = nil
-  else
-    local k = (kind == 2 or kind == 3) and kind or 1
-    o.tasks.scale = { stepper = M.stepper(k, { o.sx, o.sy }, { sx, sy }, a(5), a(6), (k == 1) and 1 or a(7)), apply = apply }
-  end
-end
--- 48 OBJ_ANIM(slot, sequence)
-OPS[48] = function(self, a)
-  local o = self.objs and self.objs[a(1)]
-  if o then o.seq, o.seqT = a(2), 0 end
-end
--- 49 OBJ_PAL_FADE(slot, startEvy, endEvy, wait, colour)
-OPS[49] = function(self, a)
-  local o = self.objs and self.objs[a(1)]
-  if not o then return end
-  o.evy, o.colour = a(2), a(5)
-  local to, wait = a(3), a(4)
-  if o.evy == to then o.tasks.fade = nil; return end
-  local f = { to = to, n = 0, waitReload = (wait < 0) and 0 or wait,
-              per = (wait < 0) and (abs(wait) + 1) or 1 }
-  o.tasks.fade = { tick = function()
-    if f.n > 0 then f.n = f.n - 1; return true end
-    f.n = f.waitReload
-    if o.evy < f.to then o.evy = min(f.to, o.evy + f.per) else o.evy = max(f.to, o.evy - f.per) end
-    return o.evy ~= f.to
-  end }
-end
--- 50 OBJ_DELETE(slot)
-OPS[50] = function(self, a) if self.objs then self.objs[a(1)] = nil end end
--- 51 GAUGE_VANISH(show, ?): 0 hides the HP gauges (0x022079C0) -- the
--- capture hides them for the throw; Gen5BattleHud asks `gaugesHidden`
-OPS[51] = function(self, a) self.gaugesHidden = (a(1) == 0) end
+for op = 45, 50 do OPS[op] = function(self) self:note("OBJ op" .. op) end end
+OPS[51] = function() end
 -- 52 SE_PLAY(seq, player, pan, delay, pitch, volume, ...)
 OPS[52] = function(self, a)
   local event = { kind = "play", id = a(1), gen5 = true, pitch = a(5), volume = a(6) }
@@ -1105,17 +894,7 @@ OPS[62] = function(self, a) self.work = a(1) end
 OPS[63] = function(self, a) self.work = self:var(a(1)) end
 OPS[64] = function(self, a) self.vars[a(1)] = a(2) end
 OPS[65] = function(self) self:note("MCSS op65") end
--- 66 MCSS_COPY (0x02200140): Transform -- the defender's sprite copied onto
--- the attacker. The battle owns the pictures, so it is handed the moment
--- (src/battle/Gen5Transform.lua); not while duration() measures the program.
-OPS[66] = function(self)
-  if self.quiet then return end
-  if self.onTransform then
-    pcall(self.onTransform, self.attackerIsPlayer, self.layout)
-  else
-    self:note("Transform copy")
-  end
-end
+OPS[66] = function(self) self:note("Transform copy") end
 -- 67 CRY_PLAY(target, ...)
 OPS[67] = function(self, a)
   local side = self:sideOf(a(1))
@@ -1125,21 +904,7 @@ OPS[67] = function(self, a)
   else self:sound(event) end
 end
 OPS[68] = function(self, a) self.typeSource = a(1) end
--- 69 OBJ_CREATE_BALL(slot, posCode, dx fx, dy fx, sx fx, sy fx): the ball the
--- item names (0x021FC148): the battler's world position plus (dx, dy),
--- projected; the art is /a/0/9/5's ball OBJ (Gen5MoveAnimData.ballObjects)
-OPS[69] = function(self, a)
-  local code = a(2)
-  local side = self:sideOf(code)
-  local home
-  if side ~= nil then home = self:homeOf(side)
-  elseif code >= 0 and code <= 7 then home = Layout.home(self.layout and self.layout.rule, code) end
-  if not home then self:note("OBJ ball at " .. tostring(code)); return end
-  self.objs = self.objs or {}
-  self.objs[a(1)] = { anchor = { home[1] + fxv(a(3)), home[2] + fxv(a(4)), home[3] },
-    dx = 0, dy = 0, sx = fxv(a(5)), sy = fxv(a(6)), seq = 0, seqT = 0,
-    evy = 0, colour = 0, ball = self.ballId or 4, tasks = {} }
-end
+OPS[69] = function(self) self:note("OBJ type icon") end
 -- 70 CALL_EFFECT / 71 RETURN / 72 JUMP / 74 GOTO_EFFECT / 77 END
 OPS[70] = function(self, a)
   if #self.stack >= 8 then return end
@@ -1211,7 +976,7 @@ function Player:createEmitter(spec)
   -- aim at it (relative to the emitter)
   local dx, dy, dz = target[1] - origin[1], target[2] - origin[2], target[3] - origin[3]
   local len = sqrt(dx * dx + dy * dy + dz * dz)
-  if len > 1e-4 then
+  if len > 1e-4 and not spec.frames then
     local ax = { dx / len, dy / len, dz / len }
     if flip then ax[1], ax[3] = -ax[1], -ax[3] end
     f.axis = ax
@@ -1235,6 +1000,23 @@ function Player:createEmitter(spec)
     end
   end
   if spec.orbit then inst.orbit = spec.orbit; inst.orbit.t = spec.orbit.start; inst.orbit.w = 0; inst.orbit.p = 0 end
+  -- the birth position goes on each particle, so a moving emitter leaves its
+  -- particles behind instead of dragging them along
+  local spawn, emitChildren = sys.spawn, sys.emitChildren
+  sys.spawn = function(s, em)
+    local before = #s.particles
+    spawn(s, em)
+    local p = s.particles[#s.particles]
+    if #s.particles > before and p then p.wx, p.wy, p.wz = inst.pos[1], inst.pos[2], inst.pos[3] end
+  end
+  sys.emitChildren = function(s, parent, child)
+    local before = #s.children
+    emitChildren(s, parent, child)
+    for k = before + 1, #s.children do
+      local c = s.children[k]
+      c.wx, c.wy, c.wz = parent.wx, parent.wy, parent.wz
+    end
+  end
   self.emitters[#self.emitters + 1] = inst
 end
 
@@ -1293,12 +1075,6 @@ end
 function Player:anchors(battle)
   battle = battle or self.battleRef
   if battle then self.battleRef = battle end
-  return M.anchorsFor(battle)
-end
-
--- the same, for a battle with no player running (src/battle/Gen5BattleLayout
--- stands the doubles slots through it)
-function M.anchorsFor(battle)
   local V = battle and view(battle)
   local romP = { M.project(M.DEFAULT_CAM, M.HOME[0]) }
   local romF = { M.project(M.DEFAULT_CAM, M.HOME[1]) }
@@ -1310,14 +1086,6 @@ function M.anchorsFor(battle)
   end
   if not (eyeP and eyeP[1] and eyeF and eyeF[1]) then
     eyeP, eyeF, kP = { 64, 136 }, { 192, 88 }, 1
-  end
-  -- DRAMATIC_SHAPE's in-world battle stands the pair somewhere else on
-  -- screen (Gen4EffectProjection's `dramaticNativePositions`, battler centres)
-  local native = battle and battle.dramaticNativePositions
-  if type(native) == "table" and native[0] and native[1] and native[0].x and native[1].x then
-    eyeP = { native[0].x, native[0].y + 40 }
-    eyeF = { native[1].x, native[1].y + 40 }
-    kP = 1
   end
   -- the cartridge draws the foe's sprite at its native size; the player's is
   -- the perspective of the nearer platform (2.2x)
@@ -1352,8 +1120,6 @@ end
 function Player:screenTransform(battle)
   if battle then self.battleRef = battle end
   if not self:alive() then return nil end
-  -- the in-world (DRAMATIC_SHAPE) battle has a camera of its own
-  if battle and battle.dramaticNativePositions then return nil end
   local cam = self.cam
   if not cam then return nil end
   local sh = self.shake or { 0, 0, 0 }
@@ -1388,28 +1154,17 @@ end
 -- the channels BattleState / Gen4Battle read (Gen4MoveAnimPlayer's names)
 -- ---------------------------------------------------------------------------
 
-local function stateOf(self, isPlayer, battler)
+local function stateOf(self, isPlayer)
   if not self:alive() then return nil end
-  -- A DOUBLE: the channel follows the battler's own slot, so the partner
-  -- standing beside the attacker (or the defender) is left alone
-  if self.layout and type(battler) == "table" and battler.position ~= nil then
-    local slot = (tonumber(battler.position) or 0) + 2
-    for _, side in ipairs({ true, false }) do
-      local s = self.state[side]
-      if s and s.slot == slot then return s, side end
-    end
-    return nil
-  end
   return self.state[isPlayer and true or false]
 end
 
 -- the battler's displacement in port pixels: its world position and draw
 -- offset carried through the projection, relative to home
-function Player:monOffset(isPlayer, battler)
-  local s, side = stateOf(self, isPlayer, battler)
+function Player:monOffset(isPlayer)
+  local s = stateOf(self, isPlayer)
   if not s then return 0, 0 end
-  if side == nil then side = isPlayer and true or false end
-  local home = self:homeOf(side)
+  local home = self:homeOf(isPlayer)
   local o = s.offset
   local p = { s.pos[1] + o[1], s.pos[2] + o[2], s.pos[3] + o[3] }
   if p[1] == home[1] and p[2] == home[2] and p[3] == home[3] then return 0, 0 end
@@ -1419,28 +1174,28 @@ function Player:monOffset(isPlayer, battler)
   return floor(px - hx + 0.5), floor(py - hy + 0.5)
 end
 
-function Player:monAffine(isPlayer, battler)
-  local s = stateOf(self, isPlayer, battler)
+function Player:monAffine(isPlayer)
+  local s = stateOf(self, isPlayer)
   if not s then return 1, 1 end
   return s.sx or 1, s.sy or 1
 end
 
-function Player:monRotate(isPlayer, battler)
-  local s = stateOf(self, isPlayer, battler)
+function Player:monRotate(isPlayer)
+  local s = stateOf(self, isPlayer)
   if not s or not s.rot or s.rot == 0 then return nil end
   -- the cartridge's +z angle turns counter-clockwise on screen
   return -s.rot, 0
 end
 
-function Player:monTint(isPlayer, battler)
-  local s = stateOf(self, isPlayer, battler)
+function Player:monTint(isPlayer)
+  local s = stateOf(self, isPlayer)
   if not s or (s.evy or 0) <= 0 then return nil end
   local c = s.colour or 0
   return (c % 32) / 31, (floor(c / 32) % 32) / 31, (floor(c / 1024) % 32) / 31, min(1, s.evy / 16)
 end
 
-function Player:monSpecial(isPlayer, battler)
-  local s = stateOf(self, isPlayer, battler)
+function Player:monSpecial(isPlayer)
+  local s = stateOf(self, isPlayer)
   if not s then return nil end
   local alpha = (s.alpha or 31) / 31
   local mosaic = (s.mosaic or 0) + 1
@@ -1448,8 +1203,8 @@ function Player:monSpecial(isPlayer, battler)
   return { alpha = alpha, mosaic = mosaic, brightness = 1, white = 0 }
 end
 
-function Player:monHidden(isPlayer, battler)
-  local s = stateOf(self, isPlayer, battler)
+function Player:monHidden(isPlayer)
+  local s = stateOf(self, isPlayer)
   return s ~= nil and s.hidden == true
 end
 
@@ -1468,8 +1223,8 @@ function Player:emitterCount()
 end
 function Player:spriteCount() return 0 end
 -- is the idle (cell) animation of this side frozen by MCSS_ANIM_STOP
-function Player:monAnimStopped(isPlayer, battler)
-  local s = stateOf(self, isPlayer, battler)
+function Player:monAnimStopped(isPlayer)
+  local s = stateOf(self, isPlayer)
   return s ~= nil and (s.stopA or s.stopB) and true or false
 end
 
@@ -1542,10 +1297,7 @@ function Player:drawParticles(battle)
       local sys = e.sys
       local function add(p, layer)
         if p.hidden and layer == 0 then return end
-        -- SPL draws a particle at its EMITTER's current position plus its own
-        -- (emitter-relative) one, so a moving emitter carries its particles:
-        -- that is what turns Water Gun's per-frame emitters into a stream
-        local wx, wy, wz = e.pos[1], e.pos[2], e.pos[3]
+        local wx, wy, wz = p.wx or e.pos[1], p.wy or e.pos[2], p.wz or e.pos[3]
         local x, y, size
         if e.screen then
           local ax, ay = self:worldToScreen(A, { wx, wy, wz })
@@ -1598,85 +1350,6 @@ function Player:drawParticles(battle)
 end
 
 -- a one-line state dump for the harness's TRACE
--- THE OBJs (op 69's ball), drawn in screen pixels at their anchor's
--- projected spot plus their offset, at the size the cartridge's OAM gives
--- them (a 32 x 32 cell times its affine scale; the foe's side is native),
--- recoloured by their palette fade. Drawn whether or not the program is
--- still running: a caught ball stays where it settled.
--- (the camera's zoom moves the anchor, not the OAM's size or its offsets:
--- `xf` is screenTransform's k, tx, ty)
-function Player:objectAt(o, A, xf)
-  local x, y = self:worldToScreen(A, o.anchor)
-  if xf then x, y = xf[1] * x + xf[2], xf[1] * y + xf[3] end
-  return x + o.dx, y + o.dy
-end
-
-function Player:drawObjects(battle, data, xf)
-  local objs = self.objs
-  if not (objs and next(objs)) then return 0 end
-  local rec = data and data.gen5_move_anims
-  local art = (rec and rec.ballObj) or self.ballObj
-  if not art then return 0 end
-  local A = self:anchors(battle)
-  local g = love.graphics
-  local drawn = 0
-  for slot = 7, 0, -1 do   -- the shadow (slot 1) under the ball (slot 0)
-    local o = objs[slot]
-    if o then
-      local b = (o.ball == 25) and 17 or o.ball
-      local cells = art.balls and (art.balls[b] or art.balls[4])
-      local frames = art.sequences and art.sequences[o.seq or 0]
-      local cell = 0
-      if frames then
-        local t, elapsed = o.seqT or 0, 0
-        cell = frames[#frames] and frames[#frames].cell or 0
-        for _, f in ipairs(frames) do
-          elapsed = elapsed + (f.duration or 0)
-          if t < elapsed then cell = f.cell; break end
-        end
-      end
-      local img = cells and imageOf(cells[cell] or cells[0])
-      if img then
-        local x, y = self:objectAt(o, A, xf)
-        local w, h = img:getDimensions()
-        local evy = min(16, max(0, o.evy or 0)) / 16
-        local c = o.colour or 0
-        local cr, cg, cb = (c % 32) / 31, (floor(c / 32) % 32) / 31, (floor(c / 1024) % 32) / 31
-        g.setColor(1, 1, 1, 1)
-        g.draw(img, x, y, 0, o.sx or 1, o.sy or 1, w / 2, h / 2)
-        if evy > 0 then
-          -- the fade blends every colour toward `colour`: drawn as the cell's
-          -- own shape in that colour over it
-          local okS, shader = pcall(function() return M.solidShader() end)
-          if okS and shader then
-            g.setShader(shader)
-            g.setColor(cr, cg, cb, evy)
-            g.draw(img, x, y, 0, o.sx or 1, o.sy or 1, w / 2, h / 2)
-            g.setShader()
-          end
-        end
-        drawn = drawn + 1
-      end
-    end
-  end
-  g.setColor(1, 1, 1, 1)
-  return drawn
-end
-
-local solid
-function M.solidShader()
-  if solid == nil then
-    local ok, sh = pcall(love.graphics.newShader, [[
-      vec4 effect(vec4 colour, Image tex, vec2 uv, vec2 px) {
-        float a = Texel(tex, uv).a;
-        return vec4(colour.rgb, colour.a * a);
-      }
-    ]])
-    solid = ok and sh or false
-  end
-  return solid or nil
-end
-
 function Player:traceLine()
   local s1, s2 = self.state[true], self.state[false]
   local function st(s)
@@ -1684,9 +1357,7 @@ function Player:traceLine()
       s.pos[1], s.pos[2], s.offset[1], s.offset[2], s.offset[3], s.sx, s.sy, s.rot, s.alpha, s.evy,
       s.hidden and " HID" or "")
   end
-  local busy = ""
-  for k = 1, 9 do if self:busy(k) then busy = busy .. k end end
-  return ("pc=%s busy=%s pl[%s] en[%s] em=%d cam=%.2f,%.2f,%.2f bg=%s"):format(tostring(self.pc), busy, st(s1), st(s2),
+  return ("pc=%s pl[%s] en[%s] em=%d cam=%.2f,%.2f,%.2f bg=%s"):format(tostring(self.pc), st(s1), st(s2),
     self:emitterCount(), self.cam.pos[1], self.cam.pos[2], self.cam.pos[3],
     self.bg and (tostring(self.bg.id) .. (self.bg.shown and "+" or "-")) or "nil")
 end

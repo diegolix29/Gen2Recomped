@@ -30,11 +30,7 @@ Gen4Fishing.NO_FISHING = {
 }
 
 function Gen4Fishing.rodFor(itemDef)
-  if type(itemDef) ~= "table" then return nil end
-  -- Black / White's records name the same row `fieldUse` (the Super Rod, 18)
-  local f = tonumber(itemDef.fieldUseFunc)
-  if f == nil and itemDef.bwPocket ~= nil then f = tonumber(itemDef.fieldUse) end
-  return Gen4Fishing.ROD_FUNCS[f] or nil
+  return type(itemDef) == "table" and Gen4Fishing.ROD_FUNCS[tonumber(itemDef.fieldUseFunc)] or nil
 end
 
 -- The item's own definition, whichever way the id is spelled: a bag row may
@@ -132,19 +128,6 @@ function Gen4Fishing.roll(data, save, mapDef, mapId, rod, tx, tz, rng)
   rng = rng or love.math.random
   local Encounter = require("src.world.Encounter")
   local view = Encounter.forMap(data, mapDef, mapId, nil, save)
-  -- BLACK / WHITE (ov21 0x21AA180): the lure on a rippling spot fishes the
-  -- rippling list and always bites; elsewhere rand(100) <= the rate
-  if view and view.family == "bw" then
-    local G = package.loaded["src.core.Game"]
-    local ow = G and G.overworld
-    local lx, ly = tx, tz
-    if ow then lx, ly = require("src.world.Gen5FishingLure").tile(ow) end
-    local tbl, onSpot = require("src.world.Gen5Phenomena").fishTable(ow, view, lx, ly)
-    if not tbl or (tonumber(tbl.rate) or 0) <= 0 then return nil end
-    if not onSpot and rng(0, 99) > tonumber(tbl.rate) then return nil end
-    if ow then ow.gen5FishOnSpot = onSpot end
-    return require("src.world.Gen4WildLead").choose(data, save, tbl.slots, "rod", "super", rng)
-  end
   local table_ = view and view[rod .. "Rod"]
   if not table_ or (tonumber(table_.rate) or 0) <= 0 then return nil end
   local hgss = Gen4Fishing.isHgss()
@@ -164,15 +147,9 @@ function Gen4Fishing.roll(data, save, mapDef, mapId, rod, tx, tz, rng)
   if feebas and mapDef and mapDef.header == feebas.header
      and rng(0, 1) ~= 0                                  -- LCRNG_RandMod(2)
      and Gen4Fishing.isFeebasTile(feebas, save, tx, tz) then
-    -- WildEncounters_TryFishingEncounter fills all five slots with Feebas
-    -- (min..max) and runs the ordinary generator: the level is ROLLED (it
-    -- had been pinned to the minimum by `level =`), and the lead's Keen Eye /
-    -- Intimidate, Hustle, Synchronize and Cute Charm apply as to any rod bite
-    local slots = {}
-    for i = 1, 5 do
-      slots[i] = { species = feebas.species, minLevel = feebas.minLevel, maxLevel = feebas.maxLevel }
-    end
-    return require("src.world.Gen4WildLead").choose(data, save, slots, "rod", rod, rng)
+    return Encounter.fromSlot({ species = feebas.species,
+                                minLevel = feebas.minLevel, maxLevel = feebas.maxLevel,
+                                level = feebas.minLevel }, rng)
   end
   -- The slot, level and lead abilities, with the cartridge's own rod odds --
   -- the data's per-slot chances are the Old Rod's for all three rods.

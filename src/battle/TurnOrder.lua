@@ -50,15 +50,6 @@ local function effectiveSpeed(battler, battle)
   if sn ~= 1 or sd ~= 1 then
     spd = math.max(1, math.floor(spd * sn / sd))
   end
-  -- BLACK AND WHITE'S TAILWIND doubles its side (src/battle/Gen5MoveEffects.lua)
-  if battler.bwSpeedMultiplier then
-    spd = math.max(1, math.floor(spd * battler.bwSpeedMultiplier))
-  end
-  -- ...and its held items: Choice Scarf, Iron Ball, the Power items, Lagging
-  -- Tail (src/battle/Gen5HoldItems.lua)
-  if battler.items or battler.bwBattle then
-    spd = require("src.battle.Gen5HoldItems").speed(battler, spd)
-  end
   return spd
 end
 

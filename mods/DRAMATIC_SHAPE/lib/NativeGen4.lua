@@ -61,12 +61,10 @@ function Native.installBattles(enabled,controls)
   if not canvas or canvas:getWidth()~=w*scale or canvas:getHeight()~=h*scale then
    canvas=love.graphics.newCanvas(w*scale,h*scale);canvas:setFilter('nearest','nearest');battle.dramaticNativeSurface=canvas
   end
-  local g=love.graphics
-  -- pop('all') puts the caller's canvas back WITH its depth attachment; a
-  -- setCanvas(getCanvas()) after it would drop the depth and is not needed
+  local g=love.graphics;local previous=g.getCanvas()
   g.push('all');g.setCanvas(canvas);g.clear(0,0,0,0);g.origin();g.scale(scale)
   local ok,err=pcall(fullDraw,battle)
-  g.pop()
+  g.pop();g.setCanvas(previous)
   if not ok then error(err,0) end
   g.setColor(1,1,1,1);g.draw(canvas,0,0,0,1/scale,1/scale)
   local renderer=battle.game.renderer
@@ -74,45 +72,40 @@ function Native.installBattles(enabled,controls)
  end
  local field,position=Battle.drawField,Battle.battlerPos
  local actors,trainer=Battle.drawBattlers,Battle.drawTrainerBack
- local enemyTrainer=Battle.drawEnemyTrainer
- local Stage=V.require('NativeStage')
- -- WHERE THIS BATTLE STANDS (NativeStage): chosen once per battle on the
- -- ground round the player, then shot by a camera solved to it.
- local DIRS={up={0,-1},down={0,1},left={-1,0},right={1,0}}
- local function stageFor(battle,state,ground)
-  local st=battle.dramaticNativeStage
-  if st then return st end
-  local map,p=state.map,state.player
-  local cx,cy=p.cellX or 0,p.cellY or 0
-  local surfing=p.surfing and true or false
-  -- FISHING: a wild fight with water dead ahead of a player standing on
-  -- land -- the foe came out of that water, so it may stand on it
-  local fishing=false
-  local d=DIRS[p.facing]
-  if not surfing and battle.kind=='wild' and d and map.isWaterCell then
-   local okW,water=pcall(map.isWaterCell,map,cx+d[1],cy+d[2])
-   if okW and water then
-    local intro=tostring(battle.introText or ''):lower()
-    local okE,enc=pcall(function() return map.isEncounterCell and map:isEncounterCell(cx,cy) end)
-    fishing=intro:find('hook',1,true)~=nil or not (okE and enc)
+ local function anchor(view,ground,map,x,z,target,w)
+  local originX,originZ=x,z
+  -- Solve a terrain point beneath the desired screen-space feet. Keep it
+  -- for this battle so orbiting moves the actors with the world.
+  for i=1,12 do
+   local function project(a,b)
+    return view:project(a+(ground.offsetX or 0),ground:groundY(a,b),b+(ground.offsetY or 0),w,192)
    end
+   local sx,sy=project(x,z)
+   if not sx then break end
+   local dx,dy=target.x-sx,target.y+32-sy
+   if math.abs(dx)+math.abs(dy)<0.1 then break end
+   local ax,ay=project(x+1,z);local bx,by=project(x,z+1)
+   if not ax or not bx then break end
+   ax,ay,bx,by=ax-sx,ay-sy,bx-sx,by-sy
+   local det=ax*by-bx*ay
+   if math.abs(det)<1e-6 then break end
+   x=x+math.max(-64,math.min(64,(dx*by-bx*dy)/det))
+   z=z+math.max(-64,math.min(64,(ax*dy-dx*ay)/det))
   end
-  local okD,double=pcall(function() return battle.isDouble and battle:isDouble() end)
-  st=Stage.plan(map,cx,cy,p.facing,{surfing=surfing,fishing=fishing,double=okD and double or false,
-   groundY=function(x,y) return ground:groundY(x*16+8,y*16+8) end})
-  st.fishing=fishing
-  battle.dramaticNativeStage=st
-  return st
- end
- local function slotOf(self,mon)
-  if Battle.doubleSlots and Battle.doubleSlots(self) then
-   for p=0,3 do
-    local okB,b=pcall(self.battlerAt,self,p)
-    if okB and b==mon then return p+2 end
-   end
+  if map.isWalkableCell and not map:isWalkableCell(math.floor(x/16),math.floor(z/16)) then
+   local best,bestDistance
+   local cx,cy=math.floor(x/16),math.floor(z/16)
+   for dy=-12,12 do for dx=-12,12 do
+    if map:isWalkableCell(cx+dx,cy+dy) then
+     local nx,nz=(cx+dx)*16+8,(cy+dy)*16+8
+     local distance=(nx-x)^2+(nz-z)^2
+     if not bestDistance or distance<bestDistance then best={x=nx,z=nz};bestDistance=distance end
+    end
+   end end
+   if best then return best end
+   return {x=originX,z=originZ}
   end
-  if mon==self.player then return 0 end
-  return 1
+  return {x=x,z=z}
  end
  local function context(battle)
   local game=battle and battle.game
@@ -126,112 +119,73 @@ function Native.installBattles(enabled,controls)
   local state,ground=context(battle)
   if not ground or ground.noDepth or battle.blankForAskName then return field(battle) end
   Ground.syncRenderScale(battle.game)
-  local W=Battle.width(battle)
-  local ox,oz=ground.offsetX or 0,ground.offsetY or 0
-  local st=stageFor(battle,state,ground)
+  local px=(state.player.cellX or 0)*16+8
+  local py=(state.player.cellY or 0)*16+8
   battle.dramaticNativeView=battle.dramaticNativeView or View.new('third')
   local view=battle.dramaticNativeView
-  view.fovY=Stage.FOV_Y
   -- Keep this rig separate from the player's saved overworld orbit.
   local look=View.look
-  -- the shot at rest, solved once per battle (and per surface width)
-  local sol=battle.dramaticNativeSolve
-  if not sol or battle.dramaticNativeSolveWidth~=W then
-   local okS,s=pcall(Stage.solve,st,view,View,ground,W,192)
-   View.look=look
-   sol=okS and s or {x=(st.cx*16+8)+ox,z=(st.cy*16+8)+oz,zoom=1.5,yaw=0.25,rise=0,baseY=ground:groundY(st.cx*16+8,st.cy*16+8)}
-   battle.dramaticNativeSolve,battle.dramaticNativeSolveWidth=sol,W
-  end
-  -- ...then the player's steer and a slow drift on top of it
-  View.look={orbiting=true,yaw=sol.yaw+(controls and controls.orbit or 0)+math.sin(battleTime*0.15)*0.04,
-   rise=sol.rise+(controls and controls.pitch or 0)*30,zoom=sol.zoom*(controls and controls.zoom or 1)}
-  view:follow(sol.x,sol.z,0,sol.baseY)
+  View.look={orbiting=true,yaw=0.25+(controls and controls.orbit or 0)+math.sin(battleTime*0.15)*0.08,
+   rise=0.16+(controls and controls.pitch or 0),zoom=1.5*(controls and controls.zoom or 1)}
+  view:follow(px+(ground.offsetX or 0),py+(ground.offsetY or 0),0,ground:groundY(px,py))
   View.look=look
   local previous=ground.view3d
   local publish=ground.suppressWorldOverride
   ground.suppressWorldOverride=true
   ground.view3d=view
   local ok,err=pcall(function()
-   if not ground:drawFree(W,192) then return end
+   if not ground:drawFree(Battle.width(battle),192) then return end
    local marks={}
    local depths={}
-   local feet={}
-   local ppus={}
+   local sizes={}
+   if battle.dramaticNativeAnchorWidth~=Battle.width(battle) then
+    battle.dramaticNativeAnchors={};battle.dramaticNativeAnchorWidth=Battle.width(battle)
+   end
    for slot=0,5 do
     -- Native slots include the extra width on the opponent's side. Trainer
     -- backs, send-outs and move effects all read these same positions.
     local target=position(battle,slot)
     if target then
-     local wx,wz=Stage.point(st,slot)
-     local x,y,ppu,depth
-     local gy=wx and ground:groundY(wx,wz)
-     if wx then x,y,ppu,depth=view:project(wx+ox,gy,wz+oz,W,192) end
-     if x then
-      -- the depth it is tested at is taken a little toward the eye, so the
-      -- grass on its own cell does not swallow it (NativeStage.DEPTH_PULL)
-      local vx,vy,vz=(view.x or 0)-(wx+ox),(view.y or 0)-gy,(view.z or 0)-(wz+oz)
-      local len=math.sqrt(vx*vx+vy*vy+vz*vz)
-      if len>Stage.DEPTH_PULL*2 then
-       local t=Stage.DEPTH_PULL/len
-       local _,_,_,pulled=view:project(wx+ox+vx*t,gy+vy*t,wz+oz+vz*t,W,192)
-       if pulled then depth=pulled end
-      end
-      ppu=ppu or 1
-      feet[slot]={x=x,y=y};ppus[slot]=ppu
-      -- the middle of a typical 80px frame drawn at this stage's size, which
-      -- is where a move's effect aims (the native pos is the frame's centre)
-      local k=ppu*16*Stage.MON_FRAME_TILES/80
-      marks[slot]={x=x,y=y-40*k}
-      depths[slot]=depth and depth-0.00002
-     else
-      marks[slot]=target
-     end
+     if slot==1 then target={x=target.x-12,y=target.y+8} end
+     local at=battle.dramaticNativeAnchors[slot]
+     if not at then at=anchor(view,ground,state.map,px,py,target,Battle.width(battle));battle.dramaticNativeAnchors[slot]=at end
+     local x,y,scale,depth=view:project(at.x+(ground.offsetX or 0),ground:groundY(at.x,at.z),at.z+(ground.offsetY or 0),Battle.width(battle),192)
+     at.baseScale=at.baseScale or scale
+     local playerAnchor=battle.dramaticNativeAnchors[0]
+     local reference=playerAnchor and playerAnchor.baseScale or at.baseScale
+     sizes[slot]=scale and reference and scale/reference or 1
+     marks[slot]=x and {x=x,y=y-32} or target
+     depths[slot]=depth and depth-0.00002
     end
    end
-   battle.dramaticNativeScales=ppus
-   battle.dramaticNativeFeet=feet
+   battle.dramaticNativeScales=sizes
    battle.dramaticNativePositions=marks
    local own=rawget(battle,'drawBattlerPic')
    local draw=battle.drawBattlerPic
    battle.drawBattlerPic=function(self,mon,...)
-    local args={...};local slot=slotOf(self,mon)
-    if not (depths[slot] and feet[slot]) then return end
+    local args={...};local slot=mon==self.player and 0 or 1
+    if not depths[slot] then return end
     return ground:withFreeDepth(depths[slot],function()
-     local g=love.graphics;local mark=marks[slot];local ft=feet[slot]
+     local g=love.graphics;local mark=marks[slot];local k=sizes[slot] or 1
+     g.push();g.origin();g.scale(Ground.renderScale());g.translate(mark.x,mark.y+32);g.scale(k,k);g.translate(-mark.x,-mark.y-32)
      local picture=self.battlerPic and self:battlerPic(mon)
-     local ph=(picture and picture:getHeight()) or 80
-     -- every frame the same height in the WORLD (NativeStage.MON_FRAME_TILES),
-     -- scaled about the feet so the mon stays standing on its cell
-     local k=ppus[slot]*16*Stage.MON_FRAME_TILES/math.max(1,ph)
-     g.push();g.origin();g.scale(Ground.renderScale())
-     g.translate(ft.x,ft.y);g.scale(k,k);g.translate(-ft.x,-ft.y)
-     -- drawBattlers centres the frame on `mark` and lowers it by the
-     -- species' own empty rows, which puts the visible feet at mark + h/2:
-     -- move that onto the stage point
-     g.translate(0,ft.y-mark.y-ph/2)
+     if picture then g.translate(0,32-picture:getHeight()/2-Battle.spriteYOffset(self,mon)) end
      local ok,err=pcall(draw,self,mon,unpack(args));g.pop()
      if not ok then error(err,0) end
     end)
    end
-   -- BLACK AND WHITE stand slots 0/1 on their own 3D field's platforms
-   -- (Gen5BattleSceneView) rather than on battlerPos; for this pass the
-   -- stage is the field, so they are drawn where the stage put them
-   local okV,G5V=pcall(require,'src.render.Gen5BattleSceneView')
-   local available=okV and G5V and G5V.available
-   if available then G5V.available=function() return false end end
    local okActors,actorError=pcall(actors,battle)
-   if available then G5V.available=available end
    battle.drawBattlerPic=own
    if not okActors then error(actorError,0) end
-   if depths[0] and feet[0] and battle.showPlayerBack and battle.playerBackPic then
+   if depths[0] and battle.showPlayerBack and battle.playerBackPic then
     ground:withFreeDepth(depths[0],function()
      local image=battle.picImage and battle:picImage(battle.playerBackPic) or battle.playerBackPic
      if image and image.getDimensions then
-      local iw,ih=image:getDimensions();local ft=feet[0]
-      local k=ppus[0]*16*Stage.TRAINER_FRAME_TILES/math.max(1,ih)
+      local iw,ih=image:getDimensions();local mark=marks[0]
+      local k=64/math.max(iw,ih)*(sizes[0] or 1)
       love.graphics.setColor(1,1,1,1)
       love.graphics.push();love.graphics.origin();love.graphics.scale(Ground.renderScale())
-      love.graphics.draw(image,ft.x,ft.y,0,k,k,iw/2,ih)
+      love.graphics.draw(image,mark.x,mark.y+32,0,k,k,iw/2,ih)
       love.graphics.pop()
      end
     end)
@@ -251,29 +205,6 @@ function Native.installBattles(enabled,controls)
  end
  function Battle.drawTrainerBack(battle)
   if not battle.dramaticNativeActors then return trainer(battle) end
- end
- -- THE OPPOSING TRAINER, at the stage's size: drawn by the native layout at
- -- the foe's battlerPos (the stage point, through the override above) but at
- -- its own 80px, which beside a tile-high Pokemon read as a giant. Scaled
- -- about the foe's feet so it stands on the same cell.
- if enemyTrainer then
-  function Battle.drawEnemyTrainer(battle)
-   local feet=battle.dramaticNativeActors and battle.dramaticNativeFeet
-   local ft=feet and feet[1]
-   local mark=battle.dramaticNativePositions and battle.dramaticNativePositions[1]
-   local ppu=battle.dramaticNativeScales and battle.dramaticNativeScales[1]
-   if not (ft and mark and ppu and battle.trainerPic) then return enemyTrainer(battle) end
-   local img=battle.picImage and battle:picImage(battle.trainerPic) or battle.trainerPic
-   local ih=(img and img.getHeight and img:getHeight()) or 80
-   local k=ppu*16*Stage.TRAINER_FRAME_TILES/math.max(1,ih)
-   local g=love.graphics
-   g.push();g.translate(ft.x,ft.y);g.scale(k,k);g.translate(-ft.x,-ft.y)
-   -- the native draw centres the pic on `mark`; put its bottom on the feet
-   g.translate(0,ft.y-mark.y-ih/2)
-   local ok,r=pcall(enemyTrainer,battle);g.pop()
-   if not ok then error(r,0) end
-   return r
-  end
  end
 end
 return Native

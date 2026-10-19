@@ -117,8 +117,7 @@ local MERGES = {
   -- `platform lift` stays: `triggerplatformlift` is still a declared no-op
   -- (the nine Stark Mountain and League rooms are walkable without it), and
   -- it is now the subject's only row.
-  -- (`platform lift` is gone too: since the height rule `triggerplatformlift`
-  -- rides the lift, g4_platform_lift_ride, src/world/Gen4PlatformLiftRide.lua)
+  ["platform lift"]                          = "persisted map features",
   -- ("journal entry" -> "journal" is gone: `givejournal` and
   -- `createjournalevent` lower to g4_give_journal and g4_journal_event now.)
   -- ("shard move tutor" -> "move tutor" is gone: the shard tutors and
@@ -160,14 +159,6 @@ local KNOWN = {
   ["menu anchor side"] = true, ["move tutor"] = true, ["slot machine"] = true, ["contest camera flashes"] = true, ["contest attire"] = true,
   ["mystery gift distribution events"] = true, ["national dex diploma"] = true,
   ["persisted map features"] = true, ["player-state latch"] = true,
-  -- HeartGold / SoulSilver's declined rows (Gen4HgssScriptAliases), each a
-  -- picture, an app or a link feature argued where it is lowered
-  ["chatot's recorded cry"] = true, ["day care's pokemon in the yard"] = true,
-  ["dress-up portrait studio"] = true, ["hall of fame machine's balls"] = true,
-  ["hideout doors' prop animations"] = true,
-  ["leaving the overworld for an app"] = true, ["persian statues' alarm"] = true,
-  ["pokeathlon record viewer"] = true, ["rocket trap's flash"] = true,
-  ["wi-fi"] = true, ["wi-fi plaza"] = true,
   -- pass 189, both named rather than left on the unknown-command path, and
   -- both argued in Gen4ScriptVM: the player's dynamic height calculation is
   -- twelve sites in ONE member (497, the Great Marsh tram) and has nothing to
@@ -456,11 +447,10 @@ if ROM and corpusSites > 0 then
   -- that fails when the thing it measures gets FIXED is a bad assertion; this
   -- one fails if a persisted-feature row goes back to being a no-op.
   local pmf = agg["persisted map features"]
-  -- ...and now none: `triggerplatformlift`, the last one, rides the lift
-  ok(pmf == nil or pmf.rows == 0,
-     "the persisted map features aggregate %s declined row(s); since the "
-     .. "platform lift ride none should be, so a row here means a feature's "
-     .. "state write was lost", pmf and tostring(pmf.rows) or "no")
+  ok(pmf ~= nil and pmf.rows == 1,
+     "the persisted map features aggregate %s declined row(s); after pass 189 "
+     .. "only `triggerplatformlift` should still be one, so a second row means "
+     .. "a feature's state write was lost", pmf and tostring(pmf.rows) or "no")
   for _, gone in ipairs({
     "pastoria gym water level", "canalave gym sliding floor",
     "pastoria gym water-level button", "sunyshore gym gear button",

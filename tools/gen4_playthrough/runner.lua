@@ -171,38 +171,12 @@ function R:forcedSwitchKey()
   return false
 end
 
--- A MOVE THAT CANNOT BE PICKED (Disabled, no PP, Taunt, Torment): A on it is
--- a refusal and the menu again -- forever, as at Ariana's double battle when
--- the lead's first move was Disabled. A player picks another; so does this.
--- Answers the key to press, or nil when the cursor's move is usable.
-function R:blockedMoveKey()
-  local b = self:top()
-  if type(b) == "table" and type(b.battle) == "table" and b.battle.phase then b = b.battle end
-  if type(b) ~= "table" or b.phase ~= "moveSelect" or not b.menuBattler then return nil end
-  local okC, chooser = pcall(b.menuBattler, b)
-  local moves = okC and type(chooser) == "table" and chooser.curMoves
-  local mv = moves and moves[b.moveIndex or 1]
-  if not mv then return nil end
-  local mvDef = b.data and b.data.moves and b.data.moves[mv.id]
-  local function blocks(fn)
-    if type(b[fn]) ~= "function" then return false end
-    local ok, r = pcall(b[fn], b, chooser, mvDef)
-    return ok and r and true or false
-  end
-  local blocked = chooser.disabledSlot == b.moveIndex or (tonumber(mv.pp) or 1) <= 0
-    or blocks("tauntBlocks") or blocks("tormentBlocks")
-  if not blocked then return nil end
-  return (self.t % 12 == 0) and "down" or false
-end
-
 -- the A rhythm while the game talks
 function R:busyInput()
   local top = self:top()
   local name = stateName(top)
   local onFainted, key = self:forcedSwitchKey()
   if onFainted then return nil, key end
-  local moveKey = self:blockedMoveKey()
-  if moveKey ~= nil then return nil, moveKey or nil end
   if name:find("NamingScreen") then
     -- START puts the cursor on OK (ns.c 2568) and A presses it
     local k = self.t % 24
@@ -237,20 +211,6 @@ local function adjacentFree(r, tx, ty)
     if open and okC and Collision.occupied and r.ow and r.ow.entities
        and Collision.occupied(r.ow.entities, cx, cy, r.ow.player) then open = false end
     if not open then dist = dist + 10000 end
-    -- ...and one off an ARMED coordinate trigger before one on it: stepping
-    -- on it runs its scene instead of the talk (S.S. Aqua B1F: the strip at
-    -- x 38 covers two of Stanly's sailor's four sides, and its scene stops
-    -- the player and walks them back off it -- over and over, when a tie on
-    -- distance picked that side)
-    if open then
-      local okD, def = pcall(function() return r.ow.map.def end)
-      for _, c in ipairs((okD and def and def.coordEvents) or {}) do
-        if c.var and r:var(c.var) == (c.value or 0)
-           and cx >= c.x and cx < c.x + (c.width or 1) and cy >= c.y and cy < c.y + (c.height or 1) then
-          dist = dist + 3000
-        end
-      end
-    end
     -- ...and one that can be walked to before one that cannot (Cold
     -- Storage's grunt with an open cell boxed in behind the crowd)
     if open and r.planStep and dist > 0 and not r.planStep(r.ow, cx, cy) then dist = dist + 5000 end
@@ -269,58 +229,14 @@ function R:walkTo(tx, ty)
   self.walkCell = cell
   if self.walkSame > 45 then
     self.walkSame = 0
-    -- BOUNCED: the cell the planner kept stepping into sends the player back
-    -- (Viridian Gym's spin tiles turn a step down column 6 into a slide back
-    -- to (5,9), forever, when a tie in the plan picked that column). It is
-    -- avoided for the rest of this step where a way round exists.
-    local dd = DIRS[self.walkDir or ""]
-    if dd and x then
-      local m = tostring(self:map())
-      self.bounce = self.bounce or {}
-      self.bounce[m] = self.bounce[m] or {}
-      self.bounce[m][(x + dd[1]) * 4096 + (y + dd[2])] = true
-    end
     return "blocked"
   end
-  local d
-  local bounce = self.bounce and self.bounce[tostring(self:map())]
-  if bounce then
-    local merged = {}
-    for k in pairs(self.avoid or {}) do merged[k] = true end
-    for k in pairs(bounce) do merged[k] = true end
-    d = self.planStep(self.ow, tx, ty, merged)
-  end
-  d = d or self.planStep(self.ow, tx, ty, self.avoid)
+  local d = self.planStep(self.ow, tx, ty, self.avoid)
   -- the other warps are only avoided where a way round them exists
   -- ...but not at the first tick there is none: a wandering person can stand
   -- in the only way round for a moment (Castelia's gym street), and the way
   -- over a warp leads off the map
-  if d then self.avoidWait, self.peopleWait = 0, 0 elseif self.avoid then
-    -- PEOPLE ARE TEMPORARY, WARPS ARE NOT. When the way round the other warps
-    -- exists with the people taken off the map, it is somebody standing in it
-    -- (the S.S. Aqua's wandering sailors in the cabin corridor): take the next
-    -- step of that way when it is open, and otherwise wait for them, rather
-    -- than re-plan over a neighbouring cabin's door. Bounded, so somebody who
-    -- never moves still falls through to the plan below.
-    local route = (self.peopleWait or 0) < 900
-      and self.planStep(setmetatable({ cast = {}, entities = {}, npcs = {} }, { __index = self.ow }),
-                        tx, ty, self.avoid)
-    if route then
-      self.peopleWait = (self.peopleWait or 0) + 1
-      local okC, Collision = pcall(require, "src.world.Collision")
-      local p = self.ow.player
-      if route ~= "here" and okC and p and Collision.canMove(self.ow.map, self.ow.cast or self.ow.entities or self.ow.npcs or {},
-           { cellX = p.cellX, cellY = p.cellY, elevation = p.elevation, facing = route, surfing = p.surfing }, route) then
-        d = route
-      else
-        -- standing still is waiting, not being stuck
-        self.held, self.stuck, self.walkSame = nil, 0, 0
-        return false
-      end
-    else
-      self.avoidWait = (self.avoidWait or 0) + 1
-    end
-  end
+  if d then self.avoidWait = 0 elseif self.avoid then self.avoidWait = (self.avoidWait or 0) + 1 end
   if not d and self.avoid and self.avoidWait > 90 then d = self.planStep(self.ow, tx, ty) end
   if os.getenv("PT_WALKLOG") and self.t % 4 == 0 then
     self:say("  walk %s (%s,%s) -> (%d,%d) %s", tostring(self:map()), tostring(x), tostring(y), tx, ty, tostring(d))
@@ -334,7 +250,7 @@ function R:walkTo(tx, ty)
     if self.stuck > 240 then return nil, ("no path to %d,%d"):format(tx, ty) end
     return false
   end
-  self.held, self.walkDir = d, d
+  self.held = d
   return false
 end
 
@@ -365,8 +281,6 @@ function R:runStep(s)
     if self.stepT > (s[3] or 12000) then return nil, "condition never came true" end
     local onFainted, key = self:forcedSwitchKey()
     if onFainted then self.key = key return false end
-    local moveKey = self:blockedMoveKey()
-    if moveKey ~= nil then self.key = moveKey or nil return false end
     -- (the Pokegear a scripted HGSS phone call leaves open closes on B)
     local gear = stateName(self:top()):find("HgssPokegear")
     if self.stepT % self.mashEvery == 0 then self.key = gear and "b" or s[4] or "a" end
@@ -399,25 +313,7 @@ function R:runStep(s)
     return ok, why
   end
   if kind == "warpto" then
-    if self:map() == s[2] then self.onWarpT, self.leaning, self.warpFrom, self.pendingBack = 0, nil, nil, nil return true end
-    -- WRONG ROOM: a wandering NPC pushed the path over a neighbouring door
-    -- (the S.S. Aqua's cabins sit side by side) -- step back out the way
-    -- in, then go on as before
-    if self.stepT == 1 then self.warpFrom, self.pendingBack, self.peopleWait = self:map(), nil, 0 end
-    if self.warpFrom and self:map() ~= self.warpFrom then
-      local back
-      for _, w in ipairs(def.warps or {}) do if w.destMap == s[2] then back = nil break end
-        if w.destMap == self.warpFrom then back = back or w end end
-      if back then
-        self:say("  wrong room %s: back out to %s", tostring(self:map()), tostring(self.warpFrom))
-        self.warpFrom = nil
-        self.pendingBack = { "warpto", tostring(back.destMap) }
-      end
-    end
-    if self.pendingBack then
-      if self:map() == self.pendingBack[2] then self.pendingBack = nil; self.warpFrom = self:map() return false end
-      s = self.pendingBack   -- this tick, head for the way back instead
-    end
+    if self:map() == s[2] then self.onWarpT, self.leaning = 0, nil return true end
     -- `done = fn`: the warp's own scene has already carried the player on
     -- (Striaton's frame table warps straight on to Fennel's house)
     if s.done and s.done(self) then self.onWarpT, self.leaning = 0, nil return true end
@@ -459,25 +355,6 @@ function R:runStep(s)
         -- warp cannot be entered the way the planner would like)
         local px, py = self:pos()
         local dx, dy = w.x - (px or 0), w.y - (py or 0)
-        -- LEANING IS FOR THE WARP ITSELF. Off it and not beside it (the lean
-        -- walked the player away, or a person stopped them short and walkTo
-        -- answered "blocked"), the lean is over: walk back and try again.
-        -- Left set, it held each direction in turn from wherever the player
-        -- was and wandered them off down the S.S. Aqua's corridor.
-        if math.abs(dx) + math.abs(dy) > 1 then self.leaning, self.onWarpT, self.pushT = nil, 0, 0 end
-        -- ...and a person standing ON the warp is waited out, not leaned
-        -- round: the door is not refusing, it is occupied
-        local okO, Collision = pcall(require, "src.world.Collision")
-        local occupied = math.abs(dx) + math.abs(dy) == 1 and okO and self.ow.entities
-          and Collision.occupied(self.ow.entities, w.x, w.y, self.ow.player)
-        if occupied then
-          self.pushT, self.leaning, self.onWarpT = 0, nil, 0
-          self.waitDoor = (self.waitDoor or 0) + 1
-          if self.waitDoor > 1800 then return nil, "somebody never left the warp to " .. s[2] end
-          self.held, self.walkSame = nil, 0
-          return false
-        end
-        self.waitDoor = 0
         if math.abs(dx) + math.abs(dy) == 1 then
           self.held = dx == 1 and "right" or dx == -1 and "left" or dy == 1 and "down" or "up"
           self.lastDir = self.held
@@ -488,9 +365,7 @@ function R:runStep(s)
         end
         local ok, why = self:walkTo(w.x, w.y)
         if ok == nil then return nil, why end
-        -- blocked AT the door leans into it; blocked short of it is a person
-        -- in the way, which the next ticks wait out or walk round
-        if ok == "blocked" and math.abs(dx) + math.abs(dy) <= 1 then self.leaning = true end
+        if ok == "blocked" then self.leaning = true end
         if ok == true or self.leaning then
           -- on the warp (or against a door): stairs and doors fire on a
           -- particular direction, so lean each way in turn until it does
@@ -510,7 +385,6 @@ function R:runStep(s)
     -- the first coordinate trigger whose own condition (var == value) holds
     -- now: the story's next scene on this map
     if self.acTarget == nil then
-      self.acBusy = nil   -- a previous trigger's, never this one's
       for _, c in ipairs(def.coordEvents or {}) do
         if c.var and self:var(c.var) == (c.value or 0) then
           self.acTarget = { c.x + math.floor(((c.width or 1) - 1) / 2), c.y, c.var, c.value }
@@ -521,11 +395,6 @@ function R:runStep(s)
     end
     -- the scene ran once the var moved off its value (or a script started)
     if self:var(self.acTarget[3]) ~= self.acTarget[4] then self.acTarget = nil return true end
-    -- ...a script started: the game went busy with the player ON the cell
-    -- (see the busy gate in tick). A trigger that leaves its var alone and moves the player off
-    -- it (Accumula's Pokemon Center counter, Z398 (7,13)) is otherwise walked
-    -- onto again and again
-    if self.acBusy then self.acBusy, self.acTarget = nil, nil return true end
     local ok, why = self:walkTo(self.acTarget[1], self.acTarget[2])
     if ok == nil then self.acTarget = nil return nil, why end
     if ok == true then self.acTarget = nil return true end
@@ -755,10 +624,6 @@ function R:tick(i, game, ow, planStep)
       or s[1] == "sign" or s[1] == "step" or s[1] == "activecoord" or s[1] == "walkedge" or s[1] == "talkto"
       or s[1] == "talkany"
     if self:busy() and (walking or s[1] == "face") then
-      if s[1] == "activecoord" and self.acTarget then
-        local x, y = self:pos()
-        if x == self.acTarget[1] and y == self.acTarget[2] then self.acBusy = true end
-      end
       return self:busyInput()
     end
     self.stepT = (self.stepT or 0) + 1
@@ -771,7 +636,7 @@ function R:tick(i, game, ow, planStep)
         tostring(self:map()), tostring(x), tostring(y), tostring(self.held), tostring(self.key), tostring(ok))
     end
     if ok == nil then self:fail(("step %d (%s): %s"):format(self.stepAt, s[1], why)) return nil, nil end
-    if ok then self.stepAt, self.stepT, self.stuck, self.bounce = self.stepAt + 1, 0, 0, nil end
+    if ok then self.stepAt, self.stepT, self.stuck = self.stepAt + 1, 0, 0 end
     return self.held, self.key
   end
   -- the steps are done: the story must say so

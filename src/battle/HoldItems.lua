@@ -60,13 +60,6 @@ end
 
 HoldItems.effect = HoldItems.effectOf
 
--- BLACK AND WHITE's items keep their hold effect as a number; a battler
--- holding one is answered by src/battle/Gen5HoldItems.lua instead
-local function bw(battler)
-  local G5 = require("src.battle.Gen5HoldItems")
-  return G5.owns(battler) and G5 or nil
-end
-
 local function speciesOf(battler)
   local mon = battler and battler.mon
   return mon and mon.species
@@ -107,8 +100,6 @@ local SOUL_DEW_SPECIES = { LATIAS = true, LATIOS = true }
 -- is being multiplied, because a CHOICE BAND is physical and a LIGHT BALL is
 -- not.
 function HoldItems.attackMultiplier(attacker, move, special)
-  local g5 = bw(attacker)
-  if g5 then return g5.attackMultiplier(attacker, move, special) end
   local effect = HoldItems.effectOf(attacker)
   if not effect then return 1, 1 end
   -- CHOICE BAND: half again as much, physical only
@@ -127,8 +118,6 @@ end
 
 -- ...and the defender's, on the defending stat
 function HoldItems.defenceMultiplier(defender, move, special)
-  local g5 = bw(defender)
-  if g5 then return g5.defenceMultiplier(defender, move, special) end
   local effect = HoldItems.effectOf(defender)
   if not effect then return 1, 1 end
   local row = SPECIES_STAT[effect]
@@ -182,8 +171,6 @@ end
 -- falls by the item's own parameter (10 and 5).  Returned as a percentage
 -- multiplier so it composes with COMPOUNDEYES and HUSTLE.
 function HoldItems.accuracyMultiplier(attacker, defender)
-  local g5 = bw(attacker) or bw(defender)
-  if g5 then return g5.accuracyMultiplier(attacker, defender) end
   local effect, param = HoldItems.effectOf(defender)
   if effect == "EVASION_UP" then return 100 - (param or 0) end
   return 100
@@ -197,8 +184,6 @@ local CRIT_SPECIES = {
 }
 
 function HoldItems.critStages(battler)
-  local g5 = bw(battler)
-  if g5 then return g5.critStages(battler) end
   local effect = HoldItems.effectOf(battler)
   if not effect then return 0 end
   if effect == "SCOPE_LENS" then return 1 end
@@ -210,8 +195,6 @@ end
 -- QUICK CLAW: a `param` percent chance to move first regardless of speed.
 -- Rolled once per turn per holder, before the speed comparison.
 function HoldItems.quickClawChance(battler)
-  local g5 = bw(battler)
-  if g5 then return g5.quickClawChance(battler) end
   local effect, param = HoldItems.effectOf(battler)
   if effect ~= "QUICK_CLAW" then return 0 end
   return param or 0
@@ -221,8 +204,6 @@ end
 -- move the cartridge marks KING'S ROCK affected -- which is the second thing
 -- the flags byte had to be extracted for.
 function HoldItems.flinchChance(attacker, move)
-  local g5 = bw(attacker)
-  if g5 then return g5.flinchChance(attacker, move) end
   local effect, param = HoldItems.effectOf(attacker)
   if effect ~= "FLINCH" then return 0 end
   if move and move.kingsRockAffected == false then return 0 end

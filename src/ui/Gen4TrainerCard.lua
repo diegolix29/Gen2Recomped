@@ -970,13 +970,15 @@ function Gen4TrainerCard:drawSide(side)
     self:drawCardLayer(side)
     return
   end
-  g.push("all")   -- the pop restores the bound canvas, a mod's depth set included
+  local prev = g.getCanvas()
+  g.push("all")
   g.origin()
   g.setScissor()
   g.setCanvas(self.flipCanvas)
   g.clear(0, 0, 0, 0)
   self:drawCardLayer(side)
   g.pop()
+  if g.getCanvas() ~= prev then g.setCanvas(prev) end
   g.push("all")
   g.setColor(1, 1, 1, 1)
   g.setBlendMode("alpha", "premultiplied")

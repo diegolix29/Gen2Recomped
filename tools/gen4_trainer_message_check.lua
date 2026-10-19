@@ -212,17 +212,6 @@ local vm = slurp("src/script/Gen4ScriptVM.lua") or ""
 local cmds = slurp("src/script/Gen4Commands.lua") or ""
 -- ...and the module Gen4Commands loads at its end for the Battle Tower
 cmds = cmds .. "\n" .. (slurp("src/script/Gen4BattleTowerCommands.lua") or "")
--- ...and every other src/script module it requires at top level (the Battle
--- Hall / Castle / Arcade lobby rows live in Gen4BattleHallLobby)
-do
-  local extra = {}
-  for mod in cmds:gmatch('\nrequire%("src%.script%.([%w_]+)"%)') do
-    if mod ~= "Gen4BattleTowerCommands" and not extra[mod] then
-      extra[mod] = true
-      cmds = cmds .. "\n" .. (slurp("src/script/" .. mod .. ".lua") or "")
-    end
-  end
-end
 ok(#vm > 0, "src/script/Gen4ScriptVM.lua did not open")
 ok(#cmds > 0, "src/script/Gen4Commands.lua did not open")
 -- The six `scripts_battles.s` commands this pass lowered.  `getmovementtype`

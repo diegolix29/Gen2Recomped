@@ -408,7 +408,7 @@ local function processLeftovers(battle, holder)
   if not maxHP then return end
   local got = heal(holder, math.max(1, math.floor(maxHP / 16)))
   if got > 0 then
-    queueHeal(battle, holder, Strings.source("%s restored HP\nwith LEFTOVERS!"))
+    queueHeal(battle, holder, "%s restored HP\nwith LEFTOVERS!")
   end
 end
 
@@ -431,7 +431,7 @@ local function processHealingItem(battle, holder)
       local got = heal(holder, param)
       if got > 0 then
         consume(holder)
-        queueHeal(battle, holder, Strings.source("%s restored HP\nwith its held item!"))
+        queueHeal(battle, holder, "%s restored HP\nwith its held item!")
       end
     end
     return
@@ -504,8 +504,6 @@ function HeldItems.modifyPrize(battle, prize)
 end
 
 function HeldItems.canEscape(data, holder)
-  -- BLACK AND WHITE's Smoke Ball (src/battle/Gen5HoldItems.lua)
-  if require("src.battle.Gen5HoldItems").canEscape(holder) then return true end
   local effect = HeldItems.effect(data, holder)
   return effect == HeldItems.EFFECT.ESCAPE
 end

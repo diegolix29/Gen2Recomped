@@ -170,12 +170,14 @@ function Screen:pageCanvas(page)
     self.canvases[page] = cv
   end
   local g = love.graphics
-  g.push("all")   -- the pop restores the bound canvas, a mod's depth set included
+  local prev = g.getCanvas()
+  g.push("all")
   g.setCanvas(cv)
   g.clear(0, 0, 0, 0)
   g.origin()
   self:drawPage(page)
   g.pop()
+  if prev then g.setCanvas(prev) end
   return cv
 end
 

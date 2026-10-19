@@ -246,14 +246,7 @@ function Damage.compute(ruleset, attacker, defender, move, opts)
   -- EARTHQUAKE, a LANTURN's VOLT ABSORB and a THUNDERBOLT.  The cartridge
   -- heals or boosts on three of the four; this stops the damage, which is
   -- the visible half (see src/battle/Abilities.lua).
-  -- (BLACK AND WHITE: under Gravity a LEVITATE is grounded like everyone
-  -- else -- src/battle/Gen5HoldItems.lua `liftsImmunity`)
-  local bwLift, bwLevitate = false, false
-  if opts.bwBattle and not opts.typeless then
-    bwLift, bwLevitate = require("src.battle.Gen5HoldItems").liftsImmunity(defender, move, opts.bwBattle)
-  end
-  if not opts.typeless and Abilities.blocks(defender, move)
-     and not (bwLevitate and Abilities.of(defender) == "LEVITATE") then
+  if not opts.typeless and Abilities.blocks(defender, move) then
     return 0, { crit = false, typeMult = 0, ability = Abilities.of(defender) }
   end
 
@@ -474,24 +467,13 @@ function Damage.compute(ruleset, attacker, defender, move, opts)
       and (Abilities.normalizeType(move.type) == "NORMAL"
            or Abilities.normalizeType(move.type) == "FIGHTING")
     if mult == 0 and foresight then mult = 10 end
-    -- BLACK AND WHITE: RING TARGET, GRAVITY, SMACK DOWN and the IRON BALL
-    -- lift a type immunity the way Foresight does -- the zero row is skipped
-    -- and the rest of the chart still counts (src/battle/Gen5HoldItems.lua)
-    if mult == 0 and bwLift then
-      foresight = true
-      mult = 10
-      for _, m in ipairs(TypeChart.rows(move.type, defender.curTypes)) do
-        if m ~= 0 then mult = math.floor(mult * m / 10) end
-      end
-    end
     if mult == 0 then
       return 0, { crit = false, typeMult = 0 }
     end
     -- WONDER GUARD, which is the one immunity that needs the chart's answer
     -- first: anything that is not super-effective does nothing at all.  It
     -- is SHEDINJA's whole reason to exist.
-    if Abilities.blocks(defender, move, mult)
-       and not (bwLevitate and Abilities.of(defender) == "LEVITATE") then
+    if Abilities.blocks(defender, move, mult) then
       return 0, { crit = false, typeMult = 0,
                   ability = Abilities.of(defender) }
     end
@@ -522,11 +504,6 @@ function Damage.compute(ruleset, attacker, defender, move, opts)
     -- between a SEA INCENSE that works and one that is a MYSTIC WATER.
     local tn, td = HoldItems.damageMultiplier(attacker, move)
     if tn ~= 1 or td ~= 1 then d = math.floor(d * tn / td) end
-    -- BLACK AND WHITE's held items on the finished damage: type items,
-    -- Life Orb, Expert Belt, gems, resist berries (src/battle/Gen5HoldItems.lua)
-    if attacker.items or defender.items then
-      d = require("src.battle.Gen5HoldItems").modifyDamage(attacker, defender, move, mult, d, special)
-    end
     -- CHARGE: the user's NEXT Electric move is worth double.  The flag is
     -- spent here and cleared by the turn loop once the move has resolved,
     -- so it survives a miss the way the cartridge's does.
@@ -714,7 +691,6 @@ function Damage.calc(opts)
 
   local fixed = opts.reflectOverflowFixed
   if fixed == nil then
-    local GameVersion = require("src.core.GameVersion")
     if GameVersion.fixes and type(GameVersion.fixes) == "function" then
       fixed = GameVersion.fixes().reflectOverflow == true
     else

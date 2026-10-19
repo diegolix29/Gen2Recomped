@@ -89,22 +89,14 @@ local function gauge(battle, x, y, w, frac, base)
   end
 end
 
-local function drawBox(battle, battler, side, slot)
+local function drawBox(battle, battler, side)
   local g = love.graphics
-  -- a double's boxes (slot 2..5): the shorter doubles cells, placed by the
-  -- cartridge's gauge table (src/battle/Gen5BattleLayout.lua)
-  local doubles = slot ~= nil and slot >= 2
   local mon = battler and battler.mon
   if not mon then return false end
   local name = side == "player" and "healthbox_player" or "healthbox_enemy"
-  local box, e = picture(battle, doubles and (name .. "_doubles") or name)
-  if not box and doubles then box, e = picture(battle, name) end
+  local box, e = picture(battle, name)
   if not box then return false end
   local c = side == "player" and H.PLAYER or H.ENEMY
-  if doubles then
-    local cx, cy = require("src.battle.Gen5BattleLayout").healthbox(slot, H.ENEMY, H.PLAYER)
-    if cx then c = { x = cx, y = cy } end
-  end
   local x, y = c.x + (e.originX or -64), c.y + (e.originY or -16)
   g.setColor(1, 1, 1, 1)
   g.draw(box, x, y)
@@ -113,8 +105,7 @@ local function drawBox(battle, battler, side, slot)
   local base = (frac > 0.5 and 0) or (frac > 0.2 and 9) or 18
   gauge(battle, x + H.HP_BAR.x, y + H.HP_BAR.y, H.HP_BAR.w, frac, base)
   digits(battle, mon.level, x + H.LEVEL.x, y + H.LEVEL.y)
-  -- (the doubles cell has no strip for the numbers and the EXP line)
-  if side == "player" and not doubles then
+  if side == "player" then
     -- "cur/max", right-aligned to the strip's end; the slash is text
     local Font = require("src.render.Font")
     digits(battle, hp, x + 88, y + H.HP_TEXT.y, true)
@@ -152,27 +143,8 @@ end
 
 function H.drawHealthboxes(battle)
   local drew = 0
-  -- the effect VM's GAUGE_VANISH (op 51): the capture hides the boxes
-  local ball = battle.gen4Ball
-  local anim = battle.gen4AnimPlaying and battle.gen4Anim
-  if (ball and ball.gen5 and ball.player and ball.player.gaugesHidden)
-     or (anim and anim.gen5 and anim.gaugesHidden) then
-    return true
-  end
   local notEnemy = battle.showEnemyTrainer or battle.enemySendingOut
   local notPlayer = battle.showPlayerBack
-  -- A DOUBLE: four boxes, one a slot, far side first (an empty slot -- its
-  -- Pokemon fainted and nothing came in -- draws no box and is not missing)
-  local okL, L = pcall(require, "src.battle.Gen5BattleLayout")
-  if okL and L.rule(battle) == "double" and not battle.gen4Safari then
-    for _, p in ipairs({ 3, 1, 0, 2 }) do
-      local side = (p % 2 == 1) and "enemy" or "player"
-      local hold = (side == "enemy" and notEnemy) or (side == "player" and notPlayer)
-      local b = battle:battlerAt(p)
-      if not hold and b and b.mon and not b.fainted then drawBox(battle, b, side, p + 2) end
-    end
-    return true
-  end
   if notEnemy or drawBox(battle, battle.enemy, "enemy") then drew = drew + 1 end
   if notPlayer or drawBox(battle, battle.player, "player") then drew = drew + 1 end
   return drew == 2

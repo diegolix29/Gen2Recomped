@@ -335,44 +335,8 @@ function F.build(x, save)
     local m = F.LAYERS_APART[id] and M.matrix(mxArc:get(z.matrix)) or nil
     for _, c in ipairs(m and m.chunks or {}) do gimmickChunks[c] = true end
   end
-  -- BLACK CITY / WHITE FOREST: their RD chunks with the pieces laid over
-  -- them (src/import/Gen5DynamicCity.lua) -- permissions and buildings
-  local cityChunks = {}
-  do
-    local City = require("src.import.Gen5DynamicCity")
-    local rdChunks, any = {}, false
-    for c = 0, chunkArc.count - 1 do
-      local b = chunkArc:get(c)
-      if b and b:sub(1, 2) == "RD" then
-        local ch = M.chunk(b)
-        if ch and ch.permissions then rdChunks[c] = ch.permissions; any = true end
-      end
-    end
-    if any then
-      local mats = {}
-      for i = 0, mxArc.count - 1 do mats[i] = M.matrix(mxArc:get(i)) end
-      local packArc = arc(F.BUILDING_PACKS.outdoor)
-      local okC, built, lines = pcall(City.build, rom, { matrices = mats, rdChunks = rdChunks,
-        packIds = function(mid)
-          for _, z in pairs(zones) do
-            if z.matrix == mid then
-              local kind, p = F.packFor(z.area)
-              local pk = kind == "outdoor" and packArc and p < packArc.count and F.pack(packArc:get(p))
-              if pk then
-                local ids = {}
-                for _, id in ipairs(pk.ids) do ids[id] = true end
-                return ids
-              end
-            end
-          end
-        end })
-      if okC then cityChunks = built or {}; report.dynamicCity = lines
-      else report.dynamicCity = { "failed: " .. tostring(built) } end
-    end
-  end
   for c = 0, chunkArc.count - 1 do
     local chunk = M.chunk(chunkArc:get(c))
-    if chunk and cityChunks[c] then chunk.permissions = cityChunks[c].permissions end
     if chunk and chunk.kind == "GC" and chunk.layer2 and not gimmickChunks[c] then
       local merged, n = F.mergeLayers(chunk.permissions, chunk.layer2)
       chunk.permissions = merged
@@ -388,10 +352,8 @@ function F.build(x, save)
       heightsOf[c] = chunk.permissions and F.heights(chunk.permissions) or nil
       lands[c] = { permissions = perms or string.rep("\0\128", F.CHUNK * F.CHUNK) }
       if chunk.kind == "NG" then ngChunks[c] = true end
-      local objects = F.placements(chunk.buildings)
-      for _, o in ipairs(cityChunks[c] and cityChunks[c].objects or {}) do objects[#objects + 1] = o end
       terrainChunks[c] = Terrain.append(blob, { packed = packed, permissions = perms,
-                                                objects = objects })
+                                                objects = F.placements(chunk.buildings) })
     else
       refused[c] = chunk and chunk.kind or "unparsed"
     end
@@ -672,25 +634,6 @@ function F.build(x, save)
     if def.header == 29 then
       for _, o in ipairs(def.objects or {}) do if o.gen5Gimmick then o.passable = true end end
     end
-  end
-  -- WHITE SHOWS WHITE FOREST WHERE BLACK SHOWS BLACK CITY: the cartridge
-  -- swaps zone 0 for 424 and 294 for 295 on every zone lookup while the
-  -- save's city byte is 1 (src/import/Gen5DynamicCity.lua), so a White
-  -- import sends the warps that lead to Black City to White Forest (the Black
-  -- Gate's to Z424, with the same warp numbers)
-  if x.version == "white" then
-    local remap = require("src.import.Gen5DynamicCity").remap(rom)
-    local n = 0
-    for _, def in pairs(maps) do
-      for _, w in ipairs(def.warps or {}) do
-        local to = w.destHeader and remap[w.destHeader]
-        if to and maps[("Z%03d"):format(to)] then
-          w.destHeader, w.destMap = to, ("Z%03d"):format(to)
-          n = n + 1
-        end
-      end
-    end
-    report.cityRemap = n
   end
 
   -- ONE MAP, SEVERAL TEXTURE SETS. A zone cut out of a shared matrix keeps

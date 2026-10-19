@@ -34,7 +34,6 @@
 -- rather than dressed up as constants.
 
 local Music = require("src.core.Music")
-local Strings = require("src.core.Strings")
 
 local Gen3EvolutionState = {}
 Gen3EvolutionState.__index = Gen3EvolutionState
@@ -62,15 +61,15 @@ end
 -- The cartridge's own line, with the port's as the fallback for a cache
 -- imported before extractEvolutionText existed.
 local FALLBACK = {
-  evolving = Strings.source("What?\n{VAR1} is evolving!"),
-  congratulations = Strings.source("Congratulations! Your {VAR1}\nevolved into {VAR2}!"),
-  stopped = Strings.source("Huh? {VAR1}\nstopped evolving!"),
+  evolving = "What?\n{VAR1} is evolving!",
+  congratulations = "Congratulations! Your {VAR1}\nevolved into {VAR2}!",
+  stopped = "Huh? {VAR1}\nstopped evolving!",
 }
 
 local function line(game, role)
   local c = game and game.data and game.data.constants
   local r = c and c.gen3Evolution
-  local text = (type(r) == "table" and r[role]) or Strings(FALLBACK[role] or "")
+  local text = (type(r) == "table" and r[role]) or FALLBACK[role]
   return text or ""
 end
 

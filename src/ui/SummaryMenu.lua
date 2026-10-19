@@ -49,10 +49,10 @@ end
 
 -- EggStatsScreen's `cp 6 / cp $0b / cp $29` ladder over the hatch counter.
 local EGG_FALLBACK = {
-  soon = Strings.source("It's making sounds\ninside. It's going\nto hatch soon!"),
-  close = Strings.source("It moves around\ninside sometimes.\nIt must be close\nto hatching."),
-  more = Strings.source("Wonder what's\ninside? It needs\nmore time, though."),
-  lots = Strings.source("This EGG needs a\nlot more time to\nhatch."),
+  soon = "It's making sounds\ninside. It's going\nto hatch soon!",
+  close = "It moves around\ninside sometimes.\nIt must be close\nto hatching.",
+  more = "Wonder what's\ninside? It needs\nmore time, though.",
+  lots = "This EGG needs a\nlot more time to\nhatch.",
 }
 
 local function eggHatchText(data, mon)
@@ -64,7 +64,7 @@ local function eggHatchText(data, mon)
   if cycles < (limits.soon or 6) then key = "soon"
   elseif cycles < (limits.close or 11) then key = "close"
   elseif cycles < (limits.more or 41) then key = "more" end
-  return text[key] or Strings(EGG_FALLBACK[key])
+  return text[key] or EGG_FALLBACK[key]
 end
 
 -- SGB: SetPal_StatusScreen -- HP-bar palette overall, mon pic zone in

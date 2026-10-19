@@ -364,8 +364,7 @@ local function buildRows(game)
       step = function(g, dir)
         local o = g.save.options
         o.performance = Performance.cycle(o.performance, dir)
-        -- (a headless or mod-built game table may not carry applyOptions)
-        if g.applyOptions then g:applyOptions(o) end
+        g:applyOptions(o)
         return true
       end },
     { id = "colors", label = Strings("COLORS"),

@@ -3826,9 +3826,9 @@ end
 -- which is half of 192. In a screen-centred frame, half the height above centre is
 -- the top row. Asserted as that arithmetic rather than as the literal 0, so the
 -- derivation is what breaks if someone changes the constant.
-ok(math.floor(16512 / 172) == 96 and Play.Player.VIEWPORT_TOP_Y == 96 - 96,
+ok(16512 // 172 == 96 and Play.Player.VIEWPORT_TOP_Y == 96 - 96,
    "the viewport top is half the screen above centre, which is row zero",
-   ("16512/172 = %d, and the port uses %d"):format(math.floor(16512 / 172),
+   ("16512/172 = %d, and the port uses %d"):format(16512 // 172,
                                                    Play.Player.VIEWPORT_TOP_Y),
    "96, and 0")
 

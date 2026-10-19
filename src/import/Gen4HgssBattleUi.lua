@@ -197,14 +197,6 @@ function M.extract(x)
   local Party = require("src.import.Gen4PartyArt")
   local eggTile = Party.EGG_TILE
   Party.EGG_TILE = M.EGG_TILE
-  -- the move-animation backgrounds at HGSS's own members (overlay 7's
-  -- table, Gen4HgssBattle.EFFECT_BG_MEMBERS), read from /a/0/0/7 directly
-  local Bg4 = require("src.import.Gen4Battle")
-  local Hgss = require("src.import.Gen4HgssBattle")
-  local savedBg = { members = Bg4.EFFECT_BG_MEMBERS, count = Bg4.EFFECT_BG_COUNT,
-                    archive = Bg4.EFFECT_BG_ARCHIVE }
-  Bg4.EFFECT_BG_MEMBERS, Bg4.EFFECT_BG_COUNT = Hgss.EFFECT_BG_MEMBERS, Hgss.EFFECT_BG_COUNT
-  Bg4.EFFECT_BG_ARCHIVE = Hgss.PATH
   local ok, err = pcall(function()
     x:extractGraphics()
     x:moveButtons()
@@ -228,8 +220,6 @@ function M.extract(x)
     end
   end)
   Party.EGG_TILE = eggTile
-  Bg4.EFFECT_BG_MEMBERS, Bg4.EFFECT_BG_COUNT = savedBg.members, savedBg.count
-  Bg4.EFFECT_BG_ARCHIVE = savedBg.archive
 
   x.rom, x._archives = saved.rom, saved.archives
   Screens.planAll, UiRes.images = saved.plan, saved.ui

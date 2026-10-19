@@ -800,8 +800,9 @@ function OverworldBattle.spanStrip(shot, img, path, y0)
   local okD, iw, ih = pcall(img.getDimensions, img)
   if not (okD and iw and ih and iw > 0 and ih > 0) then return false end
   local g = love.graphics
+  local prevCanvas = g.getCanvas()
   local prevBlend, prevAlpha = g.getBlendMode()
-  g.push("all")   -- the pop restores the bound canvas, depth set included
+  g.push("all")
   local okAll, err = pcall(function()
     g.origin()
     g.setScissor()
@@ -837,6 +838,7 @@ function OverworldBattle.spanStrip(shot, img, path, y0)
       end
     end
   end)
+  if prevCanvas then g.setCanvas(prevCanvas) else g.setCanvas() end
   g.pop()
   g.setBlendMode(prevBlend or "alpha", prevAlpha)
   g.setColor(1, 1, 1, 1)
@@ -1198,25 +1200,9 @@ function OverworldBattle.begin(state, battle)
   if not (state and state.map and state.player) then return false end
   if not Voxel3D.available() then return false end
 
-  -- FISHING: a wild fight with water dead ahead of a player on land -- the
-  -- foe came out of that water, so the local stage may stand it there
-  -- (BattleArena.findLocal); the surfer's own case is `surfing`
-  local p = state.player
-  local fishing = false
-  local ahead = ({ up = { 0, -1 }, down = { 0, 1 },
-                   left = { -1, 0 }, right = { 1, 0 } })[p.facing]
-  if ahead and not p.surfing and battle and battle.kind == "wild" then
-    local okW, water = pcall(state.map.isWaterCell, state.map,
-                             p.cellX + ahead[1], p.cellY + ahead[2])
-    if okW and water then
-      local intro = tostring(battle.introText or ""):lower()
-      local okE, enc = pcall(state.map.isEncounterCell, state.map,
-                             p.cellX, p.cellY)
-      fishing = intro:find("hook", 1, true) ~= nil or not (okE and enc)
-    end
-  end
   local ok, arena = pcall(BattleArena.find, state.map,
-                          p.cellX, p.cellY, p.surfing, p.facing, fishing)
+                          state.player.cellX, state.player.cellY,
+                          state.player.surfing)
   if not (ok and arena) then return false end
 
   -- the fight is staged from here on, so the layout it is composed for is not
@@ -1490,7 +1476,7 @@ function OverworldBattle.animTexture(battle)
     animLayer = c
   end
   local g = love.graphics
-  -- the push("all")/pop restores the bound canvas, depth set included
+  local prevCanvas = g.getCanvas()
   local ok = pcall(function()
     g.push("all")
     g.origin()
@@ -1502,6 +1488,8 @@ function OverworldBattle.animTexture(battle)
     g.pop()
   end)
   if not ok then pcall(g.pop, g) end
+  if prevCanvas then pcall(g.setCanvas, g, prevCanvas)
+  else pcall(g.setCanvas, g) end
   return ok and animLayer or nil
 end
 
@@ -1842,6 +1830,7 @@ function OverworldBattle.sideTexture(battle, side)
   if not canvas then return nil end
 
   local g = love.graphics
+  local prevCanvas = g.getCanvas()
   local prevBlend, prevAlpha = g.getBlendMode()
   -- The pic-window scissors are in the battle screen's fixed coordinates and
   -- would clip a pic that has been moved to the middle of its own canvas.
@@ -2001,7 +1990,6 @@ function OverworldBattle.sideTexture(battle, side)
   drawnAt[side] = nil
   texturing = side
 
-  g.push("all")   -- the pop restores the bound canvas, depth set included
   local ok, err = pcall(function()
     g.setCanvas(canvas)
     g.clear(0, 0, 0, 0)
@@ -2082,7 +2070,7 @@ function OverworldBattle.sideTexture(battle, side)
   for k in pairs(OFF[side]) do battle[k] = saved[k] end
   g.setScissor, g.intersectScissor, g.getScissor =
     setScissor, intersectScissor, getScissor
-  g.pop()
+  if prevCanvas then g.setCanvas(prevCanvas) else g.setCanvas() end
   g.setBlendMode(prevBlend or "alpha", prevAlpha)
   if not ok then error(err, 0) end
 
@@ -2904,8 +2892,8 @@ function OverworldBattle.snapHUDs(battle, shot)
   local lw, lh = BattleScene.surface()
 
   local g = love.graphics
+  local prevCanvas = g.getCanvas()
   local prevBlend, prevAlpha = g.getBlendMode()
-  g.push("all")   -- the pop restores the bound canvas, depth set included
   local ok, err = pcall(function()
     g.setCanvas(shot.canvas)
     g.setBlendMode("alpha")
@@ -2944,7 +2932,7 @@ function OverworldBattle.snapHUDs(battle, shot)
       end
     end
   end)
-  g.pop()
+  if prevCanvas then g.setCanvas(prevCanvas) else g.setCanvas() end
   g.setBlendMode(prevBlend or "alpha", prevAlpha)
   g.setColor(1, 1, 1, 1)
   if not ok then error(err, 0) end

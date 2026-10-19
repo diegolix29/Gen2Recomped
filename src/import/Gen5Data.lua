@@ -138,14 +138,6 @@ function G.item(s)
     bwPocket = math.floor(u16(s, 8) / 128) % 16,
     fieldUse = u8(s, 0x0A), battleUse = u8(s, 0x0B), battlePocket = u8(s, 0x0D),
     consumable = u8(s, 0x0E), sortIndex = u8(s, 0x0F),
-    -- the BATTLE POCKET MASK is bits 11..15 of +0x08 (Platinum's five bits:
-    -- balls, battle items, HP / PP, status, PP); +0x0D above is the item's
-    -- kind (0 medicine, 1 held, 2 general, 3 battle, 4 ball, 5 mail), kept
-    -- under its first name. +0x0C partyUse and +0x10 the twenty-byte party
-    -- block, Platinum's ItemPartyParam (src/inventory/Gen5Items.lua)
-    battleMask = math.floor(u16(s, 8) / 2048) % 32, itemType = u8(s, 0x0D),
-    partyUse = u8(s, 0x0C),
-    partyUseParam = (u8(s, 0x0C) == 1 and #s >= 0x24) and s:sub(0x11, 0x24) or nil,
   }
 end
 
