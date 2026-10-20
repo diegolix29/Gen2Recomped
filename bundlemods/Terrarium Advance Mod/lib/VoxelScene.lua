@@ -1551,6 +1551,19 @@ end
 -- below). Only that one entry gets the see-through treatment: NPCs and the
 -- ghosts standing on a neighbour map are left to honest occlusion, because
 -- it is only your own character you cannot afford to lose behind a roof.
+-- WHICH NEIGHBOURS HAVE TERRAIN THIS FRAME.
+--
+-- Set by render() once the meshes are requested: a neighbour is "drawn" when
+-- its mesh exists (nbMesh[i] is nil while it builds, and for any neighbour the
+-- draw-distance row has dropped). A person standing on a map whose ground is
+-- not drawn floats over the void, so the pose pass asks this before posing a
+-- ghost. nil (no render has run yet) answers true: nothing is hidden by guess.
+local drawnNb = nil
+function VoxelScene.nbDrawn(nb)
+  if not drawnNb or not nb then return true end
+  return drawnNb[nb] == true
+end
+
 local function posesOf(state, spriteColors)
   VoxelScene.groundTick()
   -- the ground lookups separately from the rest of posing: pose() advances
@@ -1595,7 +1608,7 @@ local function posesOf(state, spriteColors)
     local seen = true
     if g.nb then
       local okV, shows = pcall(ViewBox.showsMap, g.nb)
-      seen = (not okV) or shows
+      seen = ((not okV) or shows) and VoxelScene.nbDrawn(g.nb)
     end
     if not seen then skippedGhosts = skippedGhosts + 1 end
     if seen and g.npc and not g.npc.hidden then
@@ -2032,6 +2045,16 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   local terrain, nbMesh = VoxelScene.prefetch(state)
   if _p then _p() end
   if not terrain then return nil end
+  -- which neighbours actually have ground this frame (see nbDrawn). prefetch
+  -- numbered nbMesh by the draw-distance-pruned list, so the same list here.
+  do
+    drawnNb = {}
+    local okD, pruned = pcall(DrawDistance.apply, state)
+    local list = (okD and type(pruned) == "table" and pruned.neighbors) or state.neighbors or {}
+    for i, nb in ipairs(list) do
+      if nbMesh[i] then drawnNb[nb] = true end
+    end
+  end
 
   local cam = state.camera
   local cx, cy = cam.x + vw / 2, cam.y + vh / 2

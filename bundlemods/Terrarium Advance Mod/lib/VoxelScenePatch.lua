@@ -86,7 +86,8 @@ local POSES = [====[local function posesOf(state, spriteColors)
     local seen = true
     if g and g.nb and ViewBox and ViewBox.showsMap then
       local okV, shows = pcall(ViewBox.showsMap, g.nb)
-      seen = (not okV) or shows
+      seen = ((not okV) or shows)
+        and (not VoxelScene.nbDrawn or VoxelScene.nbDrawn(g.nb))
     end
     if seen and npc and not npc.hidden and type(npc.pose) == "function" then
       local sprite, vx, vy, facing, phase, flip = npc:pose()
