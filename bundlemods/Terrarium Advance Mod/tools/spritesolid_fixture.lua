@@ -181,6 +181,39 @@ function F.makeChibi()
   return table.concat(out), F.W, F.H * F.frames
 end
 
+
+-- A torso over two legs for the "do separate parts stay separate" tests and
+-- previews. W odd/even, gap = pixels between the legs. mode "x": the legs are
+-- apart seen from the front; mode "z": one is in front of the other (a stride,
+-- seen from the side). Uniform grey, so it is about shape only.
+function F.legFigure(S, W, gap, mode, opts)
+  local H, c = 24, (W - 1) / 2
+  local function legX(col) local d = math.abs(col - c); return d >= gap / 2 and d <= gap / 2 + 4.5 end
+  local views, cellY = {}, {}
+  for k, key in ipairs({ "front", "back", "left", "right" }) do
+    local m = { w = W, h = H }
+    for y = 0, H - 1 do
+      for x = 0, W - 1 do
+        local on = false
+        if y >= 1 and y <= 20 then
+          if key == "front" or key == "back" then
+            if y < 6 then on = math.abs(x - c) <= 7
+            elseif mode == "x" then on = legX(x) else on = math.abs(x - c) <= 5 end
+          else
+            if y < 6 or mode == "x" then on = math.abs(x - c) <= 3 else on = legX(x) end
+          end
+        end
+        m[y * W + x + 1] = on
+      end
+    end
+    views[key], cellY[key] = m, (k - 1) * H
+  end
+  local px = {}
+  for i = 1, W * H * 4 do px[i] = "\200\200\200\255" end
+  return assert(S.build(views, { imgW = W, imgH = H * 4, cellW = W, cellH = H, cellX = 0,
+                                 cellY = cellY, src = table.concat(px) }, opts))
+end
+
 -- views + layout for one slot, in SpriteSolid's shape
 function F.viewsFor(S, rgba, imgW, imgH, slot, padded)
   local views, cellY = {}, {}

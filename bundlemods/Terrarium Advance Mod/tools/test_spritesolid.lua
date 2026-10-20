@@ -474,6 +474,131 @@ do
   check(nSmooth > nPlain * 1.5, ("the smooth bake has far more tones along edges (%d vs %d)"):format(nSmooth, nPlain))
 end
 
+-- ------------------------------------------------------- parts stay separate --
+-- The blur that rounds the pixel staircase also bleeds across a narrow gap, so
+-- two parts a pixel apart (legs, an arm and the torso, a stride) used to fuse.
+do
+  local function crossings(r, ox, oy, oz, dx, dy, dz)    -- Moller-Trumbore, count hits
+    local n = 0
+    for i = 1, #r.map, 3 do
+      local a, b, c = r.verts[r.map[i]], r.verts[r.map[i + 1]], r.verts[r.map[i + 2]]
+      local e1x, e1y, e1z = b[1] - a[1], b[2] - a[2], b[3] - a[3]
+      local e2x, e2y, e2z = c[1] - a[1], c[2] - a[2], c[3] - a[3]
+      local px, py, pz = dy * e2z - dz * e2y, dz * e2x - dx * e2z, dx * e2y - dy * e2x
+      local det = e1x * px + e1y * py + e1z * pz
+      if math.abs(det) > 1e-12 then
+        local tx, ty, tz = ox - a[1], oy - a[2], oz - a[3]
+        local u = (tx * px + ty * py + tz * pz) / det
+        if u >= 0 and u <= 1 then
+          local qx, qy, qz = ty * e1z - tz * e1y, tz * e1x - tx * e1z, tx * e1y - ty * e1x
+          local v = (dx * qx + dy * qy + dz * qz) / det
+          if v >= 0 and u + v <= 1 and (e2x * qx + e2y * qy + e2z * qz) / det > 0 then n = n + 1 end
+        end
+      end
+    end
+    return n
+  end
+  local function figure(W, gap, mode, opts) return Fx.legFigure(S, W, gap, mode, opts) end
+  local function gapHits(r, mode)        -- a ray through the middle of the gap, mid-leg
+    if mode == "x" then return crossings(r, 0, 7.5, -60, 0, 0, 1) end
+    return crossings(r, -60, 7.5, 0, 1, 0, 0)
+  end
+
+  for _, cfg in ipairs({ { 33, 1, "x" }, { 32, 2, "x" }, { 33, 3, "x" }, { 33, 1, "z" } }) do
+    local W, gap, mode = cfg[1], cfg[2], cfg[3]
+    local tag = ("%d px gap, %s (cell %d)"):format(gap, mode == "x" and "legs apart" or "stride", W)
+    check(gapHits(figure(W, gap, mode), mode) == 0, tag .. ": stays open by default")
+    if gap == 1 then
+      check(gapHits(figure(W, gap, mode, { keepGaps = false }), mode) > 0,
+        tag .. ": FUSES without keepGaps (so the test sees the bug)")
+    end
+  end
+  -- a 1 px sliver beside a gap (the fixture's nose) is attached, not a floating
+  -- plate: with the rule weakened the surface grows open edges
+  do
+    local function openEdgesOf(opts)
+      local views, layout = Fx.viewsFor(S, rgba, imgW, imgH, 1)
+      local r = assert(S.build(views, layout, opts))
+      local function key(v) return string.format("%.3f,%.3f,%.3f", v[1], v[2], v[3]) end
+      local uses, ys = {}, {}
+      for i = 1, #r.map, 3 do
+        local k = { key(r.verts[r.map[i]]), key(r.verts[r.map[i + 1]]), key(r.verts[r.map[i + 2]]) }
+        for e = 1, 3 do
+          local a, b = k[e], k[e % 3 + 1]
+          if a ~= b then
+            local ek = a < b and (a .. "|" .. b) or (b .. "|" .. a)
+            uses[ek] = (uses[ek] or 0) + 1
+            ys[ek] = { r.verts[r.map[i + e - 1]][2], r.verts[r.map[i + e % 3]][2] }
+          end
+        end
+      end
+      local bad = 0
+      for ek, n in pairs(uses) do if n ~= 2 and not (ys[ek][1] == 0 and ys[ek][2] == 0) then bad = bad + 1 end end
+      return bad
+    end
+    check(openEdgesOf({ gapMinPart = 1 }) > 0, "(a 1 px nose beside a gap WOULD be cut off if slivers counted as parts)")
+    check(openEdgesOf(nil) == 0, "a 1 px sliver beside a gap stays attached")
+  end
+
+  -- the legs themselves are there (a ray through a leg hits it front and back)
+  check(crossings(figure(33, 1, "x"), -3, 7.5, -60, 0, 0, 1) >= 2, "a ray through a leg hits the leg")
+
+  -- carving the gaps must not open holes: the surface is still closed off the ground
+  do
+    local r = figure(33, 1, "x")
+    local function key(v) return string.format("%.3f,%.3f,%.3f", v[1], v[2], v[3]) end
+    local uses, ys = {}, {}
+    for i = 1, #r.map, 3 do
+      local k = { key(r.verts[r.map[i]]), key(r.verts[r.map[i + 1]]), key(r.verts[r.map[i + 2]]) }
+      for e = 1, 3 do
+        local a, b = k[e], k[e % 3 + 1]
+        if a ~= b then
+          local ek = a < b and (a .. "|" .. b) or (b .. "|" .. a)
+          uses[ek] = (uses[ek] or 0) + 1
+          ys[ek] = { r.verts[r.map[i + e - 1]][2], r.verts[r.map[i + e % 3]][2] }
+        end
+      end
+    end
+    local bad = 0
+    for ek, n in pairs(uses) do
+      if n ~= 2 and not (ys[ek][1] == 0 and ys[ek][2] == 0) then bad = bad + 1 end
+    end
+    check(bad == 0, "a figure with a kept gap is still a closed surface (" .. bad .. " open edges)")
+  end
+
+  -- `sharpen` shrinks the blur's radius: a box keeps more of its corners
+  do
+    local function box(opts)
+      local W, H = 32, 24
+      local views, cellY = {}, {}
+      for k, key in ipairs({ "front", "back", "left", "right" }) do
+        local m = { w = W, h = H }
+        for y = 0, H - 1 do
+          for x = 0, W - 1 do m[y * W + x + 1] = (y >= 4 and y <= 19 and x >= 10 and x <= 21) end
+        end
+        views[key], cellY[key] = m, (k - 1) * H
+      end
+      local px = {}
+      for i = 1, W * H * 4 do px[i] = "\200\200\200\255" end
+      return assert(S.build(views, { imgW = W, imgH = H * 4, cellW = W, cellH = H, cellX = 0,
+                                     cellY = cellY, src = table.concat(px) }, opts))
+    end
+    local function volume(r)
+      local v = 0
+      for i = 1, #r.map, 3 do
+        local a, b, c = r.verts[r.map[i]], r.verts[r.map[i + 1]], r.verts[r.map[i + 2]]
+        v = v + (a[1] * (b[2] * c[3] - b[3] * c[2]) - a[2] * (b[1] * c[3] - b[3] * c[1])
+                 + a[3] * (b[1] * c[2] - b[2] * c[1])) / 6
+      end
+      return math.abs(v)
+    end
+    local v0, v1, v4 = volume(box({ sharpen = 0 })), volume(box({ sharpen = 0.1 })), volume(box({ sharpen = 0.4 }))
+    check(v0 < v1 and v1 < v4, ("more sharpening keeps more of the box (%.0f < %.0f < %.0f)"):format(v0, v1, v4))
+    check(math.abs(volume(box(nil)) - v1) < 1e-6, "the default is 10% sharper than the old blur")
+    check(S.DEFAULT.sharpen == 0.10 and S.DEFAULT.keepGaps == true, "defaults: sharpen 10%, gaps kept")
+  end
+end
+
 -- ------------------------------------------------------------------- jobs --
 do
   local views, layout = Fx.viewsFor(S, rgba, imgW, imgH, 1)

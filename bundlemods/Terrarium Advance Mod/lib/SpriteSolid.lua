@@ -88,6 +88,9 @@ S.ALPHA = 128           -- alpha (0..255) at or above which a texel is body
 S.DEFAULT = {
   ss = 1,               -- field samples per pixel per axis (2 = 8x the nodes)
   blur = 2,             -- passes of [1 2 1]/4 along each axis
+  sharpen = 0.10,       -- 0..1: how much smaller the blur's radius is (0.1 = 10% sharper)
+  keepGaps = true,      -- keep the gaps the silhouettes show open (see header)
+  gapMinPart = 2,       -- px: a gap is kept only between parts at least this wide
   iso = 0.45,           -- density level of the surface (0.5 = exact edge)
   ramp = 1.0,           -- px over which a section's density falls from 1 to 0
   minDepth = 3,         -- px: the thinnest any part may be front to back
@@ -331,7 +334,7 @@ local function analyse(views, W, H)
 end
 
 -- One row's cross-section: a list of ellipses { cx, cz, a, b } in model units.
-local function sections(wRuns, dRuns, W, minDepth)
+local function sections(wRuns, dRuns, W, minDepth, minPart)
   local half = W / 2
   local halfMin = minDepth / 2
   local out = {}
@@ -344,6 +347,19 @@ local function sections(wRuns, dRuns, W, minDepth)
     }
   end
   local nW, nD = #wRuns, #dRuns
+  -- The empty space the silhouettes show: between two x runs (seen from the
+  -- front) and between two z runs (seen from the side). It is empty along the
+  -- whole other axis, so the blur must not fill it (see `keepGaps`).
+  -- A 1 px sliver beside a gap (a nose, a hair strand, a finger) is attached in
+  -- 3D and the gap is only the pixel grid, so a gap counts only between two
+  -- runs at least `minPart` wide.
+  local function wide(r) return r[2] - r[1] >= minPart end
+  local gx, gz = {}, {}
+  for i = 1, nW - 1 do
+    if wide(wRuns[i]) and wide(wRuns[i + 1]) then
+      gx[#gx + 1] = { wRuns[i][2] - half, wRuns[i + 1][1] - half }
+    end
+  end
   if nW == nD then
     for i = 1, nW do add(wRuns[i], dRuns[i]) end
   elseif nW == 1 or nD == 1 then
@@ -352,16 +368,27 @@ local function sections(wRuns, dRuns, W, minDepth)
     end
   else
     -- both see several, and a different number: take the side view as one
-    -- stretch rather than guess a pairing
+    -- stretch rather than guess a pairing (so no z gap is claimed either)
     local lo, hi = dRuns[1][1], dRuns[nD][2]
     for i = 1, nW do add(wRuns[i], { lo, hi }) end
+    nD = 1
   end
-  return out
+  -- z gaps only where the side runs became separate sections (a pair per leg,
+  -- or one x run with several z runs); otherwise they were one stretch
+  if nD >= 2 then
+    for j = 1, nD - 1 do
+      if wide(dRuns[j]) and wide(dRuns[j + 1]) then
+        gz[#gz + 1] = { dRuns[j][2] - half, dRuns[j + 1][1] - half }
+      end
+    end
+  end
+  return out, gx, gz
 end
 
 -- ----------------------------------------------------------- the field --
 
-local function blurAxis(f, nx, ny, nz, axis, passes, tick)
+local function blurAxis(f, nx, ny, nz, axis, passes, a, tick)
+  local c0 = 1 - 2 * a
   local len = (axis == 1 and nx) or (axis == 2 and ny) or nz
   local stride = (axis == 1 and 1) or (axis == 2 and nx) or (nx * ny)
   local t = {}
@@ -371,7 +398,7 @@ local function blurAxis(f, nx, ny, nz, axis, passes, tick)
       local prev, cur = 0, t[1]
       for i = 1, len do
         local nxt = (i < len) and t[i + 1] or 0
-        f[base + (i - 1) * stride] = (prev + 2 * cur + nxt) * 0.25
+        f[base + (i - 1) * stride] = prev * a + cur * c0 + nxt * a
         prev, cur = cur, nxt
       end
     end
@@ -437,7 +464,7 @@ function S.build(views, layout, opts, tick)
   if bodyH < 4 then return nil, "body only " .. bodyH .. " rows tall" end
 
   -- Rows with no side view borrow the nearest row that has one.
-  local rows = {}
+  local rows, gaps = {}, {}
   local anyD = false
   for r = top, base do if #dr[r] > 0 then anyD = true break end end
   local function depthRunsFor(r)
@@ -457,7 +484,9 @@ function S.build(views, layout, opts, tick)
       local depth = max(o.minDepth, width * 0.55)
       d = { { W / 2 - depth / 2, W / 2 + depth / 2 } }
     end
-    rows[r] = sections(wr[r], d, W, o.minDepth)
+    local ell, gx, gz = sections(wr[r], d, W, o.minDepth, o.gapMinPart)
+    rows[r] = ell
+    gaps[r] = { x = gx, z = gz }
   end
   tick()
 
@@ -473,8 +502,13 @@ function S.build(views, layout, opts, tick)
   local ss = max(1, floor(o.ss))
   local h = 1 / ss
   local m = o.margin
-  local x0, x1 = floor(xmin) - m, ceil(xmax) + m
-  local z0, z1 = floor(zmin) - m, ceil(zmax) + m
+  -- Sample points sit on pixel centres. A pixel's centre is at col + 0.5 - W/2,
+  -- which is a half-integer for an even cell and a whole number for an odd one,
+  -- so an odd cell shifts the grid by half a pixel (else a 1 px gap falls
+  -- between two samples and nothing can keep it open).
+  local ox = (W % 2) * 0.5
+  local x0, x1 = floor(xmin - ox) - m + ox, ceil(xmax - ox) + m + ox
+  local z0, z1 = floor(zmin - ox) - m + ox, ceil(zmax - ox) + m + ox
   local yBot, yTop = -o.below, bodyH + m
   local nx, ny, nz = (x1 - x0) * ss, (yTop - yBot) * ss, (z1 - z0) * ss
 
@@ -520,7 +554,47 @@ function S.build(views, layout, opts, tick)
   end
 
   local passes = max(1, floor(o.blur * ss))
-  for axis = 1, 3 do blurAxis(f, nx, ny, nz, axis, passes, tick) end
+  -- One pass is the kernel [a, 1-2a, a]; a = 1/4 is the classic [1 2 1]/4. The
+  -- blur's radius is proportional to sqrt(a), so `sharpen` shrinks the RADIUS by
+  -- that fraction: a = 1/4 * (1 - sharpen)^2.
+  local sideW = 0.25 * (1 - o.sharpen) * (1 - o.sharpen)
+  for axis = 1, 3 do blurAxis(f, nx, ny, nz, axis, passes, sideW, tick) end
+
+  -- Keep the gaps open. The blur is what rounds the pixel staircase, but it also
+  -- bleeds across a narrow gap, and two parts a pixel apart (the legs, an arm and
+  -- the torso, a stride) would fuse into one. The silhouettes say that space is
+  -- empty, so after the blur it is emptied again; the parts' own edges stay
+  -- smooth and the gap stays a gap.
+  if o.keepGaps then
+    for k = 0, nz - 1 do
+      local z = z0 + (k + 0.5) * h
+      for j = 0, ny - 1 do
+        local y = yBot + (j + 0.5) * h
+        local r = floor(base + 1 - y)
+        if r > base then r = base end
+        local g = (r >= top) and gaps[r] or nil
+        if g and (#g.x > 0 or #g.z > 0) then
+          local at = (k * ny + j) * nx
+          local cutZ = false
+          for n = 1, #g.z do
+            if z > g.z[n][1] and z < g.z[n][2] then cutZ = true break end
+          end
+          if cutZ then
+            for i = 0, nx - 1 do f[at + i + 1] = 0 end
+          else
+            for n = 1, #g.x do
+              local lo, hi = g.x[n][1], g.x[n][2]
+              for i = 0, nx - 1 do
+                local x = x0 + (i + 0.5) * h
+                if x > lo and x < hi then f[at + i + 1] = 0 end
+              end
+            end
+          end
+        end
+      end
+    end
+    tick()
+  end
 
   -- signed field: positive inside
   local iso = o.iso
