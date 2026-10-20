@@ -807,14 +807,12 @@ end
 
 -- Battle: draw Sinnoh from the staged BattleCam, then let Stadium /
 -- Colosseum actors paint into the same framebuffer via Voxel3D "current".
-function Host.renderBattle(state, arena, textures, token)
+-- Host.renderBattle swaps a dedicated camera onto the ground, pcalls this,
+-- then always restores the player's view and closes the free pass.
+local function renderBattleBody(ground, bview, state, arena, textures)
   -- the overworld's sun map belongs to the overworld: do not shade a battle with it
   do local S = sun(); if S then pcall(S.suspend) end end
-  local ground = Host.groundOf(state) or Host.groundOf(state and { map = arena.map })
-  if arena and arena.map and arena.map.renderer and arena.map.renderer.gen4Ground then
-    ground = arena.map.renderer.gen4Ground
-  end
-  if not ground then return nil end
+  if not (ground and bview) then return nil end
   if arena and arena.discs and not arena.showTerrain then return nil end
 
   local BattleScene = V.require("BattleScene")
@@ -854,13 +852,7 @@ function Host.renderBattle(state, arena, textures, token)
     curve = 0,
   }
 
-  local Gen4View = engineRequire("src.render.Gen4View")
-  if not Gen4View then return nil end
-  local view = ground.view3d
-  if not view then
-    view = Gen4View.new("third")
-    ground.view3d = view
-  end
+  local view = bview
   local savedMode = view.mode
   -- field3d derives fov from the cartridge camera distance, which is not
   -- this fight's lens. Third-person uses view.fovY as-is.
@@ -875,14 +867,12 @@ function Host.renderBattle(state, arena, textures, token)
   view.fovY = math.deg(worldCam.fov or view.fovY or 50)
   ground.cameraPlaced = true
 
-  Host._inBattle = true
   local drawFree = Host._drawFree or ground.drawFree
   local endFree = Host._endFree or ground.endFree
   local painted = drawFree(ground, pw, ph)
   if not painted then
     view.mode = savedMode
     if endFree then pcall(endFree, ground) end
-    Host._inBattle = false
     return nil
   end
   pcall(Host.overlay3D, ground)
@@ -958,8 +948,8 @@ function Host.renderBattle(state, arena, textures, token)
   local colour = nil
   if src and love and love.graphics then
     local g = love.graphics
-    local okNew, dest = pcall(g.newCanvas, pw, ph)
-    if okNew and dest then
+    local dest = reusableCanvas("_battleCanvas", pw, ph)
+    if dest then
       local prev = { g.getCanvas() }
       pcall(g.setCanvas, dest)
       g.setColor(1, 1, 1, 1)
@@ -977,7 +967,6 @@ function Host.renderBattle(state, arena, textures, token)
     end
   end
   if endFree then pcall(endFree, ground) end
-  Host._inBattle = false
   if not colour then
     view.mode = savedMode
     return nil
