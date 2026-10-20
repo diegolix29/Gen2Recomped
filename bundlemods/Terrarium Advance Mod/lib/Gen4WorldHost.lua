@@ -886,12 +886,30 @@ local function renderBattleBody(ground, bview, state, arena, textures)
   local fh = ground.freeH or ph
   local Mat4 = V.require("Mat4")
   local worldShift = (ox ~= 0 or oz ~= 0) and Mat4.translate(ox, 0, oz) or nil
+  -- OverworldBattle.update already posed the models, but it used the
+  -- voxel floor (often 0). BattleScene.render hands THIS function the
+  -- overworld `state`, not the live BattleState -- passing that as
+  -- `battle` made Stadium.setSpecies(nil) and released every rig, which
+  -- is why STADIUM / COLOSSEUM actors vanished on Platinum.
+  local battle = nil
+  do
+    local okB, OB = pcall(V.require, "OverworldBattle")
+    if okB and OB and type(OB.battle) == "function" then
+      local okLive, live = pcall(OB.battle)
+      if okLive then battle = live end
+    end
+  end
+  if not battle then
+    local g = game()
+    local top = g and g.stack and g.stack:top()
+    if top and top ~= g.overworld then battle = top end
+  end
   pcall(function()
     local St = V.require("Stadium")
-    if St and St.update then
+    if St and St.update and battle then
       -- Same floor the NSBMD mesh is standing on, not the voxel 0 that
       -- buried every actor in the terrain.
-      pcall(St.update, 0, state, groundY)
+      pcall(St.update, 0, battle, groundY)
     end
   end)
   pcall(function()
@@ -933,10 +951,12 @@ local function renderBattleBody(ground, bview, state, arena, textures)
     end)
     pcall(function()
       local CSM = V.CurrentSpriteModels
-      if CSM and type(CSM.drawWorld) == "function" then
+      if CSM and type(CSM.drawWorld) == "function" and battle then
         CSM:drawWorld({
-          width = pw, height = ph, arena = arena, battle = state,
+          width = pw, height = ph, arena = arena, battle = battle,
+          game = battle.game, groundY = groundY,
           originX = ox, originZ = oz,
+          services = { vp = Voxel3D.vp, stageVP = Voxel3D.vp },
         })
       end
     end)
