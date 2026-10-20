@@ -175,6 +175,28 @@ moved around. Sideloading the MSIX has none of that friction.
 
 ---
 
+## App icon
+
+Every platform's icon comes from one square image, `icons/icon.png`
+(1024 px, transparent corners). To change it, replace that file, run
+`python3 tools/make_icons.py` (needs Pillow), and commit what changes.
+
+| Platform | Where the icon comes from |
+| --- | --- |
+| Windows `.exe` (and the MSIX that repacks it) | `icons/icon.ico`, patched into `love.exe` by `scripts/build.sh` with [go-winres](https://github.com/tc-hib/go-winres) before `game.love` is appended. It also sets the exe's version info to RetroRecomped. Needs Go (installs go-winres on first use) or `go-winres` on `PATH`; without either the build warns and keeps LÖVE's icon, and the release job (`REQUIRE_ICON=1`) fails instead. |
+| MSIX tiles | resized from `icons/icon.png` by `scripts/build_msix.ps1` |
+| macOS | `icons/icon.icns`, copied in as `GameIcon.icns`; `build.sh` drops LÖVE's `CFBundleIconName` so the Dock uses it |
+| Linux x86_64 AppImage | resized from `icons/icon.png` to `love.png` and `.DirIcon` |
+| Linux ARM64 AppImage | resized from `icons/icon.png` by `scripts/build_linux_arm64.sh` |
+| iOS | `icons/icon-opaque.png` (iOS fills transparency black), resized by `scripts/build_ios.sh` |
+| Android | `mobile/android/app/src/main/res/drawable-*/love.png` |
+| Switch (`.nro` and OTA launcher) | `ports/switch/assets/icon.jpg` |
+| Xbox UWP | `ports/uwp/Assets/*.png` |
+| Window / taskbar at runtime | `assets/logo/icon-window.png`, set in `conf.lua` |
+
+`icons/` sits outside `assets/` on purpose: every `game.love` packer zips all
+of `assets/`, and only the small window icon belongs inside the game.
+
 ## Not covered
 
 - **arm64 Windows / Linux** — upstream LÖVE 11.5 publishes no arm64 binaries

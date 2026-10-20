@@ -38,17 +38,27 @@ function Boxes.load(data)
   return shape
 end
 
+-- Use a destination cartridge briefly without changing the running preview.
+function Boxes.withData(value, fn)
+  local previous=shape
+  Boxes.load(value)
+  local ok,result=pcall(fn)
+  shape=previous
+  if not ok then error(result,0) end
+  return result
+end
+
 function Boxes.count()
   if shape then return shape.count end
-  if GameVersion.isGen4() then return 18 end
-  return GameVersion.isGen2() and Boxes.GEN2_COUNT or Boxes.COUNT
+  if GameVersion.generation()>=4 then return GameVersion.generation()==5 and 24 or 18 end
+  return GameVersion.generation()>=2 and Boxes.GEN2_COUNT or Boxes.COUNT
 end
 
 -- How many fit in one.  Gen 1 and Gen 2 both hold twenty and neither says so
 -- anywhere, so they keep the literal; a dataset that states its own wins.
 function Boxes.capacity()
   if shape then return shape.capacity end
-  if GameVersion.isGen4() then return 30 end
+  if GameVersion.generation()>=3 then return 30 end
   return Boxes.CAPACITY
 end
 
@@ -57,18 +67,20 @@ function Boxes.ensure(save)
   if not save.boxes then
     save.boxes = {}
     save.currentBox = 1
-    if save.box then -- migrate pre-12-box saves
-      save.boxes[1] = {}
-      for _, mon in ipairs(save.box) do
-        table.insert(save.boxes[1], mon)
-      end
-      save.box = nil
+    if type(save.box)=="table" then
+      if type(save.box.boxes)=="table" then save.boxes=save.box.boxes
+      else save.boxes[1]=type(save.box.mons)=="table" and save.box.mons or save.box end
+      save.box=nil
     end
   end
   -- a save made under one generation (or trimmed by a mod) just grows: the
   -- extra Gen2 boxes appear empty rather than being unreachable
   for i = 1, count do
-    if save.boxes[i] == nil then save.boxes[i] = {} end
+    local box=save.boxes[i]
+    if type(box)=="table" and type(box.mons)=="table" then
+      save.boxes[i]=box.mons
+      if type(box.name)=="string" then save.boxNames=save.boxNames or {};save.boxNames[i]=save.boxNames[i] or box.name end
+    elseif box==nil then save.boxes[i]={} end
   end
   save.currentBox = math.max(1, math.min(count, save.currentBox or 1))
   return save.boxes

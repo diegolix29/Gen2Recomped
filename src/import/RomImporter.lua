@@ -1267,7 +1267,14 @@ local function markerFor(version)
   -- (Gen5DynamicCity) and White's zone swap to White Forest
   -- gen5-battle-bag-v1: gen5_battle_bag (Gen5BattleBagArt, /a/0/9/9), the four-pocket
   -- battle bag; without it the battle opens the field bag instead
-  if version == "black" or version == "white" then revision = "gen5-starter-v6:gen5-moveanim-v2:gen5-facilities-v1:gen5-field-fx-v1:gen5-title-v1:gen5-naming-v1:gen5-maps-v1:gen5-battle-bag-v1:" end
+  -- gen5-town-map-v2: gen5_town_map carries the ROM's road layer, the arrow and cursor
+  -- sprites and the fly points' landings (Gen5TownMapArt)
+  -- gen5-xtransceiver-v1: gen5_xtransceiver (Gen5XtransceiverArt, /a/1/3/1) and script
+  -- 0x155 lowered to the call (it was a no-op: every story call was skipped)
+  -- gen5-shop-art-v1: gen4_shop_art from /a/0/5/4 (Gen5ShopArt), BW's own counter art
+  -- gen5-windows-v1: the font record's `frames` (the menu window, /a/0/0/5 tileset 9
+  -- palette 3) and the menu cursor glyph (`symbols`, src/import/Gen5Cursor.lua)
+  if version == "black" or version == "white" then revision = "gen5-starter-v6:gen5-moveanim-v2:gen5-facilities-v1:gen5-field-fx-v1:gen5-title-v1:gen5-naming-v1:gen5-maps-v1:gen5-battle-bag-v1:gen5-town-map-v2:gen5-xtransceiver-v1:gen5-shop-art-v1:gen5-windows-v1:" end
   -- emerald-trade-scene-v3 / firered-trade-scene-v1: the in-game trade
   -- sequence's art (extractTradeScene, gen3_trade_art) -- without it special
   -- 257 falls back to the bare swap, so both Gen 3 caches re-import once
@@ -6775,11 +6782,14 @@ local function armedDelete(a, kind, id, version)
     and (love.timer.getTime() - a.t) <= DELETE_CONFIRM_SECONDS
 end
 
-function RomImporter:touchpressed(id, x, y, dx, dy, pressure)
-  -- Android-specific touch handler to avoid mouse emulation issues
-  if self._rename then return end -- the rename modal swallows all clicks
-  -- Route to the same mousepressed logic but with touch handling
-  return self:mousepressed(x, y, 1)
+function RomImporter:touchpressed(id,x,y)
+  return require("src.import.LauncherTouch").pressed(self,id,x,y)
+end
+function RomImporter:touchmoved(id,x,y)
+  return require("src.import.LauncherTouch").moved(self,id,x,y)
+end
+function RomImporter:touchreleased(id,x,y)
+  return require("src.import.LauncherTouch").released(self,id,x,y)
 end
 
 function RomImporter:mousepressed(x, y, button)
@@ -6857,7 +6867,7 @@ function RomImporter:mousepressed(x, y, button)
   end
   -- Whether a press can be ARMED and resolved on release, which needs a
   -- pollable pointer: always on desktop, on Android only where love.touch is.
-  local armDrag = (not self.android) or self.touchPollable
+  local armDrag = self._touchResolving or (not self.android) or self.touchPollable
   -- right-click a save-slot row to rename it (#205); desktop only (touch
   -- has no secondary button)
   if button == 2 then
@@ -8514,6 +8524,7 @@ end
 -- call site keeps reading the same thing.  Only the tab bar wants x: it is the
 -- one strip on the page that scrolls sideways.
 function RomImporter:_pointerHold()
+  if self._touchResolving then return false,self._my,self._mx end
   if not self.android then return love.mouse.isDown(1), self._my, self._mx end
   if not self.touchPollable then return false, nil, nil end
   local ok, list = pcall(love.touch.getTouches)
@@ -9439,7 +9450,7 @@ function RomImporter:_selectTab(id)
 end
 
 function RomImporter:_updateSlotDrag()
-  if self.android and not self.touchPollable then return end
+  if self.android and not self.touchPollable and not self._touchResolving then return end
   local down, py, px = self:_pointerHold()
   py = py or self._my
   px = px or self._mx

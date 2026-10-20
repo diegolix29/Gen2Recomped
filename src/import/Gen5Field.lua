@@ -211,7 +211,12 @@ function F.pack(bytes)
     local a, e = u32(4 + i * 4), u32(4 + (i + 1) * 4)
     if a < e and e <= #bytes then
       local seg = bytes:sub(a + 1, e)
-      if seg:sub(1, 4) == "BMD0" then models[#models + 1] = seg else ids[#ids + 1] = u32(a) end
+      -- a record opens with a u16 id and a u16 of its own (non-zero on the
+      -- animated props: the Center's healing machine is 00 00 07 00). Read
+      -- as one u32 those ids came out as 458752 and the like, and every
+      -- animated building -- the healing machine, the Center's screen, its
+      -- PCs -- went undrawn
+      if seg:sub(1, 4) == "BMD0" then models[#models + 1] = seg else ids[#ids + 1] = u32(a) % 65536 end
     end
   end
   return { ids = ids, models = models }
@@ -602,6 +607,12 @@ function F.build(x, save)
       -- table does not take the table's height from Gen4Ground's neighbours)
       local def, edits, n = maps[mapId], {}, 0
       local zeros = {}
+      -- SLOPES: a tile whose value names no flat height is a stair or a hill
+      -- (its plane is in the slope table this port does not read yet).
+      -- Recorded so Gen4Ground:heightAtPixel can ramp across it between the
+      -- flat tiles at its ends, instead of the player holding the top's height
+      -- down the whole flight and dropping at the bottom.
+      local slopes, nSlopes = {}, 0
       for ly = 0, def.height - 1 do
         for lx = 0, def.width - 1 do
           local mx, my = def.originX + lx, def.originY + ly
@@ -611,7 +622,10 @@ function F.build(x, save)
           local v = raw and F.HeightValues.valueAt(raw, (my % F.CHUNK) * F.CHUNK + (mx % F.CHUNK))
           local h = v and heightTable[v]
           if h and h ~= 0 then edits[lx .. "," .. ly] = h; n = n + 1
-          elseif h then zeros[#zeros + 1] = { lx, ly } end
+          elseif h then zeros[#zeros + 1] = { lx, ly }
+          elseif raw and F.HeightValues.isSlope(raw, (my % F.CHUNK) * F.CHUNK + (mx % F.CHUNK)) then
+            slopes[lx .. "," .. ly] = true; nSlopes = nSlopes + 1
+          end
         end
       end
       for _, z in ipairs(zeros) do
@@ -621,6 +635,7 @@ function F.build(x, save)
         end
       end
       if n > 0 then def.gen4HeightEdits = edits end
+      if nSlopes > 0 then def.gen5SlopeTiles = slopes end
       -- A 64 x 64 CHUNK: the permission section's header is its width and
       -- height (u16 each), 32 x 32 on every chunk but one -- chunk 120, the
       -- Pokemon League's grounds (zone 136, a 1 x 1 matrix), which is 64 x 64.

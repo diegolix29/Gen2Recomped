@@ -34,6 +34,9 @@ ENTITLEMENTS="$ROOT/scripts/macos-entitlements.plist"
 APP_NAME="gen2recomp"
 BUNDLE_ID="com.underdecoded.gen2recomp"
 LOVE_VERSION="11.5"
+# patches our icon into love.exe (scripts/build.sh build_win); installed with
+# `go install` on first use, so a Windows build needs Go or go-winres on PATH
+GO_WINRES_VERSION="v0.3.3"
 VERSION="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
 VERSION_EXPLICIT=false
 IDENTITY=""
@@ -42,6 +45,19 @@ NOTARY_PROFILE="notary-profile"
 NOTARIZE=true
 IOS_RELEASE=false
 IOS_IPA=false
+
+# Our square app icon (tools/make_icons.py), resized to $1 px into $2.  Uses
+# Pillow; without it, ships the full-size source rather than failing a build
+# over an icon.
+icon_png() {
+  python3 - "$ROOT/icons/icon.png" "$1" "$2" <<'PY' 2>/dev/null || cp "$ROOT/icons/icon.png" "$2"
+import sys
+from PIL import Image
+with Image.open(sys.argv[1]) as image:
+    size = int(sys.argv[2])
+    image.convert("RGBA").resize((size, size), Image.LANCZOS).save(sys.argv[3])
+PY
+}
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33mwarn:\033[0m %s\n' "$*" >&2; }
@@ -116,19 +132,23 @@ fi
 # tools/map-editor too: the editor's MAP pages require it pcall'd, so a build
 # without it opened a MAP EDITOR with an empty body for every game --
 # scripts/pack_love.sh shipped it, this list did not.
+# Listed once and grepped from memory: `unzip -Z1 | grep -q` under pipefail
+# fails whenever grep's early exit SIGPIPEs unzip, reporting a file that is
+# there as missing (scripts/build_android.sh lists it once the same way).
+LOVE_ENTRIES="$(unzip -Z1 "$LOVE_FILE")"
 for required in tools/save-editor/App.lua tools/save-editor/Kit.lua \
                 tools/save-editor/panels/Party.lua \
                 tools/map-editor/MapEdits.lua tools/map-editor/ModExport.lua \
                 tools/map-editor/panels/Preview.lua \
                 $(for m in $BUNDLED_MODS; do echo "$m/manifest.json $m/main.lua"; done); do
-  unzip -Z1 "$LOVE_FILE" | grep -qx "$required" \
+  grep -qx "$required" <<< "$LOVE_ENTRIES" \
     || fail "game.love is missing $required"
 done
 # Every manifest that exists in the tree must be in the archive -- the check
 # follows the glob rather than a second hand-written list, so the two can
 # never disagree the way they just did.
 for manifest in $MANIFESTS; do
-  unzip -Z1 "$LOVE_FILE" | grep -qx "$manifest" \
+  grep -qx "$manifest" <<< "$LOVE_ENTRIES" \
     || fail "game.love is missing $manifest"
 done
 say "game.love: $(du -h "$LOVE_FILE" | cut -f1)"
@@ -188,8 +208,16 @@ build_mac() {
   /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$plist" 2>/dev/null \
     || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $VERSION" "$plist"
 
-  if [ -f "$ROOT/assets/icon.icns" ]; then
-    cp "$ROOT/assets/icon.icns" "$out_app/Contents/Resources/GameIcon.icns"
+  # LÖVE.app names its icon twice: CFBundleIconName (from Assets.car), which
+  # wins on any current macOS, and CFBundleIconFile.  Drop the first and point
+  # the second at ours, or the Dock keeps showing the LÖVE heart.
+  if [ -f "$ROOT/icons/icon.icns" ]; then
+    cp "$ROOT/icons/icon.icns" "$out_app/Contents/Resources/GameIcon.icns"
+    /usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "$plist" 2>/dev/null || true
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile GameIcon" "$plist" 2>/dev/null \
+      || /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string GameIcon" "$plist"
+  else
+    warn "icons/icon.icns missing (run tools/make_icons.py); keeping LÖVE's icon"
   fi
 
   local id="$IDENTITY"
@@ -231,6 +259,56 @@ build_mac() {
 }
 
 # --------------------------------------------------------------- Windows
+# Rewrites the resources of the love.exe at $1: our icon (icons/icon.ico),
+# LÖVE's manifest settings, and version info naming the game.  --delete
+# because go-winres cannot parse the RT_VERSION LÖVE 11.5 ships, and patching
+# around it fails; love.exe carries nothing else (icon, manifest, version).
+# Must run BEFORE game.love is appended -- rewriting the PE drops any overlay.
+patch_win_icon() {
+  local exe="$1" ico="$ROOT/icons/icon.ico" tool
+  if [ ! -f "$ico" ]; then
+    [ "${REQUIRE_ICON:-0}" = 1 ] && fail "icons/icon.ico missing (run tools/make_icons.py)"
+    warn "icons/icon.ico missing (run tools/make_icons.py); keeping LÖVE's icon"
+    return 0
+  fi
+  tool="$(command -v go-winres || true)"
+  if [ -z "$tool" ] && [ -x "$CACHE/bin/go-winres" ]; then tool="$CACHE/bin/go-winres"; fi
+  if [ -z "$tool" ] && command -v go >/dev/null; then
+    say "installing go-winres $GO_WINRES_VERSION"
+    GOBIN="$CACHE/bin" go install "github.com/tc-hib/go-winres@$GO_WINRES_VERSION" \
+      && tool="$CACHE/bin/go-winres"
+  fi
+  if [ -z "$tool" ]; then
+    [ "${REQUIRE_ICON:-0}" = 1 ] && fail "neither go-winres nor Go found; cannot put the icon on the .exe"
+    warn "neither go-winres nor Go found; the .exe keeps LÖVE's icon (install Go to fix)"
+    return 0
+  fi
+
+  # Windows wants a numeric a.b.c.d; take the leading digits of the version,
+  # so v1.4.2 -> 1.4.2.0 and a commit hash -> 0.0.0.0.
+  local nums
+  nums="$(printf '%s\n' "$VERSION" | sed -E 's/^v//; s/[^0-9.].*$//' | awk -F. '{printf "%d.%d.%d.%d", $1, $2, $3, $4}')"
+  local dir="$WORK/winres"
+  rm -rf "$dir"; mkdir -p "$dir"
+  cp "$ico" "$dir/icon.ico"
+  cat > "$dir/winres.json" <<JSON
+{
+  "RT_GROUP_ICON": { "#1": { "0409": "icon.ico" } },
+  "RT_MANIFEST": { "#1": { "0409": { "minimum-os": "win7", "dpi-awareness": "unaware" } } },
+  "RT_VERSION": { "#1": { "0000": {
+    "fixed": { "file_version": "$nums", "product_version": "$nums" },
+    "info": { "0409": {
+      "CompanyName": "UNDERdecodedHD", "FileDescription": "RetroRecomped",
+      "FileVersion": "$VERSION", "InternalName": "$APP_NAME", "LegalCopyright": "UNDERdecodedHD",
+      "OriginalFilename": "$APP_NAME.exe", "ProductName": "RetroRecomped", "ProductVersion": "$VERSION"
+    } }
+  } } }
+}
+JSON
+  "$tool" patch --no-backup --delete --in "$dir/winres.json" "$exe" \
+    || fail "go-winres could not patch the icon into $exe"
+}
+
 build_win() {
   say "building Windows (win64) app"
   local zip_name="love-$LOVE_VERSION-win64.zip"
@@ -264,7 +342,10 @@ build_win() {
   cp "$love_dir"/*.dll "$out_dir"/
   cp "$love_dir"/license.txt "$out_dir"/ 2>/dev/null || true
 
-  cat "$love_dir/love.exe" "$LOVE_FILE" > "$out_dir/$APP_NAME.exe"
+  local exe="$WORK/love-icon.exe"
+  cp "$love_dir/love.exe" "$exe"
+  patch_win_icon "$exe"
+  cat "$exe" "$LOVE_FILE" > "$out_dir/$APP_NAME.exe"
   if [ -f "$ROOT/translation/rom-translate.exe" ]; then
     mkdir -p "$out_dir/translation"
     cp "$ROOT/translation/rom-translate.exe" "$out_dir/translation/"
@@ -327,6 +408,16 @@ build_linux() {
   unsquashfs -q -no-xattrs -o "$sfs_offset" -d "$appdir" "$love_appimage" >/dev/null
 
   cp "$LOVE_FILE" "$appdir/game.love"
+  # Our icon and name in place of LÖVE's: .DirIcon is what file managers and
+  # appimaged show, and the .desktop's Icon=love resolves to love.png at the
+  # AppDir root once the love.svg beside it is gone.
+  rm -f "$appdir/love.svg" "$appdir/.DirIcon" "$appdir/share/pixmaps/love.svg"
+  icon_png 512 "$appdir/love.png"
+  cp "$appdir/love.png" "$appdir/.DirIcon"
+  local desktop="$WORK/love.desktop"
+  sed -e "s|^Name=.*|Name=RetroRecomped|" -e '/^NoDisplay=/d' "$appdir/love.desktop" > "$desktop"
+  cat "$desktop" > "$appdir/love.desktop"
+  rm -f "$desktop"
   if [ -f "$ROOT/translation/rom-translate" ]; then
     mkdir -p "$appdir/translation"
     cp "$ROOT/translation/rom-translate" "$appdir/translation/"

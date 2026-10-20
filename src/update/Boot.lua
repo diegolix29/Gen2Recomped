@@ -353,6 +353,7 @@ end
 -- chainloaded and the caller must return immediately; false means boot the
 -- bundled game as normal.
 function Boot.run(args)
+  if _G.POKEPORT_LOVE12_PREVIEW then return false end
   -- Dev / source checkouts never self-update.
   if not (love.filesystem.isFused and love.filesystem.isFused()) then
     -- Silent on a plain working tree, which is the normal case and must not

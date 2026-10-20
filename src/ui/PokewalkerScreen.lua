@@ -576,13 +576,13 @@ function P:pageWalk(x, y, w, h, f)
     local bw = three and (lw - 72) / 3 or (lw - 54) / 2
     self:button(x + 18, yy, bw, bh, "Bring it home", function()
       local ok, why = Link.bringHome(st, false)
-      self:say(ok and "Home! Open the game to see it." or ("Could not: " .. tostring(why)))
+      self:say(ok and (why or "Home! Returned to its PC.") or ("Could not: " .. tostring(why)))
       if ok then pcall(require("src.pokewalker.WalkerNotify").watch, st, self.courses) end
     end, "accent", f.body)
     self:button(x + 36 + bw, yy, bw, bh, "Send presents home", function()
       if #st.caught == 0 and #st.items == 0 then self:say("Nothing to send yet."); return end
       local ok, why = Link.bringHome(st, true)
-      self:say(ok and "Sent! Open the game to receive them." or ("Could not: " .. tostring(why)))
+      self:say(ok and (why or "Presents delivered to its PC and bag.") or ("Could not: " .. tostring(why)))
     end, nil, f.body)
     if three then
       self:button(x + 54 + 2 * bw, yy, bw, bh, "Minigames", function() self:openMinigames() end, "gold", f.body)
@@ -828,7 +828,7 @@ function P:radarCaught(x, y, w, f)
     self:button(x + w - bw - 18, yy + (rowH - bh) / 2, bw, bh, "Send to game", function()
       local Link = require("src.pokewalker.WalkerLink")
       local ok, why = Link.sendCaught(st, idx)
-      self:say(ok and "Sent! It will be in the PC when you next load the game." or ("Could not: " .. tostring(why)))
+      self:say(ok and (why or "Delivered to its PC.") or ("Could not: " .. tostring(why)))
     end, "accent", f.body)
     yy = yy + rowH
   end
@@ -836,7 +836,7 @@ function P:radarCaught(x, y, w, f)
     self:button(x + 18, yy + 4, w - 36, bh, "Send all to " .. ((info and info.name) or "your game"), function()
       local Link = require("src.pokewalker.WalkerLink")
       local ok, why = Link.sendCaught(st)
-      self:say(ok and "Sent! They will be in the PC when you next load the game." or ("Could not: " .. tostring(why)))
+      self:say(ok and (why or "Delivered to its PC.") or ("Could not: " .. tostring(why)))
     end, nil, f.body)
   end
   return ch

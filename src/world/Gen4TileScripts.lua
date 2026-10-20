@@ -196,9 +196,49 @@ function Gen4TileScripts.hgssTreeRow(ow)
   return nil
 end
 
+-- BLACK / WHITE'S TABLE (Black ov21 0x021D3CE8, overlay offset 0x4BDE8:
+-- thirteen `{ IsBehavior_X, u16 flags, u16 script }` rows the field walks
+-- when A is pressed at a tile). Black / White's bytes are not Platinum's --
+-- the Pokemon Center's PC is 0xD6 -- so the named table above never matched
+-- and every Unova PC, bookshelf and shelf answered nothing ("the Pokemon
+-- Center is missing the PC storage system"). The script ids are shared
+-- scripts: 10090 is the PC (band bw_10090, member 868), 2500.. the
+-- furniture; 0xFFFF is "nothing".
+Gen4TileScripts.BW = {
+  [0xD6] = 10090, [0xD8] = 10520, [0xD9] = 2500, [0xDA] = 2501, [0xDB] = 2502,
+  [0xDC] = 2503, [0xDD] = 2504, [0xDE] = 2504, [0xDF] = 2505, [0xE0] = 2506,
+  [0xE1] = 2507, [0xE2] = 10400,
+}
+
+-- a shared script id -> its band and 0-based entry: the band whose first id
+-- (its key, `bw_<first>`) is the nearest at or below it
+function Gen4TileScripts.bwBand(data, id)
+  local VM = require("src.script.Gen4ScriptVM")
+  local pool = VM.store(data)
+  local best, bestFirst
+  for key, band in pairs(pool and pool.bands or {}) do
+    local first = tonumber(tostring(key):match("^bw_(%d+)$"))
+    if first and first <= id and (not bestFirst or first > bestFirst)
+       and band.entries and id - first < #band.entries then
+      best, bestFirst = key, first
+    end
+  end
+  if best then return best, id - bestFirst end
+  return nil
+end
+
 -- The row for a behaviour byte, or nil.  `facing` is the player's, in this
 -- engine's words ("up" is DIR_NORTH).
 function Gen4TileScripts.rowFor(behaviour, facing)
+  local info = require("src.core.GameVersion").info()
+  if info and info.family == "bw" then
+    local id = Gen4TileScripts.BW[behaviour]
+    if not id then return nil end
+    local Game = package.loaded["src.core.Game"]
+    local band, n = Gen4TileScripts.bwBand(Game and Game.data, id)
+    if not band then return nil end
+    return { behaviour = ("BW_%02X"):format(behaviour), band = band, index = n }
+  end
   local row = index()[behaviour]
   if not row then return nil end
   if row.facing and row.facing ~= facing then return nil end

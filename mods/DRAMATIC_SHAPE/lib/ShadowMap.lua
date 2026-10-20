@@ -26,6 +26,7 @@
 
 -- the mod namespace (see main.lua): V.require loads a sibling module
 local V = ...
+local ShaderState=V.require("ShaderState")
 
 local Mat4 = V.require("Mat4")
 local MeshBounds = V.require("MeshBounds")
@@ -133,7 +134,13 @@ local SHADER = [[
 #ifdef VERTEX
   uniform mat4 lightVP;
   uniform mat4 model;
+#ifdef STAMP_INSTANCES
+  attribute vec3 StampOffset;
+#endif
   vec4 position(mat4 transform_projection, vec4 vertex_position) {
+#ifdef STAMP_INSTANCES
+    vertex_position.xyz += StampOffset;
+#endif
     vec4 c = lightVP * (model * vertex_position);
     // the projection is orthographic, so w is 1 and clip z IS the depth,
     // linear in world units along the sun line
@@ -186,10 +193,19 @@ ShadowMap.bias = 0
 
 local function getShader()
   if shader == nil then
-    local ok, sh = pcall(love.graphics.newShader, SHADER)
+    local ok, sh = pcall(love.graphics.newShader, V.require("GraphicsCompat").shader(SHADER))
     shader = (ok and sh) or false
   end
   return shader or nil
+end
+
+local stampShader
+function ShadowMap.instanceShader()
+  if stampShader==nil then
+    local ok,sh=pcall(love.graphics.newShader,V.require("GraphicsCompat").shader("#define STAMP_INSTANCES 1\n"..SHADER))
+    stampShader=ok and sh or false
+  end
+  return stampShader or nil
 end
 
 -- The map canvas at edge `res`, rebuilt when the rung changes (a zoom
@@ -494,10 +510,10 @@ function ShadowMap.begin(cx, cy, vw, vh)
   love.graphics.setBlendMode("replace", "premultiplied")
   love.graphics.setShader(sh)
   love.graphics.setColor(1, 1, 1, 1)
-  pcall(sh.send, sh, "lightVP", "row", ShadowMap.clipVP)
+  ShaderState.send(sh, "lightVP", "row", ShadowMap.clipVP)
   -- the world until a cast pass says otherwise, reset per pass so one that
   -- forgot to put it back cannot leak into the next map's terrain
-  pcall(sh.send, sh, "sprite", 0)
+  ShaderState.send(sh, "sprite", 0)
   drawing = true
   ready = false
   return true
@@ -522,7 +538,7 @@ end
 function ShadowMap.sprites(on)
   if not drawing then return end
   local sh = getShader()
-  if sh then pcall(sh.send, sh, "sprite", on and 1 or 0) end
+  if sh then ShaderState.send(sh, "sprite", on and 1 or 0) end
 end
 
 function ShadowMap.draw(mesh, texture, model)
@@ -540,9 +556,14 @@ function ShadowMap.draw(mesh, texture, model)
   if MeshBounds.hidden(mesh, ShadowMap.clipVP, model) then return end
   local sh = getShader()
   if texture and not parts then mesh:setTexture(texture) end
-  pcall(sh.send, sh, "model", "row", model or IDENTITY)
+  ShaderState.send(sh, "model", "row", model or IDENTITY)
   if parts then V.require("MeshBatch").draw(mesh, texture, ShadowMap.clipVP, model)
   else love.graphics.draw(mesh) end
+  if parts and mesh.stamps and #mesh.stamps>0 then
+    if not V.require("HullBatch").instanced(mesh,texture,ShadowMap.clipVP,model,nil,nil,nil,sh,ShadowMap.instanceShader()) then
+      V.require("HullBatch").draw(mesh,model,nil,function(hull,pose)ShadowMap.draw(hull,texture,pose)end)
+    end
+  end
 end
 
 -- Close the pass and stamp it with the signature it was drawn for.

@@ -45,6 +45,15 @@ local mod = ...
 -- passed in as its vararg (`local V = ...`).
 
 local V = { mod = mod, path = mod.path }
+-- Repeated Gen 3 hulls share immutable GPU meshes where the driver can draw
+-- their offsets per instance. Other drivers keep the expanded vertex path.
+do
+  local get=love and love.graphics and love.graphics.getSupported
+  local ok,caps=false,nil
+  if get then ok,caps=pcall(get) end
+  V.sharedHulls=ok and caps and caps.instancing==true and love.graphics.drawInstanced~=nil
+    and require("src.core.GameVersion").isGen3()
+end
 -- ...and the loader's record carries a handle back, so a TEST DRIVER can
 -- reach the modules this mod actually loaded.
 --
@@ -392,6 +401,7 @@ mod.content.render_pipelines:register("voxel", {
     if not Voxel.active() then return end
     local Game = require("src.core.Game")
     local ow = Game and Game.overworld
+    local engineSheets = V.require("EngineSheets")
     if ow and ow.map and ow.camera then
       pcall(VoxelScene.prefetch, ow)
     end
@@ -405,6 +415,10 @@ mod.content.render_pipelines:register("voxel", {
     -- budget. Coarse row passes check every row; shared tileset analysis
     -- finishes atomically before geometry can be preempted by another map.
     local tPump = Perf.now()
+    -- Follow the engine's actual render cap. A 30 Hz handheld frame must
+    -- not be mistaken for an overloaded 60 Hz frame on every update.
+    local frameCap=require("src.core.FrameCap").current
+    if frameCap and frameCap>0 then ChunkMesher.setFrameTarget(1/frameCap) end
     -- A battle/menu above the overworld still renders and accepts input.
     -- Only a fully opaque warp fade can safely borrow the covered slice.
     local top = Game and Game.stack and Game.stack:top()
@@ -414,6 +428,9 @@ mod.content.render_pipelines:register("voxel", {
     -- The current map can still finish if its battle terrain is not ready.
     ChunkMesher.pump(covered, top and top ~= ow and not covered)
     Perf.add("ChunkMesher.pump", tPump)
+    if require("src.core.GameVersion").isGen3() and top == ow then
+      engineSheets.pump(ow, Game.data, .001)
+    end
     pumpPrebake()
   end,
 
@@ -446,8 +463,10 @@ mod.content.render_pipelines:register("voxel", {
     -- canvas it was handed, so the sky's dither, the water's march and the
     -- camera itself all come out the same picture at a higher sample rate.
     local rw, rh = AntiAlias.expand(sw, sh)
+    local drawStarted=love.timer.getTime()
     local canvas = VoxelScene.render(ctx.state, rw, rh,
                                      ctx.vw, ctx.vh, ctx.paletteFor)
+    ChunkMesher.observeDraw(love.timer.getTime()-drawStarted)
     if not canvas then return nil end   -- fall back to the 2D path
     if Voxel3D.beginOverlay() then
       -- the FX closures are ordinary 2D draws sized in DISPLAY pixels, and
@@ -805,7 +824,16 @@ schema[#schema + 1] = {
     .. "after a session in the map editor.",
 }
 
+schema[#schema + 1] = {
+  key = "voxelGpuMeshing", type = "toggle", label = "GPU MESH GENERATION",
+  default = true,
+  description = "Use LÖVE 12 compute shaders to expand terrain quads on the GPU. "
+    .. "Unsupported runtimes or drivers automatically use the CPU. Turn this "
+    .. "off to use the CPU for new meshes; existing meshes and disk caches remain valid.",
+}
+
 mod.options:define(schema)
+V.gpuMeshing = mod.options:get("voxelGpuMeshing") ~= false
 
 -- ------- prebake
 --
@@ -1245,6 +1273,7 @@ end)
 -- to do is move our cached index and pick the new value up.
 mod.events:on("mod.options_changed", function(payload)
   if not (payload and payload.mod == mod.id) then return end
+  if payload.key == "voxelGpuMeshing" then V.gpuMeshing = payload.value ~= false end
   for _, entry in ipairs(SETTINGS) do
     if payload.key == entry[1].key then entry[1]:sync(payload.value) end
   end

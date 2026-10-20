@@ -23,6 +23,22 @@ local B = {}
 
 B.SETTLE = 0.45
 B.VIDEO_FILE = "launcher_background.ogv"
+-- Convert YUV video once per background frame, then composite a bounded
+-- RGBA canvas at the UI's full frame rate. Window/DPI size never multiplies
+-- video conversion cost; NX gets a lighter decorative frame cadence.
+B.VIDEO_MAX_WIDTH,B.VIDEO_MAX_HEIGHT=960,540
+B.VIDEO_FPS=30
+B.PREVIEW_FPS=30
+local function handheld()
+  return love.system and love.system.getOS and love.system.getOS()=="NX"
+end
+local function previewFPS()return handheld() and 15 or B.PREVIEW_FPS end
+local function backdropSize(w,h)
+  local maxW,maxH=B.VIDEO_MAX_WIDTH,B.VIDEO_MAX_HEIGHT
+  if handheld() then maxW,maxH=math.min(maxW,640),math.min(maxH,360) end
+  local scale=math.min(1,maxW/w,maxH/h)
+  return math.max(1,math.floor(w*scale)),math.max(1,math.floor(h*scale))
+end
 
 local state = {
   current = nil,        -- the version whose menu is running, or "video"
@@ -81,6 +97,7 @@ function B.stop()
   local was = state.current
   if state.video then
     pcall(function() state.video:pause() end)
+    if state.video.release then pcall(state.video.release,state.video) end
     state.video = nil
   end
   if state.game then
@@ -93,6 +110,13 @@ function B.stop()
     pcall(function() require("src.render.Assets").invalidate() end)
   end
   if state.game then state.game.launcherPreview = nil end
+  for _,key in ipairs({"videoCanvas","canvas"})do
+    local canvas=state[key]
+    if canvas and canvas.release then pcall(canvas.release,canvas) end
+    state[key]=nil
+  end
+  state.videoNext,state.videoVolume,state.videoCacheFailed=nil,nil,nil
+  state.previewNext,state.previewDt=nil,nil
   state.game, state.current, state.paused = nil, nil, nil
   if was then log("stopped %s", tostring(was)) end
 end
@@ -170,10 +194,16 @@ function B.update(dt, busy)
     local v = state.video
     if not v:isPlaying() then pcall(function() v:rewind(); v:play() end) end
     local src = v.getSource and v:getSource()
-    if src then pcall(src.setVolume, src, state.music and 0.6 or 0) end
+    local volume=state.music and 0.6 or 0
+    if src and volume~=state.videoVolume then
+      pcall(src.setVolume,src,volume);state.videoVolume=volume
+    end
   end
   if state.game then
-    local ok, err = pcall(state.game.update, state.game, dt)
+    state.previewDt=(state.previewDt or 0)+math.min(dt or 0,0.1)
+    if state.previewDt<1/previewFPS() then return end
+    local step=state.previewDt;state.previewDt=0
+    local ok, err = pcall(state.game.update, state.game, step)
     if not ok then
       state.failed[state.current] = tostring(err)
       log("%s stopped: %s", tostring(state.current), tostring(err))
@@ -184,6 +214,37 @@ function B.update(dt, busy)
   end
 end
 
+local function videoFrame(g)
+  local video=state.video
+  if state.videoCacheFailed or not (g.newCanvas and g.getCanvas) then return video end
+  local now=love.timer and love.timer.getTime() or 0
+  local vw,vh=video:getDimensions()
+  if not state.videoCanvas then
+    local cw,ch=backdropSize(vw,vh)
+    local ok,canvas=pcall(g.newCanvas,cw,ch,{dpiscale=1})
+    if not ok then state.videoCacheFailed=true;return video end
+    state.videoCanvas=canvas
+    if canvas.setFilter then canvas:setFilter("linear","linear") end
+  elseif state.paused or now<(state.videoNext or 0) then return state.videoCanvas end
+  local canvas=state.videoCanvas
+  local previous=g.getCanvas()
+  g.push("all")
+  local ok,err=pcall(function()
+    g.setCanvas(canvas);g.origin();g.setScissor();g.setShader()
+    g.setColor(1,1,1,1);g.setBlendMode("alpha","alphamultiply")
+    g.clear(0,0,0,1)
+    g.draw(video,0,0,0,canvas:getWidth()/vw,canvas:getHeight()/vh)
+  end)
+  g.setCanvas(previous);g.pop()
+  if not ok then
+    canvas:release();state.videoCanvas=nil;state.videoCacheFailed=true
+    log("video cache unavailable: %s",tostring(err));return video
+  end
+  local osName=love.system and love.system.getOS and love.system.getOS()
+  state.videoNext=now+1/(osName=="NX" and 15 or B.VIDEO_FPS)
+  return canvas
+end
+
 -- draw it into `area` ({x, y, w, h}: the launcher's content beside the
 -- sidebar), or over the whole window; false when there is nothing to draw
 function B.draw(w, h, area)
@@ -191,15 +252,27 @@ function B.draw(w, h, area)
   local ax, ay, aw, ah = 0, 0, w, h
   if area then ax, ay, aw, ah = area.x, area.y, area.w, area.h end
   if state.video then
-    local vw, vh = state.video:getDimensions()
+    local frame=videoFrame(g)
+    local vw, vh = frame:getDimensions()
     local sc = math.max(aw / vw, ah / vh)
     g.setColor(1, 1, 1, 1)
     g.setScissor(ax, ay, aw, ah)
-    g.draw(state.video, ax + (aw - vw * sc) / 2, ay + (ah - vh * sc) / 2, 0, sc, sc)
+    g.draw(frame, ax + (aw - vw * sc) / 2, ay + (ah - vh * sc) / 2, 0, sc, sc)
     g.setScissor()
     return true
   end
   if not state.game then return false end
+  local cw,chh=backdropSize(aw,ah)
+  local now=love.timer and love.timer.getTime() or 0
+  local function composite(target)
+    g.push("all");g.origin();g.setColor(1,1,1,1)
+    g.setBlendMode("alpha","premultiplied")
+    g.draw(target,ax,ay,0,aw/cw,ah/chh);g.pop()
+  end
+  if state.canvas and state.canvas:getWidth()==cw and state.canvas:getHeight()==chh
+      and (state.paused or now<(state.previewNext or 0)) then
+    composite(state.canvas);return true
+  end
   -- STRAIGHT TO THE SCREEN, first thing in the launcher's frame: the game's
   -- Renderer ends its own frame by binding the screen (setCanvas()), so a
   -- canvas set around it here is left empty and the picture lands on the
@@ -215,11 +288,11 @@ function B.draw(w, h, area)
   local Renderer = require("src.render.Renderer")
   local prevSplit = Renderer.splitViewport
   local saved, target
-  if area then
-    local dpi = g.getDPIScale and g.getDPIScale() or 1
-    local cw, chh = math.max(1, math.floor(aw)), math.max(1, math.floor(ah))
+  do
+    local dpi=1
     if not (state.canvas and state.canvas:getWidth() == cw and state.canvas:getHeight() == chh) then
-      state.canvas = g.newCanvas(cw, chh)
+      if state.canvas and state.canvas.release then state.canvas:release() end
+      state.canvas = g.newCanvas(cw, chh,{dpiscale=1})
     end
     target = state.canvas
     Renderer.splitViewport = { w = cw, h = chh }
@@ -231,6 +304,7 @@ function B.draw(w, h, area)
       return setCanvas(c, ...)
     end)
     swap("getDimensions", function() return cw, chh end)
+    if g.getDPIScale then swap("getDPIScale",function()return 1 end) end
     swap("getWidth", function() return cw end)
     swap("getHeight", function() return chh end)
     if g.getPixelDimensions then
@@ -287,14 +361,8 @@ function B.draw(w, h, area)
   if saved then for name, fn in pairs(saved) do g[name] = fn end end
   g.setCanvas()
   Renderer.splitViewport = prevSplit
-  if target then
-    g.push("all")
-    g.origin()
-    g.setColor(1, 1, 1, 1)
-    g.setBlendMode("alpha", "premultiplied")
-    g.draw(target, ax, ay)
-    g.pop()
-  end
+  if target then composite(target) end
+  state.previewNext=now+1/previewFPS()
   if TC then TC.draw = tcDraw end
   if not ok then
     state.failed[state.current] = tostring(err)

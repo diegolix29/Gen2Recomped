@@ -182,13 +182,14 @@ local function initialBlob(dex, name, cx, cy, size)
 end
 
 -- the walking sprite, its feet at (x, y) and `size` tall, stepping at `t`
--- (an overworld sheet when one is imported, else the front with a hop)
+-- Highest-generation available overworld art; never a battle/Pokedex portrait.
+local walkQuads=setmetatable({}, {__mode="k"})
 function G.walker(dex, x, y, size, facing, t, name, noShadow)
   local g = love.graphics
   local A = art()
   local img, fw, fh, facings
   if A then
-    local ok, a, b, c, d = pcall(A.walk, dex)
+    local ok, a, b, c, d = pcall(A.walk, dex, false)
     if ok then img, fw, fh, facings = a, b, c, d end
   end
   if not noShadow then
@@ -196,24 +197,22 @@ function G.walker(dex, x, y, size, facing, t, name, noShadow)
     g.ellipse("fill", x, y, size * 0.32, size * 0.08)
   end
   if img then
-    local seq = facings and facings[facing or "right"] or { 6, 7, 6 }
-    local frame = seq[(math.floor((t or 0) * 6) % #seq) + 1]
-    local iw, ih = img:getDimensions()
-    local q = ih > iw and g.newQuad(0, frame * fh, fw, fh, iw, ih) or g.newQuad(frame * fw, 0, fw, fh, iw, ih)
+    local seq = facings and (facings[facing or "right"] or facings.down) or {0}
+    if type(seq)~="table" or #seq==0 then seq={0} end
+    local frame=tonumber(seq[(math.floor((t or 0)*6)%#seq)+1]) or 0
+    local iw,ih=img:getDimensions()
+    fw,fh=math.max(1,tonumber(fw) or iw),math.max(1,tonumber(fh) or ih)
+    local cols,rows=math.floor(iw/fw),math.floor(ih/fh)
+    if cols<1 or rows<1 then initialBlob(dex,name,x,y-size*.45,size);return false end
+    frame=math.max(0,math.floor(frame))%(cols*rows)
+    local byImage=walkQuads[img]
+    if not byImage then byImage={};walkQuads[img]=byImage end
+    local key=fw..":"..fh..":"..frame
+    local q=byImage[key]
+    if not q then q=g.newQuad((frame%cols)*fw,math.floor(frame/cols)*fh,fw,fh,iw,ih);byImage[key]=q end
     local s = size / fh
     g.setColor(1, 1, 1, 1)
     g.draw(img, q, x - fw * s / 2, y - fh * s + size * 0.08, 0, s, s)
-    return true
-  end
-  local front = A and select(2, pcall(A.front, dex))
-  if front and type(front) == "userdata" then
-    local b = A.bounds(front) or { x = 0, y = 0, w = front:getWidth(), h = front:getHeight() }
-    local s = size / math.max(b.w, b.h)
-    local bob = math.abs(math.sin((t or 0) * 8)) * size * 0.06
-    local flip = facing == "left" and -1 or 1
-    local q = g.newQuad(b.x, b.y, b.w, b.h, front:getDimensions())
-    g.setColor(1, 1, 1, 1)
-    g.draw(front, q, x - flip * b.w * s / 2, y - b.h * s - bob, 0, flip * s, s)
     return true
   end
   initialBlob(dex, name, x, y - size * 0.45, size)
@@ -226,14 +225,14 @@ function G.portrait(dex, x, y, size, name)
   local A = art()
   local front
   if A then
-    local ok, img = pcall(A.front, dex)
+    local ok, img = pcall(A.front, dex, false)
     if ok then front = img end
   end
   if not front then
     -- the overworld sheet's first frame will do
     local img, fw, fh
     if A then
-      local ok, a, b, c = pcall(A.walk, dex)
+      local ok, a, b, c = pcall(A.walk, dex, false)
       if ok then img, fw, fh = a, b, c end
     end
     if img then return G.walker(dex, x + size / 2, y + size * 0.92, size * 0.9, "down", 0, name) end

@@ -1254,6 +1254,7 @@ local function emit(m, sp, atlasW, atlasH)
   -- ---- faces along +-X (the flanks): merge along z, one texel each ----
   for _, d in ipairs({ 1, -1 }) do
     for y = 0, ytop do
+      Budget.check()
       for x = 0, W - 1 do
         local z = zmin
         while z <= zmax do
@@ -1504,7 +1505,7 @@ function Buildings.stamp(S, map, quads, tx, ty, bw, bh, t)
   end
   if t and t.civic then
     S.civicPlacements=S.civicPlacements or {}
-    S.civicPlacements[#S.civicPlacements+1]={first=firstQuad,last=#out,base=base,door=t.door}
+    S.civicPlacements[#S.civicPlacements+1]={first=firstQuad,last=#out,base=base,door=t.door,tx=tx,ty=ty,width=bw,height=bh}
   end
 end
 
@@ -1518,6 +1519,15 @@ function Buildings.stats()
                  quads = #quads }
   end
   return out
+end
+
+-- Civic models include the map id in their key; unlike shared templates,
+-- they must leave with the map instead of retaining every town visited.
+function Buildings.evictMap(mapId)
+  local marker = ":" .. mapId .. ":"
+  for key in pairs(models) do
+    if key:find(marker, 1, true) then models[key] = nil end
+  end
 end
 
 -- Drop the prebuilt models (hot reload, or a mod shadowing the profile).

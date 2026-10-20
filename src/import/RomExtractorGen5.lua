@@ -425,6 +425,11 @@ function X:extractConstants()
   local okSub, subway = pcall(require("src.import.Gen5Subway").build, self)
   if okSub then constants.gen5Subway = subway
   else print("Gen5Subway failed: " .. tostring(subway)) end
+  -- the Poke Mart stock, by badges and by specialty clerk (0x149, ov21's
+  -- scrcmd_shop.c tables: src/import/Gen5Marts.lua)
+  local okMart, marts = pcall(require("src.import.Gen5Marts").build, self)
+  if okMart and type(marts) == "table" then constants.gen5Marts = marts
+  else print("Gen5Marts failed: " .. tostring(marts)) end
   local okFac, facilities = pcall(require("src.import.Gen5Facilities").build, self)
   if okFac and type(facilities) == "table" then
     for k, v in pairs(facilities) do constants[k] = v end
@@ -503,6 +508,9 @@ function X:extractFont()
   local font = arc and F.parse(arc:get(0))
   if not font then return nil end
   local sheet = F.sheet(font, { columns = 32 })
+  -- the menu cursor, painted into the first free cell (src/import/Gen5Cursor.lua)
+  local cursorDef = {}
+  pcall(require("src.import.Gen5Cursor").add, sheet, font, 32, cursorDef, require("src.import.Gen4Font").DEFAULT_COLORS)
   local entry = sheet and self:saveImage("font/font_message_sheet", sheet,
     { glyphs = font.numGlyphs, glyphWidth = font.pixelWidth, glyphHeight = font.pixelHeight, columns = 32 })
   local widths = {}
@@ -513,6 +521,10 @@ function X:extractFont()
   local def = { pages = { message = page }, charmap = F.charmap(font, 1), frame = "drawn",
                 source = ("ROM:%s /a/0/2/3[0] NFTR (%d glyphs, %dx%d)")
                   :format(tostring(self.version), font.numGlyphs, font.pixelWidth, font.pixelHeight) }
+  if cursorDef.symbols then
+    for _, e in ipairs(cursorDef.charmap or {}) do def.charmap[#def.charmap + 1] = e end
+    def.symbols = cursorDef.symbols
+  end
   -- THE OTHER TWO FACES: /a/0/2/3 member 2 (11 x 13), what the battle prints
   -- names in -- the "system" face Gen4Battle's boxes ask for -- and member 1
   -- (10 x 10), the small one
@@ -556,6 +568,23 @@ function X:extractFont()
         def.dialogueFrame = { image = framed.path, tiles = 18, count = count, layout = "gen4",
                               fill = { 1, 1, 1 }, battleFrame = 5,
                               source = "ROM:/a/0/0/5 tileset 10, palettes 3, 0, 1, 2, 4 (the battle's is 4)" }
+      end
+    end
+    -- THE MENU WINDOW (YES / NO, the script menus, the shop's boxes): ARM9's
+    -- frame set-up (0x0201F5BC) takes a type into the table at 0x0209E8C8 --
+    -- type 0 is char 9 with palette 3, type 1 char 11 with palette 0 -- and
+    -- the field asks for type 0: the nine tiles of tileset 9, white inside a
+    -- dark rule. Written as the nine-slice Font.drawBox reads (`frames`).
+    local nine = farc and G.tiles(farc:get(9))
+    local pal3 = farc and G.palette(farc:get(3))
+    if nine and pal3 then
+      local cells = {}
+      for t = 0, 8 do cells[t + 1] = { tile = t, palette = 0 } end
+      local img = G.compose({ width = 24, height = 24, cells = cells }, nine, pal3)
+      local saved = img and self:saveImage("windows/menu", img)
+      if saved then
+        def.frames = { image = saved.path, cell = 24, tile = 8, count = 1,
+                       source = "ROM:/a/0/0/5 tileset 9, palette 3 (frame type 0, ARM9 0x0209E8C8)" }
       end
     end
   end
@@ -627,6 +656,18 @@ function X:extractBattleSprites()
   local ui = require("src.import.Gen5BattleUi").build(self)
   if ui then self:write("gen5_battle_ui", ui) end
   -- ...and its four-pocket bag on the touch screen (src/import/Gen5BattleBagArt.lua)
+  -- the Town Map key item's region and its places (src/import/Gen5TownMapArt.lua)
+  local okMap, townMap = pcall(require("src.import.Gen5TownMapArt").build, self)
+  if okMap and townMap then self:write("gen5_town_map", townMap)
+  elseif not okMap then print("Gen5TownMapArt failed: " .. tostring(townMap)) end
+  -- the Xtransceiver's story calls (src/import/Gen5XtransceiverArt.lua)
+  local okCall, calls = pcall(require("src.import.Gen5XtransceiverArt").build, self)
+  if okCall and calls then self:write("gen5_xtransceiver", calls)
+  elseif not okCall then print("Gen5XtransceiverArt failed: " .. tostring(calls)) end
+  -- the Poke Mart counter's art, in the record the shop draws (src/import/Gen5ShopArt.lua)
+  local okShop, shop = pcall(require("src.import.Gen5ShopArt").build, self)
+  if okShop and shop then self:write("gen4_shop_art", shop)
+  elseif not okShop then print("Gen5ShopArt failed: " .. tostring(shop)) end
   local okBag, battleBag = pcall(require("src.import.Gen5BattleBagArt").build, self)
   if okBag and battleBag then self:write("gen5_battle_bag", battleBag)
   elseif not okBag then print("Gen5BattleBagArt failed: " .. tostring(battleBag)) end

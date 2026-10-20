@@ -51,7 +51,7 @@ local function routes()
   return okR and r or nil, Courses
 end
 
-function C.build(st, seed)
+function C.build(st, seed, preferredVersion)
   local ctx = {}
   ctx.rng, ctx.rand = C.newRng(seed)
   local wk = st and st.walking
@@ -84,6 +84,45 @@ function C.build(st, seed)
     end
   end
   if #wild == 0 then for _, e in ipairs(C.FALLBACK_WILD) do wild[#wild + 1] = e end end
+  -- Use the complete imported source roster for minigames, rather than
+  -- repeating just the course's six encounters. Keep course radar unchanged.
+  local okArt, Art=pcall(require,"src.pokewalker.WalkerArt")
+  local selected=version or preferredVersion
+  if not selected then
+    local okGV, GV=pcall(require,"src.core.GameVersion")
+    if okGV then selected=GV.get() end
+  end
+  local roster
+  if okArt and Art.roster then
+    local ok,list=pcall(Art.roster,selected)
+    if ok and #list>0 then roster=list end
+    -- With no walking Pokemon, use a real import if the last game is absent.
+    if not roster and not version and not preferredVersion then
+      for _,v in ipairs({"black","white","heartgold","soulsilver","platinum","emerald","firered","crystal","polishedcrystal","prism","gold","silver","yellow","blue","red"}) do
+        ok,list=pcall(Art.roster,v)
+        if ok and #list>0 then selected=v;roster=list;break end
+      end
+    end
+  end
+  if roster then
+    wild={}
+    for i,e in ipairs(roster)do wild[i]=e end
+    for i=#wild,2,-1 do local j=ctx.rng(i);wild[i],wild[j]=wild[j],wild[i] end
+    ctx.version=selected
+    local present={}
+    for _,e in ipairs(wild)do present[e.dex]=true end
+    if ctx.standIn and not present[ctx.walker.dex] then
+      ctx.walker={dex=wild[1].dex,name=wild[1].name,level=5}
+    end
+  elseif version or preferredVersion then
+    -- Never award a Pokemon borrowed from a different game when its import
+    -- is unavailable. The walking Pokemon is still known to belong there.
+    wild=wk and wk.species and {{dex=wk.species,name=wk.name or "Your Pokemon",level=wk.level or 5,group="C"}} or {}
+    ctx.version=selected
+  end
+  if #wild==0 then error("Import this game before playing its minigames",0) end
+  ctx.speciesSet={}
+  for _,e in ipairs(wild)do ctx.speciesSet[e.dex]=true end
   ctx.wild = wild
   -- items: the course's cheaper half, then the basics
   local items, seen = {}, {}

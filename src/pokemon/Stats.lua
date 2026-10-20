@@ -24,6 +24,16 @@ function Stats.setNatures(byName)
   natures = type(byName) == "table" and byName or nil
 end
 
+-- Use a destination cartridge briefly without changing the running preview.
+function Stats.withNatures(value, fn)
+  local previous=natures
+  Stats.setNatures(value)
+  local ok,result=pcall(fn)
+  natures=previous
+  if not ok then error(result,0) end
+  return result
+end
+
 function Stats.natureFor(name)
   return natures and natures[name] or nil
 end

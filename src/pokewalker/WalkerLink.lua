@@ -80,6 +80,14 @@ local function describe(version, mon, where)
   }
 end
 
+-- the PC's slot count, by the save's own generation: the launcher has no game
+-- loaded, so the engine's Boxes (which asks the running game) cannot answer
+local function boxCapacity(version)
+  local okV, V = pcall(require, "src.core.GameVersion")
+  local gen = okV and V.generation and V.generation(version) or 1
+  return gen <= 2 and 20 or 30
+end
+
 -- every Pokemon in a slot's PC boxes (eggs left out: the walker never took one)
 function L.boxMons(version, slotId)
   local save, why = readSave(version, slotId)
@@ -89,7 +97,8 @@ function L.boxMons(version, slotId)
   if type(boxes) ~= "table" and type(save.box) == "table" then boxes = save.box.boxes or { save.box } end
   for b, box in ipairs(boxes or {}) do
     local list = box.mons or box
-    for i, mon in ipairs(type(list) == "table" and list or {}) do
+    for i=1,boxCapacity(version) do
+      local mon=type(list)=="table" and list[i]
       if type(mon) == "table" and mon.species and not mon.isEgg then
         out[#out + 1] = describe(version, mon, { version = version, slot = slotId, box = b, index = i })
       end
@@ -125,7 +134,8 @@ function L.send(st, entry, courseId)
     return false, "that Pokemon has moved -- reopen the list"
   end
   backup(src.version, src.slot, bytes, "send")
-  local mon = table.remove(list, src.index)
+  local mon = list[src.index]
+  list[src.index]=nil
   local ok, err = SaveData.writeSlot(src.version, src.slot, save)
   if not ok then return false, err end
   local entries, route = Courses.forGame(courseId, src.version)
@@ -133,14 +143,6 @@ function L.send(st, entry, courseId)
   W.send(st, courseId, entry, entries, route)
   W.save(st)
   return true
-end
-
--- the PC's slot count, by the save's own generation: the launcher has no game
--- loaded, so the engine's Boxes (which asks the running game) cannot answer
-local function boxCapacity(version)
-  local okV, V = pcall(require, "src.core.GameVersion")
-  local gen = okV and V.generation and V.generation(version) or 1
-  return gen <= 2 and 20 or 30
 end
 
 -- Put a Pokemon back in a save's PC: its own slot if free, else the first free
@@ -164,11 +166,7 @@ local function placeInBox(save, version, source, mon)
   for _, b in ipairs(order) do
     local list, i = freeIn(b)
     if list then
-      -- the very slot it left, when that is the first gap (send closed the gap)
-      if b == (source and source.box) and source.index and source.index <= i then
-        table.insert(list, source.index, mon)
-        return { box = b, index = source.index }
-      end
+      if b==(source and source.box) and source.index and list[source.index]==nil then i=source.index end
       list[i] = mon
       return { box = b, index = i }
     end
@@ -180,6 +178,14 @@ end
 local function deliver(version, slotId, parcel)
   local save, bytes = readSave(version, slotId)
   if not save then return false, bytes end
+  -- Applying a partial stack or a returning Pokemon mutates its table.
+  -- Work on a copy so a failed disk write cannot consume walker rewards.
+  local copied,copy=pcall(function()return Ser.decode(Ser.encode(parcel))end)
+  if not copied or type(copy)~="table" then return false,"could not prepare presents" end
+  parcel=copy
+  local Delivery=require("src.pokewalker.WalkerDelivery")
+  local data,why=Delivery.dataset(version)
+  if not data then return false,why end
   backup(version, slotId, bytes, "home")
   save.walkerInbox = save.walkerInbox or { mons = {}, items = {}, returning = {} }
   local box = save.walkerInbox
@@ -206,7 +212,15 @@ local function deliver(version, slotId, parcel)
   end
   for _, c in ipairs(parcel.caught or {}) do box.mons[#box.mons + 1] = c end
   for _, it in ipairs(parcel.items or {}) do box.items[#box.items + 1] = it end
-  return SaveData.writeSlot(version, slotId, save)
+  local applied,why=Delivery.apply(save,version,data)
+  if not applied then return false,"could not deliver presents: "..tostring(why) end
+  local written,err=SaveData.writeSlot(version,slotId,save)
+  if not written then return false,err end
+  local pending=save.walkerInbox
+  if pending and (#(pending.mons or {})+#(pending.items or {})+#(pending.returning or {}))>0 then
+    return true,"Unplaced presents remain safely in that save's delivery inbox."
+  end
+  return true
 end
 
 -- THE WATT SHOP's delivery (WalkerEconomy): { items = { { name, count } },
@@ -223,9 +237,9 @@ function L.bringHome(st, keep)
   local ok, err = deliver(src.version, src.slot, parcel)
   if not ok then return false, err end
   W.takeHome(st, keep)
-  W.note(st, keep and "Presents sent to your game." or ("%s came home."):format(w.name or "Your Pokemon"))
+  W.note(st, err or (keep and "Presents delivered to your PC and bag." or ("%s came home."):format(w.name or "Your Pokemon")))
   W.save(st)
-  return true
+  return true,err
 end
 
 -- one caught Pokemon (st.caught[index], or all of them with no index) home
@@ -244,7 +258,7 @@ function L.sendCaught(st, index)
   W.note(st, #send == 1 and ("%s was sent to your game."):format(send[1].name or "A Pokemon")
     or ("%d Pokemon were sent to your game."):format(#send))
   W.save(st)
-  return true
+  return true,err
 end
 
 return L

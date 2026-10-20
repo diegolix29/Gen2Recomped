@@ -101,6 +101,12 @@ function love.load()
     Game.data = Data
     Game.save = SaveData.newGame(Game.bootConfig and Game:bootConfig() or {})
     Game.save.party = { Pokemon.new(Data, tonumber(os.getenv("PARTY") or "495"), 30) }
+    -- WIDE=1: BATTLE LAYOUT = WIDE in a 16:9 window
+    if os.getenv("WIDE") then
+      Game.save.options = Game.save.options or {}
+      Game.save.options.battleLayout = "wide"
+      pcall(love.window.setMode, 854, 480)
+    end
     -- PMOVES=144,33: the lead's moves (FIGHT=1 uses the first)
     if os.getenv("PMOVES") then
       local mv = {}
@@ -157,7 +163,10 @@ function love.load()
     end
 
     local function shot()
-      local c = love.graphics.newCanvas(W, H)
+      -- WIDE=1: the battle's own surface width (Gen4Battle.width)
+      local sw = W
+      if os.getenv("WIDE") then local okB, GB = pcall(require, "src.battle.Gen4Battle"); if okB then sw = GB.width(battle) end end
+      local c = love.graphics.newCanvas(sw, H)
       love.graphics.push("all")
       love.graphics.setCanvas(c)
       love.graphics.clear(0, 0, 0, 1)

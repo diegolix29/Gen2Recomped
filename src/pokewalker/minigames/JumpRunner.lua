@@ -71,7 +71,8 @@ end
 
 local function mon(g, x, flying)
   local e = Context.pickWild(g.ctx)
-  return add(g, { kind = "mon", x = x, y = flying and (1.5 + g.ctx.rand() * 0.6) or 0, w = 0.9, h = 0.85,
+  local y=flying and (1.5+g.ctx.rand()*.6) or 0
+  return add(g, { kind = "mon", x = x, y = y, yy=y, w = 0.9, h = 0.85,
                   vx = flying and 0 or -(0.8 + g.ctx.rand() * 0.8), flying = flying, dex = e.dex, name = e.name,
                   level = e.level, group = e.group, phase = g.ctx.rand() * 6 })
 end

@@ -1458,7 +1458,8 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
   end
   -- Platinum's is item 442, which has no Gen 1 name key: its own use
   -- function row (`fieldUseFunc` 2, UseTownMapFromBag) says what it is
-  local isGen4TownMap = itemDef and itemDef.fieldUseFunc == 2
+  -- (Black / White's item records call the same row `fieldUse`)
+  local isGen4TownMap = itemDef and (itemDef.fieldUseFunc == 2 or itemDef.fieldUse == 2)
     and (itemDef.translationSourceName or itemDef.name) == "Town Map"
   if itemId == "TOWN_MAP" or isGen4TownMap then
     if battle then

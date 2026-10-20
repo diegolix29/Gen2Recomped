@@ -16,6 +16,16 @@ V.CAMERA = { distance = 30, pitch = math.rad(-18), fov = math.rad(45), target = 
 V.ENEMY = { 11, 0.2, -8 }
 V.PLAYER = { -6, 0.2, 12 }
 V.W, V.H = 256, 192
+-- BATTLE LAYOUT = WIDE: the field is drawn as wide as the battle's surface
+-- (Gen4Battle.width) with the same vertical view -- the extra width shows
+-- more of the field to either side, as Platinum's widened backdrop does --
+-- instead of the cartridge's 256 left in the middle of a wider screen
+V.curW = V.W
+function V.widthFor(battle)
+  local okB, B = pcall(require, "src.battle.Gen4Battle")
+  local w = okB and B.width and B.width(battle) or V.W
+  return (type(w) == "number" and w >= V.W) and w or V.W
+end
 V.DEFAULT = { bg = "batt_bg01", stage = "batt_stage01" }
 
 local FLIP_Y = { 1, 0, 0, 0, 0, -1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
@@ -69,10 +79,14 @@ function V.render(battle)
   local s = scene(battle)
   if not s then return nil end
   local M = require("src.render.Gen4Model")
+  local w = V.widthFor(battle)
+  if target.colour and target.w ~= w then target.colour, target.depth, target.failed = nil, nil, nil end
   if not target.colour then
-    target.colour, target.depth = M.newTarget(V.W, V.H)
+    target.colour, target.depth = M.newTarget(w, V.H)
+    target.w = w
     if not target.colour then target.failed = true end
   end
+  V.curW = w
   if target.failed then return nil end
   local bgName, stageName = V.pick(battle)
   local bg, stage = model(s, bgName), model(s, stageName)
@@ -85,7 +99,7 @@ function V.render(battle)
   g.setCanvas({ target.colour, depthstencil = target.depth })
   g.clear(0, 0, 0, 1, true, true)
   local c = V.CAMERA
-  local vp = M.multiply(FLIP_Y, M.multiply(M.perspective(c.fov, V.W / V.H, 4, 4000),
+  local vp = M.multiply(FLIP_Y, M.multiply(M.perspective(c.fov, V.curW / V.H, 4, 4000),
                                            M.orbit(c.target, c.distance, 0, c.pitch)))
   bg:draw(vp)
   if stage then
@@ -100,7 +114,7 @@ end
 local function viewProjection()
   local M = require("src.render.Gen4Model")
   local c = V.CAMERA
-  return M.multiply(FLIP_Y, M.multiply(M.perspective(c.fov, V.W / V.H, 4, 4000),
+  return M.multiply(FLIP_Y, M.multiply(M.perspective(c.fov, V.curW / V.H, 4, 4000),
                                        M.orbit(c.target, c.distance, 0, c.pitch)))
 end
 
@@ -114,7 +128,7 @@ function V.project(p)
   local cy = m[5] * x + m[6] * y + m[7] * z + m[8]
   local cw = m[13] * x + m[14] * y + m[15] * z + m[16]
   if cw == 0 then return nil end
-  return (cx / cw + 1) / 2 * V.W, (cy / cw + 1) / 2 * V.H
+  return (cx / cw + 1) / 2 * V.curW, (cy / cw + 1) / 2 * V.H
 end
 
 -- how much bigger a billboard draws at a side's platform than at the foe's:

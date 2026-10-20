@@ -77,6 +77,7 @@
 --
 -- the mod namespace (see main.lua): V.require / V.data
 local V = ...
+local Budget=V.require("BuildBudget")
 
 local Gen3 = {}
 
@@ -988,6 +989,12 @@ local function floorPlateFor(map, ctx)
   return plate
 end
 
+-- Rendering may query a neighbour before its background job has started.
+-- Checking readiness must never construct that neighbour's terrain context.
+function Gen3.peekMap(map)
+  return ctxCache[map] or nil
+end
+
 function Gen3.forMap(map)
   if not Gen3.mapIsGen3(map) then return nil end
   local hit = ctxCache[map]
@@ -1749,6 +1756,7 @@ function Gen3.forMap(map)
 
     local claimed = {}
     for cy = y0, y1 do
+      Budget.check()
       for cx = x0, x1 do
         local i = idx(cx, cy)
         if not claimed[i] and (leafAt(cx, cy) or crownTop(cx, cy)) then
@@ -1921,6 +1929,7 @@ function Gen3.forMap(map)
     -- Route 123, Route 112, Petalburg, Dewford and the Safari Zone are
     -- unchanged.
     for cy = y0, y1 - 1 do
+      Budget.check()
       for cx = x0, x1 - 1 do
         local i = idx(cx, cy)
         local ie, is = idx(cx + 1, cy), idx(cx, cy + 1)
@@ -2182,6 +2191,8 @@ function Gen3.forMap(map)
     end
 
     for cy = y0, y1 do
+
+      Budget.check()
       for cx = x0, x1 do
         local i = idx(cx, cy)
         if not claimed[i] and rocky(cx, cy) and lump(cx, cy) then
@@ -2496,6 +2507,7 @@ function Gen3.forMap(map)
     -- bed up as a thin board on a stick in the corner of her room.
     if ctx.outdoor then
       for cy = 0, height - 1 do
+        Budget.check()
         for cx = 0, width - 1 do
           if lone(cx, cy) then scenery[idx(cx, cy)] = "signpost" end
         end
@@ -2546,6 +2558,7 @@ function Gen3.forMap(map)
     ctx.waterRocks = {}
     if ctx.outdoor then
       for cy = 0, height - 2 do
+        Budget.check()
         for cx = 0, width - 2 do
           if rockCell(cx, cy) and rockCell(cx + 1, cy)
              and rockCell(cx, cy + 1) and rockCell(cx + 1, cy + 1)
@@ -2932,6 +2945,7 @@ function Gen3.forMap(map)
     end
     if ctx.outdoor then
       for cy = 0, height - 1 do
+        Budget.check()
         for cx = 0, width - 1 do
           local i = idx(cx, cy)
           if not scenery[i] and ctx.blockedAt(cx, cy) then
@@ -3059,6 +3073,7 @@ function Gen3.forMap(map)
       local blob, seenBlob = {}, {}
       local blobCells = {}
       for cy = 0, height - 1 do
+        Budget.check()
         for cx = 0, width - 1 do
           local root = cy * width + cx
           if not seenBlob[root] and ctx.blockedAt(cx, cy) then
@@ -3088,6 +3103,7 @@ function Gen3.forMap(map)
         end
       end
       for cy = 0, height - 1 do
+        Budget.check()
         for cx = 0, width - 1 do
           local i = idx(cx, cy)
           local size = blob[cy * width + cx]
@@ -3165,6 +3181,7 @@ function Gen3.forMap(map)
       -- is never left holding half a giant.
       local reclaimed = {}
       for cy = 0, height - 1 do
+        Budget.check()
         for cx = 0, width - 1 do
           local cells = blobCells[cy * width + cx]
           if cells and not reclaimed[cells] and #cells <= FURNITURE_MAX then
@@ -3954,6 +3971,7 @@ function Gen3.forMap(map)
     local seen = {}
     local function K(x, y) return y * 8192 + x end
     for cy = 0, H2 - 1 do
+      Budget.check()
       for cx = 0, W2 - 1 do
         local e = ctx.elevationAt(cx, cy)
         if e and e ~= ELEV_TRANSITION and e ~= ELEV_SURF and e ~= ELEV_DEFAULT
@@ -4013,6 +4031,7 @@ function Gen3.forMap(map)
   do
     local counts, total = {}, 0
     for cy = 0, height - 1 do
+      Budget.check()
       for cx = 0, width - 1 do
         if not ctx.blockedAt(cx, cy) then
           local m = ctx.metatileAt(cx, cy)
@@ -4939,6 +4958,7 @@ function Gen3.forMap(map)
       if metaCounts then return metaCounts end
       metaCounts = {}
       for cy = 0, height - 1 do
+        Budget.check()
         for cx = 0, width - 1 do
           local m = ctx.metatileAt(cx, cy)
           if m then metaCounts[m] = (metaCounts[m] or 0) + 1 end
@@ -4962,6 +4982,7 @@ function Gen3.forMap(map)
       if not metaBox then
         metaBox = {}
         for cy = 0, height - 1 do
+          Budget.check()
           for cx = 0, width - 1 do
             local mm = ctx.metatileAt(cx, cy)
             if mm then
@@ -6422,6 +6443,7 @@ function Gen3.forMap(map)
       -- run of `elevation` art no building has claimed is a building of its
       -- own, stood up whole (see Structures' stand-up rule).
       for cy = 0, height - 1 do
+        Budget.check()
         for cx = 0, width - 1 do
           local k0 = cy * 8192 + cx
           local m0 = ctx.metatileAt(cx, cy)
@@ -6759,13 +6781,60 @@ end
 -- and its bottom layer is not necessarily ground.
 local GROUND_SAMPLE = 192      -- of 256
 
+-- Shared atlas preparation is sliced only before map analysis begins.
+-- Its Gen3Tiles copy owns animation state, so a frame of 2D animation cannot
+-- change the static pixels halfway through a suspended bake.
+local animPatchCache = {}
+local preparing={}
+local preparationPixels=0
+local function preparationTick()
+  if preparing[coroutine.running()] then
+    preparationPixels=preparationPixels+1
+    -- Transparent corner pixels never call the plot callback. Counting
+    -- actual samples also slices sparse tree/prop layers reliably.
+    if preparationPixels%256==0 then Budget.check() end
+  end
+end
+local function analysisTiles(tileset)
+  local prep=preparing[coroutine.running()]
+  local key=tostring(tileset.id)
+  if prep and prep.tiles[key] then return prep.tiles[key] end
+  local tiles=tilesForTileset(tileset)
+  if not tiles or not prep then return tiles end
+  local copy={}
+  for k,v in pairs(tiles)do copy[k]=v end
+  setmetatable(copy,getmetatable(tiles))
+  copy.tileCache={}
+  -- Repeated static passes read identical cartridge words. Keep decoded
+  -- entries only in this job's private copy, never in animated engine state.
+  local entries,readEntries={},copy.entries
+  copy.entries=function(self,id)
+    local value=entries[id]
+    if not value then value=readEntries(self,id);entries[id]=value end
+    return value
+  end
+  local bakeLayer=copy.bakeLayer
+  copy.bakeLayer=function(self,layer,plot)
+    if not self.bakeMetatileInto then return bakeLayer(self,layer,plot) end
+    local count=self:metatileCount()
+    for id=0,count-1 do
+      Budget.check() -- includes metatiles containing no opaque plot samples
+      self:bakeMetatileInto(id,layer,id,plot)
+    end
+    return count
+  end
+  if copy.setAnimFrame then copy:setAnimFrame(0) end
+  prep.tiles[key]=copy
+  return copy
+end
+
 local function analyse(tileset)
   local key = tostring(tileset.id)
   local hit = artCache[key]
   if hit ~= nil then return hit or nil end
   artCache[key] = false
 
-  local tiles = tilesForTileset(tileset)
+  local tiles = analysisTiles(tileset)
   if not tiles then return nil end
 
   local stats = {}
@@ -6789,6 +6858,7 @@ local function analyse(tileset)
   -- colour that is also something's paint.
   local objectHist = {}
   local okTop = pcall(tiles.bakeLayer, tiles, 2, function(x, y, r, g, b)
+    preparationTick(x,y)
     local s = rec(metaAt(x, y))
     s.n2 = s.n2 + 1
     local row = y % CELL
@@ -6810,6 +6880,7 @@ local function analyse(tileset)
     return e
   end
   local okBot = pcall(tiles.bakeLayer, tiles, 1, function(x, y, r, g, b)
+    preparationTick(x,y)
     local m = metaAt(x, y)
     local s = rec(m)
     s.n1 = s.n1 + 1
@@ -6949,13 +7020,15 @@ local function analyse(tileset)
     if mx > 0.80 then s.bright = s.bright + 1 end
   end
   pcall(tiles.bakeLayer, tiles, 1, function(x, y, r, g, b)
+    preparationTick(x,y)
     tally(x, y, r, g, b, 1)
   end)
   pcall(tiles.bakeLayer, tiles, 2, function(x, y, r, g, b)
+    preparationTick(x,y)
     tally(x, y, r, g, b, 2)
   end)
 
-  local art = { stats = stats, background = background,
+  local art = { stats = stats, background = background, objectHist = objectHist,
                 backgroundColours = bgCount, groundSamples = groundTotal,
                 tileset = key }
   for _, s in pairs(stats) do
@@ -7044,7 +7117,7 @@ end
 
 local function bakeLinear(tileset)
   local key = tostring(tileset.id)
-  local tiles = tilesForTileset(tileset)
+  local tiles = analysisTiles(tileset)
   if not tiles then
     warn("noatlas", "no Gen3Tiles for %s -- the world will mesh but has "
          .. "nothing to texture from", key)
@@ -7066,6 +7139,7 @@ local function bakeLinear(tileset)
   local okBake, res = pcall(function()
     local surface = love.image.newImageData(W, H)
     local function plot(x, y, r, g, b)
+      preparationTick(x,y)
       -- metatile-sheet coordinates in; tile-sheet coordinates out
       local m = math.floor(y / CELL) * srcCols + math.floor(x / CELL)
       local q = math.floor((y % CELL) / TILE) * 2 + math.floor((x % CELL) / TILE)
@@ -7129,7 +7203,7 @@ end
 local function bakeShape(tileset)
   local key = tostring(tileset.id)
   local art = analyse(tileset)
-  local tiles = art and tilesForTileset(tileset)
+  local tiles = art and analysisTiles(tileset)
   if not (art and tiles) then
     shapeCache[key] = false
     return nil
@@ -7154,6 +7228,7 @@ local function bakeShape(tileset)
 
     -- bottom layer: ground colours become HOLES, everything else is body
     tiles:bakeLayer(1, function(x, y, r, g, b)
+    preparationTick(x,y)
       local dx, dy = place(x, y)
       if dx < 0 or dy < 0 or dx >= W or dy >= H then return end
       if background[colourKey(r, g, b)] then
@@ -7165,6 +7240,7 @@ local function bakeShape(tileset)
 
     -- top layer: object art, always body, drawn over whatever is beneath
     tiles:bakeLayer(2, function(x, y, r, g, b)
+    preparationTick(x,y)
       local dx, dy = place(x, y)
       if dx < 0 or dy < 0 or dx >= W or dy >= H then return end
       surface:setPixel(dx, dy, r / 255, g / 255, b / 255, 1)
@@ -7224,7 +7300,7 @@ function Gen3.overheadMasks(tileset)
   local key = tostring(tileset.id)
   local hit = overheadCache[key]
   if hit ~= nil then return hit or nil end
-  local tiles = tilesForTileset(tileset)
+  local tiles = analysisTiles(tileset)
   if not tiles then
     overheadCache[key] = false
     return nil
@@ -7286,7 +7362,7 @@ function Gen3.layer2MaskOf(tileset, metatile)
   local key = tostring(tileset.id)
   local per = layer2Cache[key]
   if per == nil then
-    local tiles = tilesForTileset(tileset)
+    local tiles = analysisTiles(tileset)
     per = tiles and { tiles = tiles, masks = {} } or false
     layer2Cache[key] = per
   end
@@ -7349,7 +7425,7 @@ local function rememberMapShape(key, surface, frac)
     local dead = mapShapeCache[old]
     mapShapeCache[old] = nil
     mapSolidCache[old] = nil
-    if type(dead) == "table" and type(dead.release) == "function" then
+    if dead and type(dead.release) == "function" then
       pcall(dead.release, dead)
     end
   end
@@ -7369,7 +7445,7 @@ function Gen3.shapeDataForMap(map)
   mapShapeCache[key] = false
 
   local art = analyse(tileset)
-  local tiles = art and tilesForTileset(tileset)
+  local tiles = art and analysisTiles(tileset)
   if not (art and tiles) then return Gen3.shapeDataForTileset(tileset) end
   if not (love and love.image and love.image.newImageData) then return nil end
 
@@ -7379,21 +7455,21 @@ function Gen3.shapeDataForMap(map)
   local floorSet = {}
   for _, m in ipairs(floors) do floorSet[m] = true end
   local floorHist, floorTotal = {}, 0
-  pcall(tiles.bakeLayer, tiles, 1, function(x, y, r, g, b)
-    local m = math.floor(y / CELL) * SHEET_COLS + math.floor(x / CELL)
-    if floorSet[m] then
-      local c = colourKey(r, g, b)
-      floorHist[c] = (floorHist[c] or 0) + 1
-      floorTotal = floorTotal + 1
-    end
-  end)
-  -- a floor colour that object art leans on is not background (the same
-  -- guard the pair-level set uses)
-  local objectHist = {}
-  pcall(tiles.bakeLayer, tiles, 2, function(x, y, r, g, b)
-    local c = colourKey(r, g, b)
-    objectHist[c] = (objectHist[c] or 0) + 1
-  end)
+  -- Sample only this map's actual floors; the previous pass composited the
+  -- entire tileset just to ignore almost every pixel. Original id order and
+  -- compositing rules remain those of Gen3Tiles.
+  local function floorPixel(x,y,r,g,b)
+    preparationTick()
+    local c=colourKey(r,g,b)
+    floorHist[c]=(floorHist[c] or 0)+1
+    floorTotal=floorTotal+1
+  end
+  for id=0,tiles:metatileCount()-1 do
+    Budget.check()
+    if floorSet[id] then tiles:bakeMetatileInto(id,1,id,floorPixel) end
+  end
+  -- The tileset analysis already measured this exact above-player layer.
+  local objectHist=art.objectHist
   for c, n in pairs(floorHist) do
     if n >= floorTotal * 0.002 and (objectHist[c] or 0) < n * 0.5 then
       background[c] = true
@@ -7416,6 +7492,7 @@ function Gen3.shapeDataForMap(map)
              math.floor(t / LINEAR_COLS) * TILE + (y % TILE)
     end
     tiles:bakeLayer(1, function(x, y, r, g, b)
+    preparationTick(x,y)
       local dx, dy = place(x, y)
       if dx < 0 or dy < 0 or dx >= W or dy >= H then return end
       if background[colourKey(r, g, b)] then
@@ -7427,6 +7504,7 @@ function Gen3.shapeDataForMap(map)
       end
     end)
     tiles:bakeLayer(2, function(x, y, r, g, b)
+    preparationTick(x,y)
       local dx, dy = place(x, y)
       if dx < 0 or dy < 0 or dx >= W or dy >= H then return end
       surface:setPixel(dx, dy, r / 255, g / 255, b / 255, 1)
@@ -7447,6 +7525,35 @@ function Gen3.shapeDataForMap(map)
   say("mapshape", "carved %s for its own floor -- %d floor metatile(s)",
       tostring(tileset.id), #floors)
   return res
+end
+
+-- Run once per tileset in the job coroutine, ahead of any reentrant context
+-- construction. Incomplete guards are removed if that job is evicted.
+function Gen3.prepare(map)
+  local tileset=map.tileset
+  if not Gen3.isGen3(tileset) then return end
+  local co=coroutine.running()
+  if not co then return end
+  local key=tostring(tileset.id)
+  preparing[co]={tiles={}}
+  local cleanup={release=function()
+    preparing[co]=nil
+    if ctxCache[map]==false then ctxCache[map]=nil end
+    if artCache[key]==false then artCache[key]=nil end
+    if shapeCache[key]==false then shapeCache[key]=nil end
+    if animPatchCache[key]==false then animPatchCache[key]=nil end
+    for k,v in pairs(mapShapeCache)do if v==false then mapShapeCache[k]=nil end end
+  end}
+  Budget.own(cleanup)
+  local ok,err=pcall(function()
+    Gen3.analyse(tileset)
+    Gen3.atlasDataForTileset(tileset)
+    Gen3.shapeDataForTileset(tileset)
+    Gen3.shapeDataForMap(map)
+    Gen3.animPatchesForTileset(tileset)
+  end)
+  cleanup.release();Budget.disown(cleanup)
+  if not ok then error(err) end
 end
 
 --- How much of a metatile survives THIS map's carve, 0..1. Nil when the map
@@ -7764,8 +7871,6 @@ function Gen3.flowerMasks(tileset)
   return res
 end
 
-local animPatchCache = {}
-
 function Gen3.animPatchesForTileset(tileset)
   if not Gen3.isGen3(tileset) then return nil end
   local key = tostring(tileset.id)
@@ -7773,7 +7878,7 @@ function Gen3.animPatchesForTileset(tileset)
   if hit ~= nil then return hit or nil end
   animPatchCache[key] = false
 
-  local tiles = tilesForTileset(tileset)
+  local tiles = analysisTiles(tileset)
   if not tiles then return nil end
   -- an engine that predates g3-anim-261 has no animation model at all; that
   -- is not a failure, it is a host without the data, and the world keeps its
@@ -7893,6 +7998,7 @@ function Gen3.animPatchesForTileset(tileset)
     for _, m in ipairs(cells) do ordered[#ordered + 1] = m end
     table.sort(ordered)
     for _, m in ipairs(ordered) do
+      Budget.check()
       local entries = tiles:entries(m)
       for q = 0, 3 do
         local bottom, top = entries[q + 1], entries[q + 5]
@@ -7907,6 +8013,7 @@ function Gen3.animPatchesForTileset(tileset)
 
     local strips = {}
     for step = 0, steps - 1 do
+      Budget.check()
       -- ONE MUTATION PER STEP, NOT ONE PER DRAW.  The engine's `drawLayer`
       -- takes five parameters and renders whatever frame is currently laid
       -- over the tiles -- there is no per-call frame argument and never was
@@ -7914,10 +8021,10 @@ function Gen3.animPatchesForTileset(tileset)
       -- below reads it.  Restored to what it was after the pcall; see the
       -- snapshot above.
       tiles:setAnimFrame(step)
-      local strip = love.image.newImageData(#slots * 8, 8)
+      local strip = Budget.own(love.image.newImageData(#slots * 8, 8))
       -- one metatile is rendered once per step and read four times at most,
       -- so compose it whole and cut quadrants out of it
-      local cellBuf = love.image.newImageData(CELL, CELL)
+      local cellBuf = Budget.own(love.image.newImageData(CELL, CELL))
       local lastM = nil
       -- THE FLOWER BEDS ARE CUT, THE REST OF THE SHEET IS NOT.
       --
@@ -7946,6 +8053,7 @@ function Gen3.animPatchesForTileset(tileset)
         end
         local cut = (background and flowers[m]) and true or false
         local function plot(x, y, r, g, b)
+          preparationTick()
           if x >= 0 and y >= 0 and x < CELL and y < CELL then
             if cut and background[colourKey(r, g, b)] then
               cellBuf:setPixel(x, y, 0, 0, 0, 0)
@@ -7960,11 +8068,14 @@ function Gen3.animPatchesForTileset(tileset)
         tiles:drawLayer(m, 2, 0, 0, plot)
       end
       for i, t in ipairs(slots) do
+        Budget.check()
         local m, qd = owner[i], t % 4
         compose(m)
         local sx, sy = (qd % 2) * TILE, math.floor(qd / 2) * TILE
         strip:paste(cellBuf, (i - 1) * 8, 0, sx, sy, TILE, TILE)
       end
+      Budget.disown(cellBuf)
+      cellBuf:release()
       strips[step + 1] = strip
     end
     -- The cadence, in 60Hz ticks per picture.  `animStep()` is the same
@@ -7997,6 +8108,7 @@ function Gen3.animPatchesForTileset(tileset)
     end
     return nil
   end
+  for _, strip in ipairs(res.strips) do Budget.disown(strip) end
   animPatchCache[key] = res
   say("anim", "%s animates %d slot(s) over %d step(s), one every %d frame(s)",
       key, #res.slots, res.steps, res.period)
@@ -8051,6 +8163,12 @@ end
 -- no honest way to move one cell of it.  Cheap to ask for -- a sweep of 90
 -- blocks nils one table entry 90 times -- because the rebuild happens once,
 -- when the mesher next asks.
+function Gen3.evictMap(mapId)
+  for map in pairs(ctxCache)do
+    if map.id==mapId then ctxCache[map]=nil;ctxMisses[map]=nil end
+  end
+end
+
 function Gen3.forgetMap(map)
   if map == nil then return end
   ctxCache[map] = nil

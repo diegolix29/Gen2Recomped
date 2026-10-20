@@ -1285,6 +1285,11 @@ function OverworldState:setMap(mapId, x, y, facing, opts)
       require("src.ui.Gen4TownMap").remember(Game)
     end)
   end
+  -- Unova's Town Map: the last place stood in outdoors, for opening it
+  -- indoors (src/ui/Gen5TownMap.lua)
+  if GameVersion.isGen5() and self.map and self.map.def then
+    pcall(function() require("src.ui.Gen5TownMap").remember(Game, tonumber(self.map.def.header)) end)
+  end
   -- forced dismount only where riding is disallowed (IsBikeRidingAllowed,
   -- home/overworld.asm: bike_riding_tilesets.asm tilesets plus the
   -- ROUTE_23/INDIGO_PLATEAU map exceptions)
@@ -6041,7 +6046,11 @@ function OverworldState:runFrames()
   -- further down the file resolves as a nil GLOBAL above its declaration, so an
   -- `elseif gen4 then` written before this line is simply never taken, and takes
   -- the refusal below instead -- silently, which is the whole problem with it.
-  local gen4 = ok and GV and GV.isGen4 and GV.isGen4()
+  -- ...and Black / White, whose shoes (0x0E3, Mom's Route 1 call) are the
+  -- same flag and whose run is the same B button: isGen4 answers false for
+  -- them, so they fell to the "no running" branch below ("running shoes
+  -- don't work" in Unova)
+  local gen4 = ok and GV and ((GV.isGen4 and GV.isGen4()) or (GV.isGen5 and GV.isGen5()))
 
   -- EMERALD HAS RUNNING SHOES, and they are a flag rather than an item.
   --
@@ -6629,6 +6638,13 @@ end
 -- cartridge grid under gen3FRLGRegionMap.  Refuse only when the active cache
 -- has neither representation.
 function OverworldState:openRegionMap(opts)
+  -- UNOVA'S (src/ui/Gen5TownMap.lua): the ROM's painting and place table
+  if GameVersion.isGen5() then
+    local T5 = require("src.ui.Gen5TownMap")
+    if not T5.available(Game) then return false end
+    Game.stack:push(T5.new(Game, opts or {}))
+    return true
+  end
   -- SINNOH'S TOWN MAP (src/ui/Gen4TownMap.lua)
   if GameVersion.isGen4() then
     if not Game.data.gen4_town_map then return false end
@@ -7025,7 +7041,9 @@ end
 -- A behaviour with no row answers false and the press falls through to
 -- everything after it, which is what `0xffff` does in the C.
 function OverworldState:tryGen4TileScript(fx, fy)
-  if not GameVersion.isGen4() then return false end
+  -- Black / White run the same field step with their own table (the PC is
+  -- behaviour 0xD6: Gen4TileScripts.BW), and isGen4 answers false for them
+  if not (GameVersion.isGen4() or GameVersion.isGen5()) then return false end
   -- on a Distortion World wall or ceiling the tile ahead is the platform's
   if self.dwSurface and require("src.world.Gen4DistSurface").pressA(self) then return true end
   if not (self.map and self.map.cellBehaviour) then return false end

@@ -70,7 +70,17 @@ function love.conf(t)
     t.window.minwidth = 480
     t.window.minheight = 360
   end
-  t.version = love._os == "iOS" and "12.0" or "11.5"
+  -- The window and taskbar icon on desktop (the packaged app's own icon is
+  -- set per platform at build time; see tools/make_icons.py).  Checked first
+  -- because LÖVE errors at boot on a missing icon file.
+  local icon = "assets/logo/icon-window.png"
+  if love.filesystem.getInfo and love.filesystem.getInfo(icon) then
+    t.window.icon = icon
+  end
+  -- The same source supports the stable 11.5 ports and the pinned 12 preview.
+  -- Match the running major version so a 12 build has no compatibility prompt.
+  local loveMajor = love.getVersion and love.getVersion() or 11
+  t.version = loveMajor >= 12 and "12.0" or "11.5"
   t.window.vsync = 1
   t.modules.joystick = true
   t.modules.physics = false
@@ -130,5 +140,16 @@ function love.conf(t)
     t.accelerometerjoystick = false
   else
     t.window.resizable = true
+  end
+  if loveMajor >= 12 then
+    t.highdpi = t.window.highdpi ~= false
+    t.window.highdpi = nil
+    -- Preserve the renderer whose pixels match the 11.5 release on desktop.
+    -- Vulkan remains an explicit development opt-in while reflection parity
+    -- is being verified; Metal stays the native default on Apple platforms.
+    if osName == "Windows" or osName == "Linux" then
+      local backend = os.getenv("POKEPORT_GRAPHICS_BACKEND")
+      t.graphics.renderers = {backend == "vulkan" and "vulkan" or "opengl"}
+    end
   end
 end

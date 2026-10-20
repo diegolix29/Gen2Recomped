@@ -83,10 +83,11 @@ fi
 # One source of truth for every platform's launcher icon (scripts/build.sh
 # resizes the same file with sips on macOS). Pillow is already a project
 # dependency via tools/build_data.py; without it, ship the 1024px original
-# rather than failing the build over an icon.
+# rather than failing the build over an icon.  The source is square
+# (tools/make_icons.py); the old wide banner was squashed here.
 IN_DIR="$WORK/in"
 rm -rf "$IN_DIR"; mkdir -p "$IN_DIR"
-ICON_SRC="$ROOT/assets/logo/gen2logo.png"
+ICON_SRC="$ROOT/icons/icon.png"
 [ -f "$ICON_SRC" ] || fail "missing icon source: $ICON_SRC"
 if ! python3 - "$ICON_SRC" "$IN_DIR/icon.png" <<'PY' 2>/dev/null
 import sys

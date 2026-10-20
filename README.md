@@ -19,6 +19,16 @@ the Generation II half: the Gen2 script VM and its command table, the Johto and
 Kanto world, day/night, breeding and the Day-Care, the Pokegear, shinies, held
 items, and the Gold/Silver title sequence.
 
+It has since grown well past Generation II. The same launcher now imports and
+runs **FireRed** and **Emerald** (Gen 3), **Platinum**, **HeartGold** and
+**SoulSilver** (Gen 4), and **Black** and **White** (Gen 5), plus the
+**Polished Crystal** and **Prism** romhacks — all side by side, all from your
+own cartridge dumps. Around the games sit the **Monster Walker** (a
+next-gen Pokéwalker with minigames and a Watt Shop), a **Map Editor**, a
+**Save Editor**, machine **translation** into 25 languages, **cloud saves**,
+dual-screen support for the DS games, and touch controls. See
+[What's New](#whats-new) for the tour.
+
 > [!CAUTION]
 > **Neither this project nor Gen1Recomp is affiliated with the website
 > `gen1recomp[.]com`.** That site is not run by either project and was not
@@ -27,9 +37,9 @@ items, and the Gold/Silver title sequence.
 > repository, the people behind it can change its content at any time. This
 > GitHub repository is the only official source for gen2recomp.
 
-This project does not include a ROM, emulate the Game Boy, transpile assembly,
-or download a disassembly. A canonical US Poke Gold, Silver, Red, Blue, or
-Yellow ROM is the only game content input.
+This project does not include a ROM, emulate the Game Boy, GBA or DS,
+transpile assembly, or download a disassembly. A canonical cartridge dump of
+one of the [supported games](#supported-games) is the only game content input.
 
 The ROM is verified, used during import, and then released from memory. It is
 not copied into the cache. Later launches load the private generated cache and
@@ -39,25 +49,47 @@ side.
 ## Quick Start
 
 Open the desktop app. On first boot, choose your legally obtained `.gb` /
-`.gbc` file or drop it onto the window. Import takes a few seconds for Gen 1
-and a couple of minutes for Gen 2, then the game starts automatically.
+`.gbc` / `.gba` / `.nds` file or drop it onto the window. Import takes a few
+seconds for Gen 1, a couple of minutes for Gen 2, and longer for the GBA and DS
+games, then the game starts automatically. Have a whole folder of dumps?
+**Tools → Import ROMs** takes several files at once and imports every one it
+recognises.
 
 On a console or handheld there is no file picker to open: you copy the dump
 into a folder the launcher scans instead. See
 [Downloads](#downloads--which-file-do-i-want) for the exact path per device.
 
-Only the canonical US ROMs are accepted. The importer verifies SHA-1 before
-creating any game data:
+### Supported games
 
-| Version | Size  | SHA-1                                      |
-| ------- | ----- | ------------------------------------------ |
-| Gold    | 2 MiB | `d8b8a3600a465308c9953dfa04f0081c05bdcb94` |
-| Silver  | 2 MiB | `49b163f7e57702bc939d642a18f591de55d92dae` |
-| Crystal (Rev 1) | 2 MiB | `f2f52230b536214ef7c9924f483392993e226cfb` |
-| Crystal (Rev 0) | 2 MiB | `f4cd194bdee0d04ca4eac29e09b8e4e9d818c133` |
-| Red     | 1 MiB | `ea9bcae617fdf159b045185467ae58b2e4a48b9a` |
-| Blue    | 1 MiB | `d7037c83e1ae5b39bde3c30787637ba1d4c48ce2` |
-| Yellow  | 1 MiB | `cc7d03262ebfaf2f06772c1a480c7d9d5f4a38e1` |
+Only specific canonical dumps are accepted. The importer verifies SHA-1 before
+creating any game data; a dump it does not accept is named (game, region,
+revision) so you know why — see [docs/rom-revisions.md](docs/rom-revisions.md).
+
+| Game | System | Stage | SHA-1 |
+| --- | --- | --- | --- |
+| Red | GB | Stable | `ea9bcae617fdf159b045185467ae58b2e4a48b9a` |
+| Blue | GB | Stable | `d7037c83e1ae5b39bde3c30787637ba1d4c48ce2` |
+| Yellow | GB | Stable | `cc7d03262ebfaf2f06772c1a480c7d9d5f4a38e1` |
+| Gold | GBC | Stable | `d8b8a3600a465308c9953dfa04f0081c05bdcb94` |
+| Silver | GBC | Stable | `49b163f7e57702bc939d642a18f591de55d92dae` |
+| Crystal (Rev 1) | GBC | Stable | `f2f52230b536214ef7c9924f483392993e226cfb` |
+| Crystal (Rev 0) | GBC | Stable | `f4cd194bdee0d04ca4eac29e09b8e4e9d818c133` |
+| Polished Crystal 3.2.3 | GBC | Beta | `6930b48af5844d373e3c9130f26d6dd1084cf4ed` |
+| Prism | GBC | Experimental | `752076692ae3387cf426ce5f51a98c6b60e8df6a` |
+| FireRed (Rev 0) | GBA | Alpha | `41cb23d8dccc8ebd7c649cd8fbb58eeace6e2fdc` |
+| Emerald | GBA | Alpha | `f3ae088181bf583e55daf962a92bb46f4f1d07b7` |
+| Platinum (Rev 1) | DS | Pre-alpha | `0862ec35b24de5c7e2dcb88c9eea0873110d755c` |
+| Platinum (Rev 0) | DS | Pre-alpha | `ce81046eda7d232513069519cb2085349896dec7` |
+| HeartGold (USA) | DS | Pre-alpha | `4fcded0e2713dc03929845de631d0932ea2b5a37` |
+| SoulSilver (USA) | DS | Pre-alpha | `f8dc38ea20c17541a43b58c5e6d18c1732c7e582` |
+| Black (USA/EU) | DS | Pre-alpha | `26ad0b9967aa279c4a266ee69f52b9b2332399a5` |
+| White (USA/EU) | DS | Pre-alpha | `bc696a0dfb448c7b3a8a206f0f8214411a039208` |
+
+HeartGold, SoulSilver, Black and White dumps that have had their trailing `FF`
+padding trimmed are also accepted, as long as every game byte is intact — see
+[docs/hgss-bw-import.md](docs/hgss-bw-import.md). The launcher shows each
+game's stage on its card; Alpha and Pre-alpha games are playable but expect
+gaps and bugs.
 
 The packaged app contains neither a ROM nor pre-extracted game data. Music,
 sound effects, and cries are synthesized while the game runs from compact
@@ -73,6 +105,119 @@ executables with appended data. Releases publish SHA-256 checksums
 (`sha256sums.txt`) so you can verify your download, and you can confirm a
 flagged file yourself on [VirusTotal](https://www.virustotal.com), where these
 builds come back clean on every engine except Defender's heuristic.
+
+## What's New
+
+Everything below arrived since this README was last updated.
+
+### New games
+
+- **FireRed and Emerald** run on a native Gen 3 engine: the Gen 3 bag, PC and
+  Item PC, naming screen, Oak's intro, Town Map FLY, V.S. Seeker rematches,
+  Teachy TV, the Battle Frontier groundwork, Berry Blender, and much more ROM
+  parity work. Both are labelled **ALPHA**.
+- **Platinum** brings Sinnoh in 3D from the cartridge's own terrain meshes and
+  props, the Pokétch on the lower screen, bikes, double battles, the
+  Underground menu, and wide-screen battles.
+- **HeartGold, SoulSilver, Black and White** import and boot to the field —
+  including Professor Juniper's intro in BW — as **PRE-ALPHA** builds.
+- **Polished Crystal** (beta) and **Prism** (experimental) romhacks, with
+  audio, overworld rendering and feature-parity fixes.
+- **Mass ROM import**: pick a folder's worth of dumps at once.
+
+### Monster Walker
+
+A full-screen app in the launcher sidebar, a next-gen take on the HGSS
+Pokéwalker that works with **every** imported game:
+
+- Take a Pokémon out of any game's PC, walk it with your phone's step counter
+  (Android), and send it home levelled up with whatever it found.
+- All 27 original courses, Poké Radar battles, Dowsing, friendship and the
+  7-day step history, faithful to the original rules.
+- **Minigames**: Catch Timing, Jump Runner, Memory Match, Rhythm Tap and
+  Treasure Hunt, each with its own leaderboard.
+- **Watt Shop**: spend watts on items for each generation, a daily Pokémon
+  stock, weekly Mystery Gifts, cosmetics, and the real per-game **event
+  distributions** (event Pokémon and key items), delivered straight into your
+  save.
+- Passive watts while the app is open, a daily login streak, and 26
+  achievements.
+
+Every save the Walker touches is backed up first. Details in
+[docs/pokewalker.md](docs/pokewalker.md).
+
+### Map Editor
+
+**Tools → Map Editor** opens any imported game's maps — Gen 1 through Gen 4 —
+in a 2D view or the 3D voxel world. Paint tiles, place NPCs and trainers, edit
+their text, events and flags, shape voxel height, then export your work as a
+content mod. Nothing is written to the ROM. The full manual (also in the editor
+under **?**) is [docs/MAP_EDITOR.md](docs/MAP_EDITOR.md); per-generation
+differences are in [docs/map-editor-gen34.md](docs/map-editor-gen34.md).
+Classic Tiled round-tripping is still available
+([docs/tiled-map-editing.md](docs/tiled-map-editing.md)).
+
+### Launcher
+
+The launcher now has a sidebar — **News, Games, Monster Walker, Mods, Tools,
+Settings** — with box art and descriptions you can scrape for each game, a
+choice of layouts, custom backgrounds (including your own `.ogv` video) and
+background music. **Tools** collects:
+
+| Tool | What it does |
+| --- | --- |
+| Map Editor | Edit an imported game's maps |
+| Save Editor | Open a save slot and edit it live — party, PC, items, badges, and creating Pokémon |
+| Translate a Game | Machine-translate a game's text |
+| Import a Save | Bring in a `.sav` / `.dsv` from an emulator or cartridge (Gen 1–5) |
+| Export a Save | Write the active slot out for an emulator |
+| Import ROMs | Pick one or more ROM files to import |
+| Touch Controls | Lay out the on-screen controls |
+| Scrape Game Art | Fetch box art and a description for a game |
+| Sync Saves | Sync every game's saves with the cloud |
+| Restore a Save | Browse every backup of a slot and restore one |
+
+### Languages and translation
+
+The launcher and engine are localised (including Brazilian Portuguese), and
+**Translate a Game** machine-translates a game's own text into 25 languages —
+French, German, Spanish, Italian, both Portugueses, Dutch, Polish, Japanese,
+Simplified Chinese, Russian and more — with official Pokémon names kept from a
+glossary. Choose a language per game or for the whole launcher.
+
+### Cloud saves
+
+**Settings → Cloud Saves** syncs saves through a local sync folder (OneDrive,
+Google Drive, Dropbox, iCloud), or signs straight into **Google Drive** or
+**OneDrive** with a short device code. A save is never replaced on its first
+sync, conflicting copies are both kept, and each side keeps backups. See
+[docs/cloud-saves.md](docs/cloud-saves.md).
+
+### Dual screens, touch and controllers
+
+- **Dual-screen devices** (Android dual-screen handhelds and second displays)
+  put the DS games' lower screen — the Pokétch, menus — on the second panel;
+  on Gen 1–3 the second screen becomes a live **save companion** editor.
+- Reworked **touch controls** with a layout editor and gesture fixes.
+- DS **X / Y** buttons for Gen 4+ (see [Controls](#controls)).
+
+### Safer saves and storage
+
+- Every save is written atomically, verified, and snapshotted; a lost or
+  corrupt save is recovered automatically from the best copy, and
+  **Tools → Restore a Save** brings back older ones. See
+  [docs/save-safety.md](docs/save-safety.md).
+- **Settings → Game Data Folder** moves ROM caches, mods and imports to
+  another drive or SD card ([docs/data-location.md](docs/data-location.md)).
+
+### Mods and visuals
+
+- `DRAMATIC_SHAPE` voxels extended to Gen 3 and HGSS/BW with big performance
+  work, plus cave darkness and many building profiles.
+- A streaming download API (`src/net/Fetch.lua`) lets mods such as the
+  **HD sheets** installer pull large asset packs with progress.
+- New mod hooks (party submenu options, and more), copy-on-import for mod
+  files, and launcher/gamedata customisation from mods.
 
 ## Downloads — which file do I want?
 
@@ -204,10 +349,14 @@ both NROs in place. See [docs/updater.md](docs/updater.md).
 | B      | X / Backspace     | B                  |
 | Start  | Escape            | Start              |
 | Select | Tab / Shift       | Back / Select      |
+| X (Gen 4+) | `/`           | North face button (Xbox Y / PS Triangle / Nintendo X) |
+| Y (Gen 4+) | `'`           | West face button (Xbox X / PS Square / Nintendo Y) |
 
 
 Rebind any of these in-game under **OPTIONS → CONTROLS**. Controllers are
-supported out of the box.
+supported out of the box, and touch devices get on-screen controls you can
+lay out from **Tools → Touch Controls**. X opens the field menu on DS games;
+Y uses the registered item.
 
 ### Hotkeys
 
@@ -406,8 +555,10 @@ Shipped example mods, one per kind of author, live in [mods/](mods/) —
 including `DRAMATIC_SHAPE`, the voxel renderer, extended by UNDERdecodedHD for
 Generation II support.
 
-Maps can be edited in [Tiled](https://www.mapeditor.org) and exported back out
-as a mod; see [docs/tiled-map-editing.md](docs/tiled-map-editing.md).
+Maps can be edited in the built-in [Map Editor](#map-editor) or in
+[Tiled](https://www.mapeditor.org), and exported back out as a mod; see
+[docs/MAP_EDITOR.md](docs/MAP_EDITOR.md) and
+[docs/tiled-map-editing.md](docs/tiled-map-editing.md).
 
 ## Bugs and Ideas
 
@@ -430,6 +581,20 @@ done and what is left in the Gen 2 port
 provenance
 - [docs/known-differences.md](docs/known-differences.md) — where the port still
 diverges from the cartridge
+- [docs/rom-revisions.md](docs/rom-revisions.md) — which dumps each game
+accepts, and why others are refused
+- [docs/hgss-bw-import.md](docs/hgss-bw-import.md) — HeartGold, SoulSilver,
+Black and White import status
+- [docs/gen4-platinum.md](docs/gen4-platinum.md) and
+[docs/platinum-parity-progress.md](docs/platinum-parity-progress.md) — the
+Platinum port
+- [docs/firered-port-handoff.md](docs/firered-port-handoff.md) — the FireRed port
+- [docs/pokewalker.md](docs/pokewalker.md) — the Monster Walker
+- [docs/MAP_EDITOR.md](docs/MAP_EDITOR.md) — the map editor manual
+- [docs/launcher.md](docs/launcher.md) — the launcher
+- [docs/cloud-saves.md](docs/cloud-saves.md) — cloud saves
+- [docs/save-safety.md](docs/save-safety.md) — how saves are kept and restored
+- [docs/data-location.md](docs/data-location.md) — the game data folder
 - START > LINK connects two copies directly over UDP.
 
 ## Credits
@@ -457,8 +622,13 @@ This project would not be possible without [pret](https://github.com/pret) —
 the pret band of decompiling maniacs — and their
 [pokered](https://github.com/pret/pokered),
 [pokegold](https://github.com/pret/pokegold),
-[pokeyellow](https://github.com/pret/pokeyellow), and
-[pokecrystal](https://github.com/pret/pokecrystal) disassemblies.
+[pokeyellow](https://github.com/pret/pokeyellow),
+[pokecrystal](https://github.com/pret/pokecrystal),
+[pokefirered](https://github.com/pret/pokefirered),
+[pokeemerald](https://github.com/pret/pokeemerald),
+[pokeplatinum](https://github.com/pret/pokeplatinum), and
+[pokeheartgold](https://github.com/pret/pokeheartgold) disassemblies and
+decompilations.
 
 The ADVANCED / "RED++" colour mode uses the SuperPalettes, per-species
 palette map, and true overworld GBC colouring from

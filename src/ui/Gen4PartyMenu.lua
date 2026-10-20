@@ -753,6 +753,20 @@ function Gen4PartyMenu:useFieldMove(mon,move)
     return self:runFieldScript(F.menuScript(self.game.data,move))
   end
   -- FLY (src/world/Gen4Fly.lua): FieldMoves_CheckFly, then a destination
+  -- BLACK / WHITE'S FLY (src/world/Gen5Fly.lua): no badge, the zone's fly
+  -- permission, then the Town Map in fly mode
+  if move=='FLY' and require('src.core.GameVersion').isGen5() then
+    local G5=require('src.world.Gen5Fly')
+    if not (ow.map and G5.allowed(ow.map.def)) then return self:fieldRefused('location') end
+    if #G5.destinations(self.game.data,save)==0 or not require('src.ui.Gen5TownMap').available(self.game) then
+      return self:fieldRefused('location')
+    end
+    local game=self.game
+    self:close()
+    game.stack:push(require('src.ui.Gen5TownMap').new(game,{mode='fly',
+      onFly=function(dest) ow:gen4FlyTo(dest,mon) end}))
+    return
+  end
   if move=='FLY' then
     if not badge() then return self:fieldRefused('badge') end
     if partner then return self:fieldRefused('partner') end

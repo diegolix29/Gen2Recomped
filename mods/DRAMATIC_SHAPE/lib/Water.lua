@@ -1504,7 +1504,7 @@ function Water.shader(grid)
     if not (love.graphics and love.graphics.newShader) then
       shaders[grid] = false
     else
-      local ok, sh = pcall(love.graphics.newShader, source(grid))
+      local ok, sh = pcall(love.graphics.newShader, V.require("GraphicsCompat").shader(source(grid)))
       if not ok and V and V.mod and V.mod.log then
         -- once, where it can be read: the fallback is flat water, which is
         -- easy to look at and impossible to diagnose without this line

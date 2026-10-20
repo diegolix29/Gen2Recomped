@@ -56,8 +56,11 @@ end
 
 function H.new(screen, st, opts)
   local self = setmetatable({ screen = screen, st = st, opts = opts or {}, t = 0, view = "list",
-                              sel = 1, scoresOf = nil, earned = 0, runs = 0, axis = {} }, H)
+                              sel = 1, scoresOf = nil, earned = 0, runs = 0, stickDir = {} }, H)
   Rewards.state(st)
+  local A=Gfx.art()
+  if A and A.forget then A.forget() end -- imports may have changed since last entry
+  pcall(self.context,self)
   return self
 end
 
@@ -66,22 +69,45 @@ end
 local seedBump = 0
 function H:context()
   seedBump = seedBump + 1
-  local ctx = Context.build(self.st, (self.opts.seed or os.time()) + seedBump * 7919)
+  local ctx = Context.build(self.st, (self.opts.seed or os.time()) + seedBump * 7919, self.opts.version)
   ctx.hasArt = function(dex)
     local A = Gfx.art()
     if not A then return true end
-    local ok, img = pcall(A.front, dex)
+    local ok, img = pcall(A.front, dex, false)
     return ok and img ~= nil
   end
+  self.sourceError=nil
+  self.artVersion=ctx.version
+  self.rosterCount=#ctx.wild
+  if not self.opts.version then self.opts.version=ctx.version end
   return ctx
+end
+
+function H:cycleSource()
+  if self.st.walking and self.st.walking.source then return end
+  local A=Gfx.art()
+  if not (A and A.roster) then return end
+  local versions={}
+  for _,v in ipairs({"red","blue","yellow","gold","silver","crystal","polishedcrystal","prism","emerald","firered","platinum","heartgold","soulsilver","black","white"})do
+    local ok,list=pcall(A.roster,v)
+    if ok and #list>0 then versions[#versions+1]=v end
+  end
+  for i,v in ipairs(versions)do
+    if v==self.artVersion then
+      self.opts.version=versions[i%#versions+1];self:context();return
+    end
+  end
+  if #versions>0 then self.opts.version=versions[1];self:context() end
 end
 
 function H:play(i, skipIntro)
   local mod = H.games()[i]
   if not mod then return end
   self.sel = i
+  local ok,ctx=pcall(self.context,self)
+  if not ok then self.sourceError=tostring(ctx);return end
   local session
-  session = Base.new(mod, self:context(), self.st, {
+  session = Base.new(mod, ctx, self.st, {
     onExit = function() self.session = nil; self.view = "list" end,
     onAgain = function() self:play(i, true) end,
     onFinish = function(_, result)
@@ -156,14 +182,39 @@ function H:pad(button)
   return false
 end
 
+-- A CONTROLLER SDL CANNOT MAP arrives as raw joystick events only: axis 1 / 2
+-- are its stick, its hat its d-pad (the launcher reads them the same way).
+-- A mapped pad sends both kinds, and its gamepad events already counted.
+local function rawIgnored(joystick)
+  local okI, ignore = pcall(require("src.core.GamepadMap").ignoreRawForJoystick, joystick)
+  return okI and ignore
+end
+
+function H:rawAxis(joystick, axis, value)
+  if rawIgnored(joystick) then return end
+  if axis == 1 then self:axis("leftx", value) elseif axis == 2 then self:axis("lefty", value) end
+end
+
+H.HAT = { u = "dpup", d = "dpdown", l = "dpleft", r = "dpright", lu = "dpup", ru = "dpup",
+          ld = "dpdown", rd = "dpdown" }
+
+function H:rawHat(joystick, _, direction)
+  if rawIgnored(joystick) then return end
+  local dir = H.HAT[direction]
+  if dir and self.hatDir ~= dir then self:pad(dir) end
+  self.hatDir = dir
+end
+
 -- the left stick as a d-pad (one step per push)
 function H:axis(axis, value)
   local dir
   if axis == "leftx" then dir = value > 0.6 and "dpright" or value < -0.6 and "dpleft" or nil
   elseif axis == "lefty" then dir = value > 0.6 and "dpdown" or value < -0.6 and "dpup" or nil
   else return end
-  if dir and self.axis[axis] ~= dir then self:pad(dir) end
-  self.axis[axis] = dir
+  -- (the held direction lives in `stickDir`: a field named `axis` hid this
+  -- method, and the first stick push called a table and crashed the app)
+  if dir and self.stickDir[axis] ~= dir then self:pad(dir) end
+  self.stickDir[axis] = dir
 end
 
 -- ------------------------------------------------------------ drawing
@@ -173,6 +224,7 @@ local function dateOf(t) return t and os.date("%b %d", t) or "" end
 function H:draw(x, y, w, h)
   local g = love.graphics
   Gfx.tick(self.t)
+  Gfx.version=self.artVersion
   if self.view == "game" and self.session then
     self.session:draw(x, y, w, h)
     return
@@ -208,6 +260,22 @@ function H:draw(x, y, w, h)
   Gfx.setc(Gfx.DIM)
   Gfx.fit(budget, x + pad, top, w - 2 * pad, f.small, "left")
   top = top + f.small:getHeight() + 10 * s
+
+  if self.artVersion then
+    local info=require("src.core.GameVersion").info(self.artVersion)
+    local fixed=self.st.walking and self.st.walking.source
+    local label=("Pokemon: %s (%d)  %s"):format(info and info.label or self.artVersion,self.rosterCount or 0,
+      fixed and "- walking Pokemon's ROM" or "- Change ROM")
+    local sh=f.small:getHeight()+20*s
+    Gfx.button(self.hits,x+pad,top,w-2*pad,sh,label,function()self:cycleSource()end,nil,f.small)
+    top=top+sh+10*s
+  end
+
+  if self.sourceError then
+    Gfx.setc(Gfx.RED)
+    Gfx.fit(self.sourceError,x+pad,top,w-2*pad,f.small,"left")
+    top=top+f.small:getHeight()+8*s
+  end
 
   -- the cards: as many columns as fit, each tall enough for its buttons
   local games = H.games()
@@ -341,7 +409,7 @@ end
 -- the methods covered while the hub is up
 H.HOOKS = { "draw", "update", "mousepressed", "mousereleased", "mousemoved", "wheelmoved", "keypressed",
             "keyreleased", "textinput", "gamepadpressed", "gamepadreleased", "gamepadaxis", "joystickpressed",
-            "joystickreleased", "touchpressed", "touchmoved", "touchreleased" }
+            "joystickreleased", "joystickaxis", "joystickhat", "touchpressed", "touchmoved", "touchreleased" }
 
 local NONE = {}
 
@@ -394,6 +462,8 @@ local function coverHost(host, hub)
     keypressed = function(_, key) hub:key(key) end,
     gamepadpressed = function(_, _, button) hub:pad(button) end,
     gamepadaxis = function(_, _, axis, value) hub:axis(axis, value) end,
+    joystickaxis = function(_, joystick, axis, value) hub:rawAxis(joystick, axis, value) end,
+    joystickhat = function(_, joystick, hat, direction) hub:rawHat(joystick, hat, direction) end,
     joystickpressed = function(_, joystick, button)
       local GM = require("src.core.GamepadMap")
       local okI, ignore = pcall(GM.ignoreRawForJoystick, joystick)
@@ -419,6 +489,9 @@ local function coverScreen(screen, hub)
     mousepressed = function(_, x, y) hub:pointer(x, y) return true end,
     keypressed = function(_, key) return hub:key(key) end,
     gamepadpressed = function(_, _, button) return hub:pad(button) end,
+    gamepadaxis = function(_, _, axis, value) hub:axis(axis, value) return true end,
+    joystickaxis = function(_, joystick, axis, value) hub:rawAxis(joystick, axis, value) return true end,
+    joystickhat = function(_, joystick, hat, direction) hub:rawHat(joystick, hat, direction) return true end,
   })
   return restore
 end

@@ -78,6 +78,34 @@ do
   check(groups.C > groups.B and groups.B > groups.A, 'wild picks: C common, A rare', groups.A .. '/' .. groups.B .. '/' .. groups.C)
 end
 
+-- Imported source rosters are complete, deterministic and ROM-specific.
+do
+ local Art=require('src.pokewalker.WalkerArt');local saved=Art.roster
+ local source={}
+ for i=1,60 do source[i]={dex=300+i,name='ROM '..i,level=5,group=i%3==0 and 'A' or 'C'} end
+ Art.roster=function(version)return version=='emerald' and source or {} end
+ local st=newState(true);st.walking.source={version='emerald'}
+ st.walking.species=301
+ local a,b=Context.build(st,10),Context.build(st,10)
+ check(#a.wild==60 and a.version=='emerald','minigames use full source roster')
+ local seen,same={},true
+ for i,e in ipairs(a.wild)do seen[e.dex]=true;same=same and e.dex==b.wild[i].dex end
+ check(seen[360] and not seen[25] and same,'only imported species, seeded order')
+ local other=Context.build(st,11);local different=false
+ for i,e in ipairs(a.wild)do if e.dex~=other.wild[i].dex then different=true end end
+ check(different,'new runs vary the available Pokemon')
+ a.hasArt=function()return true end
+ local board=Memory.new(a,{})
+ local legal=true;for _,c in ipairs(board.cards)do legal=legal and seen[c.dex] end
+ check(legal,'memory cards do not borrow out-of-ROM extras')
+ Art.roster=function()return {{dex=901,name='Hack species',level=5,group='C'}} end
+ local tiny=Context.build(newState(false),10,'prism');tiny.hasArt=function()return false end
+ board=Memory.new(tiny,{})
+ legal=true;for _,c in ipairs(board.cards)do legal=legal and c.dex==901 end
+ check(legal and #board.cards==16 and tiny.walker.dex==901,'tiny ROM roster never adds foreign filler')
+ Art.roster=saved
+end
+
 -- =============================================================== Rewards
 do
   Rewards._economy = false   -- no economy module: the fallbacks
@@ -579,6 +607,26 @@ do
   check(h3.view == 'game', 'launcher keys go to the hub')
   h3:close()
   check(rawget(host, 'update') == nil and rawget(host, 'draw') == nil and host.settingsOpen == false, 'close restores the launcher')
+end
+
+-- THE STICK: a field named `axis` once hid H:axis, so the first push of a
+-- controller's stick with the hub open called a table and crashed the app
+do
+  local st = newState(true)
+  local h = Hub.new(nil, st, { seed = 3 })
+  check(type(h.axis) == 'function', 'the hub\'s axis is still its method')
+  local ok = pcall(function()
+    h:axis('lefty', -1); h:axis('lefty', 0); h:axis('leftx', 1); h:axis('leftx', 0)
+    h:rawAxis({ isGamepad = function() return false end }, 2, 1)
+    h:rawHat({ isGamepad = function() return false end }, 1, 'u')
+  end)
+  check(ok, 'stick, raw stick and hat move the hub without error')
+  local s = h:play(3, true)
+  local got = {}
+  local act = s.action
+  s.action = function(self2, a, ...) got[#got + 1] = a; return act(self2, a, ...) end
+  h:axis('leftx', 1); h:axis('leftx', 0)
+  check(got[1] == 'right', 'the stick reaches a game in play')
 end
 
 print(('%d passed, %d failed'):format(PASS, FAIL))

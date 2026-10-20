@@ -24,6 +24,7 @@
 
 -- the mod namespace (see main.lua): V.require loads a sibling module
 local V = ...
+local ShaderState=V.require("ShaderState")
 
 local Mat4 = V.require("Mat4")
 local MeshBounds = V.require("MeshBounds")
@@ -133,7 +134,13 @@ local SHADER = [[
   // and only the MARCH walks the world as drawn), and written this way the
   // two cannot drift apart, because they are now the same sentence.
   attribute float VertexShade;
+#ifdef STAMP_INSTANCES
+  attribute vec3 StampOffset;
+#endif
   vec4 position(mat4 transform_projection, vec4 vertex_position) {
+#ifdef STAMP_INSTANCES
+    vertex_position.xyz += StampOffset;
+#endif
     vShade = VertexShade;
 #ifdef VOXEL_GRID
     // MODEL space, deliberately: every mesh here is built a unit per
@@ -443,18 +450,20 @@ end
 -- The scene shader. `grid` asks for the wireframe variant, and nil comes
 -- back when that one will not build -- callers then fall back to the plain
 -- one rather than losing the whole 3D pass.
-function Voxel3D.shader(grid)
+function Voxel3D.shader(grid,instanced)
   grid = grid and true or false
-  if shaders[grid] == nil then
+  local key=instanced and (grid and "stamp-grid" or "stamp") or grid
+  if shaders[key] == nil then
     if grid and not derivativesOK() then
-      shaders[grid] = false
+      shaders[key] = false
     else
       local src = grid and ("#define VOXEL_GRID 1\n" .. SHADER) or SHADER
-      local ok, sh = pcall(love.graphics.newShader, src)
-      shaders[grid] = ok and sh or false
+      if instanced then src="#define STAMP_INSTANCES 1\n"..src end
+      local ok, sh = pcall(love.graphics.newShader, V.require("GraphicsCompat").shader(src))
+      shaders[key] = ok and sh or false
     end
   end
-  return shaders[grid] or nil
+  return shaders[key] or nil
 end
 
 -- Whether the 3D path can run at all. False on a headless test run (no
@@ -1000,57 +1009,57 @@ function Voxel3D.beginScene(w, h, cx, cy, vw, vh, sky, slot)
   love.graphics.setMeshCullMode("none")
   love.graphics.setShader(sh)
   love.graphics.setColor(1, 1, 1, 1)
-  pcall(sh.send, sh, "vp", "row", Voxel3D.vp)
-  pcall(sh.send, sh, "eye", Voxel3D.eye)
+  ShaderState.send(sh, "vp", "row", Voxel3D.vp)
+  ShaderState.send(sh, "eye", Voxel3D.eye)
   -- the sun's frame, filled by ShadowMap just before this pass opened.
   -- Sent unconditionally: the sampler is declared either way, and leaving
   -- one unbound is a driver-dependent crash rather than a fallback.
   local map = ShadowMap.active()
-  pcall(sh.send, sh, "sunVP", "row", map and ShadowMap.uvVP or IDENTITY)
+  ShaderState.send(sh, "sunVP", "row", map and ShadowMap.uvVP or IDENTITY)
   local tex = ShadowMap.texture()
-  if tex then pcall(sh.send, sh, "sunMap", tex) end
-  pcall(sh.send, sh, "sunDark", map and Voxel3D.SHADOW_ALPHA or 0)
-  pcall(sh.send, sh, "sunBias", ShadowMap.bias)
+  if tex then ShaderState.send(sh, "sunMap", tex) end
+  ShaderState.send(sh, "sunDark", map and Voxel3D.SHADOW_ALPHA or 0)
+  ShaderState.send(sh, "sunBias", ShadowMap.bias)
   local texel = 1 / ShadowMap.res
-  pcall(sh.send, sh, "sunTexel", { texel, texel })
+  ShaderState.send(sh, "sunTexel", { texel, texel })
   if grid then
-    pcall(sh.send, sh, "gridDark", VoxelGrid.DARK)
-    pcall(sh.send, sh, "gridWidth", VoxelGrid.width())
+    ShaderState.send(sh, "gridDark", VoxelGrid.DARK)
+    ShaderState.send(sh, "gridWidth", VoxelGrid.width())
   end
   -- ordinary shading until the silhouette pass asks for otherwise. Sent
   -- every frame rather than once, because a scene that opened mid-ghost --
   -- a driver hiccup between beginGhost and endGhost -- would otherwise
   -- start out flattening everything it drew.
-  pcall(sh.send, sh, "ghost", 0)
-  pcall(sh.send, sh, "ghostColor", Voxel3D.GHOST_COLOR)
+  ShaderState.send(sh, "ghost", 0)
+  ShaderState.send(sh, "ghostColor", Voxel3D.GHOST_COLOR)
   -- and the world the right way up, reset per frame for the same reason
   -- `ghost` is: a frame that opened in the middle of a planar pass -- a
   -- driver hiccup between beginPlanar and endPlanar -- would otherwise draw
   -- the entire scene reflected in a plane nobody asked about.
-  pcall(sh.send, sh, "mirror", { 0, 0 })
+  ShaderState.send(sh, "mirror", { 0, 0 })
   -- the hour's light, as the caller last set it (see Voxel3D.tint)
-  pcall(sh.send, sh, "dayTint", Voxel3D.tint or { 1, 1, 1 })
+  ShaderState.send(sh, "dayTint", Voxel3D.tint or { 1, 1, 1 })
   -- the window glass: the tileset's mask (or the blank -- the sampler is
   -- declared either way, and unbound is a driver-dependent crash), how lit
   -- the panes are, and the movement-fed glint as the caller last set it
   local mask = Voxel3D.glassMask or GlassMask.blank()
   if mask then
-    pcall(sh.send, sh, "glassMask", mask)
+    ShaderState.send(sh, "glassMask", mask)
     local ok, mw, mh = pcall(mask.getDimensions, mask)
-    pcall(sh.send, sh, "glassSize", { ok and mw or 1, ok and mh or 1 })
+    ShaderState.send(sh, "glassSize", { ok and mw or 1, ok and mh or 1 })
   end
-  pcall(sh.send, sh, "glassNight", Voxel3D.glassNight or 0)
-  pcall(sh.send, sh, "glassPhase", Voxel3D.glassPhase or 0)
-  pcall(sh.send, sh, "glassGlint", Voxel3D.glassGlint or 0)
+  ShaderState.send(sh, "glassNight", Voxel3D.glassNight or 0)
+  ShaderState.send(sh, "glassPhase", Voxel3D.glassPhase or 0)
+  ShaderState.send(sh, "glassGlint", Voxel3D.glassGlint or 0)
   -- on until a sprite pass says otherwise, reset per frame like `ghost`
-  pcall(sh.send, sh, "glassOn", 1)
+  ShaderState.send(sh, "glassOn", 1)
   -- the curved world bends about the camera's focus, so the horizon keeps
   -- a fixed distance ahead of the player rather than sitting on the map.
   -- A placed camera may decline it outright (Voxel3D.camera.curve = 0).
   local placed = Voxel3D.camera
   Voxel3D.curveK = (placed and placed.curve) or WorldCurve.k(vh)
   Voxel3D.curveX, Voxel3D.curveZ = cx, cy
-  pcall(sh.send, sh, "curve", { cx, cy, Voxel3D.curveK })
+  ShaderState.send(sh, "curve", { cx, cy, Voxel3D.curveK })
   -- clip w at the focus point, the reference depth project() reports scale
   -- against (so scale == 1 for anything standing at the view centre)
   local m = Voxel3D.vp
@@ -1114,8 +1123,8 @@ function Voxel3D.beginGhost()
   pcall(love.graphics.setDepthMode, "greater", false)
   love.graphics.setColor(1, 1, 1, Voxel3D.GHOST_ALPHA)
   if activeShader then
-    pcall(activeShader.send, activeShader, "ghostColor", Voxel3D.GHOST_COLOR)
-    pcall(activeShader.send, activeShader, "ghost", 1)
+    ShaderState.send(activeShader, "ghostColor", Voxel3D.GHOST_COLOR)
+    ShaderState.send(activeShader, "ghost", 1)
   end
 end
 
@@ -1133,10 +1142,10 @@ function Voxel3D.flatten(color, amount)
   if not (active and activeShader) then return end
   local sh = activeShader
   if color then
-    pcall(sh.send, sh, "ghostColor", color)
-    pcall(sh.send, sh, "ghost", math.max(0, math.min(1, amount or 1)))
+    ShaderState.send(sh, "ghostColor", color)
+    ShaderState.send(sh, "ghost", math.max(0, math.min(1, amount or 1)))
   else
-    pcall(sh.send, sh, "ghost", 0)
+    ShaderState.send(sh, "ghost", 0)
   end
 end
 
@@ -1262,14 +1271,16 @@ function Voxel3D.beginPlanar(planeY, paint)
   love.graphics.setDepthMode("lequal", true)
   love.graphics.setShader(activeShader)
   love.graphics.setColor(1, 1, 1, 1)
-  pcall(activeShader.send, activeShader, "mirror", { 1, planeY })
+  ShaderState.send(activeShader, "mirror", { 1, planeY })
   Voxel3D.planarY = planeY
+  Voxel3D.reflectionMatrix=Mat4.mul(Mat4.translate(0,2*planeY,0),Mat4.scale(1,-1,1))
   if paint then pcall(paint) end
+  Voxel3D.reflectionMatrix=nil
   -- ...and the world the right way up again BEFORE anything else draws.
   -- Unconditionally and outside any success branch, for the reason endWater
   -- states: a frame that bails halfway through has to be put back together
   -- exactly like one that finished, or every pass after it draws mirrored.
-  pcall(activeShader.send, activeShader, "mirror", { 0, 0 })
+  ShaderState.send(activeShader, "mirror", { 0, 0 })
   -- ...and the frame's own target back under the brush. A driver that
   -- refuses this leaves the pass with a texture nobody can safely draw
   -- against, so the frame gets nil and falls back to the reflection it had
@@ -1282,12 +1293,13 @@ end
 -- Put the frame back: the scene's own target, its depth test, its shader.
 -- Safe to call after a beginPlanar that returned nil.
 function Voxel3D.endPlanar()
+  Voxel3D.reflectionMatrix=nil
   if not active then return end
   pcall(love.graphics.setCanvas, depthTarget())
   pcall(love.graphics.setDepthMode, "lequal", true)
   love.graphics.setColor(1, 1, 1, 1)
   if activeShader then
-    pcall(activeShader.send, activeShader, "mirror", { 0, 0 })
+    ShaderState.send(activeShader, "mirror", { 0, 0 })
     love.graphics.setShader(activeShader)
   end
 end
@@ -1385,7 +1397,7 @@ end
 -- no wireframe compiled in there is nothing to suppress.
 function Voxel3D.seams(on)
   if not (active and activeShader) then return end
-  pcall(activeShader.send, activeShader, "gridDark",
+  ShaderState.send(activeShader, "gridDark",
         on and VoxelGrid.DARK or 0)
 end
 
@@ -1399,7 +1411,7 @@ end
 -- standing in the wrong part of their own sheet.
 function Voxel3D.glass(on)
   if not (active and activeShader) then return end
-  pcall(activeShader.send, activeShader, "glassOn", on and 1 or 0)
+  ShaderState.send(activeShader, "glassOn", on and 1 or 0)
 end
 
 function Voxel3D.endGhost()
@@ -1409,7 +1421,7 @@ function Voxel3D.endGhost()
   -- back to ordinary shading before anything else draws; leaving it set
   -- would flatten the grass pass that follows into one grey sheet
   if activeShader then
-    pcall(activeShader.send, activeShader, "ghost", 0)
+    ShaderState.send(activeShader, "ghost", 0)
   end
 end
 
@@ -1542,6 +1554,8 @@ end
 function Voxel3D.draw(mesh, texture, model, pull, sunModel)
   if not (active and mesh) then return end
   local parts = type(mesh) == "table" and mesh.parts
+  -- Culling must see the reflected world too; the shader mirrors only Y.
+  local cullModel=Voxel3D.reflectionMatrix and Mat4.mul(Voxel3D.reflectionMatrix,model or IDENTITY) or model
   -- OFF SCREEN IS NOT DRAWN.
   --
   -- Measured with this frame's own matrix: standing in Lilycove, six
@@ -1564,7 +1578,7 @@ function Voxel3D.draw(mesh, texture, model, pull, sunModel)
   -- keeps its cull (see ShadowMap.draw): WorldCurve's own note records that
   -- the light frustum never moves and the bend carries the shadow with it.
   if (Voxel3D.curveK or 0) <= 0
-     and MeshBounds.hidden(mesh, Voxel3D.vp, model) then
+     and MeshBounds.hidden(mesh, Voxel3D.vp, cullModel) then
     return
   end
   -- the variant beginScene actually bound, not whichever one is default:
@@ -1573,11 +1587,20 @@ function Voxel3D.draw(mesh, texture, model, pull, sunModel)
   if not sh then return end
   if texture and not parts then mesh:setTexture(texture) end
   -- LOVE defaults matrix uniforms to column-major; Mat4 is row-major
-  pcall(sh.send, sh, "model", "row", model or IDENTITY)
-  pcall(sh.send, sh, "sunModel", "row", sunModel or model or IDENTITY)
-  pcall(sh.send, sh, "pull", pull or 0)
-  if parts then V.require("MeshBatch").draw(mesh, texture, Voxel3D.vp, model, Voxel3D.curveK, Voxel3D.curveX, Voxel3D.curveZ)
+  ShaderState.send(sh, "model", "row", model or IDENTITY)
+  ShaderState.send(sh, "sunModel", "row", sunModel or model or IDENTITY)
+  ShaderState.send(sh, "pull", pull or 0)
+  if parts then V.require("MeshBatch").draw(mesh, texture, Voxel3D.vp, cullModel, Voxel3D.curveK, Voxel3D.curveX, Voxel3D.curveZ)
   else love.graphics.draw(mesh) end
+  if parts and mesh.stamps and #mesh.stamps>0 then
+    local instanced=Voxel3D.shader(V.require("VoxelGrid").enabled(),true)
+    if not V.require("HullBatch").instanced(mesh,texture,Voxel3D.vp,cullModel,
+       Voxel3D.curveK,Voxel3D.curveX,Voxel3D.curveZ,sh,instanced) then
+      V.require("HullBatch").draw(mesh,model,sunModel or model,function(hull,pose,sun)
+        Voxel3D.draw(hull,texture,pose,pull,sun)
+      end)
+    end
+  end
 end
 
 -- Project a world point to canvas pixels: returns (x, y, scale), or nil

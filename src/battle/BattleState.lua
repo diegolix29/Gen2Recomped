@@ -10952,8 +10952,10 @@ function BattleState:learnMove(mon, moveId)
   if #mon.moves < 4 then
     table.insert(mon.moves, { id = moveId, pp = mdef.pp })
     Runtime.emit("pokemon.move_learned", { mon = mon, moveId = moveId })
-    self:sayNext(self:romText("_MimicLearnedMoveText", "%s learned\n%s!", mon.nickname or self.data.pokemon[mon.species].name,
-                                            mdef.name))
+    local who = mon.nickname or self.data.pokemon[mon.species].name
+    -- Black / White's battle line (bank 14 line 688), else the cartridge's own
+    local bw = require("src.ui.Gen5MoveLearnMenu").learnedLine(self.game, who, mdef.name, true)
+    self:sayNext(bw or self:romText("_MimicLearnedMoveText", "%s learned\n%s!", who, mdef.name))
     return
   end
   -- the "trying to learn" preamble lives inside MoveLearnMenu:enter;

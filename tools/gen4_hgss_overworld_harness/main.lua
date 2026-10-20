@@ -259,6 +259,39 @@ if os.getenv("PARTY_DETAIL") then
   end
 end
 
+-- BW_RELINK=<black/white .nds>: the script pool relinked IN MEMORY with the
+-- current Gen5ScriptLink (the way tools/gen5_facility_harness does), so an
+-- alias change is tested without a re-import
+if os.getenv("BW_RELINK") then
+  local Data = require("src.core.Data")
+  local load = Data.load
+  Data.load = function(self, ...)
+    local r = { load(self, ...) }
+    local ok, err = pcall(function()
+      local gen = (os.getenv("INSTALL") or "") .. "/data/generated/"
+      local X = require("src.import.RomExtractorGen5")
+      local x = assert(X.new(os.getenv("BW_RELINK"), os.getenv("VERSION") or "black"))
+      local scripts = self.gen5_scripts or dofile(gen .. "gen5_scripts.lua")
+      local zones = self.gen5_zones or dofile(gen .. "gen5_zones.lua")
+      local maps = dofile(gen .. "maps.lua")
+      local ver = self.gen5_version or dofile(gen .. "gen5_version.lua")
+      local Link = require("src.import.Gen5ScriptLink")
+      for op, w in pairs(require("src.import.Gen5ScriptOps").HAND_WIDTHS or {}) do scripts.widths[op] = w end
+      local pool, rep = Link.pool(require("src.import.NarcArchive").parse(x.rom:read("/a/0/5/7")),
+        scripts.widths, zones, maps, ver.scriptBands or Link.findBands(x.rom))
+      for k, v in pairs(self.map_scripts or {}) do if pool[k] == nil then pool[k] = v end end
+      self.map_scripts = pool
+      print(("[relink] script pool relinked: %d instructions, %d named"):format(rep.instructions, rep.named))
+      -- ...and the import-time constants a relinked command may read
+      self.constants = self.constants or {}
+      self.constants.gen5Marts = self.constants.gen5Marts or require("src.import.Gen5Marts").build(x)
+      x.rom:close()
+    end)
+    if not ok then print("[relink] FAILED " .. tostring(err)) end
+    return (table.unpack or unpack)(r)
+  end
+end
+
 -- CMD_TRACE="ecruteak|battle": print each script command whose name matches
 -- one of the |-separated patterns, with its operands, as it runs
 if os.getenv("CMD_TRACE") then

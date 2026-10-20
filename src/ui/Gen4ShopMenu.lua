@@ -81,6 +81,17 @@ function Shop:line(n, fallback, ...)
   local hgss=info and info.family=='hgss'
   local bank=hgss and 435 or Shop.TEXT
   local args={...}
+  if info and info.family=='bw' then
+    -- BLACK / WHITE: the shop's own bank 423 ({VAR1} = slot 1, {CMD 02xx n}
+    -- = slot n + 1, so the slots line up with Platinum's argument order).
+    -- Platinum's bank number would print an unrelated Unova line here.
+    local entries={[3]=3,[4]=4,[5]=5,[6]=9,[7]=10,[10]=15,[18]=20,[19]=21,[20]=23,[21]=24}
+    if not entries[n] then return fallback end
+    T.buffer(self.game,unpack(args))
+    local text=T.resolve(self.game.data,423,entries[n],self.game)
+    if text then text=text:gsub("[\v\f]+","\n"):gsub("\n+$","") end
+    return (text and text~='') and text or fallback
+  end
   if hgss then
     -- HGSS overlay 31 uses bank 435, with different entry numbers.
     local entries={[1]=1,[2]=6,[3]=11,[4]=12,[5]=14,[6]=15,[7]=16,[8]=17,[9]=18,
@@ -109,6 +120,9 @@ function Shop:bagLine(n, fallback, ...)
   T.buffer(self.game, ...)
   local info=require('src.core.GameVersion').info()
   local hgss=info and info.family=='hgss'
+  -- Black / White's selling lines are not in bank 7; its English fallbacks
+  -- are right where Platinum's bank number would print a story line
+  if info and info.family=='bw' then return fallback end
   local text = T.resolve(self.game.data, hgss and 10 or Shop.BAG_TEXT, hgss and n+2 or n, self.game)
   if text then text = text:gsub("[\v\f]+", "\n") end
   return text or fallback
@@ -124,7 +138,9 @@ function Shop.new(game, stock, onQuit, goods, opts)
     mode = 'menu', cursor = 1, scroll = 0, camStep = 0, camAcc = 0, yesNo = 1 }, Shop)
   self.message = self:line(0, 'Welcome!\nHow may I serve you?')
   local info=require('src.core.GameVersion').info()
-  if info and info.family=='hgss' then
+  -- `opts.direct`: Black / White's counter script asks BUY / SELL / SEE YA
+  -- itself (shared script 871) and opens this straight on the list, as HGSS
+  if (info and info.family=='hgss') or (opts and opts.direct) then
     -- HGSS's field script already asks BUY / SELL / SEE YA. MartBuy
     -- launches the purchase list directly, not a second context menu.
     self.direct=true;self.mode='buy';self.message=nil
@@ -590,6 +606,18 @@ function Shop:drawMoney()
     Font.draw(text, 8 + 72 - 8 - Font.width(text), 8)
     return
   end
+  -- Black / White's counter screen has its own money box (src/import/Gen5ShopArt.lua)
+  local art = self.game.data.gen4_shop_art
+  local box = self:counterUp() and art and art.money
+  if box then
+    local label, amount = self:line(18, 'Money'), self:line(19, '$' .. tostring(self.game.save.money or 0),
+      tostring(self.game.save.money or 0))
+    Font.pushStyle(art.ink and art.ink.money or { text = { 1, 1, 1 }, shadow = { 0, 0, 0 } })
+    Font.draw(label, box.labelX, box.labelY)
+    Font.draw(amount, box.amountRight - Font.width(amount), box.amountY)
+    Font.popStyle()
+    return
+  end
   require('src.ui.Gen4MoneyWindow').draw({ left = 1, top = 1, tilesW = 9, tilesH = 4,
     label = self:line(18, 'Money'), amount = self:line(19, '$' .. tostring(self.game.save.money or 0),
       tostring(self.game.save.money or 0)) })
@@ -634,6 +662,18 @@ function Shop:drawYesNo()
 end
 
 function Shop:drawList()
+  local ink = (self.game.data.gen4_shop_art or {}).ink
+  if ink and ink.list then
+    Font.pushStyle(ink.list)
+    local ok, err = pcall(self.drawListRows, self)
+    Font.popStyle()
+    if not ok then error(err, 0) end
+    return
+  end
+  return self:drawListRows()
+end
+
+function Shop:drawListRows()
   local g = love.graphics
   local rows = self:rows()
   local chosen = self.mode == 'quantity' or self.mode == 'confirm'

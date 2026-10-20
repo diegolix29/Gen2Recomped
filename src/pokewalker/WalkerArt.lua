@@ -180,14 +180,52 @@ local function speciesByDex(entry)
   return hit or nil
 end
 
+-- Exact imported-ROM roster, never a generation-wide guessed dex range.
+-- Also shared by the launcher games so ROM hacks retain their own species.
+function A.roster(version)
+  for _, entry in ipairs(FRONTS) do
+    if entry[1] == version then
+      local mons = loadData(entry, "pokemon")
+      local out, seen = {}, {}
+      for key, rec in pairs(type(mons) == "table" and mons or {}) do
+        local dex = type(rec) == "table" and tonumber(rec.dex)
+        -- DS personal records use national-dex keys instead of a dex field.
+        -- Extra personal records after the national roster are alternate forms.
+        if not dex and type(rec)=="table" and entry[2]>=4 then
+          local id=tonumber(key);local limit=entry[2]==4 and 493 or 649
+          if id and id>0 and id<=limit then dex=id end
+        end
+        if dex and dex > 0 and not seen[dex] then
+          seen[dex] = true
+          local b=rec.baseStats or {}
+          local bst=(b.hp or 0)+(b.attack or 0)+(b.defense or 0)+(b.speed or 0)
+            +(b.spatk or b.spAttack or 0)+(b.spdef or b.spDefense or 0)
+          out[#out+1]={dex=dex,name=rec.name or ("#"..dex),level=5,
+            group=bst>=500 and "A" or bst>=350 and "B" or "C"}
+        end
+      end
+      table.sort(out,function(a,b)return a.dex<b.dex end)
+      return out
+    end
+  end
+  return {}
+end
+
+local function entriesFor(list, version)
+  if not version then return list end
+  -- An explicit source never borrows another ROM's art.
+  for _,entry in ipairs(list) do if entry[1]==version then return {entry} end end
+  return {}
+end
+
 -- two frames stacked: the same bounce for every facing
 local BOUNCE = { down = { 0, 1 }, up = { 0, 1 }, left = { 0, 1 }, right = { 0, 1 } }
 
 -- the walking sheet: image, frame w, frame h, facings ({ down = {2,3,2}, ... }),
 -- and the version it came from
-function A.walk(dex, shiny)
+function A.walk(dex, shiny, version)
   if not dex then return nil end
-  for _, entry in ipairs(WALKS) do
+  for _, entry in ipairs(entriesFor(WALKS, version)) do
     if entry[2] == 4 then
       local d = loadData(entry, "gen4_follow_mon")
       local idx = d and d.sheets and d.lut and d.lut[dex]
@@ -213,9 +251,9 @@ function A.walk(dex, shiny)
 end
 
 -- the front portrait of the highest generation that has it (+ its version)
-function A.front(dex, shiny)
+function A.front(dex, shiny, version)
   if not dex then return nil end
-  for _, entry in ipairs(FRONTS) do
+  for _, entry in ipairs(entriesFor(FRONTS, version)) do
     if entry[2] >= 4 then
       local d = loadData(entry, "gen4_species_sprites")
       local rec = d and d.species and d.species[dex]
@@ -240,9 +278,9 @@ end
 function A.bounds(img) return cache.boxes[img] end
 
 -- the menu icon (two frames stacked in one image) and its frame height
-function A.icon(dex)
+function A.icon(dex, version)
   if not dex then return nil end
-  for _, entry in ipairs(FRONTS) do
+  for _, entry in ipairs(entriesFor(FRONTS, version)) do
     if entry[2] >= 4 then
       local d = loadData(entry, "gen4_species_sprites")
       local icons = d and d.icons and d.icons.bySpecies

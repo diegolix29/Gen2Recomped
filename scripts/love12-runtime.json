@@ -1,0 +1,12 @@
+{
+  "version": "12.0-development",
+  "repository": "love2d/love",
+  "commit": "b7daef0f7c1dc5888090f5d5b22d4eaf4ffd1d87",
+  "workflow_run": 35517017483,
+  "artifact_id": 10607357662,
+  "artifact_sha256": "40378d79d84c1fdea9394b2b03a8b09c4bed5190f1e6fc2a38f6bba49c31f606",
+  "download_url": "https://nightly.link/love2d/love/actions/artifacts/10607357662.zip",
+  "upstream_metadata": "https://api.github.com/repos/love2d/love/actions/artifacts/10607357662",
+  "artifact_expires": "2026-12-19",
+  "portable_member": "love-12.0-win64.zip"
+}

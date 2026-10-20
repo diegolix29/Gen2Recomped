@@ -197,6 +197,11 @@ local function groundAt(map, cellX, cellY, elev, px, py)
   -- this, crossing into such a map hoisted the walker tree-high for
   -- exactly one step -- the "hops like a ledge" seam bug.
   if not map:inBounds(cellX, cellY) then return 0 end
+  -- Cold neighbours are queued, not analysed by a render-time height query.
+  if Gen3.mapIsGen3(map) and not Gen3.peekMap(map)
+     and not (ChunkMesher.pair(map, false) or ChunkMesher.pair(map, true)) then
+    return 0
+  end
   local shapes = TileShape.forMap(map)
   -- the same full resolution the mesher draws with, NOT the raw tile table:
   -- on Gen 2 map:cellTile answers a COLLISION CLASS rather than a tile id,
@@ -1024,7 +1029,7 @@ function VoxelScene.prefetch(state)
   end
   if liveKey ~= lastLiveKey then
     lastLiveKey = liveKey
-    ChunkMesher.setLive(live)
+    ChunkMesher.setLive(live, state.map.id)
     -- RED++ bakes one atlas per map, so its animated copy is per map too
     -- and is bounded by the same neighbourhood
     TerrainAtlas.setLive(live)
@@ -1114,16 +1119,22 @@ function VoxelScene.prefetch(state)
   -- does not grow a tree wall through the map the player is standing on,
   -- which would be a worse one.
   local nbMesh, nbWater = {}, {}
+  local p=state.player
+  local px,py=(p and p.px or 0)+8,(p and p.py or 0)+8
   for i, nb in ipairs(state.neighbors or {}) do
     local nbMasks = VoxelScene.masksFor(nb.map, state)
+    local blockPx=tonumber(nb.map.def.blockPx) or (tonumber(nb.map.tileset.blockTiles) or 4)*8
+    local dx=math.max(nb.ox-px,0,px-nb.ox-nb.map.def.width*blockPx)
+    local dy=math.max(nb.oy-py,0,py-nb.oy-nb.map.def.height*blockPx)
+    local distance=dx*dx+dy*dy
     if nbMasks then
-      ChunkMesher.request(nb.map, false, nbMasks)
+      ChunkMesher.request(nb.map, false, nbMasks, false, distance)
       nbMesh[i], nbWater[i] = ChunkMesher.pair(nb.map, false)
       if not nbMesh[i] then
         nbMesh[i], nbWater[i] = ChunkMesher.pair(nb.map, true)
       end
     else
-      ChunkMesher.request(nb.map, true)
+      ChunkMesher.request(nb.map, true, nil, false, distance)
       nbMesh[i], nbWater[i] = ChunkMesher.pair(nb.map, true)
     end
   end
@@ -1516,8 +1527,10 @@ local function posesOf(state, spriteColors)
     -- conditionally would leave it a frame behind every time it reappeared.
     local sprite, vx, vy, facing, phase, flip = g.npc:pose()
     sprite=V.require('PolishedFruitSprite').sprite(g.map or state.map,g.npc,sprite)
-    if not castHides(g.npc) then
-      local gmap = g.map or state.map
+    local gmap = g.map or state.map
+    local ready = not Gen3.mapIsGen3(gmap)
+      or ChunkMesher.pair(gmap, false) or ChunkMesher.pair(gmap, true)
+    if ready and not castHides(g.npc) then
       posed[#posed + 1] = {
         sprite = sprite, px = vx + g.ox, py = g.npc.py + g.oy,
         facing = facing, phase = phase, flip = flip,

@@ -34,6 +34,14 @@ function B.settle(S)
   local base=(S.runs[key] and S.runs[key].h) or (shape and shape.h) or p.base
   local delta=base-p.base
   for i=p.first,p.last do for j=1,4 do S.objectQuads[i][j][2]=S.objectQuads[i][j][2]+delta end end
+  -- Ground and model must share the doorstep datum. Earlier stamps may be
+  -- shared by every footprint tile; give civic plots their settled floor
+  -- explicitly so the foliage clump heuristic cannot lower it afterwards.
+  S.civicFloor=S.civicFloor or {}
+  for y=p.ty,p.ty+p.height-1 do for x=p.tx,p.tx+p.width-1 do
+   local k=(y+64)*4096+x+64
+   S.civicFloor[k]=base
+  end end
   p.base=base
  end
 end

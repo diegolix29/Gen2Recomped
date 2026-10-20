@@ -16,26 +16,11 @@
 
 local editorMode = os.getenv("POKEPORT_EDITOR") == "1" or POKEPORT_EDITOR_MODE == true
 
--- Safely require advanced modules (prevents crashes if Gen 2 branch lacks them)
-local hasSwitch, SwitchDiagnostics = pcall(require, "src.debug.SwitchDiagnostics")
-local hasLaunch, LaunchOptions = pcall(require, "src.core.LaunchOptions")
-local hasNx, NxDisplay = pcall(require, "src.core.NxDisplay")
-
--- Lua errors: persist a redacted trace in the save dir and surface a hint.
-do
-  local defaultErrorHandler = love.errorhandler
-  function love.errorhandler(msg)
-    local hint = nil
-    if hasSwitch and SwitchDiagnostics.logLuaError then
-      pcall(function() hint = SwitchDiagnostics.logLuaError(msg) end)
-    end
-    if hint and type(msg) == "string" then
-      msg = msg .. "\n\n" .. hint
-    end
-    if defaultErrorHandler then
-      return defaultErrorHandler(msg)
-    end
-  end
+-- The pinned engine preview is a separate test channel. Stable self-update
+-- payloads must not replace its runtime compatibility changes underneath it.
+if love.filesystem.getInfo("love12_preview.lua", "file") then
+  _G.POKEPORT_LOVE12_PREVIEW = true
+  _G.POKEPORT_NOTIFY_ONLY_UPDATES = true
 end
 
 local Game, EditorApp, Importer, TouchEditor
@@ -899,12 +884,7 @@ function love.touchpressed(id, x, y, dx, dy, pressure)
     if love.system.getOS() == "iOS" then return end
     return TouchEditor.touchpressed(id, x, y)
   end
-  if Importer then
-    if Importer.touchpressed then return Importer:touchpressed(id, x, y, dx, dy, pressure) end
-    -- Fallback for Gen 2 style core
-    if love.system.getOS() == "iOS" then return end
-    return Importer:mousepressed(x, y, 1)
-  end
+  if Importer then return Importer:touchpressed(id,x,y,dx,dy,pressure) end
   if not Game then return end
   Game:touchpressed(id, x, y)
 end
@@ -918,7 +898,7 @@ function love.touchmoved(id, x, y, dx, dy, pressure)
     if love.system.getOS() == "iOS" then return end
     return TouchEditor.touchmoved(id, x, y)
   end
-  if Importer then return end
+  if Importer then return Importer:touchmoved(id,x,y,dx,dy,pressure) end
   if not Game then return end
   Game:touchmoved(id, x, y)
 end
@@ -932,7 +912,7 @@ function love.touchreleased(id, x, y, dx, dy, pressure)
     if love.system.getOS() == "iOS" then return end
     return TouchEditor.touchreleased(id, x, y)
   end
-  if Importer then return end
+  if Importer then return Importer:touchreleased(id,x,y,dx,dy,pressure) end
   if not Game then return end
   Game:touchreleased(id, x, y)
 end
@@ -971,7 +951,9 @@ function love.mousepressed(x, y, button, istouch)
     return TouchEditor.mousepressed(x, y, button)
   end
   if Importer then
-    if istouch and (love.system.getOS() == "Android" or love.system.getOS() == "iOS") then return end
+    -- Native touch callbacks own the complete gesture on Android and iOS.
+    -- Keep real USB/Bluetooth mouse input working on either platform.
+    if istouch then return end
     return Importer:mousepressed(x, y, button)
   end
   if editorMode and EditorApp.mousepressed then

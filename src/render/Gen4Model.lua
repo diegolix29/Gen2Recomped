@@ -305,7 +305,7 @@ local shaderCuts = false
 
 local function ensureShader()
   if shader ~= nil then return shader or nil end
-  local ok, made = pcall(love.graphics.newShader, SHADER)
+  local ok, made = pcall(love.graphics.newShader, require("src.render.ClipSpaceCompat").shader(SHADER))
   if ok and made then
     shader, shaderCuts = made, true
     return shader
@@ -314,7 +314,7 @@ local function ensureShader()
               .. "compile (%s) -- falling back to the plain one, so models "
               .. "still draw but nothing will occlude a sprite",
               tostring(made))
-  local plainOk, plain = pcall(love.graphics.newShader, SHADER_NO_CUT)
+  local plainOk, plain = pcall(love.graphics.newShader, require("src.render.ClipSpaceCompat").shader(SHADER_NO_CUT))
   if not plainOk or not plain then
     Logger.error("gen4 model: the mesh shader would not compile (%s); "
                  .. "no 3D model will draw", tostring(plain))

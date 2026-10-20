@@ -2096,6 +2096,7 @@ end
 -- whose id reappeared first.  On a mod-free save every membership test
 -- passes and the save comes back untouched.
 function SaveData.validate(save, data)
+  Boxes.load(data) -- validate slots against this cartridge, never a prior preview
   local report = { lostMons = {}, lostItems = {}, remappedMaps = {},
                    restoredMons = {}, restoredItems = {} }
   -- the clock, in the one shape the rest of the engine can do arithmetic on

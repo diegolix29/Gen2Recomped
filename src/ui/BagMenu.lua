@@ -440,8 +440,10 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
       end
       if #target.moves < 4 then
         table.insert(target.moves, { id = moveId, pp = mdef.pp })
-        showMessages(game, { Strings("%s learned\n%s!", target.nickname or
-          game.data.pokemon[target.species].name, mdef.name) })
+        local who = target.nickname or game.data.pokemon[target.species].name
+        -- Black / White's own line (src/ui/Gen5MoveLearnMenu.lua), else this one
+        showMessages(game, { require("src.ui.Gen5MoveLearnMenu").learnedLine(game, who, mdef.name)
+          or Strings("%s learned\n%s!", who, mdef.name) })
         if result == "learn" then consume(game, id) end
         taught()
       else
@@ -685,7 +687,8 @@ local function useOn(game, battle, id, target, list, moveIndex, picker)
             if #target.moves < 4 then
               table.insert(target.moves, { id = moveId, pp = mdef.pp })
               local name = target.nickname or def.name
-              showMessages(game, { Strings("%s learned\n%s!", name, mdef.name) },
+              showMessages(game, { require("src.ui.Gen5MoveLearnMenu").learnedLine(game, name, mdef.name)
+                                   or Strings("%s learned\n%s!", name, mdef.name) },
                            nextStep)
             else
               require("src.ui.Screens").push(game, "MoveLearnMenu",

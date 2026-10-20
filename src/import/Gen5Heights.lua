@@ -35,6 +35,13 @@ function H.valueAt(raw, t)
   return u16(raw, at + 2), raw:byte(at + 7) % 2 == 1
 end
 
+-- a SLOPED tile: bytes 0-1 name a normal (non-zero), so it has no flat value
+function H.isSlope(raw, t)
+  local at = 4 + t * 8
+  if #raw < at + 8 then return false end
+  return raw:byte(at + 1) ~= 0 or raw:byte(at + 2) ~= 0
+end
+
 local function mode(counts)
   local best, n = nil, 0
   for v, c in pairs(counts) do

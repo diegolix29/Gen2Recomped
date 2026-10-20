@@ -13,7 +13,7 @@ end,draw=function(mesh) drawn[#drawn+1]=mesh end},data={unpack=function(_,data,p
 end}}
 local libs={};local V={}
 V.require=function(name)
- if name=='BuildBudget' then return {check=function()end} end
+ if name=='BuildBudget' then return {check=function()end,own=function(o)return o end,disown=function()end} end
  if not libs[name] then libs[name]=assert(loadfile('mods/DRAMATIC_SHAPE/lib/'..name..'.lua'))(V) end
  return libs[name]
 end
@@ -67,4 +67,52 @@ check(not budget.covered(setmetatable({alpha=function()return 1 end},battle),tra
 check(not budget.covered(setmetatable({alpha=function()return .5 end},transition),transition),'visible fade keeps responsive budget')
 check(budget.covered(setmetatable({alpha=function()return 1 end},transition),transition),'opaque fade permits covered budget')
 check(not budget.covered(nil,transition),'absent overlay is visible')
+check(math.abs(budget.frameCost(1/60,.0015,.004,1/60)-.007)<1e-9,'VSync wait is not charged as world rendering work')
+check(budget.frameCost(.04,.005,.004,1/60)==.035,'over-budget frames retain conservative allowance')
+check(budget.frameCost(1/60,.0015,nil,1/60)> .015,'unmeasured hosts retain old timing fallback')
+-- A cancelled suspended job releases its allocations immediately.
+do
+ local Budget=assert(loadfile('mods/DRAMATIC_SHAPE/lib/BuildBudget.lua'))()
+ local owned, released={},0
+ local object={release=function()released=released+1 end}
+ local co=coroutine.create(function()Budget.own(object);Budget.check()end)
+ Budget.begin(co,-1,owned);assert(coroutine.resume(co));Budget.finish()
+ check(coroutine.status(co)=='suspended' and owned[object],'suspended allocation tracked')
+ Budget.release(owned)
+ check(released==1 and next(owned)==nil,'cancel releases resources without garbage collection')
+ local keep={release=function()error('completed allocation released')end}
+ co=coroutine.create(function()Budget.own(keep);Budget.disown(keep)end)
+ Budget.begin(co,1,owned);assert(coroutine.resume(co));Budget.finish();Budget.release(owned)
+ check(next(owned)==nil,'transferred allocations are disowned')
+end
+-- A civic model settles the entire foundation to the doorstep datum.
+do
+ local Civic=assert(loadfile('mods/DRAMATIC_SHAPE/lib/EmeraldBuildings.lua'))({})
+ local key=(12+64)*4096+10+64
+ local S={shapeAt={[key]={h=16}},runs={},objectQuads={{{0,0,0},{1,0,0},{1,1,0},{0,1,0}}},
+ civicPlacements={{door={10,12},tx=8,ty=4,width=8,height=8,first=1,last=1,base=0}}}
+ Civic.settle(S)
+ local same=true
+ for y=4,11 do for x=8,15 do same=same and S.civicFloor[(y+64)*4096+x+64]==16 end end
+ check(same and S.objectQuads[1][1][2]==16,'foundation and building settle together')
+ Civic.settle(S)
+ check(S.objectQuads[1][1][2]==16,'settling is idempotent')
+end
+-- Render queries retain a complete analysis throughout a sliced rebuild.
+do
+ local A=assert(loadfile('mods/DRAMATIC_SHAPE/lib/AnalysisCache.lua'))()
+ local cache,begin,clear=A.new();local old,new={},{}
+ cache.map=old
+ local co=coroutine.create(function()
+  local tx=begin('map');check(cache.map==nil,'rebuild starts with private cache miss')
+  cache.map=new;coroutine.yield();tx.commit()
+ end)
+ assert(coroutine.resume(co));check(cache.map==old,'render sees published analysis while rebuild is suspended')
+ assert(coroutine.resume(co));check(cache.map==new,'analysis commits atomically')
+ local cancelled
+ co=coroutine.create(function()cancelled=begin('map');cache.map={};coroutine.yield()end)
+ assert(coroutine.resume(co));cancelled.release()
+ check(cache.map==new,'cancel retains published analysis')
+ clear();check(cache.map==nil,'global invalidation clears published analysis')
+end
 print('Voxel chunk checks: '..n..' passed')

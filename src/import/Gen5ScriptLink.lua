@@ -221,7 +221,12 @@ L.ALIASES = {
   [0x0D0] = { "bwgetdate", "ww" }, [0x0D4] = { "bwgetbirthday", "ww" },
   [0x100] = { "checkpartypokerus", "w" },
   [0x075] = { "noop", "w" }, [0x23A] = { "noop", "ww" },
-  [0x103] = { "partycountnotegg", "ww", { 1 } }, [0x12F] = { "noop", "w" },
+  -- 0x12F <var>: the healing machine itself -- the nurse's subroutine (member
+  -- 855 @817) counts the party into the var with 0x103, runs 0x12F on it,
+  -- then heals (0x104). It is Platinum's playpokecenterhealinganimation:
+  -- the balls going in one by one and the Pokemon Center jingle.
+  [0x103] = { "partycountnotegg", "ww", { 1 } },
+  [0x12F] = { "playpokecenterhealinganimation", "w" },
   -- THE FLOATING WINDOWS: 0x03A <message, x, y, window> prints a line in a
   -- small window of its own at a tile position -- the crowd's murmurs
   -- around Ghetsis (`03A 000A 20 10 1`, `03A 000B 22 15 2`, then a wait for
@@ -311,12 +316,23 @@ L.ALIASES = {
   --        the doors' and the car's animations and their wait
   [0x0B2] = { "bwmenuopen", "bbwbw" }, [0x0AF] = { "addmenuentry", "www", { 1, 3 } },
   [0x0B0] = { "showmenu", "" },
+  -- THE POKE MART COUNTER (shared script 871, src/script/Gen5MartCommands):
+  -- 0x149 <var shop, var result> the BUY list (shop 255 = the regular
+  -- counter by badges, else a second clerk's specialty), 0x14E <u16, var,
+  -- var> the Bag in sell mode
+  [0x149] = { "bwpokemart", "ww" }, [0x14E] = { "bwmartsell", "www" },
+  -- THE PC (behaviour 0xD6 -> shared script 10090, member 868): 0x0B1 shows
+  -- the menu 0x0B2 / 0x0AF built (no operands -- the list form of 0x0B0),
+  -- and 0x14F <var, mode> opens the boxes in the mode the second menu
+  -- picked (0 deposit, 1 withdraw, 2 move, 3 items, 4 the Battle Box)
+  [0x0B1] = { "showmenu", "" }, [0x14F] = { "bwopenstorage", "ww" },
   [0x1CB] = { "bwelevator", "d" }, [0x1CC] = { "bwelevatorfloors", "" },
   [0x1CD] = { "bwelevatorpick", "w" }, [0x0A7] = { "bwelevatorwarp", "" },
   [0x1AE] = { "noop", "" }, [0x1AD] = { "noop", "" }, [0x1B1] = { "noop", "" },
-  -- 0x155 <caller>: the Xtransceiver's caller picture, between 0x14B (the
-  -- call opens) and 0x14A (it closes) -- Route 4's call is caller 6
-  [0x155] = { "noop", "w" },
+  -- 0x155 <call>: the Xtransceiver call itself (overlay 174, the call's
+  -- people and lines in /a/1/3/1 -- src/script/Gen5XtransceiverCommands.lua),
+  -- between 0x14B and 0x14A; calls 1..6
+  [0x155] = { "bwxtcall", "w" },
   -- 0x13D / 0x13E: the bracket round a long arrival scene (Nimbasa's
   -- Bianca and her father: 13D first, 13E just before the release) --
   -- nothing in between reads what they set

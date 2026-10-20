@@ -51,7 +51,7 @@ local Cache = {
 -- r2: the Gen 3 atlas was relaid from 16x16 metatile cells to 8px tiles, which
 -- changes the meaning of every stored UV. Bumped so the r1 directory is
 -- ignored outright rather than half-trusted; it can be deleted at leisure.
-local GEOM_REV = "dsvx-160-r3"
+local GEOM_REV = "dsvx-160-r4"
 local DIR = "dramatic_shape_voxel_cache/" .. GEOM_REV
 local FLOATS_PER_VERTEX = 6
 local BYTES_PER_VERTEX = FLOATS_PER_VERTEX * 4
@@ -298,7 +298,8 @@ local function shapeSignature()
 end
 
 local function rulesSignature(map)
-  return table.concat({ pinsSignature(map), configSignature(),
+  local shared=V.sharedHulls and "shared-hulls-v1:" or ""
+  return shared..table.concat({ pinsSignature(map), configSignature(),
     Cache.rulesTag or "", shapeSignature() }, ",")
 end
 
@@ -462,6 +463,15 @@ function Cache.load(map, slot, masks)
     return false
   end
 
+  if V.sharedHulls then
+    local restored,err=pcall(V.require("ChunkMesher").restoreHulls,map,slot,masks,terrain)
+    if not restored then
+      if terrain then terrain:release()end
+      if water then water:release()end
+      Cache.errors=Cache.errors+1;Cache.lastError=tostring(err)
+      return false
+    end
+  end
   Cache.hits = Cache.hits + 1
   Cache.bytesLoaded = Cache.bytesLoaded
     + (terrainCount + waterCount) * BYTES_PER_VERTEX

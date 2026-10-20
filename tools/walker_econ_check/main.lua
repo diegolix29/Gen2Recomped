@@ -175,7 +175,12 @@ function love.load()
   check("bought Potion x5 (100 - 40 + 10 First purchase)", okB and buyer.watts == 70, buyer.watts)
   local f = io.open(SaveData.slotDiskPath(V, slot), "rb"); local saved = Ser.decode(f:read("*a")); f:close()
   local inbox = saved.walkerInbox
-  check("inbox holds the stack", inbox and inbox.items[1] and inbox.items[1].name == "Potion" and inbox.items[1].count == 5)
+  local D=require("src.pokewalker.WalkerDelivery");local definitions=assert(D.dataset(V))
+  local function itemAmount(save,name)
+    for id,n in pairs(save.inventory or {})do local def=definitions.items[id];if def and Shop.norm(def.name)==Shop.norm(name)then return n end end
+    return 0
+  end
+  check("purchase is in the bag immediately",itemAmount(saved,"Potion")==5 and not inbox)
   buyer.watts = 5000
   local offer = Shop.stock(V, E.day())[1]
   okB, why = E.buyPokemon(buyer, offer, target)
@@ -189,7 +194,8 @@ function love.load()
     check("once a week", E.buyGift(buyer, gift, target) == false)
   end
   f = io.open(SaveData.slotDiskPath(V, slot), "rb"); saved = Ser.decode(f:read("*a")); f:close()
-  check("inbox holds the Pokemon", #saved.walkerInbox.mons >= 1 and saved.walkerInbox.mons[1].species == offer.dex, #saved.walkerInbox.mons)
+  local caught=0;for _,box in ipairs(saved.boxes or {})do for _,mon in pairs(box)do if type(mon)=="table" and mon.species==offer.dex then caught=caught+1 end end end
+  check("purchased Pokemon is boxed immediately",caught>=1 and not saved.walkerInbox,caught)
   check("purchases counted", buyer.econ.counters.purchases == (gift and 3 or 2) and buyer.econ.done.buy1)
   okB = E.buyCosmetic(buyer, "theme", "night")
   check("cosmetic bought and in use", okB and E.using(buyer, "theme") == "night")
@@ -211,9 +217,9 @@ function love.load()
   E.grantItem(wst, "Ultra Ball", 3, "test")
   Link.bringHome(wst, false)
   f = io.open(SaveData.slotDiskPath(V, slot), "rb"); saved = Ser.decode(f:read("*a")); f:close()
-  local r = saved.walkerInbox.returning[1]
-  check("returning carries bonus EXP and friendship", r and r.bonusExp == 100 and r.friendship == 100, r and r.bonusExp)
-  check("granted stack goes home", saved.walkerInbox.items[#saved.walkerInbox.items].count == 3)
+  local returned=saved.boxes[1][1]
+  check("returning friendship applied immediately",returned and returned.happiness==100 and not saved.walkerInbox)
+  check("granted stack goes home",itemAmount(saved,"Ultra Ball")==3)
 
   -- WalkerInbox: stacks keep their count; "POKé BALL" now matches
   local okI, items = pcall(dofile, (os.getenv("DATA") or "G:/Gen2Recomped") .. "/crystal/data/generated/items.lua")
@@ -239,5 +245,5 @@ function love.load()
   if os.getenv("OUT") then
     local o = io.open(os.getenv("OUT"), "wb"); if o then o:write(table.concat(log, "\n") .. "\n"); o:close() end
   end
-  love.event.quit()
+  love.event.quit(fail==0 and 0 or 1)
 end

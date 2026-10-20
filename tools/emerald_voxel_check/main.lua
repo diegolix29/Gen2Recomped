@@ -35,6 +35,13 @@ function love.load()
     local x,y=t.position[1],t.position[2]
     for dy=0,7 do for dx=0,7 do assert(S.skip[(y+dy+64)*4096+x+dx+64],"civic model not claimed "..id.." "..t.name.." "..x..","..y.." tile "..dx..","..dy)end end
    end
+   for _,p in ipairs(S.civicPlacements or {})do
+    for y=p.ty,p.ty+p.height-1 do for x=p.tx,p.tx+p.width-1 do
+     local k=(y+64)*4096+x+64
+     assert(S.civicFloor[k]==p.base,"civic floor differs from settled building base "..id)
+     assert(V.require("Structures").stampGround(m,x,y)==p.base,"civic height accessor differs "..id)
+    end end
+   end
    local pixels=V.require("Gen3").atlasDataForTileset(m.tileset)
    local pw,ph=pixels:getDimensions()
    for _,placement in ipairs(S.civicPlacements or {})do

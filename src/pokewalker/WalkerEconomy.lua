@@ -425,6 +425,12 @@ local function afford(st, price)
   return true
 end
 
+local function destination(st,target)
+  local source=st.walking and st.walking.source
+  if source and source.version and source.slot then return source end
+  return target
+end
+
 local function deliver(target, parcel)
   if not (target and target.version and target.slot) then return false, "choose a game and save first" end
   local Link = require("src.pokewalker.WalkerLink")
@@ -450,6 +456,7 @@ function E.stockKey(version, dex, day) return ("mon:%d:%s:%d"):format(day or E.d
 function E.giftKey(id, week) return ("gift:%d:%s"):format(week or weekOf(), tostring(id)) end
 
 function E.buyItem(st, entry, target)
+  target=destination(st,target)
   if not entry then return false, "nothing chosen" end
   if Shop.genOf(target and target.version) < (entry.gen or 1) then return false, "that game does not have it" end
   local ok, why = afford(st, entry.price)
@@ -457,10 +464,11 @@ function E.buyItem(st, entry, target)
   ok, why = deliver(target, { items = { { name = entry.name, count = entry.count } } })
   if not ok then return false, why end
   pay(st, entry.price, (entry.count or 1) > 1 and ("%s x%d"):format(entry.name, entry.count) or entry.name)
-  return true
+  return true,why
 end
 
 function E.buyPokemon(st, offer, target)
+  target=destination(st,target)
   if not offer then return false, "nothing chosen" end
   local Courses = require("src.pokewalker.WalkerCourses")
   if offer.dex > Courses.maxDexFor(target and target.version) then return false, "that game does not have it" end
@@ -473,10 +481,11 @@ function E.buyPokemon(st, offer, target)
   if not ok then return false, why end
   E.econ(st).bought[key] = true
   pay(st, offer.price, ("%s Lv%d"):format(offer.name, offer.level))
-  return true
+  return true,why
 end
 
 function E.buyGift(st, gift, target)
+  target=destination(st,target)
   if not gift then return false, "nothing chosen" end
   if Shop.genOf(target and target.version) < (gift.gen or 1) then return false, "that game cannot receive it" end
   pruneBought(st)
@@ -497,12 +506,13 @@ function E.buyGift(st, gift, target)
   if not ok then return false, why end
   E.econ(st).bought[key] = true
   pay(st, gift.price, "Mystery Gift: " .. what)
-  return true
+  return true,why
 end
 
 -- THE EVENTS SHELF (src/pokewalker/WalkerEvents.lua): a real distribution,
 -- once per save, queued into the target save for the game to hand over
 function E.buyEvent(st, ev, target)
+  target=destination(st,target)
   if not ev then return false, "nothing chosen" end
   if not (target and target.version and target.slot) then return false, "choose a game and save first" end
   local ok, why = afford(st, ev.price)
@@ -510,7 +520,7 @@ function E.buyEvent(st, ev, target)
   ok, why = require("src.pokewalker.WalkerEvents").queue(target.version, target.slot, ev)
   if not ok then return false, why end
   pay(st, ev.price, "Event: " .. tostring(ev.name))
-  return true
+  return true,why
 end
 
 -- cosmetics: kind theme / shell / sound, or course (an event course id)

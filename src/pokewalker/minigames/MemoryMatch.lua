@@ -45,7 +45,7 @@ function M.new(ctx, purse)
   local pool, seen = {}, {}
   local function add(dex, name)
     dex = tonumber(dex)
-    if dex and not seen[dex] and #pool < M.PAIRS and (not ctx.hasArt or ctx.hasArt(dex)) then
+    if dex and (not ctx.version or ctx.speciesSet[dex]) and not seen[dex] and #pool < M.PAIRS and (not ctx.hasArt or ctx.hasArt(dex)) then
       seen[dex] = true
       pool[#pool + 1] = { dex = dex, name = name }
     end
@@ -59,7 +59,12 @@ function M.new(ctx, purse)
   -- headless or nothing imported: numbered cards still play
   local n = 1
   while #pool < M.PAIRS do
-    if not seen[n] then seen[n] = true; pool[#pool + 1] = { dex = n } end
+    if ctx.version then
+      -- Tiny/custom ROM rosters can repeat art across distinct card pairs;
+      -- never fill their board with species from an unrelated ROM.
+      local mon=ctx.wild[(n-1)%#ctx.wild+1]
+      pool[#pool+1]={dex=mon.dex,name=mon.name}
+    elseif not seen[n] then seen[n] = true; pool[#pool + 1] = { dex = n } end
     n = n + 1
   end
   local cards = {}

@@ -218,7 +218,8 @@ apply_ios_branding() {
 }
 
 apply_ios_icon() {
-  local source="$ROOT/assets/logo/gen2logo.png"
+  # square and without alpha (tools/make_icons.py): iOS fills transparency black
+  local source="$ROOT/icons/icon-opaque.png"
   local target="$XCODE_DIR/Images.xcassets/iOS AppIcon.appiconset"
   [ -f "$source" ] || fail "missing iOS icon source: $source"
   [ -d "$target" ] || fail "missing iOS app icon set: $target"

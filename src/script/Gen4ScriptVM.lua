@@ -4198,6 +4198,9 @@ require("src.script.Gen5Stadium").install(L)
 require("src.script.Gen5Musical").install(L)
 -- HGSS's MartSell (0x30E): src/script/HgssMartCommands.lua
 require("src.script.HgssMartCommands").install(L)
+-- Black / White's Poke Mart counter (0x149 BUY, 0x14E SELL):
+-- src/script/Gen5MartCommands.lua
+require("src.script.Gen5MartCommands").install(L)
 -- HGSS phone rematches (GetPhoneBookRematch / ScrCmd_462): src/script/HgssPhoneRematch.lua
 require("src.script.HgssPhoneRematch").install(L)
 -- HGSS trainers offering their number (LoadPhoneDat / GetPhoneContactMsgIds /

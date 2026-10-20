@@ -51,9 +51,15 @@ function Rewrap.unwindAll()
   local r = registry()
   for i = #r, 1, -1 do
     local e = r[i]
-    if rawget(e.tbl, e.name) == e.wrapper then e.tbl[e.name] = e.orig end
+    if e.cleanup then e.cleanup()
+    elseif rawget(e.tbl, e.name) == e.wrapper then e.tbl[e.name] = e.orig end
     r[i] = nil
   end
+end
+
+function Rewrap.onUnwind(cleanup)
+  local r = registry()
+  r[#r + 1] = { cleanup = cleanup }
 end
 
 -- specs: a list of { table, flagKey, { functionName, ... } }.

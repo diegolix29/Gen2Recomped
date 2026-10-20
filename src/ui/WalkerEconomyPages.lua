@@ -179,6 +179,8 @@ function M.install(P)
 
   -- where purchases go: the last chosen, else the walking Pokemon's game
   function P:shopTarget()
+    local src=self.st.walking and self.st.walking.source
+    if src and src.version and src.slot then return {version=src.version,slot=src.slot} end
     local e = E.econ(self.st)
     local t = e.shopTarget
     if not (t and t.version and t.slot) then
@@ -189,6 +191,10 @@ function M.install(P)
   end
 
   function P:chooseShopTarget()
+    if self.st.walking and self.st.walking.source then
+      self:say("Purchases go to the walking Pokemon's game and save. Bring it home before choosing another save.")
+      return
+    end
     self._hasSaves = {}
     self.pickFor = function(version, slot)
       E.econ(self.st).shopTarget = { version = version, slot = slot }
@@ -273,7 +279,7 @@ function M.install(P)
     self:button(mx + 40 + bw, by, bw, bh, "Buy", function()
       self.shopConfirm = nil
       local ok, why = c.fn()
-      if ok then self:say("Done! " .. (c.done or "")) else self:say("Could not: " .. tostring(why)) end
+      if ok then self:say(why or ("Done! " .. (c.done or ""))) else self:say("Could not: " .. tostring(why)) end
     end, "accent", f.body)
   end
 
@@ -376,7 +382,7 @@ function M.install(P)
           product(self, f, cx, cy, cw, ch, {
             name = label, price = it.price, sub = cat, affordable = (st.watts or 0) >= it.price,
             onTap = function()
-              self:confirmBuy(("%s for %s. It will be in the bag the next time you play."):format(label, gameName(target.version)),
+              self:confirmBuy(("%s for %s. It goes into that save's bag."):format(label, gameName(target.version)),
                 entry.price, cy, function() return E.buyItem(st, entry, target) end)
             end })
           k = k + 1
@@ -394,7 +400,7 @@ function M.install(P)
     local y0 = y
     local stock = Shop.stock(target.version, E.day())
     g.setFont(f.small); setc(DIM)
-    g.printf(("Today's Pokemon for %s -- new ones every day at midnight. Each goes to the PC the next time you play."):format(gameName(target.version)), x + 4, y, w - 8)
+    g.printf(("Today's Pokemon for %s -- new ones every day at midnight. Each goes straight into that save's PC."):format(gameName(target.version)), x + 4, y, w - 8)
     y = y + wrapH(f.small, "x", w) * 2 + 10
     if #stock == 0 then
       g.setFont(f.body); setc(DIM)

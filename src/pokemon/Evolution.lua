@@ -420,7 +420,8 @@ function Evolution.learnEvolutionMoves(game, mon, onDone)
       table.insert(mon.moves, { id = moveId, pp = mdef.pp })
       Runtime.emit("pokemon.move_learned", { mon = mon, moveId = moveId })
       game.stack:push(TextBox.new(game,
-        Strings("%s learned\n%s!", name, mdef.name), nextStep))
+        require("src.ui.Gen5MoveLearnMenu").learnedLine(game, name, mdef.name)
+          or Strings("%s learned\n%s!", name, mdef.name), nextStep))
     else
       -- LearnMoveFromLevelUp with a full moveset: the forget UI
       Screens.push(game, "MoveLearnMenu", mon, moveId, nextStep)

@@ -2688,7 +2688,7 @@ local spriteShader, spriteMesh
 
 local function ensureSprite()
   if spriteShader == nil then
-    local ok, made = pcall(love.graphics.newShader, SPRITE_SHADER)
+    local ok, made = pcall(love.graphics.newShader, require("src.render.ClipSpaceCompat").shader(SPRITE_SHADER))
     spriteShader = (ok and made) or false
     if not spriteShader then
       Logger.error("gen4 ground: the sprite shader would not compile (%s) -- "
@@ -4600,7 +4600,47 @@ end
 -- The one height to stand on at an exact point. Falls back to the TILE's
 -- answer when no plate covers the point -- which keeps the unplated-tile
 -- neighbour rule in `heightAt` rather than growing a second copy of it here.
+-- BLACK / WHITE'S STAIRS AND HILLS: a slope tile (def.gen5SlopeTiles, written
+-- by src/import/Gen5Field.lua) has no flat height of its own. Along each axis,
+-- walk the run of slope tiles to the flat tile at either end (its edit, or 0
+-- -- a flat tile with no edit is the floor) and ramp linearly from the near
+-- edge of one to the near edge of the other; the axis whose ends differ most
+-- is the slope's. Reported as "the player floats until they reach the bottom
+-- of the stairs then teleports to the height the stairs end".
+function Gen4Ground:bwSlopeHeight(px, py)
+  local def = self.def
+  local slopes = def and def.gen5SlopeTiles
+  if type(slopes) ~= "table" then return nil end
+  local tx, ty = math.floor(px / 16), math.floor(py / 16)
+  local function isSlope(x, y) return slopes[x .. "," .. y] end
+  if not isSlope(tx, ty) then return nil end
+  local edits = def.gen4HeightEdits or {}
+  local function flat(x, y) local v = edits[x .. "," .. y]; return type(v) == "number" and v or 0 end
+  local best, bestDiff
+  for _, axis in ipairs({ { 1, 0 }, { 0, 1 } }) do
+    local dx, dy = axis[1], axis[2]
+    local a, b = 0, 0
+    while a < 12 and isSlope(tx - dx * (a + 1), ty - dy * (a + 1)) do a = a + 1 end
+    while b < 12 and isSlope(tx + dx * (b + 1), ty + dy * (b + 1)) do b = b + 1 end
+    local ha = flat(tx - dx * (a + 1), ty - dy * (a + 1))
+    local hb = flat(tx + dx * (b + 1), ty + dy * (b + 1))
+    local diff = math.abs(hb - ha)
+    if diff > 0 and (not bestDiff or diff > bestDiff) then
+      -- the slope runs from the low edge of the run's first tile to the high
+      -- edge of its last, in pixels along this axis
+      local p = dx == 1 and px or py
+      local t0 = (dx == 1 and tx or ty) - a
+      local from, to = t0 * 16, (t0 + a + b + 1) * 16
+      local s = math.max(0, math.min(1, (p - from) / math.max(1, to - from)))
+      best, bestDiff = ha + (hb - ha) * s, diff
+    end
+  end
+  return best
+end
+
 function Gen4Ground:heightAtPixel(px, py)
+  local ramp = self.def and self.def.gen5SlopeTiles and self:bwSlopeHeight(tonumber(px) or 0, tonumber(py) or 0)
+  if ramp then return ramp end
   local list = self:heightsAtPixel(px, py)
   if list[1] then return list[1] end
   return (self:heightAt(math.floor((tonumber(px) or 0) / 16),

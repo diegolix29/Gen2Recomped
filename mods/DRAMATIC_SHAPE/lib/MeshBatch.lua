@@ -11,12 +11,14 @@ function Batch.new()
   local batch = { parts = {}, count = 0 }
   function batch:getVertexCount() return self.count end
   function batch:release()
-    for _, part in ipairs(self.parts) do part:release() end
+    if self.hullOwner then self.hullOwner:release();self.hullOwner=nil;self.stamps=nil end
+    for _, part in ipairs(self.parts) do part:release();Budget.check() end
     self.parts = {}; self.count = 0
   end
-  return batch
+  return Budget.own(batch)
 end
 function Batch.add(batch, format, data, count)
+  Budget.own(data)
   local x0,y0,z0,x1,y1,z1 = math.huge,math.huge,math.huge,-math.huge,-math.huge,-math.huge
   local ptr = okFFI and data.getFFIPointer and ffi.cast("const float*", data:getFFIPointer())
   for i = 0, count - 1 do
@@ -35,6 +37,7 @@ function Batch.add(batch, format, data, count)
   Bounds.set(part, {x0,y0,z0,x1,y1,z1})
   batch.count = batch.count + count
   Budget.check()
+  Budget.disown(data)
 end
 function Batch.addTable(batch, format, vertices)
   local x0,y0,z0,x1,y1,z1 = math.huge,math.huge,math.huge,-math.huge,-math.huge,-math.huge

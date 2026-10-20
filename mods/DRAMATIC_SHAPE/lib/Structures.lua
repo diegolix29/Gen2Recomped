@@ -408,7 +408,7 @@ end
 -- treated as having one foundation
 local COURSE = 16
 
-local cache = {}
+local cache,beginAnalysis,clearAnalysis = V.require("AnalysisCache").new()
 
 -- ---------------------------------------------------------------- pixels --
 
@@ -1006,6 +1006,7 @@ function Structures.stampGround(map, tx, ty)
   local S = cache[map.id]
   if not S then return nil end
   local k = keyOf(tx, ty)
+  if S.civicFloor and S.civicFloor[k] ~= nil then return S.civicFloor[k] end
   if not S.skip[k] then return nil end
   local s = S.shapeAt[k]
   local z
@@ -12200,6 +12201,7 @@ function Structures.flightEnds(map, cx, cy)
   return best.lo, best.hi, best.axis, best.heading, best.idx, best.n
 end
 
+local DOOR_APPROACH = { { 0, -1 }, { 1, 0 }, { -1, 0 } }
 function Structures.standHeight(map, tx, ty)
   local S = cache[map.id]
   if not S then return nil end
@@ -12235,7 +12237,7 @@ function Structures.standHeight(map, tx, ty)
     -- re-entrant): the lowest walkable neighbour is still the approach, and
     -- it beats the terrace overhead every time
     local approach = nil
-    for _, d in ipairs({ { 0, -1 }, { 1, 0 }, { -1, 0 } }) do
+    for _, d in ipairs(DOOR_APPROACH) do
       local nx, ny = tx + d[1] * 2, ty + d[2] * 2
       local ns = S.shapeAt[keyOf(nx, ny)]
       local okW, wk = pcall(map.isWalkableCell,
@@ -14839,6 +14841,7 @@ function Structures.fillGen3Hollows(S, map)
   -- pass, so the only thing a later round can change is a height
   local cand = {}
   for cy = 1, H - 2 do
+    Budget.check()
     for cx = 1, W - 2 do
       if not isWater(cx, cy) and walledIn(cx, cy) then
         cand[#cand + 1] = { cx, cy }
@@ -14852,6 +14855,7 @@ function Structures.fillGen3Hollows(S, map)
     local before = filled
     do
       for _, c in ipairs(cand) do
+        Budget.tick()
         local cx, cy = c[1], c[2]
         do
           local lo = cellLo(cx, cy)
@@ -15046,7 +15050,9 @@ function Structures.settleGen3Stamps(S, map)
   for _ = 1, 8 do
     local before = moved
     for cy = 0, H - 1 do
+      Budget.check()
       for cx = 0, W - 1 do
+        Budget.tick()
         if claimed(cx, cy) then
           local floor = nil
           for _, d in ipairs(D4) do
@@ -15926,7 +15932,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
     -- tick added inside the template: the mask, flood and disc passes above
     -- are all O(NX*NY) over at most 2,304 pixels and none of them showed in
     -- the profile.
-    Budget.tick()
+    Budget.check()
     if loRow[iy] then
       local yB, yT = NY - 1 - iy, NY - iy
 
@@ -16114,6 +16120,7 @@ end
 -- hundreds of tree cells x six Lua tables each PER MAP (the multi-GB
 -- heap growth on a cross-region trek).
 local roundCache = {}
+local waterRockTemplates = setmetatable({}, { __mode = "k" })
 
 -- ---- rooftop props ------------------------------------------------------
 
@@ -22517,8 +22524,23 @@ function Structures.buildWaterRocks(S, map, x0, x1, y0, y1)
        and cy * 2 + 1 >= y0 and cy * 2 <= y1 then
       local sh = S.shapeAt[keyOf(cx * 2, cy * 2)]
       local my = (sh and sh.h) or 0
-      local okT, tq = pcall(roundTemplate, S, map, data, cx, cy, nil, 32,
-                            nil, nil, nil, nil, nil, nil, nil, nil, true)
+      -- The same 2x2 rock drawing is repeated along rivers. Its hull depends
+      -- on these sixteen atlas tiles, not the cell's position or elevation.
+      -- Reuse that immutable template rather than carve and retain it anew.
+      local variants = waterRockTemplates[data]
+      if not variants then variants={};waterRockTemplates[data]=variants end
+      local ids = { tostring(map.tileset.id) }
+      for dy=0,3 do for dx=0,3 do
+        ids[#ids+1]=tostring(S.tileAt[keyOf(cx*2+dx,cy*2+dy)])
+      end end
+      local signature=table.concat(ids, ",")
+      local tq=variants[signature]
+      local okT=true
+      if not tq then
+        okT,tq=pcall(roundTemplate, S, map, data, cx, cy, nil, 32,
+                     nil, nil, nil, nil, nil, nil, nil, nil, true)
+        if okT and type(tq)=="table" then variants[signature]=tq end
+      end
       if okT and type(tq) == "table" and #tq > 0 then
         S.roundStamps[#S.roundStamps + 1] =
           { quads = tq, mx = cx * 16 + 16, mz = cy * 16 + 16, r = 16,
@@ -33472,13 +33494,20 @@ function Structures.buildGen3Joinery(S, map)
   return built
 end
 
+function Structures.beginRebuild(mapId)
+  Buildings.evictMap(mapId)
+  return beginAnalysis(mapId)
+end
+
 function Structures.invalidate(mapId)
   if mapId then
     cache[mapId] = nil
+    Buildings.evictMap(mapId)
   else
-    cache = {}
+    clearAnalysis()
     atlasData = {}
     roundCache = {}
+    waterRockTemplates = setmetatable({}, { __mode = "k" })
     -- the border ring's neighbour rectangles are map data too (a dev-console
     -- map reload is what `VoxelScene.forgetMasks` exists for)
     ringBodyMemo = {}

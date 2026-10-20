@@ -187,6 +187,9 @@ function ScriptRunner:exec(script, ctx)
     -- out of their own game, and "a script on MAP_G08_N01 is parked" is a bug
     -- report; "the game froze" is not.
     self.lastRow = ("%s (row %d of %d)"):format(tostring(name), pc, #script)
+    -- ...and where, for a command that must see the rows after it (Black /
+    -- White's question and its YES / NO: src/script/Gen5MessageCommands.lua)
+    ctx.script, ctx.pc = script, pc
     local fn, meta = Commands.resolve(data, name)
     if not fn and type(name) == "string" and name:sub(1, 3) == "g3_" then
       local ok, Gen3Commands = pcall(require, "src.script.Gen3Commands")

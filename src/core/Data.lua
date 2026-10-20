@@ -165,7 +165,7 @@ local GEN4_MODULES = {
 local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
                         "gen4_naming", "gen4_dex", "gen4_models",
                         "gen4_terrain", "gen4_distortion_world",
-                        "gen4_weather_sys", "gen4_mail_gra", "gen4_voltorb_flip", "gen4_follow_mon", "gen5_battle_ui", "gen5_battle_bag", "gen5_battle_scene", "gen5_evolution", "gen4_hgss_menu_art", "gen4_hgss_bag_art", "gen4_hgss_summary_art", "gen5_menu_art", "gen5_bag_art", "gen5_summary_art", "gen4_hgss_dex_art", "gen4_hgss_box_art", "gen5_dex_art", "gen5_box_art", "gen4_hgss_pokegear_art", "gen4_legend_art", "gen4_hgss_safari", "gen4_alph_puzzle", "gen4_hgss_field_moves", "gen4_hgss_certificates",
+                        "gen4_weather_sys", "gen4_mail_gra", "gen4_voltorb_flip", "gen4_follow_mon", "gen5_battle_ui", "gen5_battle_bag", "gen5_town_map", "gen5_xtransceiver", "gen5_battle_scene", "gen5_evolution", "gen4_hgss_menu_art", "gen4_hgss_bag_art", "gen4_hgss_summary_art", "gen5_menu_art", "gen5_bag_art", "gen5_summary_art", "gen4_hgss_dex_art", "gen4_hgss_box_art", "gen5_dex_art", "gen5_box_art", "gen4_hgss_pokegear_art", "gen4_legend_art", "gen4_hgss_safari", "gen4_alph_puzzle", "gen4_hgss_field_moves", "gen4_hgss_certificates",
                         "gen4_species_sprites", "gen4_hgss_starter_art", "gen4_hgss_oak_art", "gen4_hgss_boot_art", "gen4_hgss_title_art", "gen5_boot_art", "gen5_main_menu_art", "gen5_juniper_art", "gen5_naming_art", "gen5_opening",
                         "gen4_move_anims", "gen4_particles",
                         "gen4_cellactors",
@@ -1466,44 +1466,7 @@ function Data:seedDefaults()
     -- one 101-entry member per rate) and belongs in the extractor; naming the
     -- curve here means the warning says which one is missing instead of the
     -- game quietly levelling on the wrong curve.
-    local EXP_RATE_NAME = {
-      [0] = "MEDIUM_FAST", [1] = "ERRATIC", [2] = "FLUCTUATING",
-      [3] = "MEDIUM_SLOW", [4] = "FAST", [5] = "SLOW",
-    }
-    local speciesFixed = 0
-    for _, def in pairs(self.pokemon or {}) do
-      if type(def) == "table" then
-        local changed = false
-        local bs = def.baseStats
-        if type(bs) == "table" and bs.spatk == nil and bs.spAttack ~= nil then
-          bs.spatk, bs.spdef = bs.spAttack, bs.spDefense
-          bs.special = bs.special or bs.spAttack
-          changed = true
-        end
-        if def.evYield == nil and type(def.evYields) == "table" then
-          local y = def.evYields
-          y.spatk = y.spatk or y.spAttack
-          y.spdef = y.spdef or y.spDefense
-          def.evYield = y
-          changed = true
-        end
-        if def.growthRate == nil and def.expRate ~= nil then
-          def.growthRate = EXP_RATE_NAME[tonumber(def.expRate)] or "MEDIUM_FAST"
-          changed = true
-        end
-        if def.level1Moves == nil then
-          local first = {}
-          for _, row in ipairs(def.learnset or {}) do
-            if row.move and (tonumber(row.level) or 0) <= 1 then
-              first[#first + 1] = row.move
-            end
-          end
-          def.level1Moves = first
-          changed = true
-        end
-        if changed then speciesFixed = speciesFixed + 1 end
-      end
-    end
+    local speciesFixed = require("src.pokemon.SpeciesRecords").species(self.pokemon)
     -- A GEN 4 TRAINER IS ONE PARTY WHERE THE ENGINE EXPECTS A LIST OF THEM.
     --
     -- `BattleState.newTrainer(game, oppClass, partyIndex)` reads
@@ -1583,73 +1546,9 @@ function Data:seedDefaults()
     -- Pointing `natureOrder` at the names costs nothing and is what the field
     -- is for: `Stats.calcGen3` looks its modifiers up BY THE VALUE STORED ON
     -- THE MON, so a name is the only form that can ever resolve.
-    local natureNames = (self.constants or {}).natures
-    local natureOrder = (self.constants or {}).natureOrder
-    if type(natureNames) == "table" and type(natureOrder) == "table"
-       and type(natureOrder[1]) == "number" and type(natureNames[1]) == "string"
-    then
-      local named = {}
-      for i = 1, 25 do named[i] = natureNames[i] or natureOrder[i] end
-      self.constants.natureOrder = named
-      Logger.info("gen4 natures: natureOrder now names its 25 rows, so a "
-                  .. "Pokemon carries \"%s\" rather than a bare index",
-                  tostring(named[1]))
-    end
-
-    -- ...AND THE MODIFIERS, WHICH ARE A RULE RATHER THAN A TABLE.
-    --
-    -- `Data:load` hands `constants.natures` to `Stats.setNatures`, which wants
-    -- it keyed BY NAME with a `modifiers` record -- that is the shape Gen 3's
-    -- extractor writes, read off `gNatureStatTable`.  Gen 4's extractor writes
-    -- a flat LIST of 25 names, so the lookup found nothing and every Sinnoh
-    -- Pokemon carried a nature that moved no stat.
-    --
-    -- The table does not have to be extracted, because it is derivable and the
-    -- cartridge derives it the same way.  `sNatureStatAffinities`
-    -- (src/pokemon.c) is the 25x5 pattern every generation uses:
-    --
-    --     raised  = nature / 5      lowered = nature % 5
-    --
-    -- over [attack, defense, speed, spAtk, spDef], and the two are equal for
-    -- the five neutral natures, which is what makes Hardy, Docile, Serious,
-    -- Bashful and Quirky move nothing.  `Pokemon_GetNatureStatValue` then
-    -- multiplies by 110 or 90 and divides by 100 -- and 110/90/100 is exactly
-    -- the percentage `Stats.calcGen3` expects, so no conversion either.
-    --
-    -- Checked against the cartridge rather than assumed: Lonely is nature 1,
-    -- so raised = 0 (attack) and lowered = 1 (defense) -- which is what
-    -- `sNatureStatAffinities[NATURE_LONELY]` says, line for line, and the same
-    -- for Brave, Adamant, Naughty and Bold.
-    local NATURE_STAT = { "attack", "defense", "speed", "spatk", "spdef" }
-    local natureRows = (self.constants or {}).natures
-    if type(natureRows) == "table" and type(natureRows[1]) == "string" then
-      local byName, modified = {}, 0
-      for i = 1, 25 do
-        local name = natureRows[i]
-        if type(name) == "string" and name ~= "" then
-          local n = i - 1                        -- the cartridge counts from 0
-          local up, down = NATURE_STAT[math.floor(n / 5) + 1], NATURE_STAT[(n % 5) + 1]
-          local modifiers = {}
-          for _, key in ipairs(NATURE_STAT) do modifiers[key] = 100 end
-          if up ~= down then
-            modifiers[up], modifiers[down] = 110, 90
-            modified = modified + 1
-          end
-          byName[name] = {
-            name = name, index = n, modifiers = modifiers,
-            raises = (up ~= down) and up or nil,
-            lowers = (up ~= down) and down or nil,
-          }
-        end
-      end
-      if next(byName) then
-        self.constants.natures = byName
-        require("src.pokemon.Stats").setNatures(byName)
-        Logger.info("gen4 natures: built the 25 modifier rows from the "
-                    .. "cartridge's own index rule (%d move a stat, 5 are "
-                    .. "neutral) -- a Sinnoh Pokemon's nature was worth "
-                    .. "nothing before this", modified)
-      end
+    if require("src.pokemon.SpeciesRecords").constants(self.constants) then
+      require("src.pokemon.Stats").setNatures(self.constants.natures)
+      Logger.info("gen4 natures: normalized the cartridge's 25 nature names and modifiers")
     end
 
     if speciesFixed > 0 then

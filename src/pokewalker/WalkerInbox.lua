@@ -4,13 +4,13 @@
 -- use it commercially. Cartridge-derived data is excluded and is not the
 -- copyright holder's to license.
 
--- WHAT THE POKEWALKER SENT HOME, unpacked by the game when it loads the save
--- (Game:restoreSave), where the game's own data is loaded:
+-- WHAT THE POKEWALKER SENT HOME, unpacked immediately by WalkerDelivery
+-- using destination ROM records, or retried by Game:restoreSave:
 --   * the walked Pokemon: its steps as EXP, but never more than one level
 --     (the original's rule), its friendship, then back into the PC;
 --   * each catch: built by Pokemon.new in this generation's shape at its
 --     course level, met "on the Pokewalker", into the PC;
---   * each item: into the bag by name (the PC when the bag is full); an item
+--   * each item: into the bag by name (queued when the bag is full); an item
 --     this game does not have becomes a Poke Ball / Potion of its kind.
 -- Nothing is dropped: whatever cannot be placed (the PC full) stays in the
 -- inbox for the next load.
@@ -37,20 +37,25 @@ local function speciesKey(data, dex)
   return nil
 end
 
+local function bagKey(data,id)
+  local alias=type(id)=="number" and ("ITEM_%03d"):format(id)
+  return alias and data.items[alias] and alias or id
+end
+
 local function itemId(data, name)
   local want = norm(name)
   local fallback
   for id, def in pairs(data.items or {}) do
     if type(def) == "table" then
       local n = norm(def.name)
-      if n == want then return id end
-      if n == "POTION" and not fallback then fallback = id end
+      if n == want then return bagKey(data,id) end
+      if n == "POTION" and not fallback then fallback = bagKey(data,id) end
     end
   end
   -- not in this game: a ball becomes a Poke Ball, anything else a Potion
   if want:find("BALL") then
     for id, def in pairs(data.items or {}) do
-      if type(def) == "table" and norm(def.name) == "POKEBALL" then return id end
+      if type(def) == "table" and norm(def.name) == "POKEBALL" then return bagKey(data,id) end
     end
   end
   return fallback
@@ -81,13 +86,14 @@ local function levelUp(data, mon, steps)
 end
 
 -- returns a short report, or nil when there was nothing
-function I.apply(save, data)
+local function applyContents(save, data, opts)
   -- the Watt Shop's Events shelf: its own queue (src/pokewalker/WalkerEvents.lua)
-  pcall(function() require("src.pokewalker.WalkerEvents").apply(save, data) end)
+  if not (opts and opts.skipEvents) then pcall(function() require("src.pokewalker.WalkerEvents").apply(save, data) end) end
   local box = save and save.walkerInbox
   if type(box) ~= "table" then return nil end
   data = data or require("src.core.Data")
   local Boxes = require("src.pokemon.Boxes")
+  save.inventory=type(save.inventory)=="table" and save.inventory or {}
   local report = { mons = 0, caught = 0, items = 0 }
   -- the walked Pokemon
   for i = #(box.returning or {}), 1, -1 do
@@ -134,7 +140,10 @@ function I.apply(save, data)
     local c = box.mons[i]
     local key = speciesKey(data, tonumber(c.species) or 0)
     if key then
-      local ok, mon = pcall(Pokemon.new, data, key, tonumber(c.level) or 5)
+      local ok,mon=true,c.raw
+      if not (type(mon)=="table" and mon.species==key) then
+        ok,mon=pcall(Pokemon.new,data,key,tonumber(c.level) or 5)
+      end
       if ok and type(mon) == "table" then
         mon.metLocation = "POKEWALKER"
         mon.ot = mon.ot or (save.player and save.player.name)
@@ -145,11 +154,15 @@ function I.apply(save, data)
         if c.shiny and not Pokemon.isShiny(mon) then
           pcall(Pokemon.forceShiny, data, mon, nil, mon.otId)
         end
-        if Boxes.deposit(save, mon) then table.remove(box.mons, i); report.caught = report.caught + 1 end
+        if Boxes.deposit(save, mon) then
+          table.remove(box.mons,i);report.caught=report.caught+1
+          save.pokedex=save.pokedex or {};save.pokedex.seen=save.pokedex.seen or {};save.pokedex.owned=save.pokedex.owned or {}
+          save.pokedex.seen[mon.species]=true;save.pokedex.owned[mon.species]=true
+        else c.raw=mon end -- preserve the individual while storage is full
+      elseif not ok then
+        require("src.core.Logger").warn("walker catch %s pending: %s",tostring(c.species),tostring(mon))
       end
-    else
-      table.remove(box.mons, i)
-    end
+    end -- Unknown species stay queued; never erase a reward we cannot resolve.
   end
   -- the items
   local Bag = require("src.inventory.Bag")
@@ -158,13 +171,15 @@ function I.apply(save, data)
     -- a stack (the Watt Shop, the minigames) keeps its count
     local n = math.max(1, math.floor(tonumber(box.items[i].count) or 1))
     if id then
-      if not Bag.add(save, id, n, data) then
-        save.pcItems = save.pcItems or {}
-        save.pcItems[id] = (save.pcItems[id] or 0) + n
+      local room=math.max(0,Bag.stackLimit(id,data)-(tonumber(save.inventory[id]) or 0))
+      local take=math.min(n,room)
+      if take>0 and Bag.add(save,id,take,data) then
+        report.items=report.items+1
+        n=n-take
       end
-      report.items = report.items + 1
-    end
-    table.remove(box.items, i)
+      if n==0 then table.remove(box.items,i) else box.items[i].count=n end
+    end -- A full bag or unknown item stays in the inbox, never a hidden PC stack.
+
   end
   if #(box.returning or {}) == 0 and #(box.mons or {}) == 0 and #(box.items or {}) == 0 then
     save.walkerInbox = nil
@@ -175,6 +190,13 @@ function I.apply(save, data)
       report.mons, report.caught, report.items)
   end)
   return report
+end
+
+function I.apply(save,data,opts)
+  data=data or require("src.core.Data")
+  return require("src.pokemon.Boxes").withData(data,function()
+    return applyContents(save,data,opts)
+  end)
 end
 
 return I

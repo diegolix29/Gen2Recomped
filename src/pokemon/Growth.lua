@@ -39,6 +39,16 @@ function Growth.setTables(byCurve)
   tables = type(byCurve) == "table" and byCurve or nil
 end
 
+-- Use a destination cartridge briefly without changing the running preview.
+function Growth.withTables(value, fn)
+  local previous=tables
+  Growth.setTables(value)
+  local ok,result=pcall(fn)
+  tables=previous
+  if not ok then error(result,0) end
+  return result
+end
+
 function Growth.tableFor(growthRate)
   return tables and tables[growthRate] or nil
 end

@@ -106,9 +106,19 @@ local function drawBox(battle, battler, side, slot)
     if cx then c = { x = cx, y = cy } end
   end
   local x, y = c.x + (e.originX or -64), c.y + (e.originY or -16)
+  -- BATTLE LAYOUT = WIDE: the player's box keeps to the right edge, as
+  -- Gen4Battle.healthboxPos moves Platinum's (the foe's stays at the left)
+  if side == "player" then
+    local okB, GB = pcall(require, "src.battle.Gen4Battle")
+    if okB and GB.extra then x = x + (GB.extra(battle) or 0) end
+  end
   g.setColor(1, 1, 1, 1)
   g.draw(box, x, y)
-  local hp, max = tonumber(mon.hp) or 0, math.max(1, tonumber(mon.stats and mon.stats.hp) or tonumber(mon.maxHp) or 1)
+  -- the DRAINING value (battler.shownHP, which BattleState walks toward the
+  -- real HP after the move's animation, as Gen4Battle's boxes draw it) -- the
+  -- mon's own hp jumped the bar to its new length before the hit landed
+  local hp = math.max(0, math.floor(tonumber(battler.shownHP) or tonumber(mon.hp) or 0))
+  local max = math.max(1, tonumber(mon.stats and mon.stats.hp) or tonumber(mon.maxHp) or 1)
   local frac = hp / max
   local base = (frac > 0.5 and 0) or (frac > 0.2 and 9) or 18
   gauge(battle, x + H.HP_BAR.x, y + H.HP_BAR.y, H.HP_BAR.w, frac, base)
@@ -124,9 +134,11 @@ local function drawBox(battle, battler, side, slot)
     g.line(x + 90.5, y + H.HP_TEXT.y + 7, x + 94.5, y + H.HP_TEXT.y)
     g.setColor(1, 1, 1, 1)
     digits(battle, max, x + 97, y + H.HP_TEXT.y)
+    -- BattleState:expFraction: the creeping fill while exp is being paid,
+    -- the mon's own progress the rest of the time (the old reader required a
+    -- module that does not exist, so the bar sat empty in every battle)
     local okE, frac2 = pcall(function()
-      local Exp = require("src.pokemon.Experience")
-      return Exp.progress and Exp.progress(battle.data, mon) or 0
+      return battle.expFraction and battle:expFraction(mon) or 0
     end)
     gauge(battle, x + H.EXP_BAR.x, y + H.EXP_BAR.y, H.EXP_BAR.w, okE and tonumber(frac2) or 0, 32)
   end

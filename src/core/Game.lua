@@ -2103,7 +2103,8 @@ function Game:restoreSave(loaded, recovered)
   -- first, so validation and the OT stamp below see the real team
   pcall(require("src.pokemon.PartyAside").onLoad, loaded)
   -- what the Pokewalker sent home (src/pokewalker/WalkerInbox.lua)
-  pcall(require("src.pokewalker.WalkerInbox").apply, loaded, self.data)
+  local okWalker,walkerError=pcall(require("src.pokewalker.WalkerInbox").apply, loaded, self.data)
+  if not okWalker then Logger.warn("walker inbox delivery deferred: %s",tostring(walkerError)) end
   -- PR #60 taught future FireRed League wins to keep the cartridge-native
   -- FLAG_DEFEATED_* bits and the older port EVENT_BEAT_* names in sync.  Saves
   -- already partway through the Elite Four predate that bridge and may have

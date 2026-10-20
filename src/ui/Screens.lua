@@ -410,6 +410,15 @@ function Screens.resolveId(game, id, arg)
       if not (screens and screens[id]) then return "Gen5EvolutionState", arg end
     end
   end
+  -- ...and the move learning over a full set: BW's words, and the pick on
+  -- BW's summary (src/ui/Gen5MoveLearnMenu.lua), positional as before
+  if id == "MoveLearnMenu" then
+    local okV, V = pcall(require, "src.core.GameVersion")
+    if okV and V.isGen5 and V.isGen5() then
+      local screens = game and game.data and game.data.screens
+      if not (screens and screens[id]) then return "Gen5MoveLearnMenu", arg end
+    end
+  end
   -- HEARTGOLD / SOULSILVER'S SUMMARY takes every summary push, the move-
   -- learning one (`choose`) included, which the Gen 4 alias below declines
   if id == "SummaryMenu" and ((game and game.data) or {}).gen4_hgss_summary_art then
