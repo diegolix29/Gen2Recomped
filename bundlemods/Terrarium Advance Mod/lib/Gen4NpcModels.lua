@@ -80,6 +80,7 @@ local V = ...
 local Npc = {
   MAX_CELL = 64,        -- px: bigger cells are not people
   PAD = 4,              -- px of colour grown past each silhouette
+  MAX_QUEUE = 24,       -- Gen 1-3: pending sheets + bodies; past this nothing new is started this frame
   MAX_BODIES = 96,      -- cached bodies before the least recently used go (~330 KB each)
   TURN_RATE = 14,       -- rad/s a body turns toward its facing
   STEP_SECONDS = 0.004, -- slice of one build step
@@ -115,6 +116,44 @@ local function lazy(name)
   local ok, m = pcall(V.require, name)
   if ok and type(m) == "table" then return m end
   return nil
+end
+
+-- ------------------------------------------------------- diagnostics --
+--
+-- Why a Gen 1-3 pose did or did not become a body, counted by reason, and
+-- written to the mod log every DIAG_SECONDS while the Gen 1-3 path is being
+-- asked about people. "NPC 3D does nothing on Gen 1-3" has many possible
+-- causes (setting off, sheet refused, build failed, read-back failed, a
+-- fuse trip...) and each one is a different counter here.
+Npc.why = {}
+Npc.DIAG_SECONDS = 10
+local diagAt, diagDirty = 0, false
+local function no(reason)
+  local w = Npc.why
+  w[reason] = (w[reason] or 0) + 1
+  diagDirty = true
+  return false
+end
+
+function Npc.report()
+  local keys = {}
+  for k in pairs(Npc.why) do keys[#keys + 1] = k end
+  table.sort(keys)
+  local parts = {}
+  for _, k in ipairs(keys) do parts[#parts + 1] = k .. "=" .. Npc.why[k] end
+  local st = Npc.stats
+  return ("enabled=%s sheets=%d builds=%d failed=%d drawn=%d queued=%d | %s"):format(
+    tostring(Npc.enabled()), st.sheets, st.builds, st.failed, st.drawn, #(Npc._queue or {}),
+    table.concat(parts, " "))
+end
+
+local function diagTick()
+  if not diagDirty then return end
+  local now = clock()
+  if now - diagAt < Npc.DIAG_SECONDS then return end
+  diagAt, diagDirty = now, false
+  local log = V.mod and V.mod.log
+  if log and log.info then pcall(log.info, log, "Gen4NpcModels (Gen 1-3 path): %s", Npc.report()) end
 end
 
 function Npc.enabled()
@@ -470,6 +509,7 @@ local function finish(item)
   local r = job.result
   if job.failed or not r then
     body.failed = job.failed or job.reason or "no result"
+    no("build-failed: " .. tostring(body.failed))
     Npc.stats.failed = Npc.stats.failed + 1
     local id = tostring(item.rec.def.id or item.rec.def.image)
     if not reported[id] then
@@ -489,6 +529,7 @@ local function finish(item)
   if not (mesh and okI and image) then
     if mesh and mesh.release then pcall(mesh.release, mesh) end
     body.failed = "mesh or texture upload failed"
+    no("upload-failed")
     Npc.stats.failed = Npc.stats.failed + 1
     return
   end
@@ -503,7 +544,12 @@ end
 -- A sheet has just loaded (Gen 1-3): queue the three poses a walker can show,
 -- the stand pose first, so a person is a body at rest before one in motion.
 local function preloadClassic(rec)
-  for _, ph in ipairs({ { 0, false }, { 1, false }, { 1, true } }) do
+  -- ONLY THE STAND BODY. The two step poses used to be queued here as well,
+  -- three bodies per sheet per palette, and the diorama poses every person on
+  -- every resident map (a town keeps four neighbours, ~150 people): the queue
+  -- never drained. A step pose is built when somebody ON SCREEN is mid-step
+  -- (classicBody), and the stand body stands in until then.
+  for _, ph in ipairs({ { 0, false } }) do
     local d, u, l, m = classicFrames(rec.def, rec.frames, ph[1], ph[2])
     local key = classicKey(d, u, l, m)
     if not rec.bodies[key] then startClassicBody(rec, key, { d = d, u = u, l = l, m = m }) end
@@ -539,6 +585,7 @@ function Npc.pump()
       item.rec.state = ok and "ready" or "failed"
       if not ok then
         item.rec.ok = false
+        no("sheet-failed: " .. tostring(why))
         Npc.stats.failed = Npc.stats.failed + 1
         local id = tostring(item.rec.def.id or item.rec.def.image)
         if not reported[id] then reported[id] = true; log("%s: %s", id, tostring(why)) end
@@ -553,6 +600,7 @@ function Npc.pump()
           body.job = job
         else
           body.failed = tostring(job)
+          no("job-error: " .. tostring(job))
           Npc.stats.failed = Npc.stats.failed + 1
           local id = tostring(item.rec.def.id or item.rec.def.image)
           if not reported[id] then reported[id] = true; log("%s: %s", id, body.failed) end
@@ -729,45 +777,57 @@ end
 -- Is this posed entity one for a Gen 1-3 body? Cheap enough for every card
 -- every frame; the setting is the first thing it looks at.
 function Npc.classicWants(p)
-  if not Npc.enabled() then return false end
-  if clock() < offUntil then return false end
-  if type(p) ~= "table" then return false end
+  diagTick()
+  if not Npc.enabled() then return no("want:setting-off") end
+  if clock() < offUntil then return no("want:fuse-resting") end
+  if type(p) ~= "table" then return no("want:no-pose") end
   local sprite, e = p.sprite, p.entity
-  if type(sprite) ~= "table" or type(e) ~= "table" then return false end
+  if type(sprite) ~= "table" then return no("want:no-sprite") end
+  if type(e) ~= "table" then return no("want:no-entity") end
   local def = sprite.def
-  if type(def) ~= "table" or def.facings then return false end     -- Gen 4 has its own path
-  if (tonumber(def.frames) or 1) <= 1 then return false end        -- a prop
-  if def.hdImage or def.hdDex or def.dsSpecies or def.hdFrameW or def.hdFrameH then return false end
-  if e.hidden or e.fixedFrame then return false end
+  if type(def) ~= "table" then return no("want:no-def") end
+  if def.facings then return no("want:def-has-facings") end         -- Gen 4 has its own path
+  if (tonumber(def.frames) or 1) <= 1 then return no("want:prop-1-frame") end
+  if def.hdImage or def.hdDex or def.dsSpecies or def.hdFrameW or def.hdFrameH then return no("want:hd-or-pokemon") end
+  if e.hidden or e.fixedFrame then return no("want:hidden-or-fixed") end
   if p.isFollower or e.isFollower or e.wildsFollower or e._wildsFollowerSpecies
      or e.roamer or e.overworldWildSpawn or e.species or e.stadiumModel then
-    return false
+    return no("want:follower-or-wild")
   end
-  if p.isPlayer and not Npc.includePlayer then return false end
-  if (p.waterline or 0) > 0 then return false end
+  if p.isPlayer and not Npc.includePlayer then return no("want:player-off") end
+  if (p.waterline or 0) > 0 then return no("want:waterline") end
   return true
 end
 
 -- The body this pose wears, or nil. While the exact pose is still building the
 -- sheet's finished stand body stands in.
-local function classicBody(p, tex)
+-- `build` is false for the sun pass: a shadow never starts a body (the eye pass
+-- is what asks for one), so a caster outside the view costs nothing.
+local function classicBody(p, tex, build)
   local def = p.sprite.def
   local rec = classicRec(def, tex)
-  if not (rec and rec.ok) then return nil end
+  if not rec then return no("body:fuse-or-no-record") end
+  if not rec.ok then return no("body:sheet-not-a-person-sheet") end
   if rec.state == nil then
-    if #queue > 64 then return nil end          -- never let a crowd flood the queue
+    if build == false then return no("body:sheet-not-started-by-shadow") end
+    if #queue >= Npc.MAX_QUEUE then return no("body:queue-full") end   -- never let a crowd flood the queue
     rec.state = "loading"
     queue[#queue + 1] = { kind = "sheet", rec = rec }
-    return nil
+    return no("body:sheet-queued")
   end
-  if rec.state ~= "ready" then return nil end
+  if rec.state == "failed" then return no("body:sheet-failed") end
+  if rec.state ~= "ready" then return no("body:sheet-loading") end
 
   local d, u, l, m = classicFrames(def, rec.frames, p.phase, p.flip)
   local key = classicKey(d, u, l, m)
   local body = rec.bodies[key]
-  if not body then body = startClassicBody(rec, key, { d = d, u = u, l = l, m = m }) end
-  body.used = frameNo
-  if body.mesh and body.image then return body, rec end
+  if not body and build ~= false and #queue < Npc.MAX_QUEUE then
+    body = startClassicBody(rec, key, { d = d, u = u, l = l, m = m })
+  end
+  if body then
+    body.used = frameNo
+    if body.mesh and body.image then return body, rec end
+  end
   local stand = rec.standKey and rec.bodies[rec.standKey]
   if stand and stand.mesh and stand.image then
     stand.used = frameNo
@@ -776,7 +836,7 @@ local function classicBody(p, tex)
   for _, b in pairs(rec.bodies) do
     if b.mesh and b.image then b.used = frameNo; return b, rec end
   end
-  return nil
+  return no("body:building")
 end
 
 -- Where the body stands: the middle of the cell the card is centred on, at the
@@ -799,15 +859,22 @@ end
 -- (palette bake and all), `pull` the camera-ward depth bias the card gets.
 -- True only when a body was drawn; false leaves the card.
 function Npc.drawClassic(p, tex, pull)
-  if not tex then return false end
+  diagTick()
+  if not tex then return no("draw:no-texture") end
   local body, rec = classicBody(p, tex)
   if not body then return false end
   local Voxel3D = lazy("Voxel3D")
-  if not Voxel3D then return false end
+  if not Voxel3D then return no("draw:no-Voxel3D") end
   local m = classicMatrix(p, rec, yawFor(p.entity, p.facing, false))
-  if not m then return false end
-  local ok = pcall(Voxel3D.draw, body.mesh, body.image, m, pull or 0)
-  if ok then Npc.stats.drawn = Npc.stats.drawn + 1 end
+  if not m then return no("draw:no-matrix") end
+  local ok, err = pcall(Voxel3D.draw, body.mesh, body.image, m, pull or 0)
+  if ok then
+    Npc.stats.drawn = Npc.stats.drawn + 1
+    Npc.why["draw:ok"] = (Npc.why["draw:ok"] or 0) + 1
+    diagDirty = true
+  else
+    no("draw:error " .. tostring(err))
+  end
   return ok
 end
 
@@ -816,7 +883,7 @@ end
 -- a pose changes.
 function Npc.castClassic(p, tex, ShadowMap)
   if not (tex and ShadowMap and ShadowMap.draw) then return false end
-  local body, rec = classicBody(p, tex)
+  local body, rec = classicBody(p, tex, false)
   if not body then return false end
   local m = classicMatrix(p, rec, worldYaw(p.facing))
   if not m then return false end
@@ -849,6 +916,13 @@ end
 function Npc.install()
   if Npc.installed then return true end
   Npc.installed = true
+  do
+    local log = V.mod and V.mod.log
+    if log and log.info then
+      pcall(log.info, log, "Gen4NpcModels installed (NPC 3D setting: %s)",
+            tostring(Npc.setting and Npc.setting:get() or "no setting object"))
+    end
+  end
   local okA, Assets = pcall(require, "src.render.Assets")
   if okA and Assets and type(Assets.register) == "function" then
     pcall(Assets.register, Npc.invalidate)   -- a mod swapping a sheet rebuilds its body

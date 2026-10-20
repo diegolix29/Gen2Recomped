@@ -57,7 +57,14 @@ local StadiumWilds = V.require("StadiumWilds")
 -- character stays the flat card it always was.
 local NpcModels = (function()
   local ok, m = pcall(V.require, "Gen4NpcModels")
-  return (ok and type(m) == "table") and m or nil
+  if not (ok and type(m) == "table") then
+    local log = V.mod and V.mod.log
+    if log and log.warn then
+      pcall(log.warn, log, "VoxelScene: Gen4NpcModels did not load, NPC 3D is off on Gen 1-3: %s", tostring(m))
+    end
+    return nil
+  end
+  return m
 end)()
 local PaletteFX = require("src.render.PaletteFX")
 local Map = require("src.world.Map")

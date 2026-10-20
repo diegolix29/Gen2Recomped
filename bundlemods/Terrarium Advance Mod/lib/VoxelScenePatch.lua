@@ -189,7 +189,11 @@ local function patchCastLoop(source)
 
   local block = [====[  local hideMe = FirstPerson.hidePlayer()
   for _, p in ipairs(posed) do
-    if not (p.isPlayer and hideMe) and not OverworldStadium.safeShouldHidePose(p) then
+    -- cardShows: the view cull drawCast has always had (see its "THE CROWD IS
+    -- MOSTLY OFF-SCREEN" note). Without it every person on every resident map
+    -- is submitted -- and, now that people are bodies, built -- each frame.
+    if not (p.isPlayer and hideMe) and (p.isPlayer or not cardShows or cardShows(p))
+       and not OverworldStadium.safeShouldHidePose(p) then
       local facing = viewFacing(p)
       local hdDef = bindHdOverworld(p, facing, state)
       local stadiumFollower3d = poseIsFollower(p) and StadiumFollower.loaded()

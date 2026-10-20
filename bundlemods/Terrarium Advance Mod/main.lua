@@ -984,7 +984,7 @@ local SETTINGS = {
     .. "(VOXEL on); on Platinum it needs the third / first person or a CAM "
     .. "TILT camera (the default cartridge camera stays flat). OFF restores "
     .. "the flat cards.",
-    full = true, cat = "world" },
+    full = true, cat = SettingsMenu.ROOT },
   { Grass3D.simpleMeshes,
     "Simplified meshes for roads, ground and decorative grass. ON uses "
     .. "simple quad meshes (4 vertices) instead of detailed grass meshes "
