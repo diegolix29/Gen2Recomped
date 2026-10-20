@@ -64,6 +64,9 @@ local function insertAfterOnce(s, needle, text, label)
 end
 
 local POSES = [====[local function posesOf(state, spriteColors)
+  -- the stock posesOf's first line: ages the ground-height memo, which is only
+  -- ever expired by this tick
+  if VoxelScene and VoxelScene.groundTick then VoxelScene.groundTick() end
   -- Claim Wilds' emergency 2D bodies before its overlay gets a chance to draw
   -- a second copy.  This function is non-throwing in v0.1.16.
   OverworldStadium.safeClaimWilds(state)
@@ -75,7 +78,17 @@ local POSES = [====[local function posesOf(state, spriteColors)
 
   for gi, g in ipairs(state.ghosts or {}) do
     local npc = g and g.npc
-    if npc and not npc.hidden and type(npc.pose) == "function" then
+    -- A ghost on a map the window box does not reach is ABSENT, not hidden:
+    -- the terrain and shadow passes decline that map (ViewBox.showsMap), so
+    -- its people would be drawn standing on nothing -- floating over the void
+    -- at the horizon. This is the filter the stock posesOf has always had and
+    -- that this replacement had dropped.
+    local seen = true
+    if g and g.nb and ViewBox and ViewBox.showsMap then
+      local okV, shows = pcall(ViewBox.showsMap, g.nb)
+      seen = (not okV) or shows
+    end
+    if seen and npc and not npc.hidden and type(npc.pose) == "function" then
       local sprite, vx, vy, facing, phase, flip = npc:pose()
       local ghostMap = g.map or state.map
       posed[#posed + 1] = {
