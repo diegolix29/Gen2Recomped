@@ -28,7 +28,7 @@
 --   Platinum, so it cannot be read from here; copy KIM's
 --   assets/battle/hd-pokemon tree into assets/hd-pokemon/ instead.
 --
--- CAP: National Dex 1..493 (Gen 4). Anything above is ignored.
+-- CAP: National Dex 1..649 (Gen 5). Anything above is ignored.
 --
 -- A missing file at ANY step returns nil, which every host treats as "leave
 -- the native art alone".
@@ -36,7 +36,7 @@ local V = ...
 
 local M = {
   VERSION = 1,
-  MAX_DEX = 493,        -- Gen 4 ceiling; 494+ do not exist on Platinum
+  MAX_DEX = 649,        -- Gen 5 ceiling; 650+ do not exist on Gen 5 games
   COLOSSEUM_MAX = 386,  -- highest dex the Colosseum actor catalog can model
   FRAME_MS = 50,        -- every KIM record uses 50 ms frames
 }
@@ -82,6 +82,26 @@ ROTOM UXIE MESPRIT AZELF DIALGA PALKIA HEATRAN REGIGIGAS GIRATINA CRESSELIA
 PHIONE MANAPHY DARKRAI SHAYMIN ARCEUS
 ]]
 
+-- ------- Gen 5 names (494..649), only a safety net for dex resolution -------
+
+local G5_NAMES = [[
+VICTINI SNIVY SERVINE SERPERIOR TEPIG PIGNITE EMBOAR OSHAWOTT DEWOTT SAMUROTT
+PATRAT WATCHOG LILLIPUP HERDIER STOUTLAND PURRLOIN LIEPARD PANSAGE SIMISAGE
+PANSEAR SIMISEAR PANPOUR SIMIPOUR MUNNA MUSHARNA PIDOVE TRANQUILL UNFEZANT
+BLITZLE ZEBSTRIKE ROGGENROLA BOLDORE GIGALITH WOOBAT SWOOBAT DRILBUR EXCADRILL
+AUDINO TIMBURR GURDURR CONKELDUR THROH SAWK SEWADDLE SWADLOON LEAVANNY VENIPEDE
+WHIRLIPEDE SCOLIPEDE COTTONEE WHIMSICOTT PETILIL LILLIGANT BASCULIN SANDILE
+KROKOROK KROOKODILE DARUMAKA DARMANITAN MARACTUS DWEBBLE CRUSTLE SCRAGGY SCRAFTY
+SIGILYPH YAMASK COFAGRIGUS TIRAMOGE ZOROARK ZORUA MINCCINO CINCCINO GOTHITA
+GOTHORITA GOTHITELLE SOLOSIS DUOSION REUNICLUS DUCKLETT SWANNA VANILLITE VANILLISH
+VANILLUXE DEERLING SAWSBUCK EMOLGA JOLTIK GALVANTULA FERROSEED FERROTHORN
+KLINK KLANG KLINKLANG TYNAMO EELEKRIK EELEKTROSS LITWICK LAMPENT CHANDELURE
+AXEW FRAXURE HAXORUS CUBCHOO BEARTIC STUNFISK MIENFOO MIENSHAO DRUDDIGON GOLETT
+GOLURK PAWNIARD BISHARP BOUFFALANT RUFFLET BRAVIARY VULLABY MANDIBUZZ HEATMOR
+DURANT DEINO ZWEILOUS HYDREIGON LARVESTA VOLCARONA COBALION TERRAKION VIRIZION
+KELDEO MELOETTA GENESECT
+]]
+
 local nameToDex
 local function nameKey(s)
   return (tostring(s):upper():gsub("[^A-Z0-9]", ""))
@@ -95,6 +115,12 @@ local function buildNames()
     nameToDex[word] = n
   end
   M._g4NameCount = n - 386
+  n = 493
+  for word in G5_NAMES:gmatch("%S+") do
+    n = n + 1
+    nameToDex[word] = n
+  end
+  M._g5NameCount = n - 493
   -- Opportunistic: the Colosseum namespace publishes 1..386 names.
   local names = V and V.ColosseumDexNames
   if type(names) == "table" then
@@ -156,6 +182,8 @@ local function loadMeta()
   merge("data/hd_sheet_meta.lua", "kim")
   -- Sidecar for sheets KIM has no rows for (Gen 4). Same format; wins on a tie.
   merge("data/hd_sheet_meta_gen4.lua", "sidecar")
+  -- Sidecar for Gen 5 sheets. Same format; wins on a tie.
+  merge("data/hd_sheet_meta_gen5.lua", "sidecar")
   return meta
 end
 

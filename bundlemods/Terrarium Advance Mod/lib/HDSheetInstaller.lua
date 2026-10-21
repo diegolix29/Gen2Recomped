@@ -2,15 +2,15 @@
 --
 -- Downloads each configured release ZIP with the engine's streaming Fetch,
 -- reads the ZIP directly (no unzip dependency) and copies ONLY the sheet PNGs
--- for National Dex 1..493 into mod.cache under hd_sheets/<facing>/<color>/.
+-- for National Dex 1..649 into mod.cache under hd_sheets/<facing>/<color>/.
 -- That is exactly where HDPokemonSheets looks first, so nothing else needs to
 -- be told: it re-scans when the install finishes.
 --
--- The cap is HDPokemonSheets.MAX_DEX (493), not whatever the pack happens to
--- hold: files for dex 494+ are never written, and nothing here assumes the pack
--- stops at 386. Whatever 1..493 files a release actually contains are
--- installed; the end-of-install log says how many landed in 1-386 and in
--- 387-493, so it is obvious what a given pack covers.
+-- The cap is HDPokemonSheets.MAX_DEX (649), not whatever the pack happens to
+-- hold: files for dex 650+ are never written, and nothing here assumes the pack
+-- stops at 386. Whatever 1..649 files a release actually contains are
+-- installed; the end-of-install log says how many landed in 1-386, 387-493,
+-- and 494-649, so it is obvious what a given pack covers.
 --
 -- Needs the "network" permission (manifest) and the engine's Fetch/ModUpdate.
 -- Pumped once per frame from main.lua's input.step wrap; the OPTIONS-menu row
@@ -24,11 +24,11 @@ local mod = V and V.mod
 local I = { VERSION = 1, ID = "hd_sheets_install", LABEL = "HD SHEETS" }
 
 I.config = {
-  -- Processed in order. Add a second entry to pull a Gen 4 (387-493) pack from
+  -- Processed in order. Add a second entry to pull a Gen 4 (387-493) or Gen 5 (494-649) pack from
   -- another release: same layout, assets/battle/hd-pokemon/<facing>/<color>/NNN.png
   sources = {
     {
-      name = "Terri-Assets HD Pokemon (full 1-493)",
+      name = "Terri-Assets HD Pokemon (full 1-649)",
       repo = "MINIMI75/Terri-Assets",
       version = "1.0.0",
       packId = nil, -- no asset-pack.json for this pack
@@ -71,7 +71,7 @@ end
 
 local function maxDex()
   local hd = HD()
-  return hd and hd.MAX_DEX or 493
+  return hd and hd.MAX_DEX or 649
 end
 
 local function lowMax()
@@ -331,8 +331,8 @@ local function finishAll()
   local hd = HD()
   if hd and hd.rescan then pcall(hd.rescan) end
   local c = I.coverage()
-  log("info", "HD sheets installed: dex 1-%d %d/%d, dex %d-%d %d/%d (needs front+back)",
-    lowMax(), c.low, lowMax(), lowMax() + 1, maxDex(), c.high, maxDex() - lowMax())
+  log("info", "HD sheets installed: dex 1-%d %d/%d, dex %d-%d %d/%d, dex %d-%d %d/%d (needs front+back)",
+    lowMax(), c.low, lowMax(), lowMax() + 1, 493, c.high, 493 - lowMax(), 494, maxDex(), c.gen5, maxDex() - 493)
 end
 
 local function finishSource()
@@ -410,7 +410,13 @@ local function pumpExtraction()
       if not ok then return fail("could not install " .. f.rel .. ": " .. tostring(writeErr)) end
       c.written = c.written + 1
     end
-    if f.dex <= lowMax() then c.low = c.low + 1 else c.high = c.high + 1 end
+    if f.dex <= lowMax() then
+      c.low = c.low + 1
+    elseif f.dex <= 493 then
+      c.high = c.high + 1
+    else
+      c.gen5 = c.gen5 + 1
+    end
     st.pos = st.pos + 1
     processed = processed + 1
     if timer then
@@ -583,7 +589,7 @@ function I.start()
   if not fs then st.state, st.error = "error", fsErr; return false end
   st.fs = fs
   cleanup()
-  st.counts = { written = 0, existing = 0, low = 0, high = 0, over = 0, other = 0 }
+  st.counts = { written = 0, existing = 0, low = 0, high = 0, gen5 = 0, over = 0, other = 0 }
   st.files, st.pos, st.total, st.bytes = {}, 1, 0, 0
   if #I.config.sources == 0 then st.state, st.error = "error", "no sources configured"; return false end
   local okI, got = pcall(fs.getInfo, I.config.localZip, "file")
@@ -629,19 +635,25 @@ function I.active()
 end
 
 -- Dex with BOTH a front and a back normal sheet installed, split at the
--- Colosseum boundary. Cached; invalidated when an install finishes.
+-- Colosseum boundary and Gen 4/Gen 5. Cached; invalidated when an install finishes.
 function I.coverage()
   if st.coverage then return st.coverage end
   local hd = HD()
-  local c = { low = 0, high = 0, total = 0 }
+  local c = { low = 0, high = 0, gen5 = 0, total = 0 }
   if hd then
     for dex = 1, maxDex() do
       if hd.available(dex, "front", false) and hd.available(dex, "back", false) then
-        if dex <= lowMax() then c.low = c.low + 1 else c.high = c.high + 1 end
+        if dex <= lowMax() then
+          c.low = c.low + 1
+        elseif dex <= 493 then
+          c.high = c.high + 1
+        else
+          c.gen5 = c.gen5 + 1
+        end
       end
     end
   end
-  c.total = c.low + c.high
+  c.total = c.low + c.high + c.gen5
   st.coverage = c
   return c
 end

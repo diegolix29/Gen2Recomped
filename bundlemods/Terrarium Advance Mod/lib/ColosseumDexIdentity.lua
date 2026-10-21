@@ -5,16 +5,24 @@ local I={}
 
 function I.originGeneration(dex)
   dex=tonumber(dex)
-  if not dex or dex<1 or dex>386 or dex%1~=0 then return nil end
+  local maxDex=386
+  local okHD,HD=pccall(require,"HDPokemonSheets")
+  if okHD and HD and type(HD.MAX_DEX)=="number" then maxDex=HD.MAX_DEX end
+  if not dex or dex<1 or dex>maxDex or dex%1~=0 then return nil end
   if dex<=151 then return 1 end
   if dex<=251 then return 2 end
-  return 3
+  if dex<=386 then return 3 end
+  if dex<=493 then return 4 end
+  return 5
 end
 
 function I.nativeDexLimit(hostGeneration)
   hostGeneration=tonumber(hostGeneration)
   if hostGeneration==1 then return 151 end
   if hostGeneration==2 then return 251 end
+  if hostGeneration==3 then return 386 end
+  if hostGeneration==4 then return 493 end
+  if hostGeneration==5 then return 649 end
   return nil
 end
 
