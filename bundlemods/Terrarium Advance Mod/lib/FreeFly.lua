@@ -3129,7 +3129,44 @@ function FreeFly.init()
           local view = self.view3d
           if view and view.isFree and view:isFree() then
             view.y = view.y + lift
+            -- keep the look-at pivot on the same rig as the eye (it is
+            -- only read by Gen4Ground:clearCameraLine, skipped below)
+            if view.pivotY then view.pivotY = view.pivotY + lift end
           end
+        end
+      end
+
+      -- THE THIRD-PERSON CAMERA'S WALL PULL-IN DOES NOT APPLY IN THE AIR.
+      --
+      -- Gen4Ground:clearCameraLine (run from Gen4Ground:draw, AFTER the
+      -- placeCamera wrap above has lifted the eye) marches from the view's
+      -- pivot -- which sits at the flyer's GROUND position, chest high --
+      -- out to the eye, and drags the eye in toward the pivot as soon as
+      -- that line crosses a blocked tile (tree, building, wall, edge) lower
+      -- than ground + CAMERA_OBSTACLE.  The lifted eye is 88+ units up, so
+      -- the line starts at the ground and climbs through exactly those
+      -- tiles: any tree, building or map edge behind the flyer snapped the
+      -- camera down to the ground-level framing and back again.  A flyer
+      -- clears all of it, so the pull-in is skipped for as long as the
+      -- ride is on.  On the ground (and during the first/last frames when
+      -- the ride has no lift) the engine's own behaviour is untouched.
+      --
+      -- Gen 5 (Black/White) is covered by the same wrap: its maps are
+      -- drawn through the very same Gen4Ground / Gen4View.
+      if okG and Gen4Ground and Gen4Ground.clearCameraLine
+         and not Gen4Ground.__freeFlyClearWrapped then
+        Gen4Ground.__freeFlyClearWrapped = true
+        local origClear = Gen4Ground.clearCameraLine
+        Gen4Ground.clearCameraLine = function(self, v, ...)
+          local skip = Gen4Ground.__freeFlyClearSkip
+          if skip and skip(self, v) then return end
+          return origClear(self, v, ...)
+        end
+      end
+      if okG and Gen4Ground then
+        Gen4Ground.__freeFlyClearSkip = function()
+          local lift = state.gen4CamLift
+          return (lift and lift > 0 and flying()) and true or false
         end
       end
 
