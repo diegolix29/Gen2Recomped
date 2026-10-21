@@ -214,6 +214,63 @@ function F.legFigure(S, W, gap, mode, opts)
                                  cellY = cellY, src = table.concat(px) }, opts))
 end
 
+-- A hatted figure: crown, a wide thin BRIM, head, body (uniform grey, shape only).
+-- brimRows = how many pixel rows thick the brim is. Half widths (px): crown 5,
+-- brim 10, head 6, body 5; every part is as deep as it is wide / 1.25.
+F.HAT = { crown = 5, brim = 10, head = 6, body = 5 }
+function F.hatFigure(S, brimRows, opts)
+  local W, H = 32, 32
+  local c = (W - 1) / 2
+  local spec = {}                       -- row -> half width
+  local function band(r0, r1, hw) for r = r0, r1 do spec[r] = hw end end
+  band(2, 6, F.HAT.crown)
+  band(7, 6 + brimRows, F.HAT.brim)
+  band(7 + brimRows, 14 + brimRows, F.HAT.head)
+  band(15 + brimRows, 27, F.HAT.body)
+  local views, cellY = {}, {}
+  for k, key in ipairs({ "front", "back", "left", "right" }) do
+    local m = { w = W, h = H }
+    for y = 0, H - 1 do
+      for x = 0, W - 1 do
+        local hw = spec[y]
+        local d = hw and ((key == "front" or key == "back") and hw or hw * 0.8) or nil
+        m[y * W + x + 1] = d ~= nil and math.abs(x - c) <= d - 0.5
+      end
+    end
+    views[key], cellY[key] = m, (k - 1) * H
+  end
+  local px = {}
+  for i = 1, W * H * 4 do px[i] = "\200\200\200\255" end
+  local r = assert(S.build(views, { imgW = W, imgH = H * 4, cellW = W, cellH = H, cellX = 0,
+                                    cellY = cellY, src = table.concat(px) }, opts))
+  r.hatBrimRow0, r.hatBase = 7, 27
+  return r
+end
+
+-- The mesh's true half width at model height y: slice every triangle with the
+-- plane at y and take the widest |x| where it cuts. (Binning vertices by row
+-- double counts the ones that sit exactly on a row boundary, which is exactly
+-- where a brim's corner is.)
+function F.sectionWidth(r, y)
+  local best = 0
+  local function cut(a, b)
+    if (a[2] - y) * (b[2] - y) < 0 then
+      local t = (y - a[2]) / (b[2] - a[2])
+      local x = math.abs(a[1] + t * (b[1] - a[1]))
+      if x > best then best = x end
+    end
+  end
+  for i = 1, #r.map, 3 do
+    local a, b, c = r.verts[r.map[i]], r.verts[r.map[i + 1]], r.verts[r.map[i + 2]]
+    cut(a, b); cut(b, c); cut(c, a)
+  end
+  return best
+end
+-- ...at the centre of sprite row `row` (0 = top), as a fraction of `halfWidth`
+function F.widthKept(r, row, halfWidth)
+  return F.sectionWidth(r, r.base + 0.5 - row) / halfWidth
+end
+
 -- views + layout for one slot, in SpriteSolid's shape
 function F.viewsFor(S, rgba, imgW, imgH, slot, padded)
   local views, cellY = {}, {}

@@ -88,7 +88,7 @@ S.ALPHA = 128           -- alpha (0..255) at or above which a texel is body
 S.DEFAULT = {
   ss = 1,               -- field samples per pixel per axis (2 = 8x the nodes)
   blur = 2,             -- passes of [1 2 1]/4 along each axis
-  sharpen = 0.10,       -- 0..1: how much smaller the blur's radius is (0.1 = 10% sharper)
+  sharpen = 0.35,       -- 0..1: how much smaller the blur's radius is (0.35 = 35% sharper)
   keepGaps = true,      -- keep the gaps the silhouettes show open (see header)
   gapMinPart = 2,       -- px: a gap is kept only between parts at least this wide
   iso = 0.45,           -- density level of the surface (0.5 = exact edge)
@@ -783,9 +783,19 @@ function S.build(views, layout, opts, tick)
     local a, b2, c3 = tris[t], tris[t + 1], tris[t + 2]
     -- drop triangles that collapsed onto the ground
     if not (P[a * 3 - 1] == 0 and P[b2 * 3 - 1] == 0 and P[c3 * 3 - 1] == 0) then
-      local sx = N[a * 3 - 2] + N[b2 * 3 - 2] + N[c3 * 3 - 2]
-      local sy = N[a * 3 - 1] + N[b2 * 3 - 1] + N[c3 * 3 - 1]
-      local sz = N[a * 3] + N[b2 * 3] + N[c3 * 3]
+      -- The cell is chosen from the triangle's OWN normal, not the smoothed vertex
+      -- normals: on a sharp mesh a small facet can face quite differently from the
+      -- average of its corners, and projecting it into the wrong cell stretches it.
+      -- (The vertex normals only say which side is out.)
+      local ax, ay, az = P[a * 3 - 2], P[a * 3 - 1], P[a * 3]
+      local ux, uy, uz = P[b2 * 3 - 2] - ax, P[b2 * 3 - 1] - ay, P[b2 * 3] - az
+      local vx, vy, vz = P[c3 * 3 - 2] - ax, P[c3 * 3 - 1] - ay, P[c3 * 3] - az
+      local sx, sy, sz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+      local ox = N[a * 3 - 2] + N[b2 * 3 - 2] + N[c3 * 3 - 2]
+      local oy = N[a * 3 - 1] + N[b2 * 3 - 1] + N[c3 * 3 - 1]
+      local oz = N[a * 3] + N[b2 * 3] + N[c3 * 3]
+      if sx * ox + sy * oy + sz * oz < 0 then sx, sy, sz = -sx, -sy, -sz end
+      if sx == 0 and sy == 0 and sz == 0 then sx, sy, sz = ox, oy, oz end
       local best, bestScore = 1, -math.huge
       for c = 1, 5 do
         local sc = sx * AN[c][1] + sy * AN[c][2] + sz * AN[c][3]

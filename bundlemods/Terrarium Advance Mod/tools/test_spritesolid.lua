@@ -230,8 +230,9 @@ do
   check(crown1 < 0.05, ("with it the crown is %.0f%% outline"):format(crown1 * 100))
   -- the face is not distorted: the middle of the front picture stays planar
   local same, tot = 0, 0
-  for y = 8 * K, 19 * K - 1 do          -- the fringe and the face (the shoulders below
-    for x = 10 * K, 22 * K - 1 do       -- face up, so they rightly use the outline-free copy)
+  for y = 13 * K, 17 * K - 1 do         -- the eyes and cheeks (above: hair treads face up; below:
+    for x = 10 * K, 22 * K - 1 do       -- the jaw narrows, so these columns reach the row's edge and
+                                        -- the stretch rightly starts)
       local at = (y * plain.atlasW + x) * 4
       local a1, a2, a3, a4 = plain.atlas:byte(at + 1, at + 4)
       local b1, b2, b3 = wrapped.atlas:byte(at + 1, at + 3)
@@ -474,6 +475,29 @@ do
   check(nSmooth > nPlain * 1.5, ("the smooth bake has far more tones along edges (%d vs %d)"):format(nSmooth, nPlain))
 end
 
+-- ------------------------------------------------------------------ a hat is a hat --
+-- A brim is a thin wide ledge. The blur used to average it into the crown and
+-- head until the hat read as a beanie (a dome with a stunted rim).
+do
+  local HAT = Fx.HAT
+  local function keeps(brimRows, opts)
+    local r = Fx.hatFigure(S, brimRows, opts)
+    return Fx.widthKept(r, 7, HAT.brim), Fx.widthKept(r, 6, HAT.crown), Fx.widthKept(r, 7 + brimRows, HAT.head), r
+  end
+  local old1 = keeps(1, { sharpen = 0.10 })
+  check(old1 < 0.8, ("(with the old blur a one-row brim keeps only %.0f%% of its width: the beanie)"):format(old1 * 100))
+  for rows = 1, 2 do
+    local brim, crown, head = keeps(rows, nil)
+    check(brim >= 0.9, ("a %d-row brim keeps %.0f%% of its width"):format(rows, brim * 100))
+    check(crown <= 1.15, ("the crown above it does not swell (%.0f%%)"):format(crown * 100))
+    check(head <= 1.15, ("the head under it does not swell (%.0f%%)"):format(head * 100))
+  end
+  -- the step is crisp: the width jumps by most of the true difference in one row
+  local r = Fx.hatFigure(S, 1, nil)
+  local above, at = Fx.sectionWidth(r, r.base + 0.5 - 5), Fx.sectionWidth(r, r.base + 0.5 - 7)
+  check(at - above >= 0.8 * (HAT.brim - HAT.crown), ("crown to brim is a step (%.1f px over two rows)"):format(at - above))
+end
+
 -- ------------------------------------------------------- parts stay separate --
 -- The blur that rounds the pixel staircase also bleeds across a narrow gap, so
 -- two parts a pixel apart (legs, an arm and the torso, a stride) used to fuse.
@@ -509,8 +533,10 @@ do
     local tag = ("%d px gap, %s (cell %d)"):format(gap, mode == "x" and "legs apart" or "stride", W)
     check(gapHits(figure(W, gap, mode), mode) == 0, tag .. ": stays open by default")
     if gap == 1 then
-      check(gapHits(figure(W, gap, mode, { keepGaps = false }), mode) > 0,
-        tag .. ": FUSES without keepGaps (so the test sees the bug)")
+      -- (with the old 10% blur and no keepGaps; the new default is sharp enough to
+      -- reopen a 1 px gap on its own, but keepGaps is what makes it dependable)
+      check(gapHits(figure(W, gap, mode, { keepGaps = false, sharpen = 0.1 }), mode) > 0,
+        tag .. ": FUSES with the old blur and no keepGaps (so the test sees the bug)")
     end
   end
   -- a 1 px sliver beside a gap (the fixture's nose) is attached, not a floating
@@ -594,8 +620,8 @@ do
     end
     local v0, v1, v4 = volume(box({ sharpen = 0 })), volume(box({ sharpen = 0.1 })), volume(box({ sharpen = 0.4 }))
     check(v0 < v1 and v1 < v4, ("more sharpening keeps more of the box (%.0f < %.0f < %.0f)"):format(v0, v1, v4))
-    check(math.abs(volume(box(nil)) - v1) < 1e-6, "the default is 10% sharper than the old blur")
-    check(S.DEFAULT.sharpen == 0.10 and S.DEFAULT.keepGaps == true, "defaults: sharpen 10%, gaps kept")
+    check(math.abs(volume(box(nil)) - volume(box({ sharpen = 0.35 }))) < 1e-6, "the default is 35% sharper than the old blur")
+    check(S.DEFAULT.sharpen == 0.35 and S.DEFAULT.keepGaps == true, "defaults: sharpen 35%, gaps kept")
   end
 end
 
