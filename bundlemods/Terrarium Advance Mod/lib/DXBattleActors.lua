@@ -779,10 +779,7 @@ end
 
 function service.available(source,dex)
   dex=tonumber(dex)
-  local maxDex=386
-  local okHD,HD=pcall(require,"HDPokemonSheets")
-  if okHD and HD and type(HD.MAX_DEX)=="number" then maxDex=HD.MAX_DEX end
-  if not (dex and dex>=1 and dex<=maxDex) then return false end
+  if not (dex and dex>=1 and dex<=386) then return false end
   local api=dxApi()
   if not api then return false end
   if type(api.available)=="function" then

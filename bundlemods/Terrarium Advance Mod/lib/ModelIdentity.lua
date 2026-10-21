@@ -73,21 +73,14 @@ end
 -- Keep identity validation tied to that catalog instead of the old Gen I/II
 -- ceiling of 251 so cross-generation Mt. Battle consumers do not reject a
 -- source-backed Hoenn actor solely because its National Dex number is >251.
---
--- HD sheets extend support to National Dex 1..649 (Gen 5), so identity
--- validation must accept dex numbers up to that ceiling even when no Colosseum
--- model exists (the 2D fallback will handle them).
 local function validDex(dex)
   if not dex or dex%1~=0 or dex<1 then return false end
   local CD=V.ColosseumDex
-  local HD=V.HDPokemonSheets
-  local maxDex=386
-  if HD and type(HD.MAX_DEX)=="number" then maxDex=HD.MAX_DEX end
   if CD then
     if type(CD.supported)=="function" then return CD.supported(dex) and true or false end
     return true
   end
-  return dex<=maxDex
+  return dex<=386
 end
 
 -- ------- transform registry

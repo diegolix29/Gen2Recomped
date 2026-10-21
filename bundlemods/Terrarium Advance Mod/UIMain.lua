@@ -672,11 +672,7 @@ local function colosseumIconFrame(game,mon)
     local def=game.data.pokemon[mon.species]
     dex=def and tonumber(def.dex) or nil
   end
-  -- Check HD Pokemon Sheets max dex for Gen 4/5 support
-  local maxDex=386
-  local okHD,HD=pcall(require,"HDPokemonSheets")
-  if okHD and HD and type(HD.MAX_DEX)=="number" then maxDex=HD.MAX_DEX end
-  if not dex or dex<1 or dex>maxDex then return nil end
+  if not dex or dex<1 or dex>386 then return nil end
 
   local count
   if cat then
