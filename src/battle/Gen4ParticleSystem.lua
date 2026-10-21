@@ -89,6 +89,21 @@ local function modulate(a, b)
   }
 end
 
+-- modulate() without the per-particle table: the product is written into a
+-- 3-slot table the PARTICLE owns, so a draw pass allocates nothing.  Safe
+-- because the draw callback consumes the colour immediately (Gen4MoveAnimPlayer
+-- copies it into a pooled record that is read in the same frame).
+local function modulateInto(p, a, b)
+  if not a then return b end
+  if not b then return a end
+  local out = p.mixedColour
+  if not out then out = { 0, 0, 0 }; p.mixedColour = out end
+  out[1] = floor((a[1] or 0) * (b[1] or 0) / 255)
+  out[2] = floor((a[2] or 0) * (b[2] or 0) / 255)
+  out[3] = floor((a[3] or 0) * (b[3] or 0) / 255)
+  return out
+end
+
 local function mixColour(from, to, k)
   if not (from and to) then return to or from end
   if k < 0 then k = 0 elseif k > 1 then k = 1 end
@@ -1027,22 +1042,34 @@ end
 -- because every drawing library this could reach takes radians and converting
 -- in one place beats converting in each caller. `colour` is nil unless a colour
 -- animation gave the particle one, so a caller can leave it alone.
+-- the comparator captured nothing, so it was a fresh closure every call for no
+-- reason; one shared function now
+local function byLayerThenDepth(a, b)
+  local la, lb = a.layer or 0, b.layer or 0
+  if la ~= lb then return la < lb end
+  return (a.z or 0) < (b.z or 0)
+end
+
 function System:draw(originX, originY, drawTexture)
   if not drawTexture then return 0 end
   local U = Gen4ParticleSystem.UNITS_TO_PIXELS
   -- BOTH LISTS, BY LAYER THEN BY DEPTH. The layer carries `drawChildrenFirst`
   -- and a hidden parent is left out entirely, which is what `hideParent` means:
   -- 821 emitters have children and some of them exist only to spray.
-  local order = {}
+  --
+  -- The sort list is this system's own scratch table, reused every frame; the
+  -- tail left over from a longer previous frame is cleared so table.sort sees
+  -- exactly `n` entries.
+  local order = self._order
+  if not order then order = {}; self._order = order; self._orderN = 0 end
+  local n = 0
   for _, p in ipairs(self.particles) do
-    if not p.hidden then order[#order + 1] = p end
+    if not p.hidden then n = n + 1; order[n] = p end
   end
-  for _, p in ipairs(self.children) do order[#order + 1] = p end
-  table.sort(order, function(a, b)
-    local la, lb = a.layer or 0, b.layer or 0
-    if la ~= lb then return la < lb end
-    return (a.z or 0) < (b.z or 0)
-  end)
+  for _, p in ipairs(self.children) do n = n + 1; order[n] = p end
+  for i = n + 1, self._orderN do order[i] = nil end
+  self._orderN = n
+  if n > 1 then table.sort(order, byLayerThenDepth) end
   local drawn = 0
   for _, p in ipairs(order) do
     -- THE PARTICLE'S OWN BASE, not the emitter's current one. `by` is in the
@@ -1052,7 +1079,7 @@ function System:draw(originX, originY, drawTexture)
                 (originY or 0) + (p.by or 0) - p.y * U, p.scaleX or p.scale,
                 p.scaleY or p.scale, p.alpha,
                 ((p.rotation or 0) % 65536) * 2 * math.pi / 65536,
-                modulate(p.colour, p.emitterColour), p.tileS, p.tileT)
+                modulateInto(p, p.colour, p.emitterColour), p.tileS, p.tileT)
     drawn = drawn + 1
   end
   return drawn

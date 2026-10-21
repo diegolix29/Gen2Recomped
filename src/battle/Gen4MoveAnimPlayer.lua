@@ -3916,30 +3916,59 @@ end
 -- where the attacker and the defender are on its own screen and adds them. The
 -- origin name is passed through rather than resolved here for the same reason
 -- `monOffset` returns a delta: this file knows the cartridge, not the layout.
+--
+-- POOLED. This used to allocate a result table, a closure per emitter and a
+-- 14-field record per particle EVERY FRAME; a busy move is a few hundred
+-- records a frame, which is the garbage that turned into collector pauses in
+-- the middle of an attack. The records and the list are now reused. The one
+-- consumer (Gen4Battle.drawParticles) reads the list inside the same frame and
+-- keeps nothing, which is what makes that safe -- do not hold on to it.
+local function particleSink(self)
+  return function(texture, x, y, scaleX, scaleY, alpha, rotation, colour)
+    local e = self._partE
+    local n = self._partN + 1
+    self._partN = n
+    local rec = self._partPool[n]
+    if not rec then rec = {}; self._partPool[n] = rec end
+    rec.origin = e.origin
+    rec.axis = e.axis
+    rec.art = e.art and e.art[(tonumber(texture) or 0) + 1] or nil
+    rec.texture = texture
+    rec.member = e.member
+    -- TWO SCALES, because a particle is not square: `aspectRatio` runs
+    -- 0.03 to 8.0 across the cartridge and a third of its emitters set
+    -- it. `scale` stays as the Y axis so nothing that read it breaks.
+    rec.x, rec.y = x, y
+    rec.scaleX, rec.scaleY, rec.scale = scaleX, scaleY, scaleY
+    rec.alpha = alpha
+    -- CARRIED, NOT DROPPED. The rotation and the colour curve are the
+    -- two things the simulation computes that only the screen can use,
+    -- and a draw record that left them out would make the animation
+    -- blocks look unimplemented from the one place that can see them.
+    rec.rotation, rec.colour = rotation, colour
+    self._partOut[n] = rec
+  end
+end
+
 function Player:particles()
-  local out = {}
+  local out = self._partOut
+  if not out then
+    out = {}
+    self._partOut, self._partPool = out, {}
+    self._partPrev, self._partN = 0, 0
+    self._partSink = particleSink(self)
+  end
+  self._partN = 0
   for _, e in ipairs(self.emitters) do
     if not e.done then
-      e.system:draw(0, 0,
-        function(texture, x, y, scaleX, scaleY, alpha, rotation, colour)
-          out[#out + 1] = {
-            origin = e.origin, axis = e.axis,
-            art = e.art and e.art[(tonumber(texture) or 0) + 1] or nil,
-            texture = texture, member = e.member,
-            -- TWO SCALES, because a particle is not square: `aspectRatio` runs
-            -- 0.03 to 8.0 across the cartridge and a third of its emitters set
-            -- it. `scale` stays as the Y axis so nothing that read it breaks.
-            x = x, y = y, scaleX = scaleX, scaleY = scaleY, scale = scaleY,
-            alpha = alpha,
-            -- CARRIED, NOT DROPPED. The rotation and the colour curve are the
-            -- two things the simulation computes that only the screen can use,
-            -- and a draw record that left them out would make the animation
-            -- blocks look unimplemented from the one place that can see them.
-            rotation = rotation, colour = colour,
-          }
-        end)
+      self._partE = e
+      e.system:draw(0, 0, self._partSink)
     end
   end
+  self._partE = nil
+  local n = self._partN
+  for i = n + 1, self._partPrev do out[i] = nil end
+  self._partPrev = n
   return out
 end
 

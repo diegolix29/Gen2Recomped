@@ -285,10 +285,21 @@ end
 -- <art>_<side>). Nothing here extracts anything.
 -- ---------------------------------------------------------------------------
 
+-- Local path -> Image memo in front of Assets.image.  This helper is called from
+-- inside the per-particle / per-cell-actor / per-move draw loops, so it must be
+-- a table lookup, not a pcall plus a resolve.  Failures are NOT remembered (a
+-- missing sheet is retried exactly as before).  Emptied with the central cache.
+local imageMemo = {}
+Assets.register(function() imageMemo = {} end)
+
 local function image(path)
   if type(path) ~= "string" then return nil end
+  local hit = imageMemo[path]
+  if hit then return hit end
   local ok, img = pcall(Assets.image, path)
-  return ok and img or nil
+  img = ok and img or nil
+  if img then imageMemo[path] = img end
+  return img
 end
 
 local function graphics(battle)
@@ -1310,7 +1321,9 @@ end
 local tileQuads = {}
 
 local function tiledQuad(width, height, tileS, tileT)
-  local key = ("%d:%d:%d:%d"):format(width, height, tileS, tileT)
+  -- numeric key: the old string.format key made a garbage string per tiled
+  -- particle per frame
+  local key = ((width * 65536 + height) * 64 + tileS) * 64 + tileT
   local quad = tileQuads[key]
   if not quad then
     quad = love.graphics.newQuad(0, 0, width * tileS, height * tileT,
@@ -3011,6 +3024,18 @@ end
 -- drawn at three-quarter size, its icon, "PP" and count packed left to right
 -- under the name rather than spread across the cartridge's 128-wide layout.
 Gen4Battle.SMALL_INFO_SCALE = 0.75
+-- type name -> icon path, built once per type instead of one concat per move
+-- slot per frame
+local typeIconPaths = {}
+function Gen4Battle.typeIconPath(typeName)
+  local p = typeIconPaths[typeName]
+  if not p then
+    p = "assets/generated/gen4/battle/type_icons_" .. typeName .. ".png"
+    typeIconPaths[typeName] = p
+  end
+  return p
+end
+
 function Gen4Battle.drawMoveFace(battle, i, colX, nameTop, infoTop, small)
   local slot = Gen4Battle.moveSlot(battle, i)
   if not slot then return end
@@ -3029,7 +3054,7 @@ function Gen4Battle.drawMoveFace(battle, i, colX, nameTop, infoTop, small)
   if faced then Font.popFace() end
   g.setColor(1, 1, 1, 1)
   local typeName = slot.def and slot.def.type and tostring(slot.def.type):lower()
-  local icon = typeName and image("assets/generated/gen4/battle/type_icons_" .. typeName .. ".png")
+  local icon = typeName and image(Gen4Battle.typeIconPath(typeName))
   local ink, shadow = Sub.ppColour(slot.pp, slot.maxPP)
   local count = ("%2d/%2d"):format(slot.pp, slot.maxPP)
   if small then

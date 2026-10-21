@@ -98,24 +98,39 @@ local function lookAt(eye, target)
            ex = eye[1], ey = eye[2], ez = eye[3] }
 end
 
--- project(cam, p) -> screen x, y, depth (DS pixels of the cartridge's view)
-function M.project(cam, p)
+-- 1 / tan(fovy / 2), recomputed only if the camera's fovy actually changes (it
+-- was a math.tan per project() and per pixelsPerUnit(), i.e. several per particle
+-- per frame)
+local focalFovy, focalF
+local function focal()
+  local fv = M.CAMERA.fovy
+  if fv ~= focalFovy then focalFovy, focalF = fv, 1 / math.tan(fv / 2) end
+  return focalF
+end
+
+-- projectXYZ(cam, x, y, z): project() with no point table, for the per-particle
+-- path
+function M.projectXYZ(cam, px, py, pz)
   local v = cam.view
-  local dx, dy, dz = p[1] - v.ex, p[2] - v.ey, p[3] - v.ez
+  local dx, dy, dz = px - v.ex, py - v.ey, pz - v.ez
   local x = dx * v.sx + dy * v.sy + dz * v.sz
   local y = dx * v.ux + dy * v.uy + dz * v.uz
   local d = dx * v.fx + dy * v.fy + dz * v.fz
   if d < 0.05 then d = 0.05 end
-  local f = 1 / math.tan(M.CAMERA.fovy / 2)
+  local f = focal()
   local nx = x * f / M.CAMERA.aspect / d
   local ny = y * f / d
   return (nx + 1) * 0.5 * M.LCD_W, (1 - ny) * 0.5 * M.LCD_H, d
 end
 
+-- project(cam, p) -> screen x, y, depth (DS pixels of the cartridge's view)
+function M.project(cam, p)
+  return M.projectXYZ(cam, p[1], p[2], p[3])
+end
+
 -- pixels one world unit covers at depth d
 function M.pixelsPerUnit(d)
-  local f = 1 / math.tan(M.CAMERA.fovy / 2)
-  return 0.5 * M.LCD_H * f / max(0.05, d)
+  return 0.5 * M.LCD_H * focal() / max(0.05, d)
 end
 
 local function camera(pos, target)
@@ -1493,13 +1508,31 @@ function Player:bgLayerState() return nil end
 -- drawing (called by Gen4Battle's hooks)
 -- ---------------------------------------------------------------------------
 
+-- art row -> Image. This ran a pcall(require) AND a pcall(Assets.image) per
+-- particle per frame; now it is one weak-table lookup after the first sighting.
+-- Emptied with the central asset cache so a hot reload cannot leave a stale Image.
+local function newImageMemo() return setmetatable({}, { __mode = "k" }) end
+local imageMemo = newImageMemo()
+local AssetsMod
 local function imageOf(art)
   if not art then return nil end
   if art.image then return art.image end
-  local okA, Assets = pcall(require, "src.render.Assets")
-  if not (okA and Assets and art.path) then return nil end
-  local okI, img = pcall(Assets.image, art.path)
-  return okI and img or nil
+  local hit = imageMemo[art]
+  if hit then return hit end
+  if AssetsMod == nil then
+    local okA, A = pcall(require, "src.render.Assets")
+    AssetsMod = (okA and A) or false
+    if AssetsMod and AssetsMod.register then
+      AssetsMod.register(function() imageMemo = newImageMemo() end)
+    end
+  end
+  if not (AssetsMod and art.path) then return nil end
+  local okI, img = pcall(AssetsMod.image, art.path)
+  if okI and img then
+    imageMemo[art] = img
+    return img
+  end
+  return nil
 end
 
 -- the effect background (BG3): 2D, so it is NOT zoomed by the camera
@@ -1532,42 +1565,72 @@ function Player:drawEffectLayer(battle)
   return true
 end
 
+local function byDepthThenLayer(a, b)
+  if a.depth ~= b.depth then return a.depth > b.depth end
+  return a.layer < b.layer
+end
+
+local NO_PARTICLES = {}
+
 -- every live particle, projected; farthest first
+--
+-- Allocation-free in steady state: the draw list and its rows are this
+-- player's own and are reused every frame (they used to be a fresh list, a row
+-- per particle, a closure per emitter and a point table per particle), the
+-- per-emitter screen anchor is computed once per emitter instead of once per
+-- particle, and a particle is projected once instead of twice. The arithmetic
+-- is identical to worldToScreen's.
 function Player:drawParticles(battle)
   if not self:alive() then return 0 end
   local A = self:anchors(battle)
-  local list = {}
+  local list = self._drawList
+  if not list then
+    list = {}
+    self._drawList, self._drawPool, self._drawPrev = list, {}, 0
+  end
+  local pool = self._drawPool
+  local n = 0
+  local DEF = M.DEFAULT_CAM
+  local SU = M.SCREEN_UNITS
   for _, e in ipairs(self.emitters) do
     if not e.done then
       local sys = e.sys
-      local function add(p, layer)
-        if p.hidden and layer == 0 then return end
-        -- SPL draws a particle at its EMITTER's current position plus its own
-        -- (emitter-relative) one, so a moving emitter carries its particles:
-        -- that is what turns Water Gun's per-frame emitters into a stream
-        local wx, wy, wz = e.pos[1], e.pos[2], e.pos[3]
-        local x, y, size
-        if e.screen then
-          local ax, ay = self:worldToScreen(A, { wx, wy, wz })
-          x = ax + p.x * M.SCREEN_UNITS
-          y = ay - p.y * M.SCREEN_UNITS
-          size = M.SCREEN_UNITS
-          list[#list + 1] = { p = p, e = e, x = x, y = y, size = size, depth = -1e9 + (p.z or 0), layer = p.layer or 0 }
-        else
-          local w = { wx + p.x, wy + p.y, wz + p.z }
-          local _, _, d = M.project(M.DEFAULT_CAM, w)
-          x, y, size = self:worldToScreen(A, w)
-          list[#list + 1] = { p = p, e = e, x = x, y = y, size = size, depth = d, layer = p.layer or 0 }
+      -- SPL draws a particle at its EMITTER's current position plus its own
+      -- (emitter-relative) one, so a moving emitter carries its particles:
+      -- that is what turns Water Gun's per-frame emitters into a stream
+      local wx, wy, wz = e.pos[1], e.pos[2], e.pos[3]
+      local ax, ay
+      if e.screen then ax, ay = self:worldToScreen(A, { wx, wy, wz }) end
+      for pass = 0, 1 do
+        local src = (pass == 0 and sys.particles or sys.children) or NO_PARTICLES
+        for i = 1, #src do
+          local p = src[i]
+          if not (p.hidden and pass == 0) then
+            n = n + 1
+            local q = pool[n]
+            if not q then q = {}; pool[n] = q end
+            if e.screen then
+              q.x = ax + p.x * SU
+              q.y = ay - p.y * SU
+              q.size = SU
+              q.depth = -1e9 + (p.z or 0)
+            else
+              local px, py, d = M.projectXYZ(DEF, wx + p.x, wy + p.y, wz + p.z)
+              local sx, sy, s = M.toScreen(A, px, py)
+              q.x, q.y = sx, sy
+              q.size = s * M.pixelsPerUnit(d)
+              q.depth = d
+            end
+            q.p, q.e, q.layer = p, e, p.layer or 0
+            list[n] = q
+          end
         end
       end
-      for _, p in ipairs(sys.particles or {}) do add(p, 0) end
-      for _, p in ipairs(sys.children or {}) do add(p, 1) end
     end
   end
-  table.sort(list, function(a, b)
-    if a.depth ~= b.depth then return a.depth > b.depth end
-    return a.layer < b.layer
-  end)
+  for i = n + 1, self._drawPrev do list[i] = nil end
+  self._drawPrev = n
+  if n > 1 then table.sort(list, byDepthThenLayer) end
   local g = love.graphics
   local drawn = 0
   for _, q in ipairs(list) do

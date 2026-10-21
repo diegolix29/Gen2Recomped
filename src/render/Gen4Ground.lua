@@ -56,6 +56,14 @@ Gen4Ground.CACHE = 16
 -- visible set, so a map entry pays one hitch and then nothing; walking into a
 -- new chunk pays for that one.
 Gen4Ground.BAKES_PER_FRAME = 4
+-- ...and a TIME cap on top of that count. Four chunk bakes is a fine budget when
+-- a bake is cheap and a visible hitch when each one is several milliseconds,
+-- which is what a big or detailed chunk costs on a slow CPU / phone. Once a
+-- frame has spent this many milliseconds baking it stops (at least one bake per
+-- frame always happens, so streaming can never stall); the live pass draws the
+-- world while the rest catch up, exactly as it does for the count budget.
+-- Set to 0 (or nil) to get the old count-only behaviour back.
+Gen4Ground.BAKE_MS = 4
 
 -- The depth range the height is mapped into, and it is a PRECISION choice
 -- rather than a safety margin.
@@ -3886,7 +3894,14 @@ function Gen4Ground:canvasFor(land)
   end
   self.budget = self.budget - 1
 
+  local bakeMs = Gen4Ground.BAKE_MS
+  local t0 = bakeMs and bakeMs > 0 and love.timer and love.timer.getTime() or nil
   local canvas = self:bake(land)
+  if t0 then
+    self.bakeSpent = (self.bakeSpent or 0) + (love.timer.getTime() - t0) * 1000
+    -- over the time budget: no more bakes this frame
+    if self.bakeSpent >= bakeMs then self.budget = 0 end
+  end
   self.baked[land] = canvas or false
   self.order[#self.order + 1] = land
   -- Oldest out first. A player walks in one direction, so the chunk longest
@@ -3952,6 +3967,7 @@ function Gen4Ground:draw(camX, camY, vw, vh)
     if self.lightBand ~= band then self:dropLitModels() end
   end
   self.budget = Gen4Ground.BAKES_PER_FRAME
+  self.bakeSpent = 0
   -- One tick a frame, which is the clock every animation in this cartridge is
   -- authored against: its frame counts ARE frames.
   --
