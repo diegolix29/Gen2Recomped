@@ -612,6 +612,30 @@ function Rider:pose()
 end
 function Rider:draw() end
 
+-- Gen 4 / Gen 5 worlds (Platinum, HGSS, BW...). Cached for a second: it is
+-- asked every frame by the rider draw and the ghost sync.
+local modernCache = { t = -1, v = false }
+local function modernWorld()
+  local now = love.timer.getTime()
+  if now - modernCache.t < 1 then return modernCache.v end
+  local v = false
+  local Host = V.Gen4WorldHost
+  if Host then
+    local okG, g = pcall(function() return Host.generation and Host.generation() end)
+    if okG and tonumber(g) and tonumber(g) >= 4 then v = true end
+    if not v and Host.isGen4 then
+      local okH, r = pcall(Host.isGen4)
+      if okH and r then v = true end
+    end
+    if not v and Host.isState then
+      local okS, r = pcall(Host.isState)
+      if okS and r then v = true end
+    end
+  end
+  modernCache.t, modernCache.v = now, v
+  return v
+end
+
 -- Seat the walking sprite on the mount.  GB 16x16 sheets use SpriteRenderer's
 -- topHalf (upper 8px = the whole head).  Gen 3/4 heroes are 16x32: the extra
 -- height hangs above the cell, but the first rows are empty/hat, so topHalf
@@ -627,8 +651,12 @@ local function drawFreeFlyRider(walk, px, py, camX, camY, facing)
   end
   local frame, flip = walk:poseFrame(facing, 0, false)
   frame = tonumber(frame) or 0
-  local inset = math.min(8, math.max(0, tileH - 16))
-  local cropH = math.min(16, tileH - inset)
+  -- Gen 3 keeps the head-and-shoulders crop. Gen 4 / 5 draw the WHOLE
+  -- trainer frame (no belly cut-off); the mount is drawn over it right
+  -- after, so the legs still sit behind the mount's body.
+  local full = modernWorld()
+  local inset = full and 0 or math.min(8, math.max(0, tileH - 16))
+  local cropH = full and tileH or math.min(16, tileH - inset)
   if cropH < 8 then
     walk:draw(px, py, camX, camY, facing, 0, false, true)
     return
@@ -1707,6 +1735,14 @@ end
 local function syncRider(ow, p)
   -- FULL FLY: no rider at all, so make sure no ghost is left in the list
   if state.fullFly then
+    dropRider(ow)
+    return
+  end
+  -- Gen 4 / 5: the ghost is a second, separate copy of the trainer (the
+  -- engine billboards it through pose() with no live facing, so it sat
+  -- still looking north). Player.draw / Host.flightRider already draw the
+  -- one rider that follows the player, so no ghost entity at all.
+  if modernWorld() then
     dropRider(ow)
     return
   end
