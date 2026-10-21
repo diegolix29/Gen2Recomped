@@ -257,6 +257,30 @@ function M.status()
   return {hook=state.hook,events=state.events,battleState=state.battleState,tries=state.tries}
 end
 
+-- A species that IS identified (a real National Dex number) but that the
+-- Colosseum actor catalog has no body for: Sinnoh (387-493) and Unova (494-649).
+-- The disc only ships 386 models, so no amount of cache preparation will ever
+-- produce one. Returns that dex number, or nil for anything else (identified and
+-- modelled, or genuinely unidentifiable -- that one stays an error).
+--
+-- Callers use it to tell "nothing to prepare, draw the 2D sprite" apart from
+-- "identity lookup failed". Before this existed both came back as `nil, nil`, so a
+-- Gen 5 party/opponent was reported as a missing National Dex mapping: the model
+-- cache could never finish, and the battle never got past the preparation screen.
+function M.unsupported(game,battler)
+  if type(battler)~="table" then return nil end
+  local mon=type(battler.mon)=="table" and battler.mon or battler
+  local defs=game and game.data and game.data.pokemon
+  local candidates={}
+  local tdex=M.transformDex(battler,mon)
+  if tdex then candidates[#candidates+1]=tdex end
+  candidates[#candidates+1]=lookupDex(defs,mon.species or mon.id,mon)
+  for _,dex in ipairs(candidates) do
+    if dex and dex%1==0 and dex>=1 and not validDex(dex) then return dex end
+  end
+  return nil
+end
+
 function M.resolve(game,battler,baseOnly)
   if type(battler)~="table" then return nil,"Pokemon identity unavailable" end
   if not state.battleState and state.tries<50 then M.install() end

@@ -151,7 +151,11 @@ function C.startupPlan(game,save,newGame)
         -- Hypothetical catalog shinies can remain on-demand, but moving an owned
         -- shiny back onto its first visible battle/menu frame defeats the point
         -- of a persistent cache and is especially expensive on Android.
-        if dex then add(dex,variant,nil,mon) else add(nil,'normal',variant,nil) end
+        if dex then add(dex,variant,nil,mon)
+        elseif V.ModelIdentity.unsupported and V.ModelIdentity.unsupported(game,mon) then
+          -- A Sinnoh/Unova (387+) party member has no Colosseum body to prepare;
+          -- it is drawn in 2D. Planning a row for it could never become "ready".
+        else add(nil,'normal',variant or 'No National Dex mapping',nil) end
       end
     end
   end
@@ -717,9 +721,15 @@ function C.holdBattle(game,mons,owner)
     if not empty then
       local dex,variant=V.ModelIdentity.resolve(game,mon)
       local identity=tostring(dex)..':'..tostring(variant)
-      if A.requiredModelReady or not seen[identity] then
+      -- Identified but modelless (Sinnoh/Unova, dex 387+): nothing to prepare and
+      -- nothing to wait for. Previously this became an error row and the battle
+      -- sat on the model-preparation failure screen.
+      local modelless=not dex and V.ModelIdentity.unsupported and V.ModelIdentity.unsupported(game,mon)
+      if modelless then
+        -- no row
+      elseif A.requiredModelReady or not seen[identity] then
         if not A.requiredModelReady then seen[identity]=true end
-        if not dex then rows[#rows+1]={error=variant,battler=mon}
+        if not dex then rows[#rows+1]={error=variant or 'No National Dex mapping',battler=mon}
         elseif not ((A.requiredModelReady and A.requiredModelReady(dex,variant,game,mon))
             or (not A.requiredModelReady and A.sessionModelReady and A.sessionModelReady(dex,variant))
             or (not A.sessionModelReady and quickValidated[identity]==cacheIdentity and A.peek('selected',dex,variant).resident)) then

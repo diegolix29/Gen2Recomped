@@ -547,9 +547,25 @@ end
 -- draw 2D"; hidden/fainted/captured actors of modelled species are unaffected.
 local function hdFallbackOwns(context,side)
   local hd=V.HDPokemonSheets
-  if not (hd and type(hd.ownsSide)=="function") then return false end
-  local ok,owned=pcall(hd.ownsSide,context,liveBattler(context,side))
-  return ok and owned==true
+  if hd and type(hd.ownsSide)=="function" then
+    local ok,owned=pcall(hd.ownsSide,context,liveBattler(context,side))
+    if ok and owned==true then return true end
+  end
+  -- NO MODEL CAN EXIST, AND NO HD SHEET IS INSTALLED: still not an error.
+  -- The Colosseum disc ships bodies for National Dex 1-386 only, so a Sinnoh or
+  -- Unova species (387-649) has nothing to acquire. Without this the side was
+  -- reported as "no National Dex mapping" (a render error that stalls the battle
+  -- cache) AND the native picture was suppressed by the "COLOSSEUM MODELS means
+  -- models" rule -- the battle either hung or the Pokemon was simply invisible.
+  -- Such a side is drawn from the engine's own battle picture instead, the same
+  -- 2D path the HD sheets use when they are present.
+  local identity=V.ModelIdentity
+  if identity and type(identity.unsupported)=="function" then
+    local game=context and (context.game or (context.battle and context.battle.game))
+    local okU,dex=pcall(identity.unsupported,game,liveBattler(context,side))
+    if okU and dex then return true end
+  end
+  return false
 end
 
 -- Native battle scripts are free to rebuild lightweight battler wrappers while

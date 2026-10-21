@@ -76,7 +76,15 @@ function P.rank(game,save,checkpoint)
   local function mon(m,score,reason,required)
     local raw=unwrap(m);if not raw or egg(raw)then return end
     local d,v=V.ModelIdentity.resolve(game,m,true)
-    if not d then if required then return nil,v end;return end
+    if not d then
+      -- Identified but modelless (Sinnoh/Unova, 387+): no body to cache, and not a
+      -- planning failure. Skip it; it is drawn in 2D.
+      if V.ModelIdentity.unsupported and V.ModelIdentity.unsupported(game,m) then
+        if required then partyCount=partyCount+1 end
+        return true
+      end
+      if required then return nil,v or 'No National Dex mapping' end;return
+    end
     -- Cache selection always prepares the normal source unit. The actual shiny
     -- identity is preserved by gameplay and materializes on-demand.
     add(d,'normal',score,reason)

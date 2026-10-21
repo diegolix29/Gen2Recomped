@@ -28,7 +28,7 @@
 --   Platinum, so it cannot be read from here; copy KIM's
 --   assets/battle/hd-pokemon tree into assets/hd-pokemon/ instead.
 --
--- CAP: National Dex 1..493 (Gen 4). Anything above is ignored.
+-- CAP: National Dex 1..649 (Gen 4 + Gen 5). Anything above is ignored.
 --
 -- A missing file at ANY step returns nil, which every host treats as "leave
 -- the native art alone".
@@ -36,7 +36,7 @@ local V = ...
 
 local M = {
   VERSION = 1,
-  MAX_DEX = 493,        -- Gen 4 ceiling; 494+ do not exist on Platinum
+  MAX_DEX = 649,        -- Gen 5 ceiling (Black/White 494-649; Platinum stops at 493)
   COLOSSEUM_MAX = 386,  -- highest dex the Colosseum actor catalog can model
   FRAME_MS = 50,        -- every KIM record uses 50 ms frames
 }
@@ -65,7 +65,7 @@ local function clock()
   return os.clock()
 end
 
--- ------- Gen 4 names (387..493), only a safety net for dex resolution -------
+-- ------- Gen 4 / Gen 5 names (387..649), only a safety net for dex resolution -------
 
 local G4_NAMES = [[
 TURTWIG GROTLE TORTERRA CHIMCHAR MONFERNO INFERNAPE PIPLUP PRINPLUP EMPOLEON
@@ -82,6 +82,26 @@ ROTOM UXIE MESPRIT AZELF DIALGA PALKIA HEATRAN REGIGIGAS GIRATINA CRESSELIA
 PHIONE MANAPHY DARKRAI SHAYMIN ARCEUS
 ]]
 
+-- Gen 5 names (494..649). Same role: a safety net for dex resolution when a
+-- species def carries no National Dex field of its own.
+local G5_NAMES = [[
+VICTINI SNIVY SERVINE SERPERIOR TEPIG PIGNITE EMBOAR OSHAWOTT DEWOTT SAMUROTT PATRAT WATCHOG
+LILLIPUP HERDIER STOUTLAND PURRLOIN LIEPARD PANSAGE SIMISAGE PANSEAR SIMISEAR PANPOUR SIMIPOUR
+MUNNA MUSHARNA PIDOVE TRANQUILL UNFEZANT BLITZLE ZEBSTRIKA ROGGENROLA BOLDORE GIGALITH WOOBAT
+SWOOBAT DRILBUR EXCADRILL AUDINO TIMBURR GURDURR CONKELDURR TYMPOLE PALPITOAD SEISMITOAD THROH
+SAWK SEWADDLE SWADLOON LEAVANNY VENIPEDE WHIRLIPEDE SCOLIPEDE COTTONEE WHIMSICOTT PETILIL
+LILLIGANT BASCULIN SANDILE KROKOROK KROOKODILE DARUMAKA DARMANITAN MARACTUS DWEBBLE CRUSTLE
+SCRAGGY SCRAFTY SIGILYPH YAMASK COFAGRIGUS TIRTOUGA CARRACOSTA ARCHEN ARCHEOPS TRUBBISH
+GARBODOR ZORUA ZOROARK MINCCINO CINCCINO GOTHITA GOTHORITA GOTHITELLE SOLOSIS DUOSION
+REUNICLUS DUCKLETT SWANNA VANILLITE VANILLISH VANILLUXE DEERLING SAWSBUCK EMOLGA KARRABLAST
+ESCAVALIER FOONGUS AMOONGUSS FRILLISH JELLICENT ALOMOMOLA JOLTIK GALVANTULA FERROSEED
+FERROTHORN KLINK KLANG KLINKLANG TYNAMO EELEKTRIK EELEKTROSS ELGYEM BEHEEYEM LITWICK LAMPENT
+CHANDELURE AXEW FRAXURE HAXORUS CUBCHOO BEARTIC CRYOGONAL SHELMET ACCELGOR STUNFISK MIENFOO
+MIENSHAO DRUDDIGON GOLETT GOLURK PAWNIARD BISHARP BOUFFALANT RUFFLET BRAVIARY VULLABY
+MANDIBUZZ HEATMOR DURANT DEINO ZWEILOUS HYDREIGON LARVESTA VOLCARONA COBALION TERRAKION
+VIRIZION TORNADUS THUNDURUS RESHIRAM ZEKROM LANDORUS KYUREM KELDEO MELOETTA GENESECT
+]]
+
 local nameToDex
 local function nameKey(s)
   return (tostring(s):upper():gsub("[^A-Z0-9]", ""))
@@ -95,6 +115,12 @@ local function buildNames()
     nameToDex[word] = n
   end
   M._g4NameCount = n - 386
+  local g4end = n
+  for word in G5_NAMES:gmatch("%S+") do
+    n = n + 1
+    nameToDex[word] = n
+  end
+  M._g5NameCount = n - g4end
   -- Opportunistic: the Colosseum namespace publishes 1..386 names.
   local names = V and V.ColosseumDexNames
   if type(names) == "table" then
