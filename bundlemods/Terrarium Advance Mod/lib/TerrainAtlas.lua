@@ -780,6 +780,81 @@ local function gen3Animate(map, base)
   return entry.image
 end
 
+-- ------------------------------------------------------- tile overrides --
+--
+-- data/tile_overrides.lua can say "tile id N wears another PNG" (Gen 1-2).
+-- The voxel mesh samples one atlas by tile id, so that is a statement about
+-- one 8x8 slot of it: stamp the replacement into a PRIVATE copy of the atlas
+-- and let the mesh sample the copy. Never the engine's own atlas -- the 2D
+-- path draws from that one and would change too.
+--
+-- The copy is made BEFORE animation so animate() builds on it (its private
+-- pixel copy starts from the stamped atlas) and the water/flower slots it
+-- rewrites each step still animate. Keyed on the base image itself, so a
+-- per-map RED++ atlas and a shared SGB/Gen 2 one each get their own copy.
+local overrideCache = setmetatable({}, { __mode = "k" }) -- base -> { key -> entry|false }
+local overrideTries = {}
+local overridesMod = nil    -- nil = not looked for yet, false = absent
+
+local function tileOverrides()
+  if overridesMod == nil then
+    local ok, m = pcall(V.optional, "TileOverrides")
+    overridesMod = (ok and m) or false
+  end
+  return overridesMod or nil
+end
+
+local function withOverrides(map, base, baked)
+  local TO = tileOverrides()
+  if not TO then return base, baked end
+  local tileset = map.tileset
+  local okPlan, plan = pcall(TO.planFor, tileset)
+  if not (okPlan and plan) then return base, baked end
+
+  local per = overrideCache[base]
+  if not per then
+    per = {}
+    overrideCache[base] = per
+  end
+  local key = tostring(tileset.id) .. "#" .. plan.key
+  local hit = per[key]
+  if hit ~= nil then
+    if hit then return hit.image, hit.data end
+    return base, baked
+  end
+  if not (love.image and love.image.newImageData and love.graphics) then
+    per[key] = false
+    return base, baked
+  end
+
+  -- the pixels the atlas was built from: ours when we baked it, else the
+  -- engine's. A readback can fail one frame and work the next, so a miss is
+  -- retried a few times before it is given up on.
+  local src = baked or rendererPixels(map)
+  if not src then
+    local n = (overrideTries[key] or 0) + 1
+    overrideTries[key] = n
+    if n >= MAX_ATTEMPTS then per[key] = false end
+    return base, baked
+  end
+
+  local ok, entry = pcall(function()
+    local w, h = src:getDimensions()
+    local data = love.image.newImageData(w, h)
+    data:paste(src, 0, 0, 0, 0, w, h)
+    TO.stamp(data, tileset.tilesPerRow or 16, plan)
+    local image = love.graphics.newImage(data)
+    image:setFilter("nearest", "nearest")
+    return { image = image, data = data }
+  end)
+  if not (ok and entry) then
+    per[key] = false
+    return base, baked
+  end
+  per[key] = entry
+  return entry.image, entry.data
+end
+
 function TerrainAtlas.forMap(map, colors)
   local base, baked = staticAtlas(map, colors)
   if not base then return nil end
@@ -787,6 +862,7 @@ function TerrainAtlas.forMap(map, colors)
   -- static sheet is the fallback whenever the frames are not in the data,
   -- which is exactly the picture this mod drew before g3-anim-261.
   if Gen3.mapIsGen3(map) then return gen3Animate(map, base) or base end
+  base, baked = withOverrides(map, base, baked)
   return TerrainAtlas.animate(map, colors, base, baked) or base
 end
 
@@ -849,6 +925,15 @@ function TerrainAtlas.invalidate()
   cache = {}
   cacheData = {}
   attempts = {}
+  for _, per in pairs(overrideCache) do
+    for _, entry in pairs(per) do
+      if entry and entry.image and entry.image.release then
+        pcall(entry.image.release, entry.image)
+      end
+    end
+  end
+  overrideCache = setmetatable({}, { __mode = "k" })
+  overrideTries = {}
   for _, entry in pairs(gen3Anim) do
     if entry and entry.image and entry.image.release then
       pcall(entry.image.release, entry.image)
