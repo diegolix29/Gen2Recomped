@@ -307,7 +307,7 @@ do
   local npcE = mkNpc(walk, { px = 400 }); drawn = {}
   Npc.drawPose(posed(npcE), nil)
   check(drawn[#drawn] and drawn[#drawn].model[1] == 1, "...but an NPC still turns by its compass facing")
-  -- voxel 1ST/3RD: bodies follow the camera the way PlayerModel towardCam does
+  -- voxel 1ST/3RD: only the player follows the camera; NPCs keep their walk facing
   cache["Gen4ActorCam"] = { worldYaw = realCam.worldYaw, freeRoam = function() return false end }
   cache["FirstPerson"] = { cardBlend = function() return 1 end,
                            cardYaw = function() return 0.4 end }
@@ -317,13 +317,8 @@ do
     "in voxel 3rd person the player body follows camera yaw")
   npcE.facing = "down"; drawn = {}
   Npc.drawPose(posed(npcE), nil)
-  check(math.abs(drawn[#drawn].model[1] - math.cos(0.4)) < 1e-6,
-    "...and so does an NPC, instead of snapping to world south")
-  npcE.facing = "right"; now = now + 5; drawn = {}
-  Npc.drawPose(posed(npcE), nil)
-  local rightYaw = 0.4 - math.pi / 2
-  check(math.abs(drawn[#drawn].model[1] - math.cos(rightYaw)) < 1e-6,
-    "...with the facing kept as an offset from the camera")
+  check(drawn[#drawn] and drawn[#drawn].model[1] == 1,
+    "...but an NPC still faces its own movement direction")
   cache["FirstPerson"] = nil
   cache["Gen4ActorCam"] = realCam
 

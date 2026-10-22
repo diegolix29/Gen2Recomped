@@ -50,11 +50,11 @@
 --   give the SHAPE only; the colour comes from the south and north pictures
 --   alone, baked into the body's own small texture (see SpriteSolid), so a
 --   side picture's eye or nose never lands on the body. The body is turned
---   by the NPC's facing relative to the camera (eased, so a turn is not a
---   snap -- the same camera yaw the flat cards and Pokemon Player use in
---   1ST/3RD, not the four world-compass snaps) and the pose follows the
---   sprite's own walk phase, so the walk is the sheet's real walk. Sheets
---   are shared: fifty youngsters cost one set of bodies.
+--   by facing (eased, so a turn is not a snap). NPCs keep their own world
+--   movement direction. The player in 1ST/3RD uses the same camera yaw the
+--   flat card and Pokemon Player use. The pose follows the sprite's own
+--   walk phase, so the walk is the sheet's real walk. Sheets are shared:
+--   fifty youngsters cost one set of bodies.
 --
 --   Everything expensive is time-sliced through Gen4Budget and happens in
 --   `pump`, never in the draw. A body that is still building returns false.
@@ -660,31 +660,32 @@ local function facingOffset(facing)
   return 0
 end
 
--- Continuous target yaw. Gen 4 third/first: the player's body heading.
--- Voxel 1ST/3RD: FirstPerson.cardYaw plus the facing offset, so a body
--- tracks the orbit the way the flat cards and Pokemon Player do instead
--- of snapping to the four world-compass angles. Tilt / field cameras
--- stay on world compass.
+-- Continuous target yaw. Only the PLAYER follows the camera; NPCs keep
+-- the facing they are actually walking. Gen 4 third/first: modelYaw.
+-- Voxel 1ST/3RD: FirstPerson body/card yaw (same as PlayerModel).
+-- Everyone else, and tilt / field cameras: world compass.
 local function yawTarget(e, facing, isPlayer, px, py)
   local Cam = lazy("Gen4ActorCam")
-  local FirstPerson = lazy("FirstPerson")
-  local b = 0
-  if FirstPerson and FirstPerson.cardBlend then
-    local ok, v = pcall(FirstPerson.cardBlend)
-    if ok then b = tonumber(v) or 0 end
-  end
   if isPlayer then
     if Cam and Cam.freeRoam and Cam.freeRoam() and Cam.modelYaw then
       return Cam.modelYaw() or 0
     end
-    if b > 0 and FirstPerson and FirstPerson.bodyYaw ~= nil then
-      return FirstPerson.bodyYaw
+    local FirstPerson = lazy("FirstPerson")
+    local b = 0
+    if FirstPerson and FirstPerson.cardBlend then
+      local ok, v = pcall(FirstPerson.cardBlend)
+      if ok then b = tonumber(v) or 0 end
     end
-  end
-  if b > 0 and FirstPerson and FirstPerson.cardYaw then
-    local ok, cameraYaw = pcall(FirstPerson.cardYaw, (px or 0) + 8, (py or 0) + 8)
-    if ok and type(cameraYaw) == "number" then
-      return (cameraYaw + facingOffset(facing)) * b
+    if b > 0 then
+      if FirstPerson.bodyYaw ~= nil then
+        return FirstPerson.bodyYaw
+      end
+      if FirstPerson.cardYaw then
+        local ok, cameraYaw = pcall(FirstPerson.cardYaw, (px or 0) + 8, (py or 0) + 8)
+        if ok and type(cameraYaw) == "number" then
+          return (cameraYaw + facingOffset(facing)) * b
+        end
+      end
     end
   end
   if Cam and Cam.worldYaw then return Cam.worldYaw(facing) end
