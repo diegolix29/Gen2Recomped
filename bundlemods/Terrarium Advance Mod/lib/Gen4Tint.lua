@@ -66,7 +66,11 @@ Tint.NEUTRAL = 0.999
 --                1 leaves routes alone, 0.8 makes them 20% darker.
 --   TOWN_FULL    how many post-equivalents count as "fully a town".
 Tint.TOWN_FLOOR = { 0.40, 0.46, 0.70 }
-Tint.WILD_SCALE = 0.75       -- routes: 25% darker than the hour's tint (was 1.0)
+-- Route dimmer, applied only as the hour gets dark. At noon this used to
+-- multiply the (already white) day tint by 0.75 and the whole map went muddy.
+Tint.WILD_SCALE = 0.75
+Tint.WILD_NIGHT_BELOW = 0.55 -- luma at or below this gets the full WILD_SCALE
+Tint.WILD_DAY_ABOVE = 0.88   -- luma at or above this is left at the hour's tint
 Tint.TOWN_FULL = 4
 Tint.TOWN_PANE_WEIGHT = 0.35
 -- A lit window counts toward "this is a town" by how far it is: in full inside
@@ -88,7 +92,15 @@ function Tint.adjust(r, g, b)
   local town = math.max(0, math.min(1, Tint.town or 0))
   local w = tonumber(Tint.WILD_SCALE) or 1
   if w ~= 1 then
-    local k = w + (1 - w) * town
+    local luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    local lo = tonumber(Tint.WILD_NIGHT_BELOW) or 0.55
+    local hi = tonumber(Tint.WILD_DAY_ABOVE) or 0.88
+    local night = 1
+    if hi > lo then
+      night = 1 - (luma - lo) / (hi - lo)
+      if night < 0 then night = 0 elseif night > 1 then night = 1 end
+    end
+    local k = 1 + (w - 1) * night * (1 - town)
     r, g, b = r * k, g * k, b * k
   end
   local f = Tint.TOWN_FLOOR
@@ -255,11 +267,13 @@ function Tint.forFrame(renderer)
   local ok, tint = pcall(DayNight.tint, true)
   if not (ok and tint) then return nil end
   local r, g, b = tint[1] or 1, tint[2] or 1, tint[3] or 1
-  -- DayNight.tint returns values in 0-255 range; normalize NEUTRAL to same range for comparison
-  local neutral255 = Tint.NEUTRAL * 255
-  if r > neutral255 and g > neutral255 and b > neutral255 then return nil end
-  -- Normalize to 0-1 for adjust() and final return
-  r, g, b = r / 255, g / 255, b / 255
+  -- DAY pin: multiply can only darken. Noon is meant to be the cartridge's
+  -- own brightness.
+  do
+    local okM, mode = pcall(function() return DayNight.setting:get() end)
+    if okM and mode == "day" then return nil end
+  end
+  if r > Tint.NEUTRAL and g > Tint.NEUTRAL and b > Tint.NEUTRAL then return nil end
   r, g, b = Tint.adjust(r, g, b)         -- settlement lift / route darkening
   if r > Tint.NEUTRAL and g > Tint.NEUTRAL and b > Tint.NEUTRAL then return nil end
   return r, g, b

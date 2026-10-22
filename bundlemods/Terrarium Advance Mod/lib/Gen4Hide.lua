@@ -13,10 +13,11 @@
 --
 -- WHAT IS HIDDEN
 --
---   grass  The standing cards the engine stamps over wild-Pokemon grass
---          (Gen4Model.addGrassCards: a shape named "<shape>Cards", index nil).
---          The flat grass quad under them is LEFT, as the ground: removing it
---          would open a hole in the terrain under your tufts.
+--   grass  Platinum standing cards (Gen4Model.addGrassCards: "<shape>Cards")
+--          plus the encounter-grass FLOOR (`nectgr`, `s_grass`) and Unova's
+--          own kusa / lgrass materials. The lawn (`ngrass`) is left, so the
+--          ground under the 3D tufts stays green instead of a hole. No
+--          separate Gen5Hide: B/W uses the same Gen4Model.draw seam.
 --   water  Shapes whose MATERIAL or TEXTURE name says water (`sea`, `water01`,
 --          `water02`, `water:lambert5`, anything with water/lake/river in it --
 --          see classify()), and terrain shapes the cartridge states as
@@ -88,6 +89,13 @@ local Hide = {
   -- "Gen4Hide:". Off now that the native water is gone; turn on to find a name
   -- that still draws.
   LOG_NAMES = false,
+  -- encounter / tall grass (not the lawn). Exact names plus substrings so
+  -- Unova `kusa` / `lgrass` / `naga_kusa` drop the same way Platinum cards do.
+  GRASS_NAMES = { nectgr = true, s_grass = true, lgreen = true, lgreenp = true },
+  GRASS_SUBSTRINGS = { "kusa", "lgrass", "l_grass", "naga_kusa", "ee_kusa",
+                       "long_grass", "short_grass" },
+  -- never hide as grass: the walkable lawn under the tufts
+  GRASS_KEEP = { ngrass = true, bf_ngrass = true },
 }
 
 local logged = {}
@@ -112,16 +120,20 @@ end
 
 function Hide.isGrassCards(shape)
   local name = shape.name
-  -- Check by name pattern (Gen4 style)
+  -- Platinum: engine-stamped standing cards over encounter grass
   if shape.index == nil and type(name) == "string" and name:sub(-5) == "Cards" then
     return true
   end
-  -- Also check by material/texture names (for Gen5 and edge cases)
-  -- These are the grass material names used by the engine (see src/render/Gen4Model.lua)
   local m, t = namesOf(shape)
-  local GRASS_MATERIALS = { nectgr = true, s_grass = true }
-  if GRASS_MATERIALS[m] or GRASS_MATERIALS[t] then
-    return true
+  if Hide.GRASS_KEEP[m] or Hide.GRASS_KEEP[t] then return false end
+  if Hide.GRASS_NAMES[m] or Hide.GRASS_NAMES[t] then return true end
+  local nm = lowered(name)
+  for _, n in ipairs({ m, t, nm }) do
+    if n ~= "" then
+      for _, sub in ipairs(Hide.GRASS_SUBSTRINGS) do
+        if n:find(sub, 1, true) then return true end
+      end
+    end
   end
   return false
 end

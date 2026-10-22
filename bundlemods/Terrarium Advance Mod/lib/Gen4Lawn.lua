@@ -46,13 +46,16 @@ local Lawn = {
     hage      = { image = "mulch.png",   uv = 1 },
     nsand     = { image = "mulch.png",    uv = 1 },
     nsandp    = { image = "mulch.png",  uv = 1 },
-    lgreen    = { image = "highgrass.png",    uv = 1 },
-    lgreenp   = { image = "highgrass.png",    uv = 1 },
+    lgreen    = { image = "grass.png",    uv = 1 },
+    lgreenp   = { image = "grass.png",    uv = 1 },
     allpeak   = { image = "edges.png",   uv = 1 },
 
     -- Twinleaf / Route 201 leftover ids (from Gen4Lawn LOG_NAMES). Same swirl
     -- probes already in this folder, plus extra hues for groups that had none.
-    nectgr    = { image = "highgrass.png",    uv = 1 },   -- wild-Pokemon grass floor
+    -- Encounter-grass floor. Gen4Hide drops this shape when 3D tufts are on;
+    -- grass.png is the fallback if a land is not hidden yet (highgrass.png
+    -- was drawing a second 2D meadow under the tufts).
+    nectgr    = { image = "grass.png",    uv = 1 },
     -- flower beds: grass.png floor, but only on a land where Gen4Flowers has built
     -- its voxel flowers (whenBuilt), so a bed is never left bare or half-changed
     nhana     = { image = "grass.png", uv = 1, whenBuilt = "Gen4Flowers" },
