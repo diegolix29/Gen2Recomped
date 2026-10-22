@@ -720,8 +720,8 @@ function Npc.drawPose(p, ground)
   local yaw = yawFor(e, p.facing, p.isPlayer)
   local m = Mat4.translate((p.px or 0) + 8 + offX, (p.gh or 0) + lift, (p.py or 0) + 8 + offZ)
   if yaw ~= 0 then m = Mat4.mul(m, Mat4.rotateY(yaw)) end
-  -- Reduce Z-depth by 90% for much thinner front-to-back appearance
-  m = Mat4.mul(m, Mat4.scale(1, 1, 0.8))
+  -- X: 20% narrower, Y: 20% taller, Z: 20% thinner
+  m = Mat4.mul(m, Mat4.scale(0.7, 1.25, 0.7))
   local ok = pcall(Voxel3D.draw, body.mesh, body.image, m)
   if ok then Npc.stats.drawn = Npc.stats.drawn + 1 end
   return ok
@@ -853,9 +853,11 @@ local function classicMatrix(p, rec, yaw)
   local half = rec.cw * sc / 2
   local m = Mat4.translate((p.px or 0) + half, (p.gh or 0) + (p.lift or 0), (p.py or 0) + half)
   if yaw ~= 0 then m = Mat4.mul(m, Mat4.rotateY(yaw)) end
-  -- Always apply scale with reduced Z-depth (90% thinner front-to-back)
-  local zScale = sc * 0.8
-  m = Mat4.mul(m, Mat4.scale(sc, hs, zScale))
+  -- X: 20% narrower, Y: 20% taller, Z: 20% thinner
+  local xScale = sc * 0.7
+  local yScale = hs * 1.1
+  local zScale = sc * 0.7
+  m = Mat4.mul(m, Mat4.scale(xScale, yScale, zScale))
   return m
 end
 
