@@ -68,6 +68,9 @@ V.require = function(name)
   if name == "ModSetting" then error("no settings in this test") end
   if name == "VoxelState" then return { active = function() return true end } end
   if name == "PlayerModel" then return V.PM end
+  if name == "FirstPerson" then
+    return cache["FirstPerson"] or { cardBlend = function() return 0 end }
+  end
   for _, n in ipairs({ "OverworldColosseum", "OverworldStadium", "StadiumFollower", "Gen4HdPokemon", "Wind", "Grass3D" }) do
     if name == n then return {} end
   end
@@ -304,6 +307,24 @@ do
   local npcE = mkNpc(walk, { px = 400 }); drawn = {}
   Npc.drawPose(posed(npcE), nil)
   check(drawn[#drawn] and drawn[#drawn].model[1] == 1, "...but an NPC still turns by its compass facing")
+  -- voxel 1ST/3RD: bodies follow the camera the way PlayerModel towardCam does
+  cache["Gen4ActorCam"] = { worldYaw = realCam.worldYaw, freeRoam = function() return false end }
+  cache["FirstPerson"] = { cardBlend = function() return 1 end,
+                           cardYaw = function() return 0.4 end }
+  now = now + 5
+  pl.facing = "down"; drawn = {}; drawPlayer()
+  check(math.abs(drawn[#drawn].model[1] - math.cos(0.4)) < 1e-6,
+    "in voxel 3rd person the player body follows camera yaw")
+  npcE.facing = "down"; drawn = {}
+  Npc.drawPose(posed(npcE), nil)
+  check(math.abs(drawn[#drawn].model[1] - math.cos(0.4)) < 1e-6,
+    "...and so does an NPC, instead of snapping to world south")
+  npcE.facing = "right"; now = now + 5; drawn = {}
+  Npc.drawPose(posed(npcE), nil)
+  local rightYaw = 0.4 - math.pi / 2
+  check(math.abs(drawn[#drawn].model[1] - math.cos(rightYaw)) < 1e-6,
+    "...with the facing kept as an offset from the camera")
+  cache["FirstPerson"] = nil
   cache["Gen4ActorCam"] = realCam
 
   -- a recoloured sprite falls back to the card

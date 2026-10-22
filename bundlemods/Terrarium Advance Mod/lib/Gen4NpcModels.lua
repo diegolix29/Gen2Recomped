@@ -50,9 +50,11 @@
 --   give the SHAPE only; the colour comes from the south and north pictures
 --   alone, baked into the body's own small texture (see SpriteSolid), so a
 --   side picture's eye or nose never lands on the body. The body is turned
---   by the NPC's world facing (eased, so a turn is not a snap) and the pose
---   follows the sprite's own walk phase, so the walk is the sheet's real
---   walk. Sheets are shared: fifty youngsters cost one set of bodies.
+--   by the NPC's facing relative to the camera (eased, so a turn is not a
+--   snap -- the same camera yaw the flat cards and Pokemon Player use in
+--   1ST/3RD, not the four world-compass snaps) and the pose follows the
+--   sprite's own walk phase, so the walk is the sheet's real walk. Sheets
+--   are shared: fifty youngsters cost one set of bodies.
 --
 --   Everything expensive is time-sliced through Gen4Budget and happens in
 --   `pump`, never in the draw. A body that is still building returns false.
@@ -648,14 +650,49 @@ end
 
 local turns = setmetatable({}, { __mode = "k" })   -- entity -> { yaw, t }
 
-local function yawFor(e, facing, isPlayer)
+-- Compass facing as a rotateY offset from "toward the eye" (sprite-solid
+-- identity faces south / "down", same as PlayerModel.yawForDraw towardCam).
+local function facingOffset(facing)
+  facing = type(facing) == "string" and string.lower(facing) or facing
+  if facing == "up" then return math.pi end
+  if facing == "left" then return math.pi / 2 end
+  if facing == "right" then return -math.pi / 2 end
+  return 0
+end
+
+-- Continuous target yaw. Gen 4 third/first: the player's body heading.
+-- Voxel 1ST/3RD: FirstPerson.cardYaw plus the facing offset, so a body
+-- tracks the orbit the way the flat cards and Pokemon Player do instead
+-- of snapping to the four world-compass angles. Tilt / field cameras
+-- stay on world compass.
+local function yawTarget(e, facing, isPlayer, px, py)
   local Cam = lazy("Gen4ActorCam")
-  local target = Cam and Cam.worldYaw(facing) or 0
-  -- in third person the walk is camera-relative and the body has a real heading
-  -- (the same one PlayerModel turns by); the four compass facings are the grid's
-  if isPlayer and Cam and Cam.freeRoam and Cam.freeRoam() and Cam.modelYaw then
-    target = Cam.modelYaw() or target
+  local FirstPerson = lazy("FirstPerson")
+  local b = 0
+  if FirstPerson and FirstPerson.cardBlend then
+    local ok, v = pcall(FirstPerson.cardBlend)
+    if ok then b = tonumber(v) or 0 end
   end
+  if isPlayer then
+    if Cam and Cam.freeRoam and Cam.freeRoam() and Cam.modelYaw then
+      return Cam.modelYaw() or 0
+    end
+    if b > 0 and FirstPerson and FirstPerson.bodyYaw ~= nil then
+      return FirstPerson.bodyYaw
+    end
+  end
+  if b > 0 and FirstPerson and FirstPerson.cardYaw then
+    local ok, cameraYaw = pcall(FirstPerson.cardYaw, (px or 0) + 8, (py or 0) + 8)
+    if ok and type(cameraYaw) == "number" then
+      return (cameraYaw + facingOffset(facing)) * b
+    end
+  end
+  if Cam and Cam.worldYaw then return Cam.worldYaw(facing) end
+  return facingOffset(facing)
+end
+
+local function yawFor(e, facing, isPlayer, px, py)
+  local target = yawTarget(e, facing, isPlayer, px, py)
   local now = clock()
   local st = turns[e]
   if not st or now - st.t > 0.5 then
@@ -717,7 +754,7 @@ function Npc.drawPose(p, ground)
 
   local Voxel3D, Mat4 = lazy("Voxel3D"), lazy("Mat4")
   if not (Voxel3D and Mat4) then return false end
-  local yaw = yawFor(e, p.facing, p.isPlayer)
+  local yaw = yawFor(e, p.facing, p.isPlayer, p.px, p.py)
   local m = Mat4.translate((p.px or 0) + 8 + offX, (p.gh or 0) + lift, (p.py or 0) + 8 + offZ)
   if yaw ~= 0 then m = Mat4.mul(m, Mat4.rotateY(yaw)) end
   -- X: 20% narrower, Y: 20% taller, Z: 20% thinner
@@ -728,16 +765,6 @@ function Npc.drawPose(p, ground)
 end
 
 -- ------------------------------------------------------------ Gen 1-3 API --
-
-local function worldYaw(facing)
-  local Cam = lazy("Gen4ActorCam")
-  if Cam and Cam.worldYaw then return Cam.worldYaw(facing) end
-  facing = type(facing) == "string" and string.lower(facing) or facing
-  if facing == "right" then return math.pi / 2 end
-  if facing == "up" then return math.pi end
-  if facing == "left" then return -math.pi / 2 end
-  return 0
-end
 
 -- Runaway guard: records are keyed by the live picture, so a sheet handed back
 -- as a NEW image every frame would be a new record (and new builds) every
@@ -871,7 +898,7 @@ function Npc.drawClassic(p, tex, pull)
   if not body then return false end
   local Voxel3D = lazy("Voxel3D")
   if not Voxel3D then return no("draw:no-Voxel3D") end
-  local m = classicMatrix(p, rec, yawFor(p.entity, p.facing, false))
+  local m = classicMatrix(p, rec, yawFor(p.entity, p.facing, p.isPlayer, p.px, p.py))
   if not m then return no("draw:no-matrix") end
   local ok, err = pcall(Voxel3D.draw, body.mesh, body.image, m, pull or 0)
   if ok then
@@ -891,7 +918,7 @@ function Npc.castClassic(p, tex, ShadowMap)
   if not (tex and ShadowMap and ShadowMap.draw) then return false end
   local body, rec = classicBody(p, tex, false)
   if not body then return false end
-  local m = classicMatrix(p, rec, worldYaw(p.facing))
+  local m = classicMatrix(p, rec, yawTarget(p.entity, p.facing, p.isPlayer, p.px, p.py))
   if not m then return false end
   return pcall(ShadowMap.draw, body.mesh, body.image, m)
 end
