@@ -24,13 +24,13 @@ local mod = V and V.mod
 local I = { VERSION = 1, ID = "hd_sheets_install", LABEL = "HD SHEETS" }
 
 I.config = {
-  -- Processed in order. Add a second entry to pull a Gen 4 (387-493) pack from
+  -- Processed in order. Add a second entry to pull a Gen 4 (387-493) or Gen 5 (494-649) pack from
   -- another release: same layout, assets/battle/hd-pokemon/<facing>/<color>/NNN.png
   sources = {
     {
-      name = "Terri-Assets HD Pokemon (full 1-493)",
-      repo = "MINIMI75/Terri-Assets",
-      version = "1.0.0",
+      name = "Terri-Assets HD Pokemon (full 1-649)",
+      repo = "ggbibi2969-arch/Terri-Assets",
+      version = "1.0.2",
       packId = nil, -- no asset-pack.json for this pack
       prefix = "hd-pokemon/",
       userAgent = "terrarium-hd-sheets",
@@ -71,7 +71,7 @@ end
 
 local function maxDex()
   local hd = HD()
-  return hd and hd.MAX_DEX or 493
+  return hd and hd.MAX_DEX or 706
 end
 
 local function lowMax()
