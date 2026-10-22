@@ -808,6 +808,7 @@ local function withOverrides(map, base, baked)
   local TO = tileOverrides()
   if not TO then return base, baked end
   local tileset = map.tileset
+  pcall(TO.noteTileset, tileset, map.id, base)   -- logs the tileset id, once
   local okPlan, plan = pcall(TO.planFor, tileset)
   if not (okPlan and plan) then return base, baked end
 
