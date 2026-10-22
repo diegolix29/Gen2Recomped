@@ -255,7 +255,11 @@ function Tint.forFrame(renderer)
   local ok, tint = pcall(DayNight.tint, true)
   if not (ok and tint) then return nil end
   local r, g, b = tint[1] or 1, tint[2] or 1, tint[3] or 1
-  if r > Tint.NEUTRAL and g > Tint.NEUTRAL and b > Tint.NEUTRAL then return nil end
+  -- DayNight.tint returns values in 0-255 range; normalize NEUTRAL to same range for comparison
+  local neutral255 = Tint.NEUTRAL * 255
+  if r > neutral255 and g > neutral255 and b > neutral255 then return nil end
+  -- Normalize to 0-1 for adjust() and final return
+  r, g, b = r / 255, g / 255, b / 255
   r, g, b = Tint.adjust(r, g, b)         -- settlement lift / route darkening
   if r > Tint.NEUTRAL and g > Tint.NEUTRAL and b > Tint.NEUTRAL then return nil end
   return r, g, b

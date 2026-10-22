@@ -106,13 +106,24 @@ end
 
 local function lowered(s) return tostring(s or ""):lower() end
 
-function Hide.isGrassCards(shape)
-  local name = shape.name
-  return shape.index == nil and type(name) == "string" and name:sub(-5) == "Cards"
-end
-
 local function namesOf(shape)
   return lowered(shape.srcMaterial or shape.material), lowered(shape.srcTexture or shape.texture)
+end
+
+function Hide.isGrassCards(shape)
+  local name = shape.name
+  -- Check by name pattern (Gen4 style)
+  if shape.index == nil and type(name) == "string" and name:sub(-5) == "Cards" then
+    return true
+  end
+  -- Also check by material/texture names (for Gen5 and edge cases)
+  -- These are the grass material names used by the engine (see src/render/Gen4Model.lua)
+  local m, t = namesOf(shape)
+  local GRASS_MATERIALS = { nectgr = true, s_grass = true }
+  if GRASS_MATERIALS[m] or GRASS_MATERIALS[t] then
+    return true
+  end
+  return false
 end
 
 local function containsAny(name, list)
