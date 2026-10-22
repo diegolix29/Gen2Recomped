@@ -9,7 +9,8 @@
 -- engine's own atlas (which the 2D view still draws from) is never touched.
 --
 -- Config lives in data/tile_overrides.lua, keyed by tileset id (the same keys
--- data/voxel_heights.lua uses: OVERWORLD, TilesetJohto, ...).  Per tileset:
+-- data/voxel_heights.lua uses: OVERWORLD, TilesetJohto, ...).  The key "*" is
+-- the entry for every tileset that has none of its own.  Per tileset:
 --
 --   tiles  = { [0x05] = "sand.png" }       explicit id -> file
 --   random = { seed = 1, ids = { 5, 6 },   ids that get a seeded-random pick
@@ -299,10 +300,15 @@ function TileOverrides.planFor(tileset)
 
   local cfg = loadConfig()
   if not cfg then return nil end
-  local spec = type(cfg.tilesets) == "table" and cfg.tilesets[id] or nil
+  -- a tileset's own entry, else the ["*"] entry that covers every tileset
+  local specs = type(cfg.tilesets) == "table" and cfg.tilesets or nil
+  local spec = specs and (specs[id] or specs["*"]) or nil
   if type(spec) ~= "table" then spec = nil end
   local overlay = overlayOn(cfg, spec, id)
-  if not spec and not overlay then return nil end
+  if not spec and not overlay then
+    log("none:" .. id, "tileset %s has no entry under `tilesets` (add one, or use [\"*\"] to cover every tileset)", id)
+    return nil
+  end
 
   local dir = cfg.dir or DEFAULT_DIR
   if dir:sub(-1) ~= "/" then dir = dir .. "/" end
