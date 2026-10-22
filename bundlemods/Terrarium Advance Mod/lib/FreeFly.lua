@@ -240,7 +240,8 @@ local GEN4_NO_SKY = {
 -- the frame, or nil on every other generation and camera
 local function gen4FreeGround(ow)
   local Host = V.Gen4WorldHost
-  if not (Host and Host.isGen4 and Host.isGen4()) then return nil end
+  if not (Host and ((Host.isNativeWorld and Host.isNativeWorld())
+                    or (Host.isGen4 and Host.isGen4()))) then return nil end
   local ground = Host.groundOf and Host.groundOf(ow)
   if not (ground and ground.freeMode) then return nil end
   local ok, mode = pcall(ground.freeMode, ground)
@@ -253,7 +254,8 @@ local function knowsFly(mon)
   -- Gen 4 stores move ids as numbers (FLY = 19), which Sky.knowsMove's
   -- name compare never matches; the engine's own field-move table does
   local Host = V.Gen4WorldHost
-  if Host and Host.isGen4 and Host.isGen4() then
+  if Host and ((Host.isNativeWorld and Host.isNativeWorld())
+               or (Host.isGen4 and Host.isGen4())) then
     local ok, F = pcall(require, "src.world.Gen4FieldMoves")
     if ok and F and F.knows then
       local okK, knows = pcall(F.knows, mon, "FLY")
@@ -283,7 +285,8 @@ local function skyAbove(game, mapDef)
   -- Gen 4: map defs carry no tileset. The cartridge's own camera row says
   -- whether the lens is outdoor (perspective) or an interior box
   local Host = V.Gen4WorldHost
-  if Host and Host.isGen4 and Host.isGen4() then
+  if Host and ((Host.isNativeWorld and Host.isNativeWorld())
+               or (Host.isGen4 and Host.isGen4())) then
     local okCam, outdoors = pcall(function()
       local Gen4Camera = require("src.render.Gen4Camera")
       local row = Gen4Camera.forType(mapDef.cameraType)
@@ -360,7 +363,8 @@ local function badgeOk(game, mon)
   -- Gen 4: ask the engine's own field-move badge table, the same answer
   -- the vanilla FLY row gets
   local Host = V.Gen4WorldHost
-  if Host and Host.isGen4 and Host.isGen4() then
+  if Host and ((Host.isNativeWorld and Host.isNativeWorld())
+               or (Host.isGen4 and Host.isGen4())) then
     local okF, F = pcall(require, "src.world.Gen4FieldMoves")
     if okF and F and F.badgeHeld then
       local okB, held = pcall(F.badgeHeld, game.data, game.save, "FLY")
@@ -2042,8 +2046,9 @@ function FreeFly.init()
     -- Seam crossings then never load anything.  Indoor maps keep the
     -- engine's normal LRU.
     local outdoorSet = {}
-    local onGen4 = V.Gen4WorldHost and V.Gen4WorldHost.isGen4
-                   and V.Gen4WorldHost.isGen4()
+    local Host = V.Gen4WorldHost
+    local onGen4 = Host and ((Host.isNativeWorld and Host.isNativeWorld())
+                             or (Host.isGen4 and Host.isGen4()))
     if not onGen4 then
       local MapField = require("src.world.FieldDefaults")
       local outside = MapField.field(Game.data, "outsideTilesets")

@@ -561,6 +561,7 @@ end
 
 local function isGen4()
   local B = lazy("Gen4Bridge")
+  if B and B.isNativeWorld then return B.isNativeWorld() end
   return B and B.isGen4 and B.isGen4() or false
 end
 

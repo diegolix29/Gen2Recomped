@@ -1,11 +1,12 @@
--- Terrarium effects on Platinum's own 3D world.
+-- Terrarium effects on the engine's own 3D world (Platinum, HGSS, B/W).
 --
--- Gen 1-3 voxelize tilesets into a diorama. Gen 4 already IS a 3D world:
+-- Gen 1-3 voxelize tilesets into a diorama. Gen 4/5 already IS a 3D world:
 -- NSBMD chunks, BDHC height, and Gen4View / Gen4Camera. Replacing that
 -- pass with VoxelScene would throw the cartridge's meshes away. This module
 -- therefore never owns the world: it declines the drawWorld pipeline so
 -- Gen4Ground keeps the frame, then paints Terrarium grass / wind / weather
 -- / VFX into the engine's live colour+depth target using that camera.
+-- B/W grass/sand bytes are not Platinum's; see lib/NativeWorld.lua.
 --
 -- Glass panes on Sinnoh houses are already in the NSBMD textures. The
 -- tileset GlassMask scan is for 8px GB art and is not run here; the lit-window
@@ -19,12 +20,13 @@ local Host = {
     cbeNativeArena = false,
 }
 
-local GRASS_BEHAVIOURS = {
-  TALL_GRASS = true,
-  VERY_TALL_GRASS = true,
-  MUD_WITH_GRASS = true,
-  MUD_DEEP_WITH_GRASS = true,
-}
+local nativeMod
+local function native()
+  if nativeMod ~= nil then return nativeMod or nil end
+  local ok, N = pcall(V.require, "NativeWorld")
+  nativeMod = (ok and type(N) == "table") and N or false
+  return nativeMod or nil
+end
 
 local grassCache = { mapId = nil, mesh = nil, at = -1 }
 
@@ -80,6 +82,8 @@ end
 Host.sun = sun
 
 function Host.generation()
+  local N = native()
+  if N and N.generation then return N.generation() end
   local GameVersion = engineRequire("src.core.GameVersion")
   if GameVersion and type(GameVersion.generation) == "function" then
     local ok, n = pcall(GameVersion.generation)
@@ -89,10 +93,22 @@ function Host.generation()
 end
 
 function Host.isGen4()
-  if Host.generation() == 4 then return true end
-  local g = game()
-  local data = g and g.data
-  return data and data.gen4_terrain ~= nil
+  return Host.generation() == 4
+end
+
+function Host.isGen5()
+  return Host.generation() == 5
+end
+
+-- Platinum / HGSS / Black-White share Gen4Ground. Prefer this over isGen4
+-- when the question is "does the native 3D field own the frame?".
+function Host.isNativeWorld()
+  local N = native()
+  if N and N.isNative then return N.isNative() end
+  local g = Host.generation()
+  if g == 4 or g == 5 then return true end
+  local data = game() and game().data
+  return data and (data.gen4_terrain ~= nil or data.gen5_version ~= nil) or false
 end
 
 function Host.groundOf(state)
@@ -120,21 +136,12 @@ function Host.shouldDrawOverworld()
   return not (Host.cbeNativeArena and not Host._inBattle)
 end
 
--- Permission / behaviour byte for a 16px cell. Gen 4 stores that in
--- def.blocks (255 is the reserved blocked cell, not a behaviour).
+-- Permission / behaviour byte for a 16px cell. Gen 4 outdoor stores that
+-- in the chunk permission word; B/W stores it in behaviorCells (def.blocks
+-- there is 0/255 collision, not a behaviour).
 function Host.behaviourAt(map, cx, cy)
-  if not (map and map.def) then return nil end
-  local def = map.def
-  local w = tonumber(def.width) or 0
-  local h = tonumber(def.height) or 0
-  cx, cy = tonumber(cx), tonumber(cy)
-  if not (cx and cy and w > 0) then return nil end
-  if cx < 0 or cy < 0 or cx >= w or cy >= h then return nil end
-  if def.blocks then
-    local v = def.blocks[cy * w + cx + 1]
-    if v == nil or v == 255 then return nil end
-    return v
-  end
+  local N = native()
+  if N and N.behaviourAt then return N.behaviourAt(map, cx, cy) end
   if type(map.cellBehaviour) == "function" then
     local ok, b = pcall(map.cellBehaviour, map, cx, cy)
     if ok then return b end
@@ -143,6 +150,8 @@ function Host.behaviourAt(map, cx, cy)
 end
 
 function Host.behaviourName(value)
+  local N = native()
+  if N and N.behaviourName then return N.behaviourName(value) end
   local Gen4Behaviors = engineRequire("src.import.Gen4Behaviors")
   if Gen4Behaviors and type(Gen4Behaviors.name) == "function" then
     local ok, name = pcall(Gen4Behaviors.name, value)
@@ -152,8 +161,9 @@ function Host.behaviourName(value)
 end
 
 function Host.isTallGrass(map, cx, cy)
-  local name = Host.behaviourName(Host.behaviourAt(map, cx, cy))
-  return name and GRASS_BEHAVIOURS[name] == true
+  local N = native()
+  if N and N.isGrass then return N.isGrass(map, cx, cy) end
+  return false
 end
 
 -- World-pixel project through the camera that actually drew this frame.
@@ -729,6 +739,7 @@ end
 -- against houses). Followers use the same pass so they stand on BDHC height
 -- instead of voxel y=0. Wind/weather wait for endFree, after sprites.
 function Host.overlay3D(ground)
+  if V.installNativeWorldFx then pcall(V.installNativeWorldFx) end
   local ow = game() and game().overworld
   if not (ground and ow) then return end
   Host._drawGround = ground

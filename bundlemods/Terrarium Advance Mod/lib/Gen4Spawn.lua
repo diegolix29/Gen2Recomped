@@ -80,7 +80,7 @@ function Spawn.active()
     local okG, n = pcall(GV.generation)
     n = okG and tonumber(n) or nil
     -- only a real answer is remembered; an early nil must not pin "not Gen 4"
-    if n then genCache = (n == 4); return genCache end
+    if n then genCache = (n == 4 or n == 5); return genCache end
   end
   return false
 end

@@ -201,13 +201,21 @@ local Gen4NpcModels = V.require("Gen4NpcModels")
 local OverworldBattle = V.require("OverworldBattle")
 local WildRoamers = V.require("WildRoamers")
 local BattleExit = V.require("BattleExit")
--- Gen 4 (Platinum): the engine already draws a real 3D world, so Terrarium's
--- effects ride on it instead of rebuilding it (lib/Gen4Bridge.lua). Installed
--- only on a Gen 4 cartridge (the hook and the grass effect; on Gen 1-3 the
--- bridge module is loaded but does nothing).
+-- Gen 4 / Gen 5: the engine already draws a real 3D world (Gen4Ground), so
+-- Terrarium's effects ride on it instead of rebuilding it (lib/Gen4Bridge.lua).
+-- Installed on Platinum, HGSS and Black/White. On Gen 1-3 the bridge module
+-- is loaded but does nothing. B/W uses its own grass/sand behaviour bytes
+-- (lib/NativeWorld.lua); Platinum texture-name effects (trees, fences, lawn)
+-- run too and match nothing until Unova ids are added.
 local Gen4Bridge = V.require("Gen4Bridge")
 V.Gen4Bridge = Gen4Bridge
-if Gen4Bridge.isGen4() and Gen4Bridge.install() then
+-- Idempotent: main.lua may load before a ROM is chosen (generation() is then
+-- 1). drawWorld retries once a Gen4Ground map is actually on screen.
+local nativeWorldFx = false
+local function installNativeWorldFx()
+  if nativeWorldFx then return true end
+  if not Gen4Bridge.isNativeWorld() then return false end
+  if not Gen4Bridge.install() then return false end
   Gen4Bridge.register("grass", V.require("Gen4Grass").draw)
   -- voxel-scene 3D trees in place of Platinum's flat tree cards (also
   -- registered inside Gen4Bridge.install; this keeps the hook next to grass)
@@ -239,11 +247,14 @@ if Gen4Bridge.isGen4() and Gen4Bridge.install() then
   pcall(function() V.require("Gen4Tint").install() end)
   -- 3D battles in the engine's own world, sprites for actors (Gen4Battle3D).
   pcall(function() V.require("Gen4Battle3D").install() end)
-  -- Gen 4 roamers: spawn logic for grass/water/cave on Platinum (Gen4Spawn)
+  -- roamers: spawn logic for grass/water/cave on the native 3D field
   pcall(function() V.require("Gen4Spawn").install() end)
-  -- Gen 4 World Host: draws roamers, followers, and actors in native 3D world
   pcall(function() Gen4WorldHost.install() end)
+  nativeWorldFx = true
+  return true
 end
+installNativeWorldFx()
+V.installNativeWorldFx = installNativeWorldFx
 -- NPC sprites -> smooth 3D bodies (Gen4NpcModels). Gen 4: drawn by
 -- Gen4WorldHost. Gen 1-3: drawn by VoxelScene's character pass.
 pcall(function() Gen4NpcModels.install() end)
@@ -523,9 +534,9 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
   -- answer false here, and the engine keeps the vanilla 2D path -- which
   -- is why no caller ever has to guard for a missing 3D pass.
   available = function()
-    -- Gen 4 draws its own 3D world (Gen4Ground); a voxelised tilemap would
-    -- REPLACE it. Stand down and let lib/Gen4Bridge.lua add effects instead.
-    if Gen4Bridge.isGen4() then return false end
+    -- Gen 4 / 5 draw their own 3D world (Gen4Ground); a voxelised tilemap
+    -- would REPLACE it. Stand down and let lib/Gen4Bridge.lua add effects.
+    if Gen4Bridge.isNativeWorld() then return false end
     return Voxel3D.available()
   end,
 
@@ -575,6 +586,9 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     -- and the whole battle. Ahead of the active() gate below, because a 3D
     -- battle does not require the free-roam mode to be switched on.
     OverworldBattle.update(dt)
+    -- Bridge install is generation-gated; a B/W ROM chosen after the mod
+    -- loaded still needs the hook. Cheap once nativeWorldFx is true.
+    pcall(installNativeWorldFx)
     -- LET'S GO rides the same always-running tick, and BEFORE the battle's
     -- own update on purpose: the capture session poses the Poke Ball here,
     -- and OverworldBattle.update renders the arena a moment later -- so
@@ -739,6 +753,7 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     -- world-pixel units.
             if Gen4WorldHost.isState(ctx.state) then
       Voxel.ready = true
+      pcall(installNativeWorldFx)
       Gen4WorldHost.noteFrame(ctx)
       return nil
     end
@@ -971,7 +986,7 @@ local SETTINGS = {
     .. "(every land, the old behaviour). Past the range Platinum's flat tree "
     .. "cards keep drawing, so the far field is cheap trees rather than bare "
     .. "ground. Lower is faster.",
-    when = function() return Gen4Bridge.isGen4() end,
+    when = function() return Gen4Bridge.isNativeWorld() end,
     full = true, cat = "perf" },
   { Gen4NpcModels.setting,
     "People as smooth 3D bodies, in every generation. Each NPC is rebuilt "

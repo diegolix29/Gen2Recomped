@@ -130,13 +130,20 @@ local function updateTown(lights)
   end
 end
 
-local function isGen4()
+local function isNativeWorld()
+  local okN, N = pcall(V.require, "NativeWorld")
+  if okN and N and N.isNative then return N.isNative() end
   local ok, GameVersion = pcall(require, "src.core.GameVersion")
   if not (ok and GameVersion and GameVersion.generation) then return false end
   local okG, g = pcall(GameVersion.generation)
-  return okG and tonumber(g) == 4
+  g = okG and tonumber(g) or nil
+  return g == 4 or g == 5
+end
+local function isGen4()
+  return isNativeWorld()
 end
 Tint.isGen4 = isGen4
+Tint.isNativeWorld = isNativeWorld
 
 -- Is the player under the open sky? Gen4Spawn.isOutdoor is the real answer on
 -- Platinum; a canopy floor takes the hour's colour like it does elsewhere.

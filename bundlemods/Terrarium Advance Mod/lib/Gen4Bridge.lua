@@ -1,16 +1,18 @@
--- Gen4Bridge: Terrarium's effects, drawn INTO the engine's own Gen 4 world.
+-- Gen4Bridge: Terrarium's effects, drawn INTO the engine's own Gen 4/5 world.
 --
 -- WHY THIS EXISTS
 --
 -- On Gen 1/2/3 this mod builds the 3D world itself: it extrudes the tilemap
 -- into voxels and owns the frame through the `voxel` render pipeline. Gen 4
--- (Platinum) already has a real 3D world -- src/render/Gen4Ground.lua draws
--- terrain and buildings from the cartridge's own models through a real camera
--- (src/render/Gen4View.lua) -- so there is nothing to extrude, and letting the
--- voxel pipeline take the world pass would REPLACE that world with a voxelised
--- tilemap. So on Gen 4 the `voxel` pipeline stands down (see main.lua:
--- `available`) and this module runs instead. It adds effects on top of the
--- engine's world and never replaces any of it.
+-- (Platinum / HGSS) and Gen 5 (Black / White) already have a real 3D world --
+-- src/render/Gen4Ground.lua draws terrain and buildings from the cartridge's
+-- own models through a real camera (src/render/Gen4View.lua) -- so there is
+-- nothing to extrude, and letting the voxel pipeline take the world pass would
+-- REPLACE that world with a voxelised tilemap. So on those games the `voxel`
+-- pipeline stands down (see main.lua: `available`) and this module runs
+-- instead. It adds effects on top of the engine's world and never replaces
+-- any of it. B/W tile behaviours are not Platinum's; grass/sand/roamer tests
+-- go through lib/NativeWorld.lua.
 --
 -- HOW IT HOOKS IN (engine untouched)
 --
@@ -129,7 +131,17 @@ end
 
 -- ------------------------------------------------------------ detection --
 
+local nativeMod
+local function native()
+  if nativeMod ~= nil then return nativeMod or nil end
+  local ok, N = pcall(V.require, "NativeWorld")
+  nativeMod = (ok and type(N) == "table") and N or false
+  return nativeMod or nil
+end
+
 local function generation()
+  local N = native()
+  if N and N.generation then return N.generation() end
   local ok, GameVersion = pcall(require, "src.core.GameVersion")
   if not (ok and GameVersion and GameVersion.generation) then return nil end
   local okGen, value = pcall(GameVersion.generation)
@@ -140,10 +152,24 @@ function Bridge.isGen4()
   return generation() == 4
 end
 
--- True when this module owns Terrarium's world-side effects: a Gen 4 game AND
--- the hook is in. main.lua's `voxel` pipeline asks this to stand down.
+function Bridge.isGen5()
+  return generation() == 5
+end
+
+-- Platinum / HGSS / Black-White: the engine already draws NSBMD through
+-- Gen4Ground, so this module owns Terrarium's world-side effects.
+function Bridge.isNativeWorld()
+  local N = native()
+  if N and N.isNative then return N.isNative() end
+  local g = generation()
+  return g == 4 or g == 5
+end
+
+-- True when this module owns Terrarium's world-side effects: a native 3D
+-- field (Gen 4 or 5) AND the hook is in. main.lua's `voxel` pipeline asks
+-- this to stand down.
 function Bridge.active()
-  return Bridge.installed and Bridge.isGen4()
+  return Bridge.installed and Bridge.isNativeWorld()
 end
 
 -- ------------------------------------------------------------- registry --
@@ -345,7 +371,7 @@ function Bridge.run(ground)
   if not (Bridge.enabled and #Bridge.order > 0) then return end
   local view, vw, vh = ground.view3d, ground.freeW, ground.freeH
   if not (view and vw and vh and view.matrix and view.forward) then return end
-  if not Bridge.isGen4() then return end
+  if not Bridge.isNativeWorld() then return end
 
     -- Prevent duplicate calls in the same frame to fix flickering on desktop
   local frameId = ground.clock or (love and love.timer and love.timer.getTime() and love.timer.getTime())
@@ -374,7 +400,7 @@ function Bridge.runPre(ground)
   if not (Bridge.enabled and #Bridge.preOrder > 0) then return false end
   local view, vw, vh = ground.view3d, ground.freeW, ground.freeH
   if not (view and vw and vh and view.matrix and view.forward) then return false end
-  if not Bridge.isGen4() then return false end
+  if not Bridge.isNativeWorld() then return false end
 
   -- Prevent duplicate calls in the same frame to fix flickering on desktop
   local frameId = ground.clock or (love and love.timer and love.timer.getTime() and love.timer.getTime())

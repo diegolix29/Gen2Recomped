@@ -47,13 +47,38 @@ local lastDef, lastLayout
 
 function Cells.behaviour(map, cx, cy)
   if not map then return nil end
-  if map.inBounds and map.blockAt and map:inBounds(cx, cy) then
-    local ok, b = pcall(map.blockAt, map, cx, cy)
-    if ok and type(b) == "number" then return b end
+  -- cellBehaviour is the real behaviour byte on both Platinum outdoor
+  -- (permission low byte via Gen4Ground) and B/W (behaviorCells). blockAt
+  -- on B/W is 0/255 collision, so it must not be asked first.
+  if map.inBounds and map:inBounds(cx, cy) then
+    if type(map.cellBehaviour) == "function" then
+      local okC, b = pcall(map.cellBehaviour, map, cx, cy)
+      if okC and type(b) == "number" then return b end
+    end
+    if map.blockAt then
+      local ok, b = pcall(map.blockAt, map, cx, cy)
+      if ok and type(b) == "number" then return b end
+    end
     return nil
+  end
+  local ground = map.renderer and map.renderer.gen4Ground
+  if ground and type(ground.behaviourAt) == "function" then
+    local okG, gb = pcall(ground.behaviourAt, ground, cx, cy)
+    if okG and type(gb) == "number" then return gb end
   end
   local def = map.def
   if not def then return nil end
+  local cells = def.behaviorCells
+  if type(cells) == "string" then
+    local w = tonumber(def.width) or 0
+    local h = tonumber(def.height) or 0
+    if w > 0 and cx >= 0 and cy >= 0 and cx < w and cy < h then
+      local v = cells:byte(cy * w + cx + 1)
+      if v then return v end
+    end
+  end
+  -- B/W layout.blocks is collision (0/255), not behaviour.
+  if def.gen5 then return nil end
   local layout
   if lastDef == def and lastLayout then
     layout = lastLayout
