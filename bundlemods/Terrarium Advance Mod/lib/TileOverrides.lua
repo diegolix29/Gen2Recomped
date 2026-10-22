@@ -18,6 +18,13 @@
 -- Explicit `tiles` win over `random`.  Files are looked up under `dir`
 -- (default assets/ground/grass/) in the mod root.
 --
+-- ID OVERLAY (`idOverlay`): stamps EVERY tile slot of the atlas with its own id
+-- as two hex digits on an id-coloured square, so the number you need is simply
+-- readable off the voxel world -- cliff faces, mountains, roofs, everything --
+-- instead of guessed.  `idOverlay = true` covers every Gen 1-2 tileset, or give
+-- a list of tileset ids.  Explicit `tiles` / `random` picks still win.  Ids at
+-- 256 and up show their low byte.
+--
 -- THE PICTURE IS SHRUNK TO 8x8.  The atlas slot is 8x8 texels, so a 500px
 -- photo-texture is box-averaged down to one tile.  It reads as the texture's
 -- colour and rough pattern, which is what an id test needs; real detail would
@@ -52,6 +59,69 @@ local function log(key, fmt, ...)
   if V and V.mod and V.mod.log and V.mod.log.info then
     pcall(V.mod.log.info, V.mod.log, "TileOverrides: " .. msg)
   end
+end
+
+-- ------------------------------------------------------------ id overlay --
+
+local FONT = {   -- 3x5 hex digits, one string per row, top to bottom
+  ["0"] = { "111", "101", "101", "101", "111" },
+  ["1"] = { "010", "110", "010", "010", "111" },
+  ["2"] = { "111", "001", "111", "100", "111" },
+  ["3"] = { "111", "001", "111", "001", "111" },
+  ["4"] = { "101", "101", "111", "001", "001" },
+  ["5"] = { "111", "100", "111", "001", "111" },
+  ["6"] = { "111", "100", "111", "101", "111" },
+  ["7"] = { "111", "001", "001", "010", "010" },
+  ["8"] = { "111", "101", "111", "101", "111" },
+  ["9"] = { "111", "101", "111", "001", "111" },
+  ["A"] = { "010", "101", "111", "101", "101" },
+  ["B"] = { "110", "101", "110", "101", "110" },
+  ["C"] = { "011", "100", "100", "100", "011" },
+  ["D"] = { "110", "101", "101", "101", "110" },
+  ["E"] = { "111", "100", "110", "100", "111" },
+  ["F"] = { "111", "100", "110", "100", "100" },
+}
+
+local function hsv(h, s, v)
+  local i = math.floor(h * 6)
+  local f = h * 6 - i
+  local p, q, t = v * (1 - s), v * (1 - f * s), v * (1 - (1 - f) * s)
+  i = i % 6
+  if i == 0 then return v, t, p
+  elseif i == 1 then return q, v, p
+  elseif i == 2 then return p, v, t
+  elseif i == 3 then return p, q, v
+  elseif i == 4 then return t, p, v end
+  return v, p, q
+end
+
+local idTiles = {}      -- id -> 8x8 ImageData
+
+-- One tile: the id's low byte as two hex digits, black on a colour that
+-- differs from its neighbours' (so a wall of different ids reads as different
+-- blocks even before the numbers are legible).
+local function idTile(id)
+  local hit = idTiles[id]
+  if hit then return hit end
+  local out = love.image.newImageData(TILE, TILE)
+  local br, bg, bb = hsv(((id * 47) % 360) / 360, id >= 256 and 0.25 or 0.55, 0.95)
+  for y = 0, TILE - 1 do
+    for x = 0, TILE - 1 do out:setPixel(x, y, br, bg, bb, 1) end
+  end
+  local hex = string.format("%02X", id % 256)
+  for n = 1, 2 do
+    local glyph = FONT[hex:sub(n, n)]
+    local ox = (n - 1) * 4        -- digit 1 at x 0-2, digit 2 at x 4-6
+    for gy = 1, 5 do
+      for gx = 1, 3 do
+        if glyph[gy]:sub(gx, gx) == "1" then
+          out:setPixel(ox + gx - 1, gy, 0, 0, 0, 1)
+        end
+      end
+    end
+  end
+  idTiles[id] = out
+  return out
 end
 
 -- ---------------------------------------------------------------- config --
@@ -188,9 +258,37 @@ end
 
 -- ------------------------------------------------------------------- API --
 
--- The overrides for one tileset: { tiles = { [id] = 8x8 ImageData }, key = s },
--- or nil when the tileset has none.  `key` changes whenever the resolved set
--- does, so a caller can cache a stamped atlas against it.
+local function overlayOn(cfg, spec, id)
+  if type(spec) == "table" and spec.overlay ~= nil then return spec.overlay == true end
+  local o = cfg and cfg.idOverlay
+  if o == true then return true end
+  if type(o) == "table" then
+    for k, v in pairs(o) do
+      if v == id or (k == id and v == true) then return true end
+    end
+  end
+  return false
+end
+
+-- Say, once per tileset, which key the config needs and how big its atlas is.
+-- The ids in data/tile_overrides.lua are per tileset, so "which tileset is
+-- this map?" has to be answerable from the log.
+function TileOverrides.noteTileset(tileset, mapId, atlas)
+  local id = tileset and tileset.id
+  if id == nil or logged["seen:" .. tostring(id)] then return end
+  local w, h = 0, 0
+  if atlas and atlas.getDimensions then
+    local ok, aw, ah = pcall(atlas.getDimensions, atlas)
+    if ok then w, h = aw or 0, ah or 0 end
+  end
+  log("seen:" .. tostring(id), "tileset %s seen on map %s (atlas %dx%d, %s tiles per row)",
+      tostring(id), tostring(mapId), w, h, tostring(tileset.tilesPerRow or 16))
+end
+
+-- The overrides for one tileset: { tiles = { [id] = 8x8 ImageData },
+-- overlay = bool, key = s }, or nil when the tileset has none.  `key` changes
+-- whenever the resolved set does, so a caller can cache a stamped atlas
+-- against it.
 function TileOverrides.planFor(tileset)
   local id = tileset and tileset.id
   if id == nil then return nil end
@@ -200,18 +298,21 @@ function TileOverrides.planFor(tileset)
   plans[id] = false
 
   local cfg = loadConfig()
-  local spec = cfg and type(cfg.tilesets) == "table" and cfg.tilesets[id] or nil
-  if type(spec) ~= "table" then return nil end
+  if not cfg then return nil end
+  local spec = type(cfg.tilesets) == "table" and cfg.tilesets[id] or nil
+  if type(spec) ~= "table" then spec = nil end
+  local overlay = overlayOn(cfg, spec, id)
+  if not spec and not overlay then return nil end
 
   local dir = cfg.dir or DEFAULT_DIR
   if dir:sub(-1) ~= "/" then dir = dir .. "/" end
 
-  local files = resolveFiles(cfg, spec)
+  local files = spec and resolveFiles(cfg, spec) or {}
   local ids = {}
   for tile in pairs(files) do ids[#ids + 1] = tile end
   table.sort(ids)
 
-  local plan = { tiles = {}, key = "", files = {} }
+  local plan = { tiles = {}, key = "", files = {}, overlay = overlay }
   local keyParts, lines = {}, {}
   for _, tile in ipairs(ids) do
     local pixels = tileFor(dir, files[tile])
@@ -222,10 +323,12 @@ function TileOverrides.planFor(tileset)
       lines[#lines + 1] = string.format("$%02X=%s", tile, files[tile])
     end
   end
-  if #keyParts == 0 then return nil end
+  if #keyParts == 0 and not overlay then return nil end
+  if overlay then keyParts[#keyParts + 1] = "overlay" end
   plan.key = table.concat(keyParts, ",")
   plans[id] = plan
-  log("plan:" .. id, "%s: %s", id, table.concat(lines, "  "))
+  log("plan:" .. id, "%s: %s%s", id, overlay and "ID OVERLAY on  " or "",
+      table.concat(lines, "  "))
   return plan
 end
 
@@ -236,6 +339,21 @@ function TileOverrides.stamp(data, perRow, plan)
   perRow = perRow or 16
   local w, h = data:getDimensions()
   local count = 0
+
+  -- the id overlay goes down first, on every slot; the explicit picks below
+  -- then replace the slots they name
+  if plan.overlay then
+    for tile = 0, perRow * math.floor(h / TILE) - 1 do
+      if not plan.tiles[tile] then
+        local dx, dy = (tile % perRow) * TILE, math.floor(tile / perRow) * TILE
+        if dx + TILE <= w and dy + TILE <= h then
+          data:paste(idTile(tile), dx, dy, 0, 0, TILE, TILE)
+          count = count + 1
+        end
+      end
+    end
+  end
+
   for tile, art in pairs(plan.tiles) do
     local dx, dy = (tile % perRow) * TILE, math.floor(tile / perRow) * TILE
     if dx + TILE <= w and dy + TILE <= h then
@@ -266,6 +384,7 @@ function TileOverrides.invalidate()
   config = nil
   plans = {}
   tiles8 = {}
+  idTiles = {}
   logged = {}
 end
 

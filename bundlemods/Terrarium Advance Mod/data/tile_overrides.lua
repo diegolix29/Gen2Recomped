@@ -12,7 +12,8 @@
 --   random = { seed = 1, ids = {...},    these ids each get a seeded-random
 --              pool = {...} }            texture (own pool optional)
 --
--- `tiles` wins over `random` for the same id.  Change a seed to re-roll.  The
+-- `tiles` wins over `random` for the same id.  `overlay = true/false` inside a
+-- tileset entry overrides `idOverlay` for that tileset.  Change a seed to re-roll.  The
 -- mod logs the resolved assignment once per tileset ("TileOverrides: ...") so
 -- you can see exactly which id got which file.
 --
@@ -21,6 +22,13 @@
 
 return {
   enabled = true,
+
+  -- ID OVERLAY: stamp every tile slot with its own id (two hex digits on a
+  -- coloured square) so you can read the id of any mountain, cliff or roof
+  -- straight off the voxel world.  true = every Gen 1-2 tileset, or a list:
+  -- { "TilesetKanto", "TilesetJohto" }.  Picks under `tilesets` still win.
+  -- Turn it off (false) when you have your ids.
+  idOverlay = true,
 
   -- where the PNGs live, relative to the mod root
   dir = "assets/ground/grass/",
