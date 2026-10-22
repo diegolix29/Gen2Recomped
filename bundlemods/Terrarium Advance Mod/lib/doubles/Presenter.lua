@@ -153,6 +153,14 @@ tryAcquire=function(s,r,force)
   local def=s.screen.game.data.pokemon[r.mon.species]
   local dex=tonumber(def and (def.dex or def.index or def.number) or r.mon.dex)
   if V.ModelIdentity then dex=V.ModelIdentity.resolve(s.screen.game,r.mon) end
+  if not dex and V.ModelIdentity and V.ModelIdentity.unsupported
+      and V.ModelIdentity.unsupported(s.screen.game,r.mon) then
+    -- A real species the Colosseum disc has no body for (Sinnoh/Unova, dex
+    -- 387+): there is nothing to acquire, so draw its 2D sprite like the
+    -- models-off path instead of retrying a mapping that can never succeed.
+    r.spriteMode=true;r.pendingModel=nil;r.error=nil
+    return true
+  end
   if not dex then
     r.error='No National Dex mapping'
     r.pendingModel=true;r.retryAt=(s.visualClock or 0)+0.1
