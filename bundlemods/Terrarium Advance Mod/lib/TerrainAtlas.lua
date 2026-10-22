@@ -811,6 +811,9 @@ local function withOverrides(map, base, baked)
   pcall(TO.noteTileset, tileset, map.id, base)   -- logs the tileset id, once
   local okPlan, plan = pcall(TO.planFor, tileset)
   if not (okPlan and plan) then return base, baked end
+  -- "mesh"-mode picks are taken out of the terrain mesh by ChunkMesher and
+  -- never touch the atlas, so a plan with nothing to stamp costs no copy
+  if not (plan.overlay or next(plan.tiles)) then return base, baked end
 
   local per = overrideCache[base]
   if not per then

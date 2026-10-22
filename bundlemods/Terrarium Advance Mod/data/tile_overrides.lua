@@ -10,26 +10,31 @@
 -- tileset that has none of its own, so the test below applies wherever you
 -- are.  (The mod logs "TileOverrides: tileset <id> seen on map ..." once per
 -- tileset if you want the exact spelling to give one its own entry.)
--- Pictures are shrunk to the atlas's 8x8 tile.
+--
+-- mode = "mesh" (default): those tiles' faces are taken out of the terrain and
+--   rebuilt as their own meshes wearing the PNG at FULL RESOLUTION, tiled in
+--   world space -- tops, cliff faces and ramps alike.  Textures are capped to
+--   `maxTexture` px (power of two) and tile once per `repeatTiles` tiles.
+-- mode = "atlas": the PNG is shrunk into the tile's 8x8 atlas slot.  Pixelated
+--   by construction; kept as the cheap fallback.
 
 -- ===========================================================================
--- THE TEST LIST.  One flat colour per id, so you can tell at a glance which
--- id is which (the probe_*.png files are 16x16 solid colours).
+-- THE TEST LIST.  One real texture per id, each different, so you can tell
+-- at a glance which id is which.
 --
---   ID   what it is (from your screenshot)   PNG                 you should see
---   --   ---------------------------------   ------------------  --------------
---   01   mountain body                       probe_red.png       red
---   11   mountain body                       probe_orange.png    orange
---   34   edge                                probe_green.png     green
---   37   edge                                probe_cyan.png      cyan
---   27   mountain ramp                       probe_magenta.png   magenta
---   5B   the purple floor                    probe_blue.png      blue
---   24   the blue block                      probe_white.png     white
+--   ID   what it is (from your screenshot)   PNG              you should see
+--   --   ---------------------------------   ---------------  ---------------
+--   01   mountain body                       flagstone.png    grey flagstones
+--   11   mountain body                       pavers.png       grey paving
+--   34   edge                                mulch.png        wood chips
+--   37   edge                                sand.png         cream sand
+--   27   mountain ramp                       ground.png       brown earth
+--   5B   the purple floor                    road.png         asphalt
+--   24   the blue block                      waterp.png       cyan
 --
 -- Anything NOT in this list keeps showing its id number (idOverlay is on), so
--- the picture tells you everything: a coloured tile is an override that
--- worked, and a numbered tile is untouched.  If 01 still shows "01" the pick
--- did not apply -- see the log.
+-- the picture tells you everything: a textured tile is an override that
+-- worked, and a numbered tile is untouched.
 -- ===========================================================================
 local TEST = {
   tiles = {
@@ -57,6 +62,17 @@ local TEST = {
 
 return {
   enabled = true,
+
+  -- "mesh" = full-resolution PNGs on their own meshes (default);
+  -- "atlas" = shrunk into the 8x8 atlas slot.  Can also be set per tileset.
+  mode = "mesh",
+
+  -- mesh mode: tiles per repeat of the texture (1 = the whole PNG on each
+  -- 8x8 tile; 2 = one PNG across two tiles; 0.5 = twice per tile), and the
+  -- biggest texture kept, in pixels (it is made a power of two)
+  repeatTiles = 1,
+  maxTexture = 512,
+  filter = "linear",    -- or "nearest" for a crisp, blocky look
 
   -- stamp every OTHER tile slot with its own id (two hex digits on a coloured
   -- square).  true = every Gen 1-2 tileset, or a list: { "TilesetKanto" }.

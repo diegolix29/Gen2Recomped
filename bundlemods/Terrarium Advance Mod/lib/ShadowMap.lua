@@ -319,7 +319,8 @@ function ShadowMap.drawGroup(group, texture, model, b)
     local ch = chunks[i]
     if not b or (ch.x1 >= b[1] and ch.x0 <= b[3]
                  and ch.z1 + ch.ymax >= b[2] and ch.z0 <= b[4]) then
-      if texture then ch.mesh:setTexture(texture) end
+      local tex = ch.texture or texture
+      if tex then ch.mesh:setTexture(tex) end
       love.graphics.draw(ch.mesh)
     end
   end

@@ -1625,6 +1625,118 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
   end
 end
 
+-- ------------------------------------------------ tile texture overrides --
+--
+-- data/tile_overrides.lua can give a tile id its own full-resolution PNG
+-- (TileOverrides, "mesh" mode). The terrain mesh samples ONE atlas, so such a
+-- tile cannot wear a second texture from inside it; its faces have to leave.
+-- This wraps the build's sink: a quad whose atlas UVs land in an overridden
+-- tile is NOT pushed to the terrain, it goes to a sink of its own, one per
+-- PNG, with UVs worked out from where the quad is in the WORLD (so the
+-- texture runs unbroken across tiles and up cliff faces). Their chunks are
+-- tagged `texture` and appended to the terrain Group, which both
+-- Voxel3D.drawGroup and ShadowMap.drawGroup honour -- so the faces keep their
+-- shade, ambient occlusion, water flag, culling box and shadow.
+--
+-- Deciding by the quad's own UVs rather than at each emit site is what keeps
+-- this to one seam: tops, cliff bands, sculpted ramps and roofs all say which
+-- tile they wear the same way. A quad that samples a SINGLE texel (an object
+-- prism, which takes its colour from one pixel of the art) is left alone.
+local TileOverrides = nil
+
+local function meshPlanFor(map)
+  if TileOverrides == nil then
+    local ok, m = pcall(V.optional, "TileOverrides")
+    TileOverrides = (ok and m) or false
+  end
+  local tileset = map and map.tileset
+  if not (TileOverrides and tileset) then return nil end
+  if Gen3 and Gen3.isGen3(tileset) then return nil end
+  local ok, plan = pcall(TileOverrides.planFor, tileset)
+  if ok and plan and plan.mesh and next(plan.mesh) then return plan end
+  return nil
+end
+
+local function divertSink(map, base, plan)
+  local tileset = map.tileset
+  local perRow = tileset.tilesPerRow or 16
+  local atlasW = tileset.imageWidth or (perRow * 8)
+  local atlasH = tileset.imageHeight or 48
+  local span = 8 * (plan.repeatTiles or 1)   -- world pixels per texture repeat
+  -- A whole number added to every coordinate changes nothing to a repeating
+  -- texture, but it moves the UVs out of 0..1: the terrain shader also reads a
+  -- glass-pane mask shaped like the ATLAS with these same coordinates, and
+  -- coordinates inside 0..1 would land on its pane rectangles.
+  local BIAS = 64
+  local overrides = plan.mesh
+  local basePush = base.push
+  local subs, order = {}, {}
+
+  local function push(c, uv, shade, sky, water)
+    local o
+    if type(uv) == "table" and uv[4] and c and c[4] then
+      local u1, v1 = uv[1][1], uv[1][2]
+      local u2, v2 = uv[2][1], uv[2][2]
+      local u3, v3 = uv[3][1], uv[3][2]
+      local u4, v4 = uv[4][1], uv[4][2]
+      local umin = math.min(u1, u2, u3, u4)
+      local umax = math.max(u1, u2, u3, u4)
+      local vmin = math.min(v1, v2, v3, v4)
+      local vmax = math.max(v1, v2, v3, v4)
+      -- more than half a texel of spread: a face of the tile, not one pixel of it
+      if (umax - umin) * atlasW > 0.5 or (vmax - vmin) * atlasH > 0.5 then
+        local tile = math.floor((vmin + vmax) / 2 * atlasH / 8) * perRow
+                     + math.floor((umin + umax) / 2 * atlasW / 8)
+        o = overrides[tile]
+      end
+    end
+    if not o then return basePush(c, uv, shade, sky, water) end
+
+    -- the quad's facing, from two of its edges
+    local ax, ay, az = c[2][1] - c[1][1], c[2][2] - c[1][2], c[2][3] - c[1][3]
+    local bx, by, bz = c[4][1] - c[1][1], c[4][2] - c[1][2], c[4][3] - c[1][3]
+    local nx = math.abs(ay * bz - az * by)
+    local ny = math.abs(az * bx - ax * bz)
+    local nz = math.abs(ax * by - ay * bx)
+    local wuv = {}
+    for i = 1, 4 do
+      local p = c[i]
+      if ny >= nx and ny >= nz then          -- a top: the ground plan
+        wuv[i] = { BIAS + p[1] / span, BIAS + p[3] / span }
+      elseif nz >= nx then                   -- a face looking along z
+        wuv[i] = { BIAS + p[1] / span, BIAS - p[2] / span }
+      else                                   -- a face looking along x
+        wuv[i] = { BIAS + p[3] / span, BIAS - p[2] / span }
+      end
+    end
+
+    local sub = subs[o.file]
+    if not sub then
+      sub = { sink = newChunkedSink(), image = o.image }
+      subs[o.file] = sub
+      order[#order + 1] = sub
+    end
+    return sub.sink.push(c, wuv, shade, sky, water)
+  end
+
+  local function finish()
+    local main = base.finish()
+    for _, sub in ipairs(order) do
+      local g = sub.sink.finish()
+      if g and g.chunks then
+        if not main then main = setmetatable({ chunks = {} }, Group) end
+        for _, ch in ipairs(g.chunks) do
+          ch.texture = sub.image
+          main.chunks[#main.chunks + 1] = ch
+        end
+      end
+    end
+    return main
+  end
+
+  return setmetatable({ push = push, finish = finish }, { __index = base })
+end
+
 function ChunkMesher.geometry(map, bodyOnly, masks, split)
   local sink = newTableSink()
   local waterSink = split and newTableSink() or nil
@@ -1637,6 +1749,8 @@ end
 
 function ChunkMesher.build(map, bodyOnly, masks)
   local sink = newChunkedSink()
+  local divert = meshPlanFor(map)
+  if divert then sink = divertSink(map, sink, divert) end
   runGeometry(map, bodyOnly, masks, sink)
   return sink.finish()
 end
@@ -1982,7 +2096,10 @@ local function runJob(job)
   -- the live path; every arrival re-ran Structures + runGeometry from
   -- scratch. Actually ask VoxelDiskCache first.
   local cachedTerrain, cachedWater
-  if DiskCache and (type(DiskCache.enabled) ~= "function" or DiskCache.enabled()) then
+  -- the disk cache holds the UNdiverted terrain, so a map with texture
+  -- overrides neither reads from it nor writes to it
+  local divert = meshPlanFor(map)
+  if not divert and DiskCache and (type(DiskCache.enabled) ~= "function" or DiskCache.enabled()) then
     local okLoad, hit, terrainMesh, waterMesh =
       pcall(DiskCache.load, map, job.slot, job.masks)
     if okLoad and hit then
@@ -1991,6 +2108,7 @@ local function runJob(job)
   end
   if cachedTerrain == nil then
     local sink = newChunkedSink()
+    if divert then sink = divertSink(map, sink, divert) end
     runGeometry(map, job.slot == "body", job.masks, sink)
     local mesh = sink.finish()
     if (gen[job.id] or 0) ~= job.gen then
@@ -1998,7 +2116,7 @@ local function runJob(job)
       return
     end
     swapSlot(c, job.slot, mesh or false)
-    if mesh then pcall(queueWriteBack, map, job.slot, job.masks) end
+    if mesh and not divert then pcall(queueWriteBack, map, job.slot, job.masks) end
   else
     local mesh = wrapCachedMesh(map, cachedTerrain, cachedWater)
     if (gen[job.id] or 0) ~= job.gen then
