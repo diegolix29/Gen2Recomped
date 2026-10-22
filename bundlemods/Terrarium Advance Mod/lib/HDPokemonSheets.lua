@@ -28,7 +28,7 @@
 --   Platinum, so it cannot be read from here; copy KIM's
 --   assets/battle/hd-pokemon tree into assets/hd-pokemon/ instead.
 --
--- CAP: National Dex 1..649 (Gen 4 + Gen 5). Anything above is ignored.
+-- CAP: National Dex 1..721 (Gen 1-6). Anything above is ignored.
 --
 -- A missing file at ANY step returns nil, which every host treats as "leave
 -- the native art alone".
@@ -36,7 +36,7 @@ local V = ...
 
 local M = {
   VERSION = 1,
-  MAX_DEX = 649,        -- Gen 5 ceiling (Black/White 494-649; Platinum stops at 493)
+  MAX_DEX = 721,        -- Gen 6 ceiling (Platinum stops at 493, Black/White at 649, X/Y at 721)
   COLOSSEUM_MAX = 386,  -- highest dex the Colosseum actor catalog can model
   FRAME_MS = 50,        -- every KIM record uses 50 ms frames
 }
@@ -65,7 +65,7 @@ local function clock()
   return os.clock()
 end
 
--- ------- Gen 4 / Gen 5 names (387..649), only a safety net for dex resolution -------
+-- ------- Gen 4 / 5 / 6 names (387..721), only a safety net for dex resolution -------
 
 local G4_NAMES = [[
 TURTWIG GROTLE TORTERRA CHIMCHAR MONFERNO INFERNAPE PIPLUP PRINPLUP EMPOLEON
@@ -102,6 +102,17 @@ MANDIBUZZ HEATMOR DURANT DEINO ZWEILOUS HYDREIGON LARVESTA VOLCARONA COBALION TE
 VIRIZION TORNADUS THUNDURUS RESHIRAM ZEKROM LANDORUS KYUREM KELDEO MELOETTA GENESECT
 ]]
 
+-- Gen 6 names (650..721), same role.
+local G6_NAMES = [[
+CHESPIN QUILLADIN CHESNAUGHT FENNEKIN BRAIXEN DELPHOX FROAKIE FROGADIER GRENINJA BUNNELBY
+DIGGERSBY FLETCHLING FLETCHINDER TALONFLAME SCATTERBUG SPEWPA VIVILLON LITLEO PYROAR FLABEBE
+FLOETTE FLORGES SKIDDO GOGOAT PANCHAM PANGORO FURFROU ESPURR MEOWSTIC HONEDGE DOUBLADE AEGISLASH
+SPRITZEE AROMATISSE SWIRLIX SLURPUFF INKAY MALAMAR BINACLE BARBARACLE SKRELP DRAGALGE CLAUNCHER
+CLAWITZER HELIOPTILE HELIOLISK TYRUNT TYRANTRUM AMAURA AURORUS SYLVEON HAWLUCHA DEDENNE CARBINK
+GOOMY SLIGGOO GOODRA KLEFKI PHANTUMP TREVENANT PUMPKABOO GOURGEIST BERGMITE AVALUGG NOIBAT
+NOIVERN XERNEAS YVELTAL ZYGARDE DIANCIE HOOPA VOLCANION
+]]
+
 local nameToDex
 local function nameKey(s)
   return (tostring(s):upper():gsub("[^A-Z0-9]", ""))
@@ -121,6 +132,12 @@ local function buildNames()
     nameToDex[word] = n
   end
   M._g5NameCount = n - g4end
+  local g5end = n
+  for word in G6_NAMES:gmatch("%S+") do
+    n = n + 1
+    nameToDex[word] = n
+  end
+  M._g6NameCount = n - g5end
   -- Opportunistic: the Colosseum namespace publishes 1..386 names.
   local names = V and V.ColosseumDexNames
   if type(names) == "table" then
@@ -185,6 +202,11 @@ local function loadMeta()
   -- Gen 5 (494-649): KIM has no rows for these either, so without this every
   -- Gen 5 sheet falls through layoutFor() to the 1-frame static path.
   merge("data/hd_sheet_meta_gen5.lua", "sidecar")
+  -- Gen 6 (650-721): the HD pack holds sheets for most of these but KIM has no rows.
+  merge("data/hd_sheet_meta_gen6.lua", "sidecar")
+  -- Sheets added with `tools/import_hd_pokemon.py --extra` (species the pack lacks, Mega/Primal
+  -- forms). Merged last so a row here wins on a tie.
+  merge("data/hd_sheet_meta_extra.lua", "sidecar")
   return meta
 end
 
@@ -248,6 +270,15 @@ local FORM_AWARE = {
   [412] = true, [413] = true, [421] = true, [422] = true, [423] = true,
   [479] = true, [487] = true, [492] = true, [493] = true,
 }
+-- Mega Evolutions and Primal Reversions (Gen 6). Sheets are NNN-mega / NNN-megax / NNN-megay /
+-- NNN-primal; the engine must report the form as "mega", "Mega X", "mega-y", "primal", ... (the key is
+-- lower-cased with everything but a-z0-9 removed). A mon with no form stays on its base sheet.
+for _, dex in ipairs({ 3, 6, 9, 15, 18, 65, 80, 94, 115, 127, 130, 142, 150, 181, 208, 212, 214,
+                       229, 248, 254, 257, 260, 282, 302, 303, 306, 308, 310, 319, 323, 334, 354,
+                       359, 362, 373, 376, 380, 381, 382, 383, 384, 428, 445, 448, 460, 475, 531,
+                       719 }) do
+  FORM_AWARE[dex] = true
+end
 local DEFAULT_FORM = {
   [412] = "plant", [413] = "plant", [421] = "overcast", [422] = "west",
   [423] = "west", [479] = "normal", [487] = "altered", [492] = "land",

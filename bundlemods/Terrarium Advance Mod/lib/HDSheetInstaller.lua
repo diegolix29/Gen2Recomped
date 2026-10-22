@@ -354,7 +354,9 @@ local function finishSource()
     if hd and hd.rescan then pcall(hd.rescan) end
     st.coverage = nil
     local c = I.coverage()
-    if c.total >= maxDex() - 5 then
+    -- Threshold is pinned to 649 (the old MAX_DEX): the Terri pack never held 716+ species, so
+    -- measuring against the Gen 6 cap would always pull the second multi-hundred-MB pack.
+    if c.total >= math.min(maxDex(), 649) - 5 then
       log("info", "HD sheets: source %d covers %d/%d, skipping the remaining source(s)",
         st.srcIndex, c.total, maxDex())
       return finishAll()
@@ -454,6 +456,7 @@ local function beginDownload(release)
   st.zipName = I.config.tempName
   st.total = tonumber(release.zip.size) or 0
   st.bytes = 0
+  log("info", "HD sheet installer: GET %s (%.1f MB announced)", tostring(release.zip.url), st.total / 1048576)
   st.job = Fetch.download(release.zip.url, I.config.tempName, {
     size = st.total > 0 and st.total or nil,
     userAgent = source().userAgent or "terrarium-hd-sheets",
@@ -547,6 +550,7 @@ local function pumpDownload()
   end
   sizeNow()
   local s = Fetch.poll(st.job)
+  st.lastPoll = s
   if s.status == "pending" then
     local got = tonumber(s.bytes) or tonumber(s.downloaded) or tonumber(s.received)
     local p = tonumber(s.progress)
@@ -646,6 +650,7 @@ function I.update()
   local key = s .. ":" .. tostring(st.srcIndex)
   if st.seenKey ~= key then
     st.seenKey, st.stateSince, st.lastGrow, st.lastBytes = key, t, t, st.bytes or 0
+    st.sawGrowth, st.lastPoll, st.lastBeat = false, nil, 0
     log("info", "HD sheet installer: %s (source %d/%d)", s, st.srcIndex, #I.config.sources)
   end
   -- Watchdogs: a pending network job never reports on its own, so without
@@ -663,10 +668,38 @@ function I.update()
   if not ok then return fail(err) end
   if st.state == "downloading" then
     if (st.bytes or 0) > (st.lastBytes or 0) then
-      st.lastBytes, st.lastGrow = st.bytes, t
-    elseif t - (st.lastGrow or t) > I.config.stallTimeout then
-      return fail(("download stalled at %.1f MB for %d s"):format((st.bytes or 0) / 1048576, I.config.stallTimeout))
+      st.lastBytes, st.lastGrow, st.sawGrowth = st.bytes, t, true
+    else
+      -- If the engine never reports a single byte, it may simply not stream
+      -- progress (the file can appear all at once), so only the long overall
+      -- limit applies. Once bytes HAVE been moving, a stall is a real stall.
+      local limit = st.sawGrowth and I.config.stallTimeout or I.config.maxSeconds
+      if t - (st.lastGrow or t) > limit then
+        return fail(("download stalled at %.1f MB for %d s"):format((st.bytes or 0) / 1048576, limit))
+      end
     end
+  end
+  -- Heartbeat: one log line every 3 s so a stuck install can be diagnosed.
+  if (st.state == "checking" or st.state == "downloading") and t - (st.lastBeat or 0) >= 3 then
+    st.lastBeat = t
+    local parts = {}
+    if type(st.lastPoll) == "table" and st.state == "downloading" then
+      for k, v in pairs(st.lastPoll) do
+        local tv = type(v)
+        if tv == "string" or tv == "number" or tv == "boolean" then
+          parts[#parts + 1] = tostring(k) .. "=" .. tostring(v)
+        end
+      end
+      table.sort(parts)
+    end
+    local fileSize = "n/a"
+    if st.fs then
+      local okI, info = pcall(st.fs.getInfo, I.config.tempName, "file")
+      fileSize = (okI and info) and tostring(info.size) or "no file"
+    end
+    log("info", "HD sheet installer: %s %ds, bytes=%d/%d, temp file=%s, poll{%s}",
+      st.state, math.floor(t - (st.stateSince or t)), st.bytes or 0, st.total or 0, fileSize,
+      table.concat(parts, ", "))
   end
 end
 
