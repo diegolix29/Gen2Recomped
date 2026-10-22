@@ -30289,6 +30289,12 @@ function Structures.buildGrass(S, map, x0, x1, y0, y1, data)
             -- grass and carries no gameplay-facing texture cues
             instance.heightScale = 0.5
             instance.texture = "decor"
+            -- Random 90-degree rotation (0, 90, 180, 270) for variety while staying aligned
+            local hash = ((tx * 374761393 + ty * 668265263) % 2147483647)
+            if hash < 0 then hash = -hash end
+            local angle = math.floor((hash % 100000) / 25000) * (math.pi / 2)
+            instance.yaw = angle
+            instance.scale = 1  -- No random scale for consistent sizing
             decorInstances[#decorInstances + 1] = instance
           else
             instances[#instances + 1] = instance
@@ -30322,18 +30328,24 @@ function Structures.buildGrass(S, map, x0, x1, y0, y1, data)
           local instance = Grass3D.instanceForTile(tx, ty)
           instance.heightScale = 0.05
           instance.texture = "road"
+          instance.yaw = 0  -- No rotation for straight road tiles
+          instance.scale = 1  -- No random scale for consistent sizing
           roadInstances[#roadInstances + 1] = instance
         end
         if ground then
           local instance = Grass3D.instanceForTile(tx, ty)
           instance.heightScale = 0.1
           instance.texture = "ground"
+          instance.yaw = 0  -- No rotation for straight ground tiles
+          instance.scale = 1  -- No random scale for consistent sizing
           groundInstances[#groundInstances + 1] = instance
         end
         if water then
           local instance = Grass3D.instanceForTile(tx, ty)
           instance.heightScale = 0.02
           instance.texture = "water"
+          instance.yaw = 0  -- No rotation for straight water tiles
+          instance.scale = 1  -- No random scale for consistent sizing
           waterInstances[#waterInstances + 1] = instance
         end
       end
