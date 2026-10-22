@@ -182,6 +182,9 @@ local function loadMeta()
   merge("data/hd_sheet_meta.lua", "kim")
   -- Sidecar for sheets KIM has no rows for (Gen 4). Same format; wins on a tie.
   merge("data/hd_sheet_meta_gen4.lua", "sidecar")
+  -- Gen 5 (494-649): KIM has no rows for these either, so without this every
+  -- Gen 5 sheet falls through layoutFor() to the 1-frame static path.
+  merge("data/hd_sheet_meta_gen5.lua", "sidecar")
   return meta
 end
 

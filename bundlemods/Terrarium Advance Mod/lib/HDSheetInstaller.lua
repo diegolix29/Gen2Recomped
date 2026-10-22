@@ -50,6 +50,9 @@ I.config = {
   localZip = "terrarium_hd_sheets_pack.zip",
   apiTemp = "terrarium_hd_sheets_releases.tmp.json",
   extractBudget = 0.010,       -- seconds of unpacking per frame
+  checkTimeout = 45,           -- seconds CHECKING may last before it is an error
+  stallTimeout = 60,           -- seconds a download may go without a new byte
+  tapGuard = 1.0,              -- seconds in which a second tap is ignored (double-tap would cancel)
   maxSeconds = 15 * 60,        -- the release ZIP is large; Fetch's default is too short
   maxFile = 64 * 1024 * 1024,
 }
@@ -87,6 +90,11 @@ end
 local function log(level, fmt, ...)
   local l = mod and mod.log
   if l and type(l[level]) == "function" then pcall(l[level], l, fmt, ...) end
+end
+
+local function now()
+  if love and love.timer and type(love.timer.getTime) == "function" then return love.timer.getTime() end
+  return os.clock()
 end
 
 local function cacheOk()
@@ -339,6 +347,18 @@ local function finishSource()
   closeReader()
   removeTemp()
   if st.srcIndex < #I.config.sources then
+    -- A fallback pack is only worth another big download when this one left
+    -- gaps. (Terri-Assets already holds 1-649; the Kanto pack would just be a
+    -- second multi-hundred-MB download of files that are already installed.)
+    local hd = HD()
+    if hd and hd.rescan then pcall(hd.rescan) end
+    st.coverage = nil
+    local c = I.coverage()
+    if c.total >= maxDex() - 5 then
+      log("info", "HD sheets: source %d covers %d/%d, skipping the remaining source(s)",
+        st.srcIndex, c.total, maxDex())
+      return finishAll()
+    end
     I._startSource(st.srcIndex + 1)
   else
     finishAll()
@@ -528,8 +548,14 @@ local function pumpDownload()
   sizeNow()
   local s = Fetch.poll(st.job)
   if s.status == "pending" then
-    if st.total > 0 and tonumber(s.progress) and tonumber(s.progress) > 0 then
-      st.bytes = math.max(st.bytes or 0, st.total * tonumber(s.progress))
+    local got = tonumber(s.bytes) or tonumber(s.downloaded) or tonumber(s.received)
+    local p = tonumber(s.progress)
+    if not got and p and p > 0 then
+      -- progress may be a 0..1 fraction or a byte count, depending on engine build
+      if p <= 1 then got = (st.total > 0) and st.total * p or nil else got = p end
+    end
+    if got and got > (st.bytes or 0) then
+      st.bytes = (st.total > 0) and math.min(got, st.total) or got
     end
     return
   end
@@ -600,7 +626,7 @@ function I.start()
 end
 
 function I.cancel()
-  if st.state == "checking" or st.state == "downloading" then
+  if st.state == "checking" or st.state == "downloading" or st.state == "extracting" then
     cancelNetwork()
     st.releaseHandle = nil
     st.apiPhase = false
@@ -615,13 +641,33 @@ end
 function I.update()
   local s = st.state
   if s == "idle" or s == "done" or s == "error" then return end
+  local t = now()
+  st.lastPump = t
+  local key = s .. ":" .. tostring(st.srcIndex)
+  if st.seenKey ~= key then
+    st.seenKey, st.stateSince, st.lastGrow, st.lastBytes = key, t, t, st.bytes or 0
+    log("info", "HD sheet installer: %s (source %d/%d)", s, st.srcIndex, #I.config.sources)
+  end
+  -- Watchdogs: a pending network job never reports on its own, so without
+  -- these a dead request sits on CHECKING / DOWNLOAD forever, saying nothing.
+  if s == "checking" and t - st.stateSince > I.config.checkTimeout then
+    return fail(("no answer from GitHub after %d s (release list for %s)")
+      :format(I.config.checkTimeout, tostring(source() and source().repo)))
+  end
   local ok, err = pcall(function()
     if s == "checking" then pumpRelease()
     elseif s == "downloading" then pumpDownload()
     elseif s == "extracting" then pumpExtraction()
     end
   end)
-  if not ok then fail(err) end
+  if not ok then return fail(err) end
+  if st.state == "downloading" then
+    if (st.bytes or 0) > (st.lastBytes or 0) then
+      st.lastBytes, st.lastGrow = st.bytes, t
+    elseif t - (st.lastGrow or t) > I.config.stallTimeout then
+      return fail(("download stalled at %.1f MB for %d s"):format((st.bytes or 0) / 1048576, I.config.stallTimeout))
+    end
+  end
 end
 
 function I.active()
@@ -659,13 +705,23 @@ end
 -- Short text for the OPTIONS-menu value column.
 function I.statusText()
   local s = st.state
-  if s == "checking" then return "CHECKING" end
-  if s == "downloading" then
-    if st.total > 0 then return ("DOWNLOAD %d%%"):format(math.floor(100 * (st.bytes or 0) / st.total)) end
-    return "DOWNLOADING"
+  local n = #I.config.sources
+  local tag = n > 1 and (" %d/%d"):format(math.max(st.srcIndex, 1), n) or ""
+  if s == "checking" then
+    return ("CHECKING%s %ds"):format(tag, math.floor(now() - (st.stateSince or now())))
   end
-  if s == "extracting" then return ("UNPACK %d/%d"):format(st.pos - 1, #st.files) end
-  if s == "error" then return "ERROR RETRY" end
+  if s == "downloading" then
+    local mb = (st.bytes or 0) / 1048576
+    if st.total > 0 then
+      return ("DOWNLOAD %d%% %.0fMB%s"):format(math.floor(100 * (st.bytes or 0) / st.total), mb, tag)
+    end
+    return ("DOWNLOAD %.1fMB%s"):format(mb, tag)
+  end
+  if s == "extracting" then return ("UNPACK %d/%d%s"):format(st.pos - 1, #st.files, tag) end
+  if s == "error" then
+    local e = tostring(st.error or ""):gsub("%s+", " "):upper()
+    return ("ERROR %s"):format(e:sub(1, 34))
+  end
   local c = I.coverage()
   if c.total == 0 then return "GET SHEETS" end
   return ("%d/%d"):format(c.total, maxDex())
@@ -677,11 +733,22 @@ function I.row()
   return {
     id = I.ID,
     label = I.LABEL,
-    value = function() return I.statusText() end,
+    value = function()
+      -- The installer is normally pumped from input.step. If the engine does
+      -- not run that while the OPTIONS menu is open, the row would freeze on
+      -- its first word; drawing the row is a second, throttled pump.
+      if I.active() and now() - (st.lastPump or 0) > 0.1 then pcall(I.update) end
+      return I.statusText()
+    end,
     step = function()
+      local t = now()
       if I.active() then
+        -- a second tap right after starting would cancel the install
+        if t - (st.startedAt or -99) < I.config.tapGuard then return true end
         I.cancel()
       else
+        st.startedAt = t
+        st.lastPump = t
         pcall(I.start)
       end
       return true
