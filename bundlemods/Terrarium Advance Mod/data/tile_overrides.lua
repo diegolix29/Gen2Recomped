@@ -32,9 +32,9 @@ return {
   pool = {
     "dark sand.png", "edges.png", "flagstone.png", "floor.png",
     "flowers.png", "grass.png", "ground.png", "highgrass.png",
-    "lamp.png", "mulch.png", "object.png", "pavers.png",
-    "road.png", "rock.png", "sand.png", "snow.png",
-    "trees.png", "waterp.png", "wild.png",
+    "lamp.png", "mulch.png", "grass.png", "pavers.png",
+    "road.png", "rock.png", "edges.png", "snow.png",
+    "edges.png", "waterp.png", "wild.png",
   },
 
   tilesets = {
