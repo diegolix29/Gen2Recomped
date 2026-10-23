@@ -304,36 +304,15 @@ local function atlasSignature(map)
                         tostring(info.height) }, ":")
 end
 
--- TILE OVERRIDES (data/tile_overrides.lua) take faces out of the terrain
--- stream and store them as parts of their own, so which tiles wear which PNG
--- is part of what an entry MEANS.  plan.key already changes with the picks,
--- the mode and the repeat; the shape classes it diverts are added here.
-local function overrideSignature(map)
-  local tileset = map and map.tileset
-  if not tileset or (Gen3 and Gen3.isGen3(tileset)) then return "-" end
-  local okM, TO = pcall(V.optional, "TileOverrides")
-  if not (okM and TO) then return "-" end
-  local ok, plan = pcall(TO.planFor, tileset)
-  if not (ok and plan and plan.mesh and next(plan.mesh)) then return "-" end
-  local cls = {}
-  for k in pairs(plan.classes or {}) do cls[#cls + 1] = k end
-  table.sort(cls)
-  return tostring(hashAdd(4099, plan.key .. ";" .. table.concat(cls, ",")))
-end
-
 local function signature(map, slot, masks)
   return table.concat({ GEOM_REV, bodySignature(map), tostring(slot),
     slot == "body" and "-" or maskSignature(masks), rulesSignature(map),
-    atlasSignature(map), overrideSignature(map) }, "|")
+    atlasSignature(map) }, "|")
 end
 
 local function paths(map, slot)
   local stem = DIR .. "/" .. sanitize(map and map.id) .. "_" .. sanitize(slot)
-  return stem .. ".meta", stem .. ".terrain.bin", stem .. ".water.bin", stem
-end
-
-local function partPath(stem, i)
-  return stem .. ".tex" .. i .. ".bin"
+  return stem .. ".meta", stem .. ".terrain.bin", stem .. ".water.bin"
 end
 
 local function readAll(path)
@@ -346,12 +325,7 @@ local function parseMeta(text)
   if type(text) ~= "string" then return nil end
   local magic, sig, terrain, water = text:match("^(.-)\n(.-)\n(%d+)\n(%d+)\n?")
   if magic ~= "VXM2" then return nil end
-  -- then one "part <count> <file>" line per tile-override texture
-  local parts = {}
-  for count, file in text:gmatch("\npart (%d+) ([^\n]+)") do
-    parts[#parts + 1] = { count = tonumber(count), file = file }
-  end
-  return sig, tonumber(terrain), tonumber(water), parts
+  return sig, tonumber(terrain), tonumber(water)
 end
 
 local function fileSize(path)
@@ -422,13 +396,13 @@ end
 
 function Cache.load(map, slot, masks)
   if not runtimeAvailable() or not CACHEABLE[slot] then return false end
-  local metaPath, terrainPath, waterPath, stem = paths(map, slot)
+  local metaPath, terrainPath, waterPath = paths(map, slot)
   local meta = readAll(metaPath)
   if not meta then
     Cache.misses = Cache.misses + 1
     return false
   end
-  local sig, terrainCount, waterCount, partList = parseMeta(meta)
+  local sig, terrainCount, waterCount = parseMeta(meta)
   if not sig or sig ~= signature(map, slot, masks) then
     Cache.misses = Cache.misses + 1
     return false
@@ -455,26 +429,11 @@ function Cache.load(map, slot, masks)
     return false
   end
 
-  local parts, partVerts = {}, 0
-  for i, p in ipairs(partList or {}) do
-    local mesh, okP, errP = loadRawMesh(partPath(stem, i), p.count)
-    if not okP then
-      for _, q in ipairs(parts) do pcall(q.mesh.release, q.mesh) end
-      if terrain and terrain.release then pcall(terrain.release, terrain) end
-      if water and water.release then pcall(water.release, water) end
-      Cache.errors = Cache.errors + 1
-      Cache.lastError = errP
-      return false
-    end
-    if mesh then parts[#parts + 1] = { mesh = mesh, file = p.file } end
-    partVerts = partVerts + (p.count or 0)
-  end
-
   Cache.hits = Cache.hits + 1
   Cache.bytesLoaded = Cache.bytesLoaded
-    + (terrainCount + waterCount + partVerts) * BYTES_PER_VERTEX
+    + (terrainCount + waterCount) * BYTES_PER_VERTEX
   Cache.lastError = nil
-  return true, terrain, water, parts
+  return true, terrain, water
 end
 
 local function writeText(path, text)
@@ -508,7 +467,6 @@ local function prune()
     if okInfo and info and info.type == "file" then
       local stem = name:gsub("%.terrain%.bin$", "")
                        :gsub("%.water%.bin$", "")
-                       :gsub("%.tex%d+%.bin$", "")
                        :gsub("%.meta$", "")
       local g = groups[stem] or { stem = stem, bytes = 0, time = math.huge }
       g.bytes = g.bytes + (tonumber(info.size) or 0)
@@ -527,12 +485,6 @@ local function prune()
     for _, suffix in ipairs({ ".meta", ".terrain.bin", ".water.bin" }) do
       pcall(love.filesystem.remove, DIR .. "/" .. g.stem .. suffix)
     end
-    for i = 1, 64 do
-      local p = DIR .. "/" .. partPath(g.stem, i)
-      local okI, info = pcall(love.filesystem.getInfo, p)
-      if not (okI and info) then break end
-      pcall(love.filesystem.remove, p)
-    end
     total = total - g.bytes
   end
 end
@@ -540,7 +492,7 @@ end
 -- `terrainSink` / `waterSink` are ChunkMesher's FFI sinks. They expose
 -- vertexCount() and writeRaw(path), allowing this module to stay independent
 -- of FFI/cdata and keeping all native-buffer ownership inside ChunkMesher.
-function Cache.store(map, slot, masks, terrainSink, waterSink, parts)
+function Cache.store(map, slot, masks, terrainSink, waterSink)
   if not runtimeAvailable() or not CACHEABLE[slot] then return false end
   if not (terrainSink and type(terrainSink.vertexCount) == "function"
       and type(terrainSink.writeRaw) == "function") then return false end
@@ -550,7 +502,7 @@ function Cache.store(map, slot, masks, terrainSink, waterSink, parts)
 
   local okDir = pcall(love.filesystem.createDirectory, DIR)
   if not okDir then return false end
-  local metaPath, terrainPath, waterPath, stem = paths(map, slot)
+  local metaPath, terrainPath, waterPath = paths(map, slot)
   local okT, errT = terrainSink:writeRaw(terrainPath)
   if not okT then
     Cache.errors = Cache.errors + 1
@@ -571,25 +523,8 @@ function Cache.store(map, slot, masks, terrainSink, waterSink, parts)
     pcall(love.filesystem.remove, waterPath)
   end
 
-  -- tile-override parts: one stream per texture, named in the meta
-  local partLines, partVerts = {}, 0
-  for i, p in ipairs(parts or {}) do
-    local count = tonumber(p.sink:vertexCount()) or 0
-    local okP, errP = p.sink:writeRaw(partPath(stem, i))
-    if not okP then
-      Cache.errors = Cache.errors + 1
-      Cache.lastError = tostring(errP)
-      return false
-    end
-    partLines[#partLines + 1] = "part " .. count .. " " .. tostring(p.file)
-    partVerts = partVerts + count
-  end
-
-  local rows = { "VXM2", signature(map, slot, masks),
-    tostring(terrainCount), tostring(waterCount) }
-  for _, line in ipairs(partLines) do rows[#rows + 1] = line end
-  rows[#rows + 1] = ""
-  local meta = table.concat(rows, "\n")
+  local meta = table.concat({ "VXM2", signature(map, slot, masks),
+    tostring(terrainCount), tostring(waterCount), "" }, "\n")
   if not writeText(metaPath, meta) then
     Cache.errors = Cache.errors + 1
     Cache.lastError = "could not write voxel cache metadata"
@@ -597,7 +532,7 @@ function Cache.store(map, slot, masks, terrainSink, waterSink, parts)
   end
   Cache.writes = Cache.writes + 1
   Cache.bytesWritten = Cache.bytesWritten
-    + (terrainCount + waterCount + partVerts) * BYTES_PER_VERTEX
+    + (terrainCount + waterCount) * BYTES_PER_VERTEX
   Cache.lastError = nil
   writeCounter = writeCounter + 1
   if writeCounter % 8 == 0 then pcall(prune) end

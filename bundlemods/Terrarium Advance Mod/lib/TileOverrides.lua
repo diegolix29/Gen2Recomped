@@ -63,15 +63,6 @@ local config = nil          -- the parsed data file | false (unusable) | nil (no
 local plans = {}            -- tileset key -> plan | false (nothing to do)
 local tiles8 = {}           -- file -> 8x8 ImageData | false (unreadable)
 local images = {}           -- file -> full-resolution Image | false
-
--- Mesh mode re-textures a face only when its cell's SHAPE CLASS is one of
--- these.  Tile ids are 8x8 atlas slots and houses, roofs and trees are drawn
--- from the same slots as the grass and rock around them, so the id alone
--- re-textured buildings and trees too.  `classes = {...}` in the data file
--- (global or per tileset) replaces this list.
-local DEFAULT_CLASSES = {
-  "ground", "grass", "terrace", "ledge", "cliff", "slope",
-}
 local logged = {}
 
 local function log(key, fmt, ...)
@@ -423,14 +414,7 @@ function TileOverrides.planFor(tileset)
   for tile in pairs(files) do ids[#ids + 1] = tile end
   table.sort(ids)
 
-  -- which shape classes mesh mode may re-texture (see DEFAULT_CLASSES)
-  local classes = {}
-  for _, c in ipairs((spec and spec.classes) or cfg.classes or DEFAULT_CLASSES) do
-    classes[c] = true
-  end
-
   local plan = { tiles = {}, mesh = {}, key = "", files = {}, overlay = overlay,
-                 classes = classes,
                  repeatTiles = math.max(0.125, tonumber((spec and spec.repeatTiles)
                                                         or cfg.repeatTiles) or 1) }
   local keyParts, lines = {}, {}
