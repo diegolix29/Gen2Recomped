@@ -31,6 +31,9 @@ local FIRST_MEMBER = 2
 local PER_FORM = 8
 local TARGET_HEIGHT = 16.0
 local MORPH_SLOTS = 12
+-- PICA wrap (0 clamp edge, 1 clamp border, 2 repeat, 3 mirror) -> the
+-- PokemonActors texture spec's wrapS/wrapT (0 clamp, 1 repeat, 2 mirrored)
+local WRAP = { [0] = 0, [1] = 0, [2] = 1, [3] = 2 }
 
 local function u16(s, p) local a, b = s:byte(p, p + 1); return a + b * 256 end
 local function u32(s, p)
@@ -124,10 +127,20 @@ function C.buildSpecies(mod, rom, g, index, dex, stamp)
   local texPaths, texCount = {}, 0
   local groups, vertexTotal = {}, 0
 
+  local prefix = (model.name or ""):match("^(pm%d+_%d+)") or "pm"
+  local skipped = 0
   for gi, entry in ipairs(meshes) do
     local mesh, bind = entry.mesh, entry.bind
     local mat = model.materials[mesh.materialIndex + 1] or {}
     local tname = mat.textures and mat.textures[1]
+    -- Effect meshes (flames, glows: FireCoreA, FireStenA, ...) sample shared
+    -- effect textures through the game's additive/stencil shaders.  Drawn as
+    -- ordinary surfaces they are black and white blobs, so only meshes whose
+    -- base texture is the species' own (pmNNNN_FF_...) are kept.
+    if not (tname and tname:sub(1, #prefix) == prefix) then
+      skipped = skipped + 1
+      goto continue
+    end
     local t = tname and textures[tname]
     local tp = tname and texPaths[tname]
     if t and not tp then
@@ -147,7 +160,12 @@ function C.buildSpecies(mod, rom, g, index, dex, stamp)
       local x, y, z = norm(v.position)
       local uv = v.uv or { 0, 0 }
       local n = v.normal or { 0, 1, 0 }
-      local cells = { num(x), num(y), num(z), num(uv[1]), num(uv[2] or 0),
+      -- PICA's t runs up from the bottom of the texture, whose first row in
+      -- memory is the TOP of the decoded image (PICA.decodeTexture); LOVE's
+      -- v runs down from the top, so v = 1 - t.  Checked by rendering
+      -- Ivysaur's and Charizard's caches offline: with t as-is the eye sheet
+      -- showed its closed frame and Charizard's wings sampled empty texels.
+      local cells = { num(x), num(y), num(z), num(uv[1]), num(1 - (uv[2] or 0)),
                       num(n[1]), num(n[2]), num(n[3]) }
       local px, py, pz = cells[1], cells[2], cells[3]
       for _ = 1, MORPH_SLOTS do
@@ -161,8 +179,10 @@ function C.buildSpecies(mod, rom, g, index, dex, stamp)
     end
     if #rows > 0 then
       vertexTotal = vertexTotal + #rows
-      groups[#groups + 1] = { name = mat.name, texture = tp, packed = table.concat(rows, "\n") }
+      groups[#groups + 1] = { name = mat.name, texture = tp, packed = table.concat(rows, "\n"),
+                              wrapS = WRAP[mat.wrapU] or 1, wrapT = WRAP[mat.wrapV] or 1 }
     end
+    ::continue::
   end
   if #groups == 0 then return nil, "no drawable meshes" end
 
@@ -182,7 +202,8 @@ function C.buildSpecies(mod, rom, g, index, dex, stamp)
   for _, gr in ipairs(groups) do
     out[#out + 1] = "{material=" .. ("%q"):format(tostring(gr.name))
     if gr.texture then
-      out[#out + 1] = (",texture={path=%q,w=%d,h=%d,wrapS=1,wrapT=1}"):format(gr.texture.path, gr.texture.w, gr.texture.h)
+      out[#out + 1] = (",texture={path=%q,w=%d,h=%d,wrapS=%d,wrapT=%d}"):format(
+        gr.texture.path, gr.texture.w, gr.texture.h, gr.wrapS, gr.wrapT)
     end
     out[#out + 1] = ",diffuse={1,1,1},ambient={1,1,1},specular={0,0,0},alpha=1,shininess=0"
     out[#out + 1] = ",xlu=false,noz=false,renderFlags=0,shadow=false,effect=false,textureSlot=-1"
@@ -195,8 +216,8 @@ function C.buildSpecies(mod, rom, g, index, dex, stamp)
   mod.cache:write(dir .. "/rev.txt", stamp or "oras-actor=1\n")
   -- a stale runtime sidecar from an earlier build must not outlive this one
   pcall(mod.cache.delete, mod.cache, dir .. "/runtime_mesh_v1/base.lua")
-  return ("%s: %d groups, %d verts, %d textures (members %d-%d)"):format(
-    tostring(model.name), #groups, vertexTotal, texCount, base, base + 7)
+  return ("%s: %d groups, %d verts, %d textures, %d effect meshes skipped (members %d-%d)"):format(
+    tostring(model.name), #groups, vertexTotal, texCount, skipped, base, base + 7)
 end
 
 -- Build `list` (dex numbers) and register them.  `log(fmt, ...)` reports

@@ -13,7 +13,8 @@
 --             +7C node visibility {ptr, count}   +84 name
 --   material  +00 params ptr, +04..+0C texture objects, +10 texture commands
 --             {ptr, count}, +18 mappers ptr, +1C/+20/+24 texture 0-2 names,
---             +28 name
+--             +28 name.  Params +0C: texture coords (see uvTransform);
+--             mapper (16 bytes): sampler u8, wrap U u8, wrap V u8, ...
 --   mesh      +00 material index u16, +02 flags u8, +04 node index u16,
 --             +06 key u16, +08 enable commands {ptr, count}, +10 submeshes
 --             {ptr, count}, +18 disable commands, +20 centre (3 floats),
@@ -303,10 +304,17 @@ function H3D.models(d, h)
     for i = 0, matCount - 1 do
       local b = matAt + i * 0x2C
       local params = W(d, b)
+      -- texture mapper 0 (16 bytes each, three of them): sampler type u8,
+      -- wrap U u8, wrap V u8 (0 clamp to edge, 1 clamp to border, 2 repeat,
+      -- 3 mirror).  ORAS bodies are commonly half a texture, mirrored.
+      local mappers = W(d, b + 0x18)
+      local wrapU = mappers and mappers > 0 and d:byte(mappers + 2) or 2
+      local wrapV = mappers and mappers > 0 and d:byte(mappers + 3) or 2
       model.materials[i + 1] = {
         name = str(d, b + 0x28),
         textures = { str(d, b + 0x1C), str(d, b + 0x20), str(d, b + 0x24) },
         uvTransform = params and params > 0 and H3D.uvTransform(d, params + 0x0C) or nil,
+        wrapU = wrapU, wrapV = wrapV,
       }
     end
 

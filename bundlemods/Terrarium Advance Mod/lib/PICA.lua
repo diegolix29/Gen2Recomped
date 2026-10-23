@@ -12,8 +12,9 @@
 -- TEXTURES.  8x8 tiles, left to right then top to bottom, pixels inside a
 -- tile in the Morton order SWIZZLE lists; ETC1/ETC1A4 in 4x4 blocks, four per
 -- tile.  `PICA.decodeTexture` returns an RGBA ImageData whose row 0 is the
--- first row in memory -- a texture coordinate t samples row t*height of it,
--- so LOVE (origin top-left) uses UVs as they are and OBJ needs 1 - v.
+-- first row in memory, which is the TOP of the texture: PICA's t runs up from
+-- the bottom, so LOVE (v down from the top) samples it with v = 1 - t, and an
+-- OBJ (vt up from the bottom) uses t as it is.
 
 local PICA = {}
 

@@ -553,7 +553,9 @@ function P.export(mod, base)
         if p[k] > hi[k] then hi[k] = p[k] end
       end
       local uv = v.uv or { 0, 0 }
-      obj[#obj + 1] = string.format("vt %.5f %.5f", uv[1], 1 - (uv[2] or 0))
+      -- OBJ's vt runs up from the bottom like PICA's t, and the PNG's top
+      -- row is the texture's first row in memory, so t goes through as-is
+      obj[#obj + 1] = string.format("vt %.5f %.5f", uv[1], uv[2] or 0)
       local n = v.normal or { 0, 1, 0 }
       obj[#obj + 1] = string.format("vn %.4f %.4f %.4f", n[1], n[2], n[3])
     end
