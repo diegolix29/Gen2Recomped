@@ -26,19 +26,7 @@
 -- a list of tileset ids.  Explicit `tiles` / `random` picks still win.  Ids at
 -- 256 and up show their low byte.
 --
--- TWO MODES (`mode`, global or per tileset):
---
---   "mesh"  (default)  The faces of those tile ids are TAKEN OUT of the terrain
---           mesh and rebuilt as their own meshes wearing the PNG at full
---           resolution, tiled in world space -- the way Grass3D's road and
---           ground meshes carry their own texture.  Tops, cliff faces, ramps
---           and roofs all follow, because it is decided per quad by which
---           atlas tile the quad samples.  See ChunkMesher's divertSink.
---   "atlas"            The PNG is shrunk into the tile's 8x8 atlas slot.  Cheap
---           and it works on every surface, but it is pixelated by
---           construction.  Also what `idOverlay` uses.
---
--- IN "atlas" MODE THE PICTURE IS SHRUNK TO 8x8.  The atlas slot is 8x8 texels, so a 500px
+-- THE PICTURE IS SHRUNK TO 8x8.  The atlas slot is 8x8 texels, so a 500px
 -- photo-texture is box-averaged down to one tile.  It reads as the texture's
 -- colour and rough pattern, which is what an id test needs; real detail would
 -- take a bigger atlas (and UV maths that follows it), which this does not do.
@@ -62,7 +50,6 @@ local TILE = 8
 local config = nil          -- the parsed data file | false (unusable) | nil (not read)
 local plans = {}            -- tileset key -> plan | false (nothing to do)
 local tiles8 = {}           -- file -> 8x8 ImageData | false (unreadable)
-local images = {}           -- file -> full-resolution Image | false
 local logged = {}
 
 local function log(key, fmt, ...)
@@ -270,85 +257,6 @@ local function tileFor(dir, file)
   return tile
 end
 
--- ------------------------------------------------------- full-res images --
-
-local function isPow2(n)
-  local p = 1
-  while p < n do p = p * 2 end
-  return p == n
-end
-
-local function nearestPow2(n)
-  local p = 1
-  while p * 2 <= n do p = p * 2 end
-  -- round to whichever power of two is nearer
-  return (n - p) > (p * 2 - n) and p * 2 or p
-end
-
--- Resample to w x h by box averaging (at most two samples per axis per
--- texel), which is also plain nearest-neighbour when growing.
-local function resample(src, w, h)
-  local sw, sh = src:getDimensions()
-  local out = love.image.newImageData(w, h)
-  for y = 0, h - 1 do
-    local y0 = math.floor(y * sh / h)
-    local y1 = math.max(y0 + 1, math.floor((y + 1) * sh / h))
-    local ys = math.max(1, math.floor((y1 - y0) / 2))
-    for x = 0, w - 1 do
-      local x0 = math.floor(x * sw / w)
-      local x1 = math.max(x0 + 1, math.floor((x + 1) * sw / w))
-      local xs = math.max(1, math.floor((x1 - x0) / 2))
-      local r, g, b, a, n = 0, 0, 0, 0, 0
-      for yy = y0, y1 - 1, ys do
-        for xx = x0, x1 - 1, xs do
-          local pr, pg, pb, pa = src:getPixel(math.min(xx, sw - 1), math.min(yy, sh - 1))
-          r, g, b, a, n = r + pr, g + pg, b + pb, a + pa, n + 1
-        end
-      end
-      out:setPixel(x, y, r / n, g / n, b / n, a / n)
-    end
-  end
-  return out
-end
-
--- A PNG as a repeating, mip-mapped GPU image.  Sizes are made power-of-two and
--- capped at `maxTexture` (default 512): a repeating, mip-mapped texture is not
--- guaranteed for odd sizes on every GPU this mod runs on (mobile), and a
--- 1920px photo per ground type is memory nobody asked for.
-local function imageFor(dir, file)
-  local hit = images[file]
-  if hit ~= nil then return hit or nil end
-  images[file] = false
-  if not (love and love.image and love.graphics and love.graphics.newImage) then return nil end
-  local path = tostring((V and V.path) or "") .. "/" .. dir .. file
-  local okE, exists = pcall(Assets.exists, path)
-  if not (okE and exists) then
-    log("miss:" .. file, "no %s%s -- tiles that name it keep their own art", dir, file)
-    return nil
-  end
-  local cfg = config or {}
-  local cap = math.max(16, math.floor(tonumber(cfg.maxTexture) or 512))
-  local ok, image = pcall(function()
-    local data = Assets.imageData(path)
-    local w, h = data:getDimensions()
-    local tw = math.min(cap, isPow2(w) and w or nearestPow2(w))
-    local th = math.min(cap, isPow2(h) and h or nearestPow2(h))
-    if tw ~= w or th ~= h then data = resample(data, tw, th) end
-    local img = love.graphics.newImage(data, { mipmaps = true })
-    local filter = cfg.filter == "nearest" and "nearest" or "linear"
-    pcall(img.setFilter, img, filter, filter, 8)
-    pcall(img.setMipmapFilter, img, filter)
-    img:setWrap("repeat", "repeat")
-    return img
-  end)
-  if not (ok and image) then
-    log("bad:" .. file, "%s%s could not be loaded as a texture (%s)", dir, file, tostring(image))
-    return nil
-  end
-  images[file] = image
-  return image
-end
-
 -- ------------------------------------------------------------------- API --
 
 local function overlayOn(cfg, spec, id)
@@ -378,12 +286,10 @@ function TileOverrides.noteTileset(tileset, mapId, atlas)
       tostring(id), tostring(mapId), w, h, tostring(tileset.tilesPerRow or 16))
 end
 
--- The overrides for one tileset, or nil when it has none:
---   plan.tiles    { [id] = 8x8 ImageData }  stamped into the atlas copy
---   plan.mesh     { [id] = { file, image } } rebuilt as full-resolution meshes
---   plan.overlay  true when every other slot shows its id
---   plan.repeatTiles  tiles per repeat of a mesh texture
---   plan.key      changes whenever the resolved set does
+-- The overrides for one tileset: { tiles = { [id] = 8x8 ImageData },
+-- overlay = bool, key = s }, or nil when the tileset has none.  `key` changes
+-- whenever the resolved set does, so a caller can cache a stamped atlas
+-- against it.
 function TileOverrides.planFor(tileset)
   local id = tileset and tileset.id
   if id == nil then return nil end
@@ -406,46 +312,28 @@ function TileOverrides.planFor(tileset)
 
   local dir = cfg.dir or DEFAULT_DIR
   if dir:sub(-1) ~= "/" then dir = dir .. "/" end
-  local mode = (spec and spec.mode) or cfg.mode or "mesh"
-  if mode ~= "atlas" then mode = "mesh" end
 
   local files = spec and resolveFiles(cfg, spec) or {}
   local ids = {}
   for tile in pairs(files) do ids[#ids + 1] = tile end
   table.sort(ids)
 
-  local plan = { tiles = {}, mesh = {}, key = "", files = {}, overlay = overlay,
-                 repeatTiles = math.max(0.125, tonumber((spec and spec.repeatTiles)
-                                                        or cfg.repeatTiles) or 1) }
+  local plan = { tiles = {}, key = "", files = {}, overlay = overlay }
   local keyParts, lines = {}, {}
   for _, tile in ipairs(ids) do
-    local file = files[tile]
-    local ok = false
-    if mode == "mesh" then
-      local image = imageFor(dir, file)
-      if image then
-        plan.mesh[tile] = { file = file, image = image }
-        ok = true
-      end
-    else
-      local pixels = tileFor(dir, file)
-      if pixels then
-        plan.tiles[tile] = pixels
-        ok = true
-      end
-    end
-    if ok then
-      plan.files[tile] = file
-      keyParts[#keyParts + 1] = tile .. "=" .. file
-      lines[#lines + 1] = string.format("$%02X=%s", tile, file)
+    local pixels = tileFor(dir, files[tile])
+    if pixels then
+      plan.tiles[tile] = pixels
+      plan.files[tile] = files[tile]
+      keyParts[#keyParts + 1] = tile .. "=" .. files[tile]
+      lines[#lines + 1] = string.format("$%02X=%s", tile, files[tile])
     end
   end
   if #keyParts == 0 and not overlay then return nil end
-  keyParts[#keyParts + 1] = mode .. "x" .. tostring(plan.repeatTiles)
   if overlay then keyParts[#keyParts + 1] = "overlay" end
   plan.key = table.concat(keyParts, ",")
   plans[id] = plan
-  log("plan:" .. id, "%s [%s]: %s%s", id, mode, overlay and "ID OVERLAY on  " or "",
+  log("plan:" .. id, "%s: %s%s", id, overlay and "ID OVERLAY on  " or "",
       table.concat(lines, "  "))
   return plan
 end
@@ -502,7 +390,6 @@ function TileOverrides.invalidate()
   config = nil
   plans = {}
   tiles8 = {}
-  images = {}
   idTiles = {}
   logged = {}
 end
