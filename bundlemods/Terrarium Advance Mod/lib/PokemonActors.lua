@@ -506,13 +506,16 @@ local function loadScene(dex,diskOnly,checkpoint)
   for i,g in ipairs(cache.groups or {}) do
     checkpoint("Uploading model material "..i)
     local img
-    if g.texture and not diskOnly then
-      img=textures[g.texture.path]
+    -- an ORAS shiny scene ("<dex>:shiny") shares the normal geometry and
+    -- swaps in the group's own shiny texture (lib/ORASActorCache.lua)
+    local texSpec=(type(dex)=="string" and dex:match(":shiny$") and g.textureShiny) or g.texture
+    if texSpec and not diskOnly then
+      img=textures[texSpec.path]
       if not img then
         local ierr
-        img,ierr=imageFromRaw(g.texture)
+        img,ierr=imageFromRaw(texSpec)
         if not img then sceneErrors[dex]=tostring(ierr);return nil,sceneErrors[dex] end
-        textures[g.texture.path]=img
+        textures[texSpec.path]=img
       end
     end
     local mesh,verr,vertices
@@ -1039,6 +1042,32 @@ local function moveSlot(moveDef)
   if category:find("special",1,true) then return "specialA" end
   if category:find("physical",1,true) then return "physicalA" end
   return "physicalA"
+end
+
+-- ORAS models (lib/ORASActorCache.lua) can carry several physical/special
+-- banks (ORAS battle-motion slots 8-11 and 12-15).  moveSlot only ever asks
+-- for the A bank, so pick among the ones this scene has, by move id: the same
+-- move always plays the same motion, different moves spread across them.
+-- Colosseum scenes keep exactly the slot moveSlot chose.
+local ORAS_VARIANTS={physical={"A","B","C","D","E"},special={"A","B","C"}}
+local function orasAttackVariant(scene,requested,moveId)
+  if not (scene and scene.source=="ORAS" and type(requested)=="string") then return requested end
+  local family=requested:match("^(physical)") or requested:match("^(special)")
+  if not family then return requested end
+  local found={}
+  for _,letter in ipairs(ORAS_VARIANTS[family]) do
+    local key=family..letter
+    if (scene.actions and scene.actions[key]) or (scene.actionSpecs and scene.actionSpecs[key]) then
+      found[#found+1]=key
+    end
+  end
+  if #found<=1 then return requested end
+  local n=tonumber(moveId)
+  if not n then
+    n=0
+    for c in tostring(moveId or ""):gmatch(".") do n=(n*31+c:byte())%2147483647 end
+  end
+  return found[(math.floor(n)%#found)+1]
 end
 
 local NATIVE_FALLBACKS={
@@ -1781,7 +1810,7 @@ function Actor:attack(moveId,moveDef,opts)
   end
   self.action="attack";self.actionAge=0;self:transition("attack")
   self.lastMove=moveId;self.lastMoveDef=moveDef
-  local requested=opts.nativeSlot or moveSlot(moveDef)
+  local requested=opts.nativeSlot or orasAttackVariant(self.scene,moveSlot(moveDef),moveId)
   local sampled=self:selectNativeSlot(requested)
   -- The selected PKX bank is part of the retail presentation chain. Older CBE
   -- builds deliberately discarded it whenever a Waza timeline was present,
@@ -2256,7 +2285,8 @@ function A.acquire(source,dex,variant,opts)
   -- If a tiny persisted metadata sidecar exists we still consume it; otherwise
   -- leave the global key unresolved so a later real battle actor can perform the
   -- authoritative source metadata read when it actually needs move timing.
-  local needsFilter=variant=="shiny" and not Dex.rare[dex]
+  -- ORAS species carry authored shiny textures: never recolour them
+  local needsFilter=variant=="shiny" and not Dex.rare[dex] and not (Dex.isOras and Dex.isOras(dex))
   local filterInvalid=needsFilter and (metadata and metadata.shinyFilter) and not validFilter(metadata.shinyFilter)
   if not (opts and opts.noSource==true)
       and ((metadata==nil and not informationSurface) or filterInvalid)

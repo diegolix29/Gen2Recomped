@@ -58,34 +58,86 @@ function M.probe()
   return true
 end
 
--- TEST BATCH: National Dex 1-20 built into PokemonActors caches
+-- BUILD: National Dex 1-151 (Gen 1) into PokemonActors caches
 -- (lib/ORASActorCache.lua) -- the same cache every 3D-actor surface reads, so
 -- they appear in battles, as followers and in the overworld like Colosseum's.
--- Synchronous for now: about ten seconds per species of pure-Lua inflate and
--- decode on the options menu.  The full 1-721 install becomes a background job.
-M.TEST_DEX = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 }
+--
+-- A BACKGROUND JOB: the build runs in a coroutine that M.pump() resumes once a
+-- frame (main.lua's update tick), and ORASActorCache yields at its stage
+-- checkpoints once FRAME_BUDGET seconds of the frame are used -- the game
+-- keeps running, with a hitch on the heaviest single steps (inflating a
+-- texture set).  The row shows progress; species already built in the
+-- current format are skipped, so pressing it again only does what is left.
+M.BUILD_DEX = {}
+for dex = 1, 151 do M.BUILD_DEX[dex] = dex end
+local FRAME_BUDGET = 0.012
 
-function M.buildTest()
+local job = nil      -- { co, done, total, lines, startedAt }
+
+local function now()
+  return (love and love.timer and love.timer.getTime and love.timer.getTime()) or os.clock()
+end
+
+function M.running() return job ~= nil end
+
+function M.startBuild(list)
+  if job then return false end
+  list = list or M.BUILD_DEX
+  local Cache = V.require("ORASActorCache")
   local lines = {}
-  local ok, built, failed, err = pcall(function()
-    return V.require("ORASActorCache").build(mod, M.TEST_DEX, function(fmt, ...)
+  job = { done = 0, total = #list, lines = lines, startedAt = now(), frameStart = now() }
+  st.state, st.error, st.summary = "building", nil, nil
+  job.co = coroutine.create(function()
+    return Cache.build(mod, list, function(fmt, ...)
       local line = string.format(fmt, ...)
       lines[#lines + 1] = line
       log("info", "%s", line)
+    end, function(done, total)
+      job.done, job.total = done, total
     end)
   end)
+  Cache.checkpoint = function()
+    if job and coroutine.running() == job.co and now() - job.frameStart > FRAME_BUDGET then
+      coroutine.yield()
+    end
+  end
+  log("info", "ORAS MODELS: building %d species in the background", #list)
+  return true
+end
+
+local function finish(ok, built, failed, err, skipped)
+  local Cache = V.require("ORASActorCache")
+  Cache.checkpoint = nil
+  local lines = job and job.lines or {}
+  local seconds = job and (now() - job.startedAt) or 0
+  job = nil
   if not ok then
     st.state, st.error = "error", tostring(built)
     log("warn", "ORAS build failed: %s", st.error)
-    return false
+    return
   end
   if err then log("warn", "ORAS build: %s", tostring(err)) end
-  st.state = (built or 0) > 0 and "done" or "error"
-  st.summary = string.format("%d built, %d failed", built or 0, failed or 0)
+  st.state = ((built or 0) + (skipped or 0)) > 0 and "done" or "error"
+  st.summary = string.format("%d built, %d skipped, %d failed in %.0fs",
+                             built or 0, skipped or 0, failed or 0, seconds)
   st.error = err
-  log("info", "ORAS MODELS test batch: %s", st.summary)
+  log("info", "ORAS MODELS: %s -- restart the game so every part of the mod picks them up", st.summary)
   if mod and mod.cache then pcall(mod.cache.write, mod.cache, "oras/build.txt", table.concat(lines, "\n") .. "\n") end
-  return true
+end
+
+-- once a frame (main.lua)
+function M.pump()
+  if not job then return end
+  job.frameStart = now()
+  local ok, built, failed, err, skipped = coroutine.resume(job.co)
+  if not ok then return finish(false, built) end
+  if coroutine.status(job.co) == "dead" then finish(true, built, failed, err, skipped) end
+end
+
+-- kept for the earlier test flow: a synchronous build of a short list
+function M.buildTest(list)
+  M.startBuild(list or { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 })
+  while job do M.pump() end
 end
 
 function M.row()
@@ -93,16 +145,18 @@ function M.row()
     id = M.ID,
     label = M.LABEL,
     value = function()
+      if job then return string.format("BUILDING %d/%d", job.done, job.total) end
       if st.state == "error" then return "ERROR" end
-      if st.state == "done" then return "BUILT 1-20" end
-      return M.imported() and "BUILD 1-20" or "NO DUMP"
+      if st.state == "done" then return "BUILT 1-151" end
+      return M.imported() and "BUILD 1-151" or "NO DUMP"
     end,
     step = function()
+      if job then return true end
       if not M.imported() then
         log("info", "ORAS MODELS: import a decrypted Omega Ruby / Alpha Sapphire .3ds from the MODS panel first")
         return true
       end
-      M.buildTest()
+      M.startBuild()
       return true
     end,
   }

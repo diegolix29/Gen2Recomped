@@ -505,7 +505,9 @@ function D.variant(dex,variant)
 end
 function D.modelKey(dex,variant)
   local n=D.number(dex);if not n then return nil end
-  return D.variant(dex,variant)=="shiny" and D.rare[n] and (tostring(n)..":shiny") or n
+  -- an ORAS species always has its own shiny scene: ORAS ships shiny
+  -- textures, so it never needs the runtime recolour (see D.isOras)
+  return D.variant(dex,variant)=="shiny" and (D.rare[n] or D.orasHas(n)) and (tostring(n)..":shiny") or n
 end
 -- ORAS models (lib/ORASActorCache.lua) are written in this same cache format
 -- under oras/pokemon/<dex>, built from the player's own Omega Ruby / Alpha
@@ -531,13 +533,18 @@ function D.loadOras(mod)
   end
   return n
 end
-function D.isOras(dex,variant)
+function D.orasHas(n)
   if not D.orasLoaded then
     local m=type(loaderArg)=="table" and loaderArg.mod or nil
     if m then pcall(D.loadOras,m) else D.orasLoaded=true end
   end
-  local n=D.number(dex)
-  return n~=nil and D.orasDex[n]==true and type(D.modelKey(dex,variant))~="string"
+  return n~=nil and D.orasDex[n]==true
+end
+-- Both variants of an ORAS species live in the one oras/pokemon/<dex> folder:
+-- the shiny scene shares its geometry and animation banks and swaps in each
+-- group's `textureShiny` (PokemonActors.loadScene).
+function D.isOras(dex,variant)
+  return D.orasHas(D.number(dex))
 end
 
 function D.cacheRoot(dex,variant)

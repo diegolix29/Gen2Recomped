@@ -153,15 +153,27 @@ end
 -- PokemonActors plays base -> 1..12 -> base, so slot k is idle frame
 -- k * frames / 13.  Actions play slot 0 -> 12 once, so slot k is frame
 -- k * frames / 12.  GF motions run at 30 frames a second.
+-- Slots 8-11 are the physical motions (ba20_buturi01..) and 12-15 the
+-- special ones (ba21_tokusyu01..); most species fill only the first of each,
+-- some have more (Squirtle: slot 9).  PokemonActors picks among them per move
+-- for ORAS scenes (orasAttackVariant).
 local ACTIONS = {
-  { name = "physicalA", slot = 8 },   -- ba20_buturi
-  { name = "specialA", slot = 12 },   -- ba21_tokusyu
+  { name = "physicalA", slot = 8 }, { name = "physicalB", slot = 9 },
+  { name = "physicalC", slot = 10 }, { name = "physicalD", slot = 11 },
+  { name = "specialA", slot = 12 }, { name = "specialB", slot = 13 },
+  { name = "specialC", slot = 14 },
   { name = "damage", slot = 16 },     -- ba30_damageS
   { name = "faint", slot = 17 },      -- ba41_down
 }
 local IDLE_SLOT = 0                   -- ba10_waitA
 local FPS = 30
-local ORAS_STAMP = "oras-actor=2\n"
+-- bumped whenever the cache layout changes: a species whose rev.txt holds an
+-- older stamp is rebuilt, one with this stamp is skipped
+local ORAS_STAMP = "oras-actor=3\n"
+C.STAMP = ORAS_STAMP
+
+-- set by a background build (ORASModels) to yield between stages
+local function checkpoint() if C.checkpoint then C.checkpoint() end end
 
 -- Build one species. Returns a summary string, or nil and a reason.
 function C.buildSpecies(mod, rom, g, index, dex)
@@ -171,6 +183,11 @@ function C.buildSpecies(mod, rom, g, index, dex)
   local td, th = packBch(g, base + 3, 1)
   if not td then return nil, th end
   local textures = H3D.textures(td, th)
+  checkpoint()
+  -- shiny textures: block slot 4, the same names as the normal set
+  local sd, sh = packBch(g, base + 4, 1)
+  local shinyTextures = sd and H3D.textures(sd, sh) or {}
+  checkpoint()
 
   -- battle motions: part 0 of the battle-motion member (slot 6 of the block)
   local skeleton, motions = nil, {}
@@ -228,6 +245,7 @@ function C.buildSpecies(mod, rom, g, index, dex)
     for slot = 0, MORPH_SLOTS do
       local frame = motion and (looping and slot * frames / (MORPH_SLOTS + 1) or slot * frames / MORPH_SLOTS) or 0
       local skin, world = pose(motion, frame)
+      checkpoint()
       for m, entry in ipairs(kept) do
         local list = {}
         for vi, rec in ipairs(entry.skin) do
@@ -245,18 +263,24 @@ function C.buildSpecies(mod, rom, g, index, dex)
   local dir = root(dex)
   local rt = dir .. "/runtime_mesh_v1"
 
-  -- textures
-  local texPaths, texCount = {}, 0
+  -- textures, normal and shiny
+  local texPaths, shinyPaths, texCount = {}, {}, 0
+  local function decodeTo(data, t, path, entry)
+    local okT, img = pcall(PICA.decodeTexture, data, t.address, t.width, t.height, t.format)
+    if not (okT and img) then return nil end
+    assert(mod.cache:write(path, img:getString()) ~= false, "texture write failed: " .. path)
+    checkpoint()
+    return { path = path, w = t.width, h = t.height,
+             wrapS = WRAP[entry.mat.wrapU] or 1, wrapT = WRAP[entry.mat.wrapV] or 1 }
+  end
   for _, entry in ipairs(kept) do
     local t = textures[entry.tname]
     if t and not texPaths[entry.tname] then
-      local okT, img = pcall(PICA.decodeTexture, td, t.address, t.width, t.height, t.format)
-      if okT and img then
-        texCount = texCount + 1
-        local tp = { path = ("%s/tex_%02d.rgba"):format(dir, texCount), w = t.width, h = t.height,
-                     wrapS = WRAP[entry.mat.wrapU] or 1, wrapT = WRAP[entry.mat.wrapV] or 1 }
-        assert(mod.cache:write(tp.path, img:getString()) ~= false, "texture write failed: " .. tp.path)
-        texPaths[entry.tname] = tp
+      texCount = texCount + 1
+      texPaths[entry.tname] = decodeTo(td, t, ("%s/tex_%02d.rgba"):format(dir, texCount), entry)
+      local st = shinyTextures[entry.tname]
+      if st and sd then
+        shinyPaths[entry.tname] = decodeTo(sd, st, ("%s/tex_%02d_shiny.rgba"):format(dir, texCount), entry)
       end
     end
   end
@@ -326,10 +350,21 @@ function C.buildSpecies(mod, rom, g, index, dex)
     end
   end
 
+  -- a species with motions of only one attack family (Caterpie has no
+  -- physical one) plays that one for both
+  if not actions.physicalA then
+    local other = actions.physicalB and "physicalB" or (actions.specialA and "specialA")
+    if other then actions.physicalA = { alias = other, clip = actions[other].clip, duration = actions[other].duration } end
+  end
+  if not actions.specialA and actions.physicalA and not actions.physicalA.alias then
+    actions.specialA = { alias = "physicalA", clip = actions.physicalA.clip, duration = actions.physicalA.duration }
+  end
+
   local groups = {}
   for m, entry in ipairs(kept) do
     groups[m] = {
       material = entry.mat.name or ("mesh" .. m), texture = texPaths[entry.tname],
+      textureShiny = shinyPaths[entry.tname] or texPaths[entry.tname],
       diffuse = { 1, 1, 1 }, ambient = { 1, 1, 1 }, specular = { 0, 0, 0 }, alpha = 1, shininess = 0,
       xlu = false, noz = false, renderFlags = 0, shadow = false, effect = false, textureSlot = -1,
       vertexStride = 44, runtimeBin = ("%s/base_%02d.f32"):format(rt, m),
@@ -364,10 +399,15 @@ function C.buildSpecies(mod, rom, g, index, dex)
     #baked > 0 and table.concat(baked, ", ") or "none", base, base + 7)
 end
 
--- Build `list` (dex numbers) and register them.  `log(fmt, ...)` reports
--- progress.  Returns built, failed.
-function C.build(mod, list, log)
+-- Build `list` (dex numbers) and register them.  `log(fmt, ...)` reports each
+-- species; `progress(done, total, dex)` is told after each one.  A species
+-- whose rev.txt already holds C.STAMP is skipped (counted as skipped), and the
+-- index is rewritten after every species, so a build cut short keeps what it
+-- finished.  Runs inside a coroutine when C.checkpoint yields (ORASModels).
+-- Returns built, failed, err, skipped.
+function C.build(mod, list, log, progress)
   log = log or function() end
+  progress = progress or function() end
   local rom, err = N3DSRom.open(mod, IMPORT_ID)
   if not rom then return 0, #list, err end
   local g, gerr = GARC.open(rom, assert(rom:file(MODEL_GARC), "no " .. MODEL_GARC))
@@ -386,25 +426,38 @@ function C.build(mod, list, log)
     if ok and type(old) == "table" then for _, d in ipairs(old) do listed[tonumber(d)] = true end end
   end
 
-  local built, failed = 0, 0
-  for _, dex in ipairs(list) do
-    local ok, summary, why = pcall(C.buildSpecies, mod, rom, g, index, dex)
-    if ok and summary then
-      built = built + 1
-      listed[dex] = true
-      log("ORAS dex %d: %s", dex, summary)
-    else
-      failed = failed + 1
-      log("ORAS dex %d FAILED: %s", dex, tostring(ok and why or summary))
-    end
+  local function writeIndex()
+    local all = {}
+    for d in pairs(listed) do all[#all + 1] = d end
+    table.sort(all)
+    local parts = {}
+    for i, d in ipairs(all) do parts[i] = tostring(d) end
+    mod.cache:write("oras/pokemon/index.lua", "return {" .. table.concat(parts, ",") .. "}\n")
   end
 
-  local all = {}
-  for d in pairs(listed) do all[#all + 1] = d end
-  table.sort(all)
-  local parts = {}
-  for i, d in ipairs(all) do parts[i] = tostring(d) end
-  mod.cache:write("oras/pokemon/index.lua", "return {" .. table.concat(parts, ",") .. "}\n")
+  local built, failed, skipped = 0, 0, 0
+  for n, dex in ipairs(list) do
+    local okRev, rev = pcall(mod.cache.read, mod.cache, root(dex) .. "/rev.txt")
+    if okRev and rev == C.STAMP and listed[dex] then
+      skipped = skipped + 1
+    else
+      -- pcall does not cross a coroutine yield in plain Lua 5.1, but does in
+      -- LuaJIT (which this runs on): yields inside buildSpecies are fine
+      local ok, summary, why = pcall(C.buildSpecies, mod, rom, g, index, dex)
+      if ok and summary then
+        built = built + 1
+        listed[dex] = true
+        writeIndex()
+        log("ORAS dex %d: %s", dex, summary)
+      else
+        failed = failed + 1
+        log("ORAS dex %d FAILED: %s", dex, tostring(ok and why or summary))
+      end
+    end
+    progress(n, #list, dex)
+    checkpoint()
+  end
+  writeIndex()
 
   -- live routing for the instances reachable from here; any other copy of
   -- ColosseumDex picks the index up on its next load (a restart)
@@ -414,7 +467,7 @@ function C.build(mod, list, log)
   if Actors and Actors.forgetScene then
     for _, dex in ipairs(list) do pcall(Actors.forgetScene, dex) end
   end
-  return built, failed
+  return built, failed, nil, skipped
 end
 
 return C

@@ -625,6 +625,10 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     pcall(function()
       V.require("Stadium2RomPick").poll(require("src.core.Game"))
     end)
+    -- the ORAS model build runs here, a slice a frame (lib/ORASModels.lua)
+    pcall(function()
+      V.require("ORASModels").pump()
+    end)
     -- The horde, on the same always-running tick and for the same reason:
     -- it owns no pass of the frame, it is a MODE over the overworld, and
     -- it has to keep thinking while a warp's wipe covers the screen (the
