@@ -3190,9 +3190,7 @@ function Voxel3D.drawGroup(group, texture, model, pull, sunModel, b)
     -- stands on it -- see the note where ymax is measured
     if not b or (ch.x1 >= b[1] and ch.x0 <= b[3]
                  and ch.z1 + ch.ymax >= b[2] and ch.z0 <= b[4]) then
-      -- a chunk can wear its own texture (ChunkMesher's tile overrides)
-      local tex = ch.texture or texture
-      if tex and ch.mesh.setTexture then ch.mesh:setTexture(tex) end
+      if texture and ch.mesh.setTexture then ch.mesh:setTexture(texture) end
       if ch.mesh and type(ch.mesh) ~= "table" then
         pcall(love.graphics.draw, ch.mesh)
       end
