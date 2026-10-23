@@ -3,70 +3,40 @@
 -- Read by lib/TileOverrides.lua and applied to the voxel atlas copy by
 -- lib/TerrainAtlas.lua.  Gen 1-2 tilesets only.  Nothing here touches the 2D
 -- view, collision or scripts -- an entry only changes how a tile LOOKS in
--- voxel mode.  There is no randomness in this file: a pick is a pick.
+-- voxel mode.
 --
--- Tile ids are the hex numbers `idOverlay` prints on the world (0x01 = "01").
--- Keys under `tilesets` are tileset ids; the key "*" is the entry for EVERY
--- tileset that has none of its own, so the test below applies wherever you
--- are.  (The mod logs "TileOverrides: tileset <id> seen on map ..." once per
--- tileset if you want the exact spelling to give one its own entry.)
--- Pictures are shrunk to the atlas's 8x8 tile.
-
--- ===========================================================================
--- THE TEST LIST.  One flat colour per id, so you can tell at a glance which
--- id is which (the probe_*.png files are 16x16 solid colours).
+-- Keys under `tilesets` are tileset ids, the same ones data/voxel_heights.lua
+-- uses.  Tile ids are indices into that tileset's own 8x8 atlas (16 to a row).
 --
---   ID   what it is (from your screenshot)   PNG                 you should see
---   --   ---------------------------------   ------------------  --------------
---   01   mountain body                       probe_red.png       red
---   11   mountain body                       probe_orange.png    orange
---   34   edge                                probe_green.png     green
---   37   edge                                probe_cyan.png      cyan
---   27   mountain ramp                       probe_magenta.png   magenta
---   5B   the purple floor                    probe_blue.png      blue
---   24   the blue block                      probe_white.png     white
+--   tiles  = { [0x05] = "sand.png" }     a fixed pick
+--   random = { seed = 1, ids = {...},    these ids each get a seeded-random
+--              pool = {...} }            texture (own pool optional)
 --
--- Anything NOT in this list keeps showing its id number (idOverlay is on), so
--- the picture tells you everything: a coloured tile is an override that
--- worked, and a numbered tile is untouched.  If 01 still shows "01" the pick
--- did not apply -- see the log.
--- ===========================================================================
-local TEST = {
-  tiles = {
-    [0x01] = "edges.png",
-    [0x03] = "edges.png",
-    [0x11] = "edges.png",
-    [0x34] = "edges.png",
-    [0x37] = "edges.png",
-    [0x5B] = "flagstone.png",
-    [0x34] = "edges.png",
-    [0x35] = "edges.png",
-    [0x36] = "edges.png",
-    [0x13] = "edges.png",
-    [0x02] = "edges.png",
-    [0x1E] = "edges.png",
-    [0x2C] = "grass.png",
-
-    [0x39] = "road.png",
-    [0x50] = "highgrass.png",
-    [0x30] = "highgrass.png",
-    [0x00] = "highgrass.png",
-    [0x20] = "highgrass.png",
-  },
-}
+-- `tiles` wins over `random` for the same id.  `overlay = true/false` inside a
+-- tileset entry overrides `idOverlay` for that tileset.  Change a seed to re-roll.  The
+-- mod logs the resolved assignment once per tileset ("TileOverrides: ...") so
+-- you can see exactly which id got which file.
+--
+-- Pictures are shrunk to the atlas's 8x8 tile -- good for telling ids apart,
+-- not for fine detail.  Set `enabled = false` to switch it all off.
 
 return {
   enabled = true,
 
-  -- stamp every OTHER tile slot with its own id (two hex digits on a coloured
-  -- square).  true = every Gen 1-2 tileset, or a list: { "TilesetKanto" }.
-  -- Picks under `tilesets` still win.  false = off.
-  idOverlay = false,
+  -- ID OVERLAY: stamp every tile slot with its own id (two hex digits on a
+  -- coloured square) so you can read the id of any mountain, cliff or roof
+  -- straight off the voxel world.  true = every Gen 1-2 tileset, or a list:
+  -- { "TilesetKanto", "TilesetJohto" }.  Picks under `tilesets` still win.
+  -- Turn it off (false) when you have your ids.
+  idOverlay = true,
 
   -- where the PNGs live, relative to the mod root
   dir = "assets/ground/grass/",
 
-  -- only used by `random = {...}` entries, none of which are in use
+  -- the default pool for `random`: the ground textures that read clearly at
+  -- 8x8.  (Left out on purpose: light.png, a glow; metal aged.png, near
+  -- black; shadow.png; the probe_*.png squares; transparent.png; the grass
+  -- mesh files.  Add them to a pool to use them.)
   pool = {
     "dark sand.png", "edges.png", "flagstone.png", "floor.png",
     "flowers.png", "grass.png", "ground.png", "highgrass.png",
@@ -76,6 +46,18 @@ return {
   },
 
   tilesets = {
-    ["*"] = TEST,
+    -- Gen 2 Johto.  $05/$06 are the plain grass every outdoor map is made of
+    -- (voxel_heights pins them as `ground`), $3C the dirt on top of a cliff
+    -- and $2C its lip.
+    TilesetJohto = {
+      random = { seed = 12, ids = { 0x05, 0x06, 0x3C, 0x2C } },
+    },
+
+    -- Gen 1 overworld.  44 ($2C) is plain grass (voxel_heights: "the very
+    -- tile Cut leaves behind"); 82 ($52) is, from memory of the Red/Blue
+    -- tileset and not checked against this build's atlas, the tall grass.
+    OVERWORLD = {
+      random = { seed = 12, ids = { 44, 82 } },
+    },
   },
 }
