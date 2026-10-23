@@ -70,9 +70,9 @@ local TEST = {
 -- CAVES AND FORESTS.  Each has its own tileset, so its own ids.  Ids come
 -- from the pins in data/voxel_heights.lua.  Swap the PNG names freely.
 -- ===========================================================================
-local CAVE_FLOOR = "dark sand.png"
-local CAVE_WALL  = "rock.png"
-local FOREST_FLOOR = "ground.png"
+local CAVE_FLOOR = "edges.png"
+local CAVE_WALL  = "edges.png"
+local FOREST_FLOOR = "grass.png"
 
 -- Gen 1 caves (Mt Moon, Rock Tunnel, Seafoam, Victory Road, Cerulean Cave)
 local CAVERN = {
@@ -99,12 +99,11 @@ local CAVE2 = {
   tiles = {
     -- ground: low floor, and the raised floor + its edge band
     [0x01] = CAVE_FLOOR,
-    [0x16] = "sand.png", [0x24] = "sand.png",
+    [0x16] = "edges.png", [0x24] = "edges.png",
     -- walls: the one rock family every cave wall is drawn from
     [0x05] = CAVE_WALL, [0x07] = CAVE_WALL, [0x0A] = CAVE_WALL, [0x0B] = CAVE_WALL,
     [0x10] = CAVE_WALL, [0x15] = CAVE_WALL, [0x17] = CAVE_WALL,
-    [0x1A] = CAVE_WALL, [0x1B] = CAVE_WALL,
-    [0x25] = CAVE_WALL, [0x26] = CAVE_WALL, [0x27] = CAVE_WALL,
+    [0x25] = CAVE_WALL, [0x26] = "flagstone.png", [0x27] = CAVE_WALL,
   },
 }
 
