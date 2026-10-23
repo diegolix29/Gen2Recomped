@@ -77,28 +77,20 @@ local function modelName(g, base)
   return m and m.name, d, h, m
 end
 
+-- The index is right for every species (checked over all 721 against the
+-- dump).  A model's NAME is not a dex number past Gen 5: Gen 6 models carry
+-- Game Freak's internal numbers (Chespin, #650, is pm0721) and some species'
+-- first form is _11, not _00 (Tornadus) -- so the block is taken from the
+-- index and only checked to decode to a model.
 local function findSpecies(g, index, dex)
-  local want = ("pm%04d_00"):format(dex)
   local rec = (dex - 1) * 4 + 1
-  local guess = rec + 1 <= #index and u16(index, rec) or (dex - 1)
-  local tried = {}
-  local function try(form)
-    local base = FIRST_MEMBER + form * PER_FORM
-    if form < 0 or tried[form] or base + PER_FORM > g.count then return nil end
-    tried[form] = true
-    local name, d, h, model = modelName(g, base)
-    if name == want then return base, d, h, model end
-    return nil, name
-  end
-  local base, d, h, model = try(guess)
-  if base then return base, d, h, model end
-  for step = 1, 40 do
-    for _, f in ipairs({ guess + step, guess - step }) do
-      base, d, h, model = try(f)
-      if base then return base, d, h, model end
-    end
-  end
-  return nil, "no block named " .. want .. " near form " .. guess
+  if rec + 3 > #index then return nil, "no index record for dex " .. dex end
+  local form = u16(index, rec)
+  local base = FIRST_MEMBER + form * PER_FORM
+  if base + PER_FORM > g.count then return nil, "index points past the archive for dex " .. dex end
+  local name, d, h, model = modelName(g, base)
+  if not (name and model) then return nil, "block " .. base .. " holds no model for dex " .. dex end
+  return base, d, h, model
 end
 
 -- --------------------------------------------------------------- writing
@@ -169,7 +161,7 @@ local IDLE_SLOT = 0                   -- ba10_waitA
 local FPS = 30
 -- bumped whenever the cache layout changes: a species whose rev.txt holds an
 -- older stamp is rebuilt, one with this stamp is skipped
-local ORAS_STAMP = "oras-actor=3\n"
+local ORAS_STAMP = "oras-actor=4\n"
 C.STAMP = ORAS_STAMP
 
 -- set by a background build (ORASModels) to yield between stages
@@ -287,41 +279,77 @@ function C.buildSpecies(mod, rom, g, index, dex)
 
   -- one bank -> per-group float32 files (44 floats a row: slot-0 position,
   -- uv, normal, then slots 1-12) and the thirteen per-slot lowest y values
+  -- Indexed: each group's rows are its UNIQUE vertices (first-use order),
+  -- and one index buffer per group (base_NN.idx, uint32) is shared by every
+  -- bank -- PokemonActors applies it with setVertexMap.  A plain triangle
+  -- list stored each vertex about three times (~14 MB a species).
+  for _, entry in ipairs(kept) do
+    local order, at, tris = {}, {}, {}
+    for _, sm in ipairs(entry.mesh.submeshes) do
+      local ix = sm.indices
+      for k = 1, #ix - (#ix % 3) do
+        local vi = ix[k] + 1
+        if not at[vi] then order[#order + 1] = vi; at[vi] = #order - 1 end
+        tris[#tris + 1] = at[vi]
+      end
+    end
+    entry.order, entry.tris = order, tris
+  end
+
+  local function packIndices(list)
+    if ffi then
+      local buf = ffi.new("uint32_t[?]", #list)
+      for i = 1, #list do buf[i - 1] = list[i] end
+      return ffi.string(buf, #list * 4)
+    end
+    local parts = {}
+    for i = 1, #list do
+      local v = list[i]
+      parts[i] = string.char(v % 256, math.floor(v / 256) % 256, math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256)
+    end
+    return table.concat(parts)
+  end
+
+  -- one bank -> per-group float32 files (44 floats a row: slot-0 position,
+  -- uv, normal, then slots 1-12) and the thirteen per-slot lowest y values
   local function writeBank(positions, pathOf)
     local floor = {}
     for i = 1, MORPH_SLOTS + 1 do floor[i] = math.huge end
     local vertexCount = 0
     for m, entry in ipairs(kept) do
       local values, n = {}, 0
-      for _, sm in ipairs(entry.mesh.submeshes) do
-        local ix = sm.indices
-        for k = 1, #ix - (#ix % 3) do
-          local vi = ix[k] + 1
-          local b = entry.bind[vi]
-          local uv = b and b.uv or { 0, 0 }
-          local nrm = b and b.normal or { 0, 1, 0 }
-          local p0 = positions[m][0][vi]
-          -- PICA's t runs up from the bottom; LOVE's v runs down: v = 1 - t
-          -- (see PICA.decodeTexture; checked by rendering caches offline)
-          values[n + 1], values[n + 2], values[n + 3] = p0[1], p0[2], p0[3]
-          values[n + 4], values[n + 5] = uv[1], 1 - (uv[2] or 0)
-          values[n + 6], values[n + 7], values[n + 8] = nrm[1], nrm[2], nrm[3]
-          n = n + 8
-          for slot = 0, MORPH_SLOTS do
-            local p = positions[m][slot][vi]
-            if p[2] < floor[slot + 1] then floor[slot + 1] = p[2] end
-            if slot > 0 then
-              values[n + 1], values[n + 2], values[n + 3] = p[1], p[2], p[3]
-              n = n + 3
-            end
+      for _, vi in ipairs(entry.order) do
+        local b = entry.bind[vi]
+        local uv = b and b.uv or { 0, 0 }
+        local nrm = b and b.normal or { 0, 1, 0 }
+        local p0 = positions[m][0][vi]
+        -- PICA's t runs up from the bottom; LOVE's v runs down: v = 1 - t
+        -- (see PICA.decodeTexture; checked by rendering caches offline)
+        values[n + 1], values[n + 2], values[n + 3] = p0[1], p0[2], p0[3]
+        values[n + 4], values[n + 5] = uv[1], 1 - (uv[2] or 0)
+        values[n + 6], values[n + 7], values[n + 8] = nrm[1], nrm[2], nrm[3]
+        n = n + 8
+        for slot = 0, MORPH_SLOTS do
+          local p = positions[m][slot][vi]
+          if p[2] < floor[slot + 1] then floor[slot + 1] = p[2] end
+          if slot > 0 then
+            values[n + 1], values[n + 2], values[n + 3] = p[1], p[2], p[3]
+            n = n + 3
           end
         end
       end
-      vertexCount = vertexCount + n / 44
+      vertexCount = vertexCount + #entry.tris
       assert(mod.cache:write(pathOf(m), packFloats(values, n)) ~= false, "bank write failed: " .. pathOf(m))
+      checkpoint()
     end
     for i = 1, MORPH_SLOTS + 1 do if floor[i] == math.huge then floor[i] = 0 end end
     return floor, vertexCount
+  end
+
+  for m, entry in ipairs(kept) do
+    local path = ("%s/base_%02d.idx"):format(rt, m)
+    assert(mod.cache:write(path, packIndices(entry.tris)) ~= false, "index write failed: " .. path)
+    entry.vertexMap = path
   end
 
   -- base bank: the idle loop (or the bind pose, static, if there is none)
@@ -368,6 +396,7 @@ function C.buildSpecies(mod, rom, g, index, dex)
       diffuse = { 1, 1, 1 }, ambient = { 1, 1, 1 }, specular = { 0, 0, 0 }, alpha = 1, shininess = 0,
       xlu = false, noz = false, renderFlags = 0, shadow = false, effect = false, textureSlot = -1,
       vertexStride = 44, runtimeBin = ("%s/base_%02d.f32"):format(rt, m),
+      vertexMap = entry.vertexMap,
     }
   end
   local minFloor = math.huge

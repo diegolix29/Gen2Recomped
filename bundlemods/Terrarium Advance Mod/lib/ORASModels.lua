@@ -58,7 +58,7 @@ function M.probe()
   return true
 end
 
--- BUILD: National Dex 1-151 (Gen 1) into PokemonActors caches
+-- BUILD: every species ORAS has, National Dex 1-721, into PokemonActors caches
 -- (lib/ORASActorCache.lua) -- the same cache every 3D-actor surface reads, so
 -- they appear in battles, as followers and in the overworld like Colosseum's.
 --
@@ -69,7 +69,7 @@ end
 -- texture set).  The row shows progress; species already built in the
 -- current format are skipped, so pressing it again only does what is left.
 M.BUILD_DEX = {}
-for dex = 1, 151 do M.BUILD_DEX[dex] = dex end
+for dex = 1, 721 do M.BUILD_DEX[dex] = dex end
 local FRAME_BUDGET = 0.012
 
 local job = nil      -- { co, done, total, lines, startedAt }
@@ -147,8 +147,8 @@ function M.row()
     value = function()
       if job then return string.format("BUILDING %d/%d", job.done, job.total) end
       if st.state == "error" then return "ERROR" end
-      if st.state == "done" then return "BUILT 1-151" end
-      return M.imported() and "BUILD 1-151" or "NO DUMP"
+      if st.state == "done" then return "BUILT 1-721" end
+      return M.imported() and "BUILD 1-721" or "NO DUMP"
     end,
     step = function()
       if job then return true end

@@ -578,7 +578,9 @@ end
 
 function D.supported(dex)
   dex=D.number(dex)
-  return dex~=nil and D.species[dex]~=nil
+  -- Colosseum covers 1-386; a species built from the ORAS dump (up to 721)
+  -- is supported too, whether or not Colosseum has it
+  return dex~=nil and (D.species[dex]~=nil or D.orasHas(dex))
 end
 
 -- Total compressed footprint represented by D.species, for build-time

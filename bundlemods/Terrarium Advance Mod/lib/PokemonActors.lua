@@ -416,6 +416,23 @@ local function imageFromRaw(spec)
   return img
 end
 
+-- An indexed cache group (ORAS, lib/ORASActorCache.lua) stores unique vertex
+-- rows plus a uint32 index file shared by its base and action banks; a group
+-- without `vertexMap` is the plain triangle list every older cache is.
+local function applyVertexMap(mesh,path)
+  if not (mesh and path) then return true end
+  if type(mesh.setVertexMap)~="function" then return false,"mesh vertex maps unavailable" end
+  local bytes,err=GeneratedAssets.read(path)
+  if type(bytes)~="string" or #bytes==0 or #bytes%4~=0 then
+    return false,"bad vertex map "..tostring(path)..": "..tostring(err)
+  end
+  local okD,data=pcall(love.data.newByteData,bytes)
+  if not okD then return false,tostring(data) end
+  local ok,setErr=pcall(mesh.setVertexMap,mesh,data,"uint32")
+  if data.release then pcall(data.release,data) end
+  return ok,setErr
+end
+
 local function ensureShader()
   if shader then return shader end
   if not (love and love.graphics and love.graphics.newShader) then return nil,"LOVE graphics unavailable" end
@@ -548,10 +565,17 @@ local function loadScene(dex,diskOnly,checkpoint)
         if not wok then runtimeBaseComplete=false end
       end
     end
+    if mesh and g.vertexMap then
+      local okMap,mapErr=applyVertexMap(mesh,g.vertexMap)
+      if not okMap then
+        sceneErrors[dex]=("dex %s mesh %d: %s"):format(dex,i,tostring(mapErr))
+        return nil,sceneErrors[dex]
+      end
+    end
     if img then mesh:setTexture(img) end
     local d=g.diffuse or {1,1,1}
     groups[#groups+1]={
-      mesh=mesh,image=img,textured=img~=nil,
+      mesh=mesh,image=img,textured=img~=nil,vertexMap=g.vertexMap,
       diffuse={tonumber(d[1]) or 1,tonumber(d[2]) or 1,tonumber(d[3]) or 1},
       alpha=tonumber(g.alpha) or 1,
       xlu=g.xlu==true,noz=g.noz==true,
@@ -650,6 +674,9 @@ local function loadScene(dex,diskOnly,checkpoint)
       checkpoint("Uploading animation material "..i)
       local baseg=groups[i];if not baseg then return nil end
       local mesh=select(1,RuntimeMeshCache.meshFromPath(FORMAT,runtimeActionBinPath(dex,name,i),44,"static"))
+      if mesh and baseg.vertexMap and not applyVertexMap(mesh,baseg.vertexMap) then
+        pcall(function() mesh:release() end);mesh=nil
+      end
       if not mesh then
         for _,g in ipairs(agroups) do pcall(function() if g.mesh and g.mesh.release then g.mesh:release() end end) end
         return nil
