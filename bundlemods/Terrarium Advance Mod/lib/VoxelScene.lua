@@ -1311,6 +1311,40 @@ local function cardShows(p)
   return (not ok) or seen
 end
 
+-- 3D road, 3D ground, and simple-mesh decor grass are ground carpets: they
+-- must lose to characters and stadium models. Tall grass (and full-mesh
+-- decor tufts) still draw later with a camera-ward pull so they cover feet.
+-- Drawing these after the cast WITH that pull is what sat them on top of
+-- every 3D body. No pull, and before the cast, so the depth buffer keeps
+-- them as floor.
+local function drawGroundCarpets(state, atlasFor)
+  local Grass3D = nil
+  do
+    local ok, G = pcall(V.require, "Grass3D")
+    if ok then Grass3D = G end
+  end
+  local function drawLayer(getter, tex)
+    local mesh = ChunkMesher[getter] and ChunkMesher[getter](state.map)
+    if mesh then Voxel3D.draw(mesh, tex, nil, 0, nil, 0) end
+    for _, nb in ipairs(state.neighbors or {}) do
+      local m = ChunkMesher[getter] and ChunkMesher[getter](nb.map)
+      if m then
+        Voxel3D.draw(m, tex, Mat4.translate(nb.ox, 0, nb.oy), 0, nil, 0)
+      end
+    end
+  end
+  local roadTex = Grass3D and Grass3D.roadTexture and Grass3D.roadTexture() or nil
+  local groundTex = Grass3D and Grass3D.groundTexture and Grass3D.groundTexture() or nil
+  drawLayer("road", roadTex)
+  drawLayer("ground", groundTex)
+  local simple = Grass3D and Grass3D.wantsSimpleMeshes and Grass3D.wantsSimpleMeshes()
+  if simple then
+    local decorTex = (Grass3D.texture and Grass3D.texture()) or atlasFor(state.map)
+    drawLayer("decor", decorTex)
+  end
+  return simple
+end
+
 local function drawCast(state, posed, me, atlasFor, yaw)
   Voxel3D.glass(false)
   Voxel3D.seams(false)
@@ -2374,6 +2408,9 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
     -- the panes' atlas positions stripe the cast with lamplight at night
     Voxel3D.glass(false)
 
+    -- Road / ground (always) and simple-mesh decor grass: floor, not foliage.
+    local simpleDecor = drawGroundCarpets(state, atlasFor)
+
     -- The player's silhouette goes down BEFORE the characters, so the only
     -- thing it can meet in the depth buffer is the WORLD -- terrain, buildings,
     -- trees. Drawn after the solid pass it would meet the player's own card
@@ -2606,43 +2643,20 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
       end
     end
 
-    -- decorative grass mesh (no effects)
-    local decorMesh = ChunkMesher.decor and ChunkMesher.decor(state.map)
-    if decorMesh then
-      Voxel3D.draw(decorMesh, grassTex, nil, pull, nil, 0)  -- No sway for decorative grass
-    end
-    for i, nb in ipairs(state.neighbors or {}) do
-      local nbDecor = ChunkMesher.decor and ChunkMesher.decor(nb.map)
-      if nbDecor then
-        Voxel3D.draw(nbDecor, grassTex, Mat4.translate(nb.ox, 0, nb.oy), pull, nil, 0)
+    -- Full-mesh decorative grass only: same camera-ward pull as tall grass
+    -- so tufts cover pokemon and player feet. Simple-mesh decor already
+    -- went down as a ground carpet before the cast (drawGroundCarpets).
+    -- 3D road / 3D ground never belong here -- they are floor.
+    if not simpleDecor then
+      local decorMesh = ChunkMesher.decor and ChunkMesher.decor(state.map)
+      if decorMesh then
+        Voxel3D.draw(decorMesh, grassTex, nil, pull, nil, 0)
       end
-    end
-
-    -- road mesh using Grass3D with road texture at 0.05 height
-    local roadMesh = ChunkMesher.road and ChunkMesher.road(state.map)
-    if roadMesh then
-      local roadTex = Grass3D and Grass3D.roadTexture() or nil
-      Voxel3D.draw(roadMesh, roadTex, nil, pull, nil, 0)  -- No sway for road
-    end
-    for i, nb in ipairs(state.neighbors or {}) do
-      local nbRoad = ChunkMesher.road and ChunkMesher.road(nb.map)
-      if nbRoad then
-        local roadTex = Grass3D and Grass3D.roadTexture() or nil
-        Voxel3D.draw(nbRoad, roadTex, Mat4.translate(nb.ox, 0, nb.oy), pull, nil, 0)
-      end
-    end
-
-    -- ground mesh using Grass3D with ground texture at 0.1 height
-    local groundMesh = ChunkMesher.ground and ChunkMesher.ground(state.map)
-    if groundMesh then
-      local groundTex = Grass3D and Grass3D.groundTexture() or nil
-      Voxel3D.draw(groundMesh, groundTex, nil, pull, nil, 0)  -- No sway for ground
-    end
-    for i, nb in ipairs(state.neighbors or {}) do
-      local nbGround = ChunkMesher.ground and ChunkMesher.ground(nb.map)
-      if nbGround then
-        local groundTex = Grass3D and Grass3D.groundTexture() or nil
-        Voxel3D.draw(nbGround, groundTex, Mat4.translate(nb.ox, 0, nb.oy), pull, nil, 0)
+      for _, nb in ipairs(state.neighbors or {}) do
+        local nbDecor = ChunkMesher.decor and ChunkMesher.decor(nb.map)
+        if nbDecor then
+          Voxel3D.draw(nbDecor, grassTex, Mat4.translate(nb.ox, 0, nb.oy), pull, nil, 0)
+        end
       end
     end
 

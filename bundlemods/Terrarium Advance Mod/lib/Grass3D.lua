@@ -195,13 +195,18 @@ local function loadTemplate()
 end
 
 -- Create a simple quad template (4 verts, 2 triangles) for road/ground
--- Much faster than using the complex grass mesh
-local function loadQuadTemplate()
+-- Much faster than using the complex grass mesh.
+--
+-- Lifted a fraction of a pixel off y=0 so the carpet wins the depth test
+-- against the voxel floor without a camera-ward `pull` (pull would also
+-- put it in front of 3D models). `y` is world pixels.
+local function loadQuadTemplate(y)
+  y = y or 0.25
   local verts = {
-    { -4, 0, -4, 0, 0, 0.8 },   -- bottom-left
-    { 4, 0, -4, 1, 0, 0.8 },    -- bottom-right
-    { 4, 0, 4, 1, 1, 0.8 },     -- top-right
-    { -4, 0, 4, 0, 1, 0.8 },    -- top-left
+    { -4, y, -4, 0, 0, 0.8 },   -- bottom-left
+    { 4, y, -4, 1, 0, 0.8 },    -- bottom-right
+    { 4, y, 4, 1, 1, 0.8 },     -- top-right
+    { -4, y, 4, 0, 1, 0.8 },    -- top-left
   }
   local indices = { 1, 2, 3, 1, 3, 4 }  -- two triangles
   return {
@@ -214,19 +219,19 @@ end
 
 local function loadRoadTemplate()
   if roadTpl ~= nil then return roadTpl or nil end
-  roadTpl = loadQuadTemplate()
+  roadTpl = loadQuadTemplate(0.2)
   return roadTpl
 end
 
 local function loadGroundTemplate()
   if groundTpl ~= nil then return groundTpl or nil end
-  groundTpl = loadQuadTemplate()
+  groundTpl = loadQuadTemplate(0.15)
   return groundTpl
 end
 
 local function loadDecorTemplate()
   if decorTpl ~= nil then return decorTpl or nil end
-  decorTpl = loadQuadTemplate()
+  decorTpl = loadQuadTemplate(0.25)
   return decorTpl
 end
 
@@ -783,6 +788,9 @@ end
 
 function Grass3D.invalidate()
   tpl = nil
+  roadTpl = nil
+  groundTpl = nil
+  decorTpl = nil
   meta = nil
   Grass3D.dropGPU()
 end
