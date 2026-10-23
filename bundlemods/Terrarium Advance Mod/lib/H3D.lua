@@ -125,8 +125,10 @@ local function meshLayout(words)
   end
 
   local off = uniforms[6] or { 0, 0, 0, 0 }
+  local weightElements = 0
+  for _, a in ipairs(attrs) do if a.name == "boneWeight" then weightElements = a.elements end end
   return { address = address, stride = stride, attrs = attrs, fixed = fixedAttrs,
-           positionOffset = { off[1], off[2], off[3] } }
+           positionOffset = { off[1], off[2], off[3] }, weightElements = weightElements }
 end
 
 -- one vertex: { position = {x,y,z}, normal = ..., uv0 = {u,v}, boneIndex = {...}, ... }
@@ -157,7 +159,21 @@ local function readVertex(d, layout, v)
     out.position[3] = out.position[3] + po[3]
   end
   for name, val in pairs(layout.fixed) do
-    if not out[name] then out[name] = { val[1], val[2], val[3], val[4] } end
+    if not out[name] then
+      if name == "boneWeight" then
+        -- a fixed weight vec4's w is a homogeneous 1.0 (eyes and irises
+        -- carry (1, 0, 0, 1)): only x, y, z are weights
+        out[name] = { val[1], val[2], val[3] }
+      elseif name == "boneIndex" then
+        -- fixed indices supply as many bones as the vertex has weights:
+        -- Squirtle's Body02 has fixed (0, 1, 2, 3) against a real
+        -- 4-element weight attribute, and its 4th index is a real bone
+        local n = (layout.weightElements or 0) >= 4 and 4 or 3
+        out[name] = { val[1], val[2], val[3], n == 4 and val[4] or nil }
+      else
+        out[name] = { val[1], val[2], val[3], val[4] }
+      end
+    end
   end
   return out
 end
@@ -374,6 +390,135 @@ function H3D.bindPose(model, mesh)
     out[i] = { position = p, normal = n, uv = H3D.applyUV(uvT, v.uv0) }
   end
   return out
+end
+
+-- --------------------------------------------------------------- posing
+--
+-- A battle motion (lib/GF1Motion.lua) animates bones by NAME; every motion
+-- bone of the species checked exists in the model skeleton.  A model bone the
+-- motion animates gets a local matrix from the motion's channels (any channel
+-- the motion leaves out keeps the bone's bind value); the rest keep their
+-- bind local.  Smooth-skinned vertices are in bind (model) space, so they move
+-- by world * inverse(bind world); rigid ones are in their bone's space and
+-- move by that bone's world.
+
+function H3D.affineInverse(m)
+  local a, b, c = m[1], m[2], m[3]
+  local d, e, f = m[5], m[6], m[7]
+  local g, h, i = m[9], m[10], m[11]
+  local det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+  if math.abs(det) < 1e-12 then det = 1e-12 end
+  local r = {
+    (e * i - f * h) / det, (c * h - b * i) / det, (b * f - c * e) / det, 0,
+    (f * g - d * i) / det, (a * i - c * g) / det, (c * d - a * f) / det, 0,
+    (d * h - e * g) / det, (b * g - a * h) / det, (a * e - b * d) / det, 0,
+    0, 0, 0, 1,
+  }
+  local tx, ty, tz = m[4], m[8], m[12]
+  r[4] = -(r[1] * tx + r[2] * ty + r[3] * tz)
+  r[8] = -(r[5] * tx + r[6] * ty + r[7] * tz)
+  r[12] = -(r[9] * tx + r[10] * ty + r[11] * tz)
+  return r
+end
+
+-- poser(motion, frame) -> skin[boneIndex] (world * inverse bind), world[boneIndex]
+-- (1-based bone indices, as model.bones)
+function H3D.poser(model, sample, skeletonNames)
+  local gfIndex = {}
+  for i, name in ipairs(skeletonNames or {}) do gfIndex[name] = i - 1 end
+  local inverseBind = {}
+  for i, bone in ipairs(model.bones) do inverseBind[i] = H3D.affineInverse(bone.world) end
+  return function(motion, frame)
+    local world, skin = {}, {}
+    for i, bone in ipairs(model.bones) do
+      local localM = bone.localMatrix
+      local gi = motion and gfIndex[bone.name]
+      if gi then
+        local curves = motion.curves
+        local animated = false
+        for c = 0, 8 do if curves[gi * 9 + c] then animated = true; break end end
+        if animated then
+          local t = { bone.translation[1], bone.translation[2], bone.translation[3] }
+          local r = { bone.rotation[1], bone.rotation[2], bone.rotation[3] }
+          local s = { bone.scale[1], bone.scale[2], bone.scale[3] }
+          for c = 0, 8 do
+            local curve = curves[gi * 9 + c]
+            if curve then
+              local v = sample(curve, frame)
+              if c < 3 then t[c + 1] = v elseif c < 6 then r[c - 2] = v else s[c - 5] = v end
+            end
+          end
+          localM = H3D.localMatrix(s, r, t)
+        end
+      end
+      local parent = bone.parent >= 0 and world[bone.parent + 1]
+      world[i] = parent and matMul(parent, localM) or localM
+      skin[i] = matMul(world[i], inverseBind[i])
+    end
+    return skin, world
+  end
+end
+
+-- Per-vertex skinning recipe for one mesh: list[vertex] = { rigid = bone } or
+-- { bones = {...}, weights = {...} } (1-based model bone indices), from the
+-- first submesh that references the vertex.  Unused index slots (weight 0, or
+-- past the palette) are dropped.
+function H3D.skinning(model, mesh)
+  local owner = {}
+  for _, sm in ipairs(mesh.submeshes) do
+    for _, ix in ipairs(sm.indices) do owner[ix] = owner[ix] or sm end
+  end
+  local out = {}
+  for i, v in ipairs(mesh.vertices) do
+    local sm = owner[i - 1]
+    local rec = { position = v.position or { 0, 0, 0 } }
+    if sm and sm.skinning ~= 0 then
+      local idx = v.boneIndex or { 0 }
+      if sm.skinning == 2 then
+        rec.rigid = (sm.palette[math.floor(idx[1] + 0.5) + 1] or 0) + 1
+      else
+        local w = v.boneWeight or { 1 }
+        local sum = 0
+        for k = 1, #w do sum = sum + w[k] end
+        rec.bones, rec.weights = {}, {}
+        for k = 1, #idx do
+          local weight = w[k]
+          if weight == nil then weight = (k == #w + 1 and 1 - sum > 0.005) and (1 - sum) or 0 end
+          local pal = sm.palette[math.floor(idx[k] + 0.5) + 1]
+          if weight > 0 and pal then
+            rec.bones[#rec.bones + 1] = pal + 1
+            rec.weights[#rec.weights + 1] = weight
+          end
+        end
+        -- weights are percentages quantized to bytes; renormalize what is kept
+        local total = 0
+        for _, w2 in ipairs(rec.weights) do total = total + w2 end
+        if total > 0 and math.abs(total - 1) > 1e-4 then
+          for k = 1, #rec.weights do rec.weights[k] = rec.weights[k] / total end
+        end
+      end
+    end
+    out[i] = rec
+  end
+  return out
+end
+
+function H3D.skinPoint(rec, skin, world)
+  local p = rec.position
+  if rec.rigid then return H3D.transformPoint(world[rec.rigid] or skin[1], p) end
+  if rec.bones and #rec.bones > 0 then
+    local x, y, z = 0, 0, 0
+    for k, b in ipairs(rec.bones) do
+      local m = skin[b]
+      if m then
+        local w = rec.weights[k]
+        local a, bb, c = H3D.transformPoint(m, p)
+        x, y, z = x + a * w, y + bb * w, z + c * w
+      end
+    end
+    return x, y, z
+  end
+  return p[1], p[2], p[3]
 end
 
 -- ------------------------------------------------------------- textures

@@ -58,12 +58,12 @@ function M.probe()
   return true
 end
 
--- TEST BATCH: National Dex 1-10 built into PokemonActors caches
+-- TEST BATCH: National Dex 1-20 built into PokemonActors caches
 -- (lib/ORASActorCache.lua) -- the same cache every 3D-actor surface reads, so
 -- they appear in battles, as followers and in the overworld like Colosseum's.
 -- Synchronous for now: about ten seconds per species of pure-Lua inflate and
 -- decode on the options menu.  The full 1-721 install becomes a background job.
-M.TEST_DEX = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 }
+M.TEST_DEX = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20 }
 
 function M.buildTest()
   local lines = {}
@@ -94,8 +94,8 @@ function M.row()
     label = M.LABEL,
     value = function()
       if st.state == "error" then return "ERROR" end
-      if st.state == "done" then return "BUILT 1-10" end
-      return M.imported() and "BUILD 1-10" or "NO DUMP"
+      if st.state == "done" then return "BUILT 1-20" end
+      return M.imported() and "BUILD 1-20" or "NO DUMP"
     end,
     step = function()
       if not M.imported() then

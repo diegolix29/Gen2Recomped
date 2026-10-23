@@ -10,11 +10,15 @@
 -- treats it as ready while the cache exists.  Colosseum's own caches under
 -- cache/pokemon/ are never touched.
 --
--- Geometry is the bind pose (lib/H3D.lua), normalized like the Colosseum
--- extractor's: 16 units tall, feet on y = 0, centred on x/z.  Each 44-float
--- row is position, uv, normal, then twelve morph-frame positions -- copies
--- of the bind pose until battle motions are baked in (morphFrames = 0, so
--- PokemonActors draws the base pose).
+-- Geometry is normalized like the Colosseum extractor's (from the bind pose:
+-- 16 units tall, feet on y = 0, centred on x/z) and animated by the species'
+-- own battle motions (lib/GF1Motion.lua, skinned by lib/H3D.lua): the base
+-- bank is the idle loop, and physicalA / specialA / damage / faint are
+-- action banks.  Every bank is written straight into PokemonActors' runtime
+-- sidecar form (runtime_mesh_v1/: base.lua + base_NN.f32, action_*.lua,
+-- action_*_floor.lua, action_*_NN.f32 -- 44 float32 a row: position, uv,
+-- normal, then twelve morph-slot positions), which loadScene prefers, so no
+-- multi-megabyte text payload is written or parsed.
 
 local V = ...
 local N3DSRom = V.require("N3DSRom")
@@ -97,127 +101,267 @@ local function findSpecies(g, index, dex)
   return nil, "no block named " .. want .. " near form " .. guess
 end
 
+-- --------------------------------------------------------------- writing
+
+local okFfi, ffi = pcall(require, "ffi")
+if not okFfi then ffi = nil end
+local unpack = unpack or table.unpack
+
+-- n floats (a Lua array) -> little-endian float32 bytes
+local function packFloats(values, n)
+  if ffi then
+    local buf = ffi.new("float[?]", n)
+    for i = 1, n do buf[i - 1] = values[i] end
+    return ffi.string(buf, n * 4)
+  end
+  local parts, row = {}, string.rep("f", 44)
+  for i = 1, n, 44 do
+    parts[#parts + 1] = love.data.pack("string", row, unpack(values, i, i + 43))
+  end
+  return table.concat(parts)
+end
+
+-- a plain Lua literal, the shape RuntimeMeshCache.readLua loads
+local function literal(v)
+  local t = type(v)
+  if t == "number" then
+    if v ~= v or v == math.huge or v == -math.huge then return "0" end
+    return ("%.9g"):format(v)
+  elseif t == "string" then return ("%q"):format(v)
+  elseif t == "boolean" then return v and "true" or "false"
+  elseif t ~= "table" then return "nil" end
+  local keys = {}
+  for k in pairs(v) do keys[#keys + 1] = k end
+  table.sort(keys, function(a, b)
+    if type(a) == type(b) then return tostring(a) < tostring(b) end
+    return type(a) == "number"
+  end)
+  local out = { "{" }
+  for _, k in ipairs(keys) do
+    local key = type(k) == "number" and ("[" .. k .. "]") or ("[" .. ("%q"):format(k) .. "]")
+    out[#out + 1] = key .. "=" .. literal(v[k]) .. ","
+  end
+  out[#out + 1] = "}"
+  return table.concat(out)
+end
+
+local function writeLua(mod, path, value)
+  return mod.cache:write(path, "return " .. literal(value) .. "\n") ~= false
+end
+
+-- Battle-motion slots baked into banks.  The base bank is the idle loop:
+-- PokemonActors plays base -> 1..12 -> base, so slot k is idle frame
+-- k * frames / 13.  Actions play slot 0 -> 12 once, so slot k is frame
+-- k * frames / 12.  GF motions run at 30 frames a second.
+local ACTIONS = {
+  { name = "physicalA", slot = 8 },   -- ba20_buturi
+  { name = "specialA", slot = 12 },   -- ba21_tokusyu
+  { name = "damage", slot = 16 },     -- ba30_damageS
+  { name = "faint", slot = 17 },      -- ba41_down
+}
+local IDLE_SLOT = 0                   -- ba10_waitA
+local FPS = 30
+local ORAS_STAMP = "oras-actor=2\n"
+
 -- Build one species. Returns a summary string, or nil and a reason.
-function C.buildSpecies(mod, rom, g, index, dex, stamp)
+function C.buildSpecies(mod, rom, g, index, dex)
+  local GF1 = V.require("GF1Motion")
   local base, md, mh, model = findSpecies(g, index, dex)
   if not base then return nil, md end
   local td, th = packBch(g, base + 3, 1)
   if not td then return nil, th end
   local textures = H3D.textures(td, th)
 
-  -- bind pose for every mesh, then one normalization over all of them
-  local meshes, lo, hi = {}, { math.huge, math.huge, math.huge }, { -math.huge, -math.huge, -math.huge }
-  for _, mesh in ipairs(model.meshes) do
-    local bind = H3D.bindPose(model, mesh)
-    meshes[#meshes + 1] = { mesh = mesh, bind = bind }
-    for _, v in ipairs(bind) do
-      for k = 1, 3 do
-        if v.position[k] < lo[k] then lo[k] = v.position[k] end
-        if v.position[k] > hi[k] then hi[k] = v.position[k] end
+  -- battle motions: part 0 of the battle-motion member (slot 6 of the block)
+  local skeleton, motions = nil, {}
+  do
+    local okPb, pb = pcall(g.member, g, base + 6)
+    if okPb and pb and #pb >= 12 then
+      local count = u16(pb, 3)
+      if count > 0 then
+        local off, nxt = u32(pb, 5), u32(pb, 9)
+        local okRead, skel, mots = pcall(GF1.readPack, pb:sub(off + 1, nxt))
+        if okRead then skeleton, motions = skel, mots end
       end
     end
   end
-  local height = hi[2] - lo[2]
-  if not (height > 0) then return nil, "model has no height" end
-  local s = TARGET_HEIGHT / height
-  local cx, cz = (lo[1] + hi[1]) / 2, (lo[3] + hi[3]) / 2
-  local function norm(p) return (p[1] - cx) * s, (p[2] - lo[2]) * s, (p[3] - cz) * s end
+  local names = {}
+  for i, b in ipairs(skeleton or {}) do names[i] = b.name end
+  local pose = H3D.poser(model, GF1.sample, names)
 
-  local dir = root(dex)
-  local texPaths, texCount = {}, 0
-  local groups, vertexTotal = {}, 0
-
+  -- kept meshes (effect meshes skipped, see below), their bind data and
+  -- skinning recipes; bounds from the bind pose normalize every frame alike
   local prefix = (model.name or ""):match("^(pm%d+_%d+)") or "pm"
-  local skipped = 0
-  for gi, entry in ipairs(meshes) do
-    local mesh, bind = entry.mesh, entry.bind
+  local kept, skipped = {}, 0
+  local lo, hi = { math.huge, math.huge, math.huge }, { -math.huge, -math.huge, -math.huge }
+  for _, mesh in ipairs(model.meshes) do
     local mat = model.materials[mesh.materialIndex + 1] or {}
     local tname = mat.textures and mat.textures[1]
     -- Effect meshes (flames, glows: FireCoreA, FireStenA, ...) sample shared
     -- effect textures through the game's additive/stencil shaders.  Drawn as
     -- ordinary surfaces they are black and white blobs, so only meshes whose
     -- base texture is the species' own (pmNNNN_FF_...) are kept.
-    if not (tname and tname:sub(1, #prefix) == prefix) then
+    if tname and tname:sub(1, #prefix) == prefix then
+      local bind = H3D.bindPose(model, mesh)
+      kept[#kept + 1] = { mesh = mesh, mat = mat, tname = tname, bind = bind,
+                          skin = H3D.skinning(model, mesh) }
+      for _, v in ipairs(bind) do
+        for k = 1, 3 do
+          if v.position[k] < lo[k] then lo[k] = v.position[k] end
+          if v.position[k] > hi[k] then hi[k] = v.position[k] end
+        end
+      end
+    else
       skipped = skipped + 1
-      goto continue
     end
-    local t = tname and textures[tname]
-    local tp = tname and texPaths[tname]
-    if t and not tp then
+  end
+  if #kept == 0 then return nil, "no drawable meshes" end
+  local height = hi[2] - lo[2]
+  if not (height > 0) then return nil, "model has no height" end
+  local s = TARGET_HEIGHT / height
+  local cx, cz = (lo[1] + hi[1]) / 2, (lo[3] + hi[3]) / 2
+
+  -- positions[meshIndex][slot][vertex] = { x, y, z }, normalized
+  local function sampleBank(motion, frames, looping)
+    local out = {}
+    for m = 1, #kept do out[m] = {} end
+    for slot = 0, MORPH_SLOTS do
+      local frame = motion and (looping and slot * frames / (MORPH_SLOTS + 1) or slot * frames / MORPH_SLOTS) or 0
+      local skin, world = pose(motion, frame)
+      for m, entry in ipairs(kept) do
+        local list = {}
+        for vi, rec in ipairs(entry.skin) do
+          local x, y, z
+          if motion then x, y, z = H3D.skinPoint(rec, skin, world)
+          else local p = entry.bind[vi].position; x, y, z = p[1], p[2], p[3] end
+          list[vi] = { (x - cx) * s, (y - lo[2]) * s, (z - cz) * s }
+        end
+        out[m][slot] = list
+      end
+    end
+    return out
+  end
+
+  local dir = root(dex)
+  local rt = dir .. "/runtime_mesh_v1"
+
+  -- textures
+  local texPaths, texCount = {}, 0
+  for _, entry in ipairs(kept) do
+    local t = textures[entry.tname]
+    if t and not texPaths[entry.tname] then
       local okT, img = pcall(PICA.decodeTexture, td, t.address, t.width, t.height, t.format)
       if okT and img then
         texCount = texCount + 1
-        tp = { path = ("%s/tex_%02d.rgba"):format(dir, texCount), w = t.width, h = t.height }
+        local tp = { path = ("%s/tex_%02d.rgba"):format(dir, texCount), w = t.width, h = t.height,
+                     wrapS = WRAP[entry.mat.wrapU] or 1, wrapT = WRAP[entry.mat.wrapV] or 1 }
         assert(mod.cache:write(tp.path, img:getString()) ~= false, "texture write failed: " .. tp.path)
-        texPaths[tname] = tp
+        texPaths[entry.tname] = tp
       end
     end
-
-    local rows = {}
-    local function row(ix)
-      local v = bind[ix + 1]
-      if not v then return end
-      local x, y, z = norm(v.position)
-      local uv = v.uv or { 0, 0 }
-      local n = v.normal or { 0, 1, 0 }
-      -- PICA's t runs up from the bottom of the texture, whose first row in
-      -- memory is the TOP of the decoded image (PICA.decodeTexture); LOVE's
-      -- v runs down from the top, so v = 1 - t.  Checked by rendering
-      -- Ivysaur's and Charizard's caches offline: with t as-is the eye sheet
-      -- showed its closed frame and Charizard's wings sampled empty texels.
-      local cells = { num(x), num(y), num(z), num(uv[1]), num(1 - (uv[2] or 0)),
-                      num(n[1]), num(n[2]), num(n[3]) }
-      local px, py, pz = cells[1], cells[2], cells[3]
-      for _ = 1, MORPH_SLOTS do
-        cells[#cells + 1] = px; cells[#cells + 1] = py; cells[#cells + 1] = pz
-      end
-      rows[#rows + 1] = table.concat(cells, ",")
-    end
-    for _, sm in ipairs(mesh.submeshes) do
-      local ix = sm.indices
-      for k = 1, #ix - 2, 3 do row(ix[k]); row(ix[k + 1]); row(ix[k + 2]) end
-    end
-    if #rows > 0 then
-      vertexTotal = vertexTotal + #rows
-      groups[#groups + 1] = { name = mat.name, texture = tp, packed = table.concat(rows, "\n"),
-                              wrapS = WRAP[mat.wrapU] or 1, wrapT = WRAP[mat.wrapV] or 1 }
-    end
-    ::continue::
   end
-  if #groups == 0 then return nil, "no drawable meshes" end
 
+  -- one bank -> per-group float32 files (44 floats a row: slot-0 position,
+  -- uv, normal, then slots 1-12) and the thirteen per-slot lowest y values
+  local function writeBank(positions, pathOf)
+    local floor = {}
+    for i = 1, MORPH_SLOTS + 1 do floor[i] = math.huge end
+    local vertexCount = 0
+    for m, entry in ipairs(kept) do
+      local values, n = {}, 0
+      for _, sm in ipairs(entry.mesh.submeshes) do
+        local ix = sm.indices
+        for k = 1, #ix - (#ix % 3) do
+          local vi = ix[k] + 1
+          local b = entry.bind[vi]
+          local uv = b and b.uv or { 0, 0 }
+          local nrm = b and b.normal or { 0, 1, 0 }
+          local p0 = positions[m][0][vi]
+          -- PICA's t runs up from the bottom; LOVE's v runs down: v = 1 - t
+          -- (see PICA.decodeTexture; checked by rendering caches offline)
+          values[n + 1], values[n + 2], values[n + 3] = p0[1], p0[2], p0[3]
+          values[n + 4], values[n + 5] = uv[1], 1 - (uv[2] or 0)
+          values[n + 6], values[n + 7], values[n + 8] = nrm[1], nrm[2], nrm[3]
+          n = n + 8
+          for slot = 0, MORPH_SLOTS do
+            local p = positions[m][slot][vi]
+            if p[2] < floor[slot + 1] then floor[slot + 1] = p[2] end
+            if slot > 0 then
+              values[n + 1], values[n + 2], values[n + 3] = p[1], p[2], p[3]
+              n = n + 3
+            end
+          end
+        end
+      end
+      vertexCount = vertexCount + n / 44
+      assert(mod.cache:write(pathOf(m), packFloats(values, n)) ~= false, "bank write failed: " .. pathOf(m))
+    end
+    for i = 1, MORPH_SLOTS + 1 do if floor[i] == math.huge then floor[i] = 0 end end
+    return floor, vertexCount
+  end
+
+  -- base bank: the idle loop (or the bind pose, static, if there is none)
+  local idle = motions[IDLE_SLOT]
+  local basePositions = sampleBank(idle, idle and idle.frames or 0, true)
+  local baseFloor, vertexTotal = writeBank(basePositions, function(m) return ("%s/base_%02d.f32"):format(rt, m) end)
+
+  -- action banks, written straight into PokemonActors' runtime sidecar form
+  local actions, baked = {}, {}
+  for _, a in ipairs(ACTIONS) do
+    local motion = motions[a.slot]
+    if motion and motion.frames > 0 then
+      local duration = motion.frames / FPS
+      local floor = writeBank(sampleBank(motion, motion.frames, false), function(m)
+        return ("%s/action_%s_%02d.f32"):format(rt, a.name, m)
+      end)
+      writeLua(mod, ("%s/action_%s.lua"):format(rt, a.name), {
+        runtimeMeshVersion = 1, stamp = ORAS_STAMP, clip = a.slot, duration = duration,
+        frameSpacing = 1, morphFrames = MORPH_SLOTS, groupCount = #kept,
+      })
+      writeLua(mod, ("%s/action_%s_floor.lua"):format(rt, a.name), {
+        runtimeMeshVersion = 1, stamp = ORAS_STAMP, groupCount = #kept, floorMinYSlots = floor,
+      })
+      actions[a.name] = { clip = a.slot, duration = duration }
+      baked[#baked + 1] = ("%s %.2fs"):format(a.name, duration)
+    end
+  end
+
+  local groups = {}
+  for m, entry in ipairs(kept) do
+    groups[m] = {
+      material = entry.mat.name or ("mesh" .. m), texture = texPaths[entry.tname],
+      diffuse = { 1, 1, 1 }, ambient = { 1, 1, 1 }, specular = { 0, 0, 0 }, alpha = 1, shininess = 0,
+      xlu = false, noz = false, renderFlags = 0, shadow = false, effect = false, textureSlot = -1,
+      vertexStride = 44, runtimeBin = ("%s/base_%02d.f32"):format(rt, m),
+    }
+  end
+  local minFloor = math.huge
+  for _, y in ipairs(baseFloor) do if y < minFloor then minFloor = y end end
   local hx, hz = (hi[1] - lo[1]) * s / 2, (hi[3] - lo[3]) * s / 2
-  local out = {
-    "-- Generated locally from the player's own Omega Ruby / Alpha Sapphire dump.\n",
-    "return {formatVersion=4,poseFormat=\"oras-bind-pose-v1\",oras=true,\n",
-    "dex=", tostring(dex), ",stem=", ("%q"):format(model.name or ""), ",source=\"ORAS\",\n",
-    "clip=0,clipCount=0,idleDuration=0,frameSpacing=1,morphFrames=0,morphSlots=", tostring(MORPH_SLOTS), ",\n",
-    "vertexCount=", tostring(vertexTotal), ",groupCount=", tostring(#groups), ",\n",
-    "heightRatio=1,widthRatio=", num((hi[1] - lo[1]) / height), ",\n",
-    "bounds={min={", num(-hx), ",0,", num(-hz), "},max={", num(hx), ",", num(TARGET_HEIGHT), ",", num(hz),
-    "},center={0,", num(TARGET_HEIGHT / 2), ",0}},\n",
-    "jointPositions={},jointFrames={},actions={},\n",
-    "groups={\n",
+  local meta = {
+    runtimeMeshVersion = 1, stamp = ORAS_STAMP,
+    formatVersion = 4, poseFormat = "oras-gf1-motion-v1", oras = true,
+    dex = dex, stem = model.name or "", source = "ORAS",
+    clip = IDLE_SLOT, clipCount = 0, frameSpacing = 1,
+    idleDuration = idle and idle.frames / FPS or 0,
+    morphFrames = idle and MORPH_SLOTS or 0, morphSlots = MORPH_SLOTS,
+    vertexCount = vertexTotal, groupCount = #groups,
+    heightRatio = 1, widthRatio = (hi[1] - lo[1]) / height,
+    bounds = { min = { -hx, 0, -hz }, max = { hx, TARGET_HEIGHT, hz }, center = { 0, TARGET_HEIGHT / 2, 0 } },
+    floorMinY = minFloor,
+    jointPositions = {}, jointFrames = {},
+    actions = actions, groups = groups,
   }
-  for _, gr in ipairs(groups) do
-    out[#out + 1] = "{material=" .. ("%q"):format(tostring(gr.name))
-    if gr.texture then
-      out[#out + 1] = (",texture={path=%q,w=%d,h=%d,wrapS=%d,wrapT=%d}"):format(
-        gr.texture.path, gr.texture.w, gr.texture.h, gr.wrapS, gr.wrapT)
-    end
-    out[#out + 1] = ",diffuse={1,1,1},ambient={1,1,1},specular={0,0,0},alpha=1,shininess=0"
-    out[#out + 1] = ",xlu=false,noz=false,renderFlags=0,shadow=false,effect=false,textureSlot=-1"
-    out[#out + 1] = ",vertexStride=44,verticesPacked=[==[\n" .. gr.packed .. "]==]},\n"
-  end
-  out[#out + 1] = "}}\n"
+  -- base.lua is what PokemonActors loads (its stamp matches rev.txt);
+  -- model_cache.lua is the same table, which marks the species as present
+  assert(writeLua(mod, rt .. "/base.lua", meta), "runtime base write failed")
+  assert(writeLua(mod, dir .. "/model_cache.lua", meta), "model cache write failed")
+  mod.cache:write(dir .. "/rev.txt", ORAS_STAMP)
 
-  local okW = mod.cache:write(dir .. "/model_cache.lua", table.concat(out))
-  if okW == false then return nil, "model cache write failed" end
-  mod.cache:write(dir .. "/rev.txt", stamp or "oras-actor=1\n")
-  -- a stale runtime sidecar from an earlier build must not outlive this one
-  pcall(mod.cache.delete, mod.cache, dir .. "/runtime_mesh_v1/base.lua")
-  return ("%s: %d groups, %d verts, %d textures, %d effect meshes skipped (members %d-%d)"):format(
-    tostring(model.name), #groups, vertexTotal, texCount, skipped, base, base + 7)
+  return ("%s: %d groups, %d verts, %d textures, %d effect meshes skipped, idle %s, actions %s (members %d-%d)"):format(
+    tostring(model.name), #groups, vertexTotal, texCount, skipped,
+    idle and ("%.2fs"):format(idle.frames / FPS) or "none",
+    #baked > 0 and table.concat(baked, ", ") or "none", base, base + 7)
 end
 
 -- Build `list` (dex numbers) and register them.  `log(fmt, ...)` reports
@@ -231,7 +375,6 @@ function C.build(mod, list, log)
   local index = g:member(0)
 
   local Actors = V.PokemonActors
-  local stamp = Actors and Actors.cacheStamp and Actors.cacheStamp() or nil
 
   -- existing index, so building a second batch keeps the first
   local Dex = V.ColosseumDex
@@ -245,7 +388,7 @@ function C.build(mod, list, log)
 
   local built, failed = 0, 0
   for _, dex in ipairs(list) do
-    local ok, summary, why = pcall(C.buildSpecies, mod, rom, g, index, dex, stamp)
+    local ok, summary, why = pcall(C.buildSpecies, mod, rom, g, index, dex)
     if ok and summary then
       built = built + 1
       listed[dex] = true
