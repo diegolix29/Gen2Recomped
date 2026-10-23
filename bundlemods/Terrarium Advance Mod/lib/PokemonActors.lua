@@ -1608,6 +1608,10 @@ local BURROWED_GROUND_DEPTH={
   [51]=.38, -- Dugtrio
 }
 
+-- the most an ORAS model's idle may hover above the floor, as a fraction of
+-- its posed height (see Actor:matrix)
+local ORAS_HOVER_CAP=.12
+
 function Actor:matrix(x,groundY,z,towardX,towardZ)
   local s=self.worldScale or 1
   -- Use the portable quadrant-aware helper above; LuaJIT's math.atan ignores a
@@ -1667,6 +1671,18 @@ function Actor:matrix(x,groundY,z,towardX,towardZ)
   -- vertex/pose, but translate the complete actor upward if its currently
   -- sampled source geometry would penetrate Y=groundY. This handles flying,
   -- serpentine, damage and attack poses uniformly across every species.
+  -- ORAS models stand on their skeleton's origin, which for some species sits
+  -- far below the idle pose (Rayquaza's rest pose stands straight up, its idle
+  -- coils metres higher): drawn as authored they float high above the floor.
+  -- Lower the whole model -- one constant offset from the idle's lowest point,
+  -- so its bob and every action keep their motion -- to hover at most
+  -- ORAS_HOVER_CAP of its height.  The floor clamp below still applies.
+  local sc=self.scene
+  if sc and sc.source=="ORAS" then
+    local baseMin=tonumber(sc.floorMinY) or 0
+    local cap=(tonumber(self.height) or 0)*ORAS_HOVER_CAP
+    if baseMin>cap then lift=lift-(baseMin-cap)*s end
+  end
   local authoredMinY=weightedFloorMinY(self)
   local collisionMinY=rotatedFloorMinY(self,authoredMinY,pitch,roll)
   self.forceBasePlayback=false

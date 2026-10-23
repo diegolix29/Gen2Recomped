@@ -118,7 +118,7 @@ local FOREST2 = {
 -- the id overlay is on for this tileset (`overlay = true`), so walk in,
 -- read the number on the floor, add it below, then set overlay to false.
 local FOREST1 = {
-  overlay = true,
+  overlay = false,
   tiles = {
     -- [0x??] = FOREST_FLOOR,
   },
