@@ -137,6 +137,8 @@ uniform vec3 shinyGain;
 // over time (lib/ORASActorCache.lua bakes their luminance into rgb/alpha)
 uniform float emissive;
 uniform float glowTime;
+// ORAS eye sheets: the cell offset of the current blink frame (else zero)
+uniform vec2 uvShift;
 varying vec3 worldPos;
 varying vec3 worldNormal;
 
@@ -150,7 +152,7 @@ vec4 effect(vec4 color, Image texture, vec2 uv, vec2 screen) {
     if (ga < 0.02) discard;
     return vec4(glow.rgb * materialColor.rgb, ga);
   }
-  vec4 texel = Texel(texture,uv);
+  vec4 texel = Texel(texture,uv+uvShift);
   float texAlpha = mix(1.0, texel.a, useTexture);
   float a = texAlpha * materialColor.a * tintColor.a * opacity * color.a;
   if (a < 0.08) discard;
@@ -458,6 +460,20 @@ local function setGlow(on)
   end
 end
 
+-- ORAS eye sheets (lib/ORASActorCache.lua): a group's `blink` holds the uv
+-- offsets of eye cell 1 (half closed) and 2 (closed) from its rest cell.
+local UV_SHIFT={0,0}
+local function setEyeCell(grp,cell)
+  if not shader then return end
+  local b=grp.blink
+  if b and cell>0 and b[cell*2] then
+    UV_SHIFT[1],UV_SHIFT[2]=b[cell*2-1],b[cell*2]
+  else
+    UV_SHIFT[1],UV_SHIFT[2]=0,0
+  end
+  pcall(shader.send,shader,"uvShift",UV_SHIFT)
+end
+
 local function ensureShader()
   if shader then return shader end
   if not (love and love.graphics and love.graphics.newShader) then return nil,"LOVE graphics unavailable" end
@@ -604,6 +620,7 @@ local function loadScene(dex,diskOnly,checkpoint)
       diffuse={tonumber(d[1]) or 1,tonumber(d[2]) or 1,tonumber(d[3]) or 1},
       alpha=tonumber(g.alpha) or 1,
       xlu=g.xlu==true,noz=g.noz==true,glow=g.glow==true,
+      blink=type(g.blink)=="table" and g.blink or nil,
       renderFlags=tonumber(g.renderFlags) or 0,
       shadow=g.shadow==true,effect=g.effect==true,
       textureSlot=tonumber(g.textureSlot) or -1,
@@ -708,7 +725,7 @@ local function loadScene(dex,diskOnly,checkpoint)
       end
       if baseg.image then mesh:setTexture(baseg.image) end
       agroups[i]={mesh=mesh,image=baseg.image,textured=baseg.textured,diffuse=baseg.diffuse,alpha=baseg.alpha,
-        xlu=baseg.xlu,noz=baseg.noz,glow=baseg.glow,renderFlags=baseg.renderFlags,shadow=baseg.shadow,effect=baseg.effect,textureSlot=baseg.textureSlot}
+        xlu=baseg.xlu,noz=baseg.noz,glow=baseg.glow,blink=baseg.blink,renderFlags=baseg.renderFlags,shadow=baseg.shadow,effect=baseg.effect,textureSlot=baseg.textureSlot}
     end
     if type(floorSlots)~="table" then
       local fm=select(1,RuntimeMeshCache.readLua(runtimeActionFloorPath(dex,name)))
@@ -763,7 +780,7 @@ local function loadScene(dex,diskOnly,checkpoint)
       end
       agroups[i]={
         mesh=mesh,image=baseg.image,textured=baseg.textured,
-        diffuse=baseg.diffuse,alpha=baseg.alpha,xlu=baseg.xlu,noz=baseg.noz,glow=baseg.glow,
+        diffuse=baseg.diffuse,alpha=baseg.alpha,xlu=baseg.xlu,noz=baseg.noz,glow=baseg.glow,blink=baseg.blink,
         renderFlags=baseg.renderFlags,shadow=baseg.shadow,effect=baseg.effect,
         textureSlot=baseg.textureSlot,
       }
@@ -1327,8 +1344,23 @@ function Actor:spawn(progress)
   self.spawnScale=p
   if p<1 then
     if self.state~="faint" and self.state~="removal" then self:transition("spawn") end
+    -- ORAS send-out (curled up -> unfurled, lib/ORASActorCache.lua "appear"),
+    -- once per actor, over the grow-in; update() hands it to idle when done.
+    -- Overworld actors go straight to spawn(1) and never play it.
+    if not self._appearTried and self.state=="spawn" then
+      self._appearTried=true
+      local sc=self.scene
+      local has=sc and sc.source=="ORAS" and ((sc.actions and sc.actions.appear) or (sc.actionSpecs and sc.actionSpecs.appear))
+      if has and self:selectNativeSlot("appear") then
+        self.action="appear";self.actionAge=0
+      end
+    end
   elseif self.state=="spawn" then
-    self:selectNativeSlot("idle");self:transition("idle")
+    if self.action=="appear" then
+      self:transition("appear")
+    else
+      self:selectNativeSlot("idle");self:transition("idle")
+    end
   end
 end
 
@@ -1338,6 +1370,8 @@ function Actor:idle()
   -- request used to truncate the source hurt clip. Ignore it and let update()
   -- perform the single deterministic Damage -> next-state handoff.
   if self.hitAge then return false end
+  -- the ORAS send-out finishes on its own (update)
+  if self.action=="appear" then return true end
   -- Idle is a state notification, not a request to rewind the source clip.
   -- Hosts may publish it repeatedly during commands/text and in both battle
   -- modes; preserve the current loop phase when it is already playing.
@@ -1502,7 +1536,7 @@ end
 function Actor:frameWeights()
   local bank,clock,duration,dense=self:playbackBank()
   local n=bank and bank.morphFrames or self.scene.morphFrames
-  local looping=(self.state=="idle" or self.state=="spawn") and not dense
+  local looping=(self.state=="idle" or self.state=="spawn") and not dense and self.action~="appear"
   -- Native playback uses non-negative interpolation between real source poses.
   -- Dense reaction pages make those neighbours tightly spaced; sparse banks are
   -- still kept linear rather than inventing cubic vertex-space overshoot that
@@ -1805,6 +1839,7 @@ function Actor:draw(matrix)
   -- F5 isolates one group at a time so a stray shape can be identified by
   -- sight instead of guessed at from vertex counts alone.
   local only=A.isolateGroup
+  local eyeCell=(sc.source=="ORAS") and self:eyeCell() or 0
   local playback=self:playbackBank()
   local drawGroups=(not self.forceBasePlayback and playback and playback.groups) or sc.groups
   if self.forceBasePlayback then setBaseWeights() end
@@ -1823,6 +1858,7 @@ function Actor:draw(matrix)
         love.graphics.setDepthMode("lequal",not (grp.noz or grp.xlu or grp.glow))
       end
       setGlow(grp.glow)
+      setEyeCell(grp,eyeCell)
       local okDraw=grp.mesh and pcall(love.graphics.draw,grp.mesh)
       setGlow(false)
       if not okDraw then drawFault=true;break end
@@ -1842,15 +1878,33 @@ function Actor:draw(matrix)
         shader:send("useTexture",grp.textured and 1 or 0)
         if love.graphics.setDepthMode then love.graphics.setDepthMode("lequal",not (grp.noz or grp.xlu or grp.glow)) end
         setGlow(grp.glow)
+        setEyeCell(grp,eyeCell)
         if grp.mesh then pcall(love.graphics.draw,grp.mesh) end
         setGlow(false)
       end
     end
     perf.actionDrawFallbacks=(perf.actionDrawFallbacks or 0)+1
   end
+  setEyeCell({},0)
   if love.graphics.setDepthMode then love.graphics.setDepthMode("lequal",true) end
   love.graphics.setShader()
   return true
+end
+
+-- Which ORAS eye cell to show: 0 open, 1 half closed, 2 closed.  A blink
+-- every few seconds (half, closed, half: about a sixth of a second); shut
+-- while hurt and once fainted.
+function Actor:eyeCell()
+  if self.hitAge or self.state=="faint" or self.state=="removal" then return 2 end
+  local now=tonumber(self.clock) or 0
+  if not self._blinkAt then self._blinkAt=now+1+math.random()*2.5 end
+  local t=now-self._blinkAt
+  if t<0 then return 0 end
+  if t<0.05 then return 1 end
+  if t<0.12 then return 2 end
+  if t<0.17 then return 1 end
+  self._blinkAt=now+2.5+math.random()*3.5
+  return 0
 end
 
 function Actor:attack(moveId,moveDef,opts)

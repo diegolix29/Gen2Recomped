@@ -547,4 +547,111 @@ function H3D.textures(d, h)
   return out
 end
 
+-- ------------------------------------------------------ material animation
+--
+-- Per SPICA (H3DAnimation / H3DAnimationElement / H3DAnimVector /
+-- H3DFloatKeyFrameGroup / KeyFrameQuantizationHelper).  An animation: name,
+-- flags u8, type u8, curve count u16, frame count f32, element pointer list
+-- and count.  An element: material name, target u16 (H3D.TARGET), primitive
+-- u8 (2 = vector2), then a flags word and one word per axis: a curve
+-- pointer, or the value itself when constant.
+
+H3D.TARGET = { texCoord0Trans = 21, texCoord1Trans = 24, texCoord2Trans = 27 }
+
+local function u24(d, at) local a, b, c = d:byte(at + 1, at + 3); return a + b * 256 + c * 65536 end
+local function s12(v) return v >= 2048 and v - 4096 or v end
+
+-- A key frame group (file version >= 0x20 layout): start, end, repeat
+-- bytes, curve index, interpolation u8 (0 step, 1 linear, 2 hermite),
+-- quantization u8, count u16, value scale, value offset, frame scale,
+-- 1/duration, key pointer.
+local function readCurve(d, c)
+  local interp, quant, count = d:byte(c + 13), d:byte(c + 14), u16(d, c + 15)
+  local vs, vo, fs = F(d, c + 16), F(d, c + 20), F(d, c + 24)
+  local p = W(d, c + 32)
+  local keys = {}
+  for i = 1, count do
+    local f, v, sin, sout
+    if quant == 0 then          -- Hermite128
+      f, v, sin, sout = F(d, p), F(d, p + 4), F(d, p + 8), F(d, p + 12); p = p + 16
+    elseif quant == 1 then      -- Hermite64
+      local fv = W(d, p)
+      f, v = fv % 4096, math.floor(fv / 4096) % 1048576
+      sin, sout = s16(d, p + 5) / 256, s16(d, p + 7) / 256; p = p + 8
+    elseif quant == 2 then      -- Hermite48
+      f, v = d:byte(p + 1), u16(d, p + 2)
+      local sl = u24(d, p + 3)
+      sin, sout = s12(sl % 4096) / 32, s12(math.floor(sl / 4096) % 4096) / 32; p = p + 6
+    elseif quant == 3 then      -- UnifiedHermite96
+      f, v, sin = F(d, p), F(d, p + 4), F(d, p + 8); sout = sin; p = p + 12
+    elseif quant == 4 then      -- UnifiedHermite48
+      f, v, sin = u16(d, p + 1) / 32, u16(d, p + 3), s16(d, p + 5) / 256; sout = sin; p = p + 6
+    elseif quant == 5 then      -- UnifiedHermite32
+      f = d:byte(p + 1)
+      local vsl = u24(d, p + 1)
+      v, sin = vsl % 4096, s12(math.floor(vsl / 4096) % 4096) / 32; sout = sin; p = p + 4
+    elseif quant == 6 then      -- StepLinear64
+      f, v, sin, sout = F(d, p), F(d, p + 4), 0, 0; p = p + 8
+    elseif quant == 7 then      -- StepLinear32
+      local fv = W(d, p)
+      f, v, sin, sout = fv % 4096, math.floor(fv / 4096) % 1048576, 0, 0; p = p + 4
+    else
+      return nil
+    end
+    keys[i] = { f * fs, v * vs + vo, sin, sout }
+  end
+  return { interp = interp, keys = keys }
+end
+
+function H3D.sampleCurve(cv, frame)
+  if type(cv) == "number" then return cv end
+  local k = cv and cv.keys
+  if not (k and k[1]) then return nil end
+  if frame <= k[1][1] then return k[1][2] end
+  for i = 1, #k - 1 do
+    local a, b = k[i], k[i + 1]
+    if frame <= b[1] then
+      local span = b[1] - a[1]
+      if span <= 0 or cv.interp == 0 then return span <= 0 and b[2] or a[2] end
+      local t = (frame - a[1]) / span
+      if cv.interp == 1 then return a[2] + (b[2] - a[2]) * t end
+      local t2, t3 = t * t, t * t * t
+      return (2 * t3 - 3 * t2 + 1) * a[2] + (t3 - 2 * t2 + t) * span * a[4]
+           + (-2 * t3 + 3 * t2) * b[2] + (t3 - t2) * span * b[3]
+    end
+  end
+  return k[#k][2]
+end
+
+-- Material animations of a BCH: { name, frames, elements = { material,
+-- target, x, y } } where x / y are curves, constants, or nil.
+function H3D.materialAnimations(d, h)
+  local out = {}
+  for _, a in ipairs(contentEntries(d, h, "materialAnimations")) do
+    local anim = { name = str(d, a), frames = F(d, a + 8), elements = {} }
+    local ep, ec = W(d, a + 12), W(d, a + 16) or 0
+    for k = 0, ec - 1 do
+      local e = W(d, ep + k * 4)
+      local target, prim = u16(d, e + 5), d:byte(e + 7)
+      local el = { material = str(d, e), target = target, prim = prim }
+      if prim == 2 then
+        -- H3DAnimVectorFlags: bit n = axis n constant, bit 8+n = axis n absent
+        local flags = W(d, e + 8)
+        for axis = 0, 1 do
+          local constant = math.floor(flags / 2 ^ axis) % 2 == 1
+          local absent = math.floor(flags / 2 ^ (axis + 8)) % 2 == 1
+          local at = e + 12 + axis * 4
+          local v
+          if constant then v = F(d, at)
+          elseif not absent and (W(d, at) or 0) > 0 then v = readCurve(d, W(d, at)) end
+          el[axis == 0 and "x" or "y"] = v
+        end
+      end
+      anim.elements[#anim.elements + 1] = el
+    end
+    out[#out + 1] = anim
+  end
+  return out
+end
+
 return H3D

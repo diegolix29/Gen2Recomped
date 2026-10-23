@@ -156,6 +156,9 @@ local ACTIONS = {
   { name = "specialC", slot = 14 },
   { name = "damage", slot = 16 },     -- ba30_damageS
   { name = "faint", slot = 17 },      -- ba41_down
+  -- the send-out: curled up as it leaves the ball, unfurling to stand (slot
+  -- 3); flyers have the airborne one in slot 6 instead (Charizard)
+  { name = "appear", slot = 3, alt = 6 },
 }
 local IDLE_SLOT = 0                   -- ba10_waitA
 
@@ -172,14 +175,76 @@ end
 local FPS = 30
 -- bumped whenever the cache layout changes: a species whose rev.txt holds an
 -- older stamp is rebuilt, one with this stamp is skipped
-local ORAS_STAMP = "oras-actor=5\n"
--- the stamp before glow groups: such a species is rebuilt only if its model
--- has effect meshes (see C.build), otherwise just re-stamped
-local PRE_GLOW_STAMP = "oras-actor=4\n"
+local ORAS_STAMP = "oras-actor=6\n"
 C.STAMP = ORAS_STAMP
 
 -- set by a background build (ORASModels) to yield between stages
 local function checkpoint() if C.checkpoint then C.checkpoint() end end
+
+-- uv offset (LOVE space: v = 1 - t) of moving texture coordinate 0's
+-- translation by dx, dy, per H3D.uvTransform's three transform kinds
+local function uvDelta(t, dx, dy)
+  local ca, sa = math.cos(t.rot or 0), math.sin(t.rot or 0)
+  local du, dt
+  if t.kind == 0 then du, dt = -t.sx * dx, -t.sy * dy
+  elseif t.kind == 1 then du, dt = t.sx * (-ca * dx - sa * dy), t.sy * (sa * dx - ca * dy)
+  elseif t.kind == 2 then du, dt = -t.sx * ca * dx - t.sx * sa * dy, -t.sy * sa * dx + t.sy * ca * dy
+  else return 0, 0 end
+  return du, -dt
+end
+
+-- Eye sheets.  Part 1 of the face-animation member (block slot 2) is
+-- pmNNNN_FF_eye01, which walks texture coordinate 0 across the eye sheet's
+-- cells in order: the rest cell (open), then half closed, then closed (then
+-- expressions).  Returns material name -> { du1, dv1, du2, dv2 }: the uv
+-- offsets of cells 1 and 2 from the rest cell, for PokemonActors' blink.
+local function eyeBlinks(g, base, model)
+  local out = {}
+  local okP, pd, ph = pcall(packBch, g, base + 2, 1)
+  if not (okP and pd) then return out end
+  local okA, anims = pcall(H3D.materialAnimations, pd, ph)
+  local anim = okA and anims and anims[1]
+  if not (anim and tostring(anim.name or ""):find("eye")) then return out end
+  local mats = {}
+  for _, m in ipairs(model.materials) do if m.name then mats[m.name] = m end end
+  for _, el in ipairs(anim.elements) do
+    local mat = mats[el.material or ""]
+    local t = mat and mat.uvTransform
+    if el.target == H3D.TARGET.texCoord0Trans and t and (el.x or el.y) then
+      -- the plateaus the animation steps through, in order
+      local cells, last = {}, nil
+      for f = 0, math.floor(anim.frames or 0) do
+        local x = H3D.sampleCurve(el.x, f) or t.tx
+        local y = H3D.sampleCurve(el.y, f) or t.ty
+        local key = ("%.3f,%.3f"):format(x, y)
+        if key ~= last then cells[#cells + 1] = { x, y }; last = key end
+        if #cells >= 3 then break end
+      end
+      local rest = cells[1]
+      if #cells >= 3 and math.abs(rest[1] - t.tx) < 1e-3 and math.abs(rest[2] - t.ty) < 1e-3 then
+        local du1, dv1 = uvDelta(t, cells[2][1] - rest[1], cells[2][2] - rest[2])
+        local du2, dv2 = uvDelta(t, cells[3][1] - rest[1], cells[3][2] - rest[2])
+        out[el.material] = { du1, dv1, du2, dv2 }
+      end
+    end
+  end
+  -- eye01 can name one eye only (Pikachu: REye); the other eye on the same
+  -- sheet with the same transform blinks with it
+  for name, m in pairs(mats) do
+    if not out[name] and m.uvTransform and m.textures and m.textures[1] then
+      for other, b in pairs(out) do
+        local o = mats[other]
+        local a, t = m.uvTransform, o and o.uvTransform
+        if t and o.textures and o.textures[1] == m.textures[1] and a.kind == t.kind
+            and a.sx == t.sx and a.sy == t.sy and a.rot == t.rot then
+          out[name] = b
+          break
+        end
+      end
+    end
+  end
+  return out
+end
 
 -- Build one species. Returns a summary string, or nil and a reason.
 function C.buildSpecies(mod, rom, g, index, dex)
@@ -211,6 +276,7 @@ function C.buildSpecies(mod, rom, g, index, dex)
   local names = {}
   for i, b in ipairs(skeleton or {}) do names[i] = b.name end
   local pose = H3D.poser(model, GF1.sample, names)
+  local blinks = eyeBlinks(g, base, model)
 
   -- kept meshes (effect meshes skipped, see below), their bind data and
   -- skinning recipes; bounds from the bind pose normalize every frame alike
@@ -398,20 +464,21 @@ function C.buildSpecies(mod, rom, g, index, dex)
   -- action banks, written straight into PokemonActors' runtime sidecar form
   local actions, baked = {}, {}
   for _, a in ipairs(ACTIONS) do
-    local motion = motions[a.slot]
+    local slot = (motions[a.slot] or not a.alt) and a.slot or a.alt
+    local motion = motions[slot]
     if motion and motion.frames > 0 then
       local duration = motion.frames / FPS
       local floor = writeBank(sampleBank(motion, motion.frames, false), function(m)
         return ("%s/action_%s_%02d.f32"):format(rt, a.name, m)
       end)
       writeLua(mod, ("%s/action_%s.lua"):format(rt, a.name), {
-        runtimeMeshVersion = 1, stamp = ORAS_STAMP, clip = a.slot, duration = duration,
+        runtimeMeshVersion = 1, stamp = ORAS_STAMP, clip = slot, duration = duration,
         frameSpacing = 1, morphFrames = MORPH_SLOTS, groupCount = #kept,
       })
       writeLua(mod, ("%s/action_%s_floor.lua"):format(rt, a.name), {
         runtimeMeshVersion = 1, stamp = ORAS_STAMP, groupCount = #kept, floorMinYSlots = floor,
       })
-      actions[a.name] = { clip = a.slot, duration = duration }
+      actions[a.name] = { clip = slot, duration = duration }
       baked[#baked + 1] = ("%s %.2fs"):format(a.name, duration)
     end
   end
@@ -432,6 +499,7 @@ function C.buildSpecies(mod, rom, g, index, dex)
       material = entry.mat.name or ("mesh" .. m), texture = texPaths[entry.tname],
       textureShiny = shinyPaths[entry.tname] or texPaths[entry.tname],
       glow = entry.glow == true,
+      blink = blinks[entry.mat.name],
       diffuse = { 1, 1, 1 }, ambient = { 1, 1, 1 }, specular = { 0, 0, 0 }, alpha = 1, shininess = 0,
       xlu = entry.glow == true, noz = false, renderFlags = 0, shadow = false, effect = entry.glow == true, textureSlot = -1,
       vertexStride = 44, runtimeBin = ("%s/base_%02d.f32"):format(rt, m),
@@ -461,8 +529,10 @@ function C.buildSpecies(mod, rom, g, index, dex)
   assert(writeLua(mod, dir .. "/model_cache.lua", meta), "model cache write failed")
   mod.cache:write(dir .. "/rev.txt", ORAS_STAMP)
 
-  return ("%s: %d groups (%d glow), %d verts, %d textures, %d effect meshes skipped, idle %s, actions %s (members %d-%d)"):format(
-    tostring(model.name), #groups, #glows, vertexTotal, texCount, skipped,
+  local blinkCount = 0
+  for _ in pairs(blinks) do blinkCount = blinkCount + 1 end
+  return ("%s: %d groups (%d glow, %d blink), %d verts, %d textures, %d effect meshes skipped, idle %s, actions %s (members %d-%d)"):format(
+    tostring(model.name), #groups, #glows, blinkCount, vertexTotal, texCount, skipped,
     idle and ("%.2fs"):format(idle.frames / FPS) or "none",
     #baked > 0 and table.concat(baked, ", ") or "none", base, base + 7)
 end
@@ -507,24 +577,6 @@ function C.build(mod, list, log, progress)
   for n, dex in ipairs(list) do
     local okRev, rev = pcall(mod.cache.read, mod.cache, root(dex) .. "/rev.txt")
     local current = okRev and rev == C.STAMP and listed[dex]
-    if not current and okRev and rev == PRE_GLOW_STAMP and listed[dex] then
-      -- glow groups are the only change since: a model without effect
-      -- meshes has nothing to gain from a rebuild
-      local okF, base, _, _, model = pcall(findSpecies, g, index, dex)
-      if okF and base and model then
-        local prefix = (model.name or ""):match("^(pm%d+)") or "pm"  -- Natu (pm0177) drops the _00
-        local effects = false
-        for _, mesh in ipairs(model.meshes) do
-          local mat = model.materials[mesh.materialIndex + 1] or {}
-          local tname = mat.textures and mat.textures[1]
-          if tname and tname:sub(1, #prefix) ~= prefix then effects = true; break end
-        end
-        if not effects then
-          mod.cache:write(root(dex) .. "/rev.txt", C.STAMP)
-          current = true
-        end
-      end
-    end
     if current then
       skipped = skipped + 1
     else
