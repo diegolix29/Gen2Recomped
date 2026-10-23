@@ -1,6 +1,8 @@
--- Presentation-only UI overhaul for Gen1Recomp.
--- Native gameplay, battle logic, menu input, storage logic, and TM flow are preserved.
--- Custom rendering is feature-gated and falls back to native behavior when disabled.
+-- Terrarium Advance presentation layer for Gen1Recomp.
+-- Independent of the Colosseum disc: native gameplay, battle logic, menu input,
+-- storage, and TM flow stay engine-owned. Custom rendering is feature-gated and
+-- falls back to native chrome when a screen is disabled. Colosseum portraits
+-- and 3D models are optional extras when that runtime is present.
 
 local BattleState = require("src.battle.BattleState")
 local EngineFont = require("src.render.Font")
@@ -191,13 +193,12 @@ local screenFeatureEnabled
 local goldScreenEnabled
 local callOriginal
 
--- Colosseum renderer is embedded in a nested scope rather than loaded with
--- require("colosseum_ui"). Gen1Recomp does not add each mod root to Lua's
--- package.path, so sibling Lua files are not require-able by bare module name.
--- The nested scope also avoids Lua's 200 top-level-local limit.
+-- Battle HUD lives in a nested scope rather than a second require().
+-- Gen1Recomp does not add each mod root to Lua's package.path, so sibling
+-- Lua files are not require-able by bare module name. The nested scope also
+-- avoids Lua's 200 top-level-local limit.
 GoldCompat.ColosseumUI = (function()
--- Standalone Colosseum battle-presentation renderer for Gen1Recomp.
--- Owns only battle HUD, menu, and message rendering.
+-- Terrarium battle HUD, command menu, and message rendering.
 
 local BattleState = require("src.battle.BattleState")
 local EngineFont = require("src.render.Font")
@@ -1066,161 +1067,53 @@ local function drawSpritePortrait(game,mon,x,y,w,h)
 end
 
 -- -----------------------------------------------------------------------
--- Colosseum-ish shape language
+-- Battle HUD shape language: rounded glass cards, not GameCube plates.
 -- -----------------------------------------------------------------------
 
-local function polygon(...)
-  love.graphics.polygon("fill",...)
+local function roundCard(mode,x,y,w,h,r)
+  love.graphics.rectangle(mode,x,y,w,h,r,r)
 end
 
 local function statusPlateShape(x,y,w,h,side,u)
   local g=love.graphics
-  local cut=12*u
-  local x0,x1=x,x+w
-  local y0,y1=y,y+h
+  local r=10*u
+  local x0,y0=x,y
 
-  -- Shadow.
-  g.setColor(0,0,0,0.40)
-  polygon(
-    x0+cut+4*u,y0+6*u,
-    x1-cut+4*u,y0+6*u,
-    x1+4*u,y0+cut+6*u,
-    x1-cut+4*u,y1+6*u,
-    x0+cut+4*u,y1+6*u,
-    x0+4*u,y1-cut+6*u,
-    x0+4*u,y0+cut+6*u
-  )
+  g.setColor(0,0,0,0.28)
+  roundCard("fill",x0+3*u,y0+5*u,w,h,r)
 
-  -- Entire status assembly is one dark molded shell.
-  GoldCompat.setUIColor("surface",0.10,0.115,0.115,0.98)
-  polygon(
-    x0+cut,y0,
-    x1-cut,y0,
-    x1,y0+cut,
-    x1-cut,y1,
-    x0+cut,y1,
-    x0,y1-cut,
-    x0,y0+cut
-  )
+  GoldCompat.setUIColor("surface",0.07,0.09,0.10,0.94)
+  roundCard("fill",x0,y0,w,h,r)
 
-  -- Slight inner face; no cream/Gen-3-style card backing.
-  local inset=3*u
-  GoldCompat.setUIColor("surface",0.17,0.185,0.18,0.98)
-  polygon(
-    x0+cut+inset,y0+inset,
-    x1-cut-inset,y0+inset,
-    x1-inset,y0+cut,
-    x1-cut-inset,y1-inset,
-    x0+cut+inset,y1-inset,
-    x0+inset,y1-cut,
-    x0+inset,y0+cut
-  )
+  GoldCompat.setUIColor("surface",0.12,0.15,0.16,0.55)
+  roundCard("fill",x0+2.5*u,y0+2.5*u,w-5*u,h-5*u,math.max(4*u,r-3*u))
 
-  -- Header bevel.
-  GoldCompat.setUIColor("trim",0.28,0.30,0.285,1)
-  polygon(
-    x0+18*u,y0+6*u,
-    x1-18*u,y0+6*u,
-    x1-12*u,y0+13*u,
-    x0+12*u,y0+13*u
-  )
-
-  -- Thin warm metallic ridge, closer to the GameCube-era UI.
-  GoldCompat.setUIColor("trim",0.77,0.69,0.39,0.95)
-  g.setLineWidth(math.max(1,1.4*u))
-  g.line(x0+18*u,y0+4*u,x1-19*u,y0+4*u)
+  GoldCompat.setUIColor("trim",0.28,0.62,0.64,0.88)
+  g.setLineWidth(math.max(1,1.15*u))
+  roundCard("line",x0+0.8*u,y0+0.8*u,w-1.6*u,h-1.6*u,r)
 end
 
 local function portraitPod(x,y,size,u)
   local g=love.graphics
-  local c=8*u
+  local r=9*u
 
-  g.setColor(0,0,0,0.42)
-  polygon(
-    x+c+4*u,y+5*u,
-    x+size-c+4*u,y+5*u,
-    x+size+4*u,y+c+5*u,
-    x+size-c+4*u,y+size+5*u,
-    x+c+4*u,y+size+5*u,
-    x+4*u,y+size-c+5*u,
-    x+4*u,y+c+5*u
-  )
+  g.setColor(0,0,0,0.30)
+  roundCard("fill",x+3*u,y+4*u,size,size,r)
 
-  GoldCompat.setUIColor("surface",0.08,0.095,0.095,1)
-  polygon(
-    x+c,y,
-    x+size-c,y,
-    x+size,y+c,
-    x+size-c,y+size,
-    x+c,y+size,
-    x,y+size-c,
-    x,y+c
-  )
+  GoldCompat.setUIColor("surface",0.06,0.08,0.09,0.96)
+  roundCard("fill",x,y,size,size,r)
 
-  GoldCompat.setUIColor("trim",0.30,0.32,0.30,1)
-  polygon(
-    x+c+2*u,y+2*u,
-    x+size-c-2*u,y+2*u,
-    x+size-2*u,y+c,
-    x+size-c-2*u,y+size-2*u,
-    x+c+2*u,y+size-2*u,
-    x+2*u,y+size-c,
-    x+2*u,y+c
-  )
-
-  GoldCompat.setUIColor("surface",0.035,0.045,0.045,1)
-  polygon(
-    x+c+5*u,y+5*u,
-    x+size-c-5*u,y+5*u,
-    x+size-5*u,y+c,
-    x+size-c-5*u,y+size-5*u,
-    x+c+5*u,y+size-5*u,
-    x+5*u,y+size-c,
-    x+5*u,y+c
-  )
+  GoldCompat.setUIColor("surface",0.03,0.04,0.045,1)
+  roundCard("fill",x+4*u,y+4*u,size-8*u,size-8*u,math.max(3*u,r-4*u))
 end
 
 
 local function portraitPodOverlay(x,y,size,u)
   local g=love.graphics
-  local c=7*u
-
-  -- Full plated side rails: these are filled foreground pieces, not just lines,
-  -- so the portrait reads as seated inside the HUD instead of hanging over it.
-  GoldCompat.setUIColor("trim",0.18,0.20,0.19,1)
-  g.polygon("fill",
-    x,y+c, x+c,y, x+4*u,y+4*u, x+4*u,y+size-4*u,
-    x+c,y+size, x,y+size-c)
-  g.polygon("fill",
-    x+size,y+c, x+size-c,y, x+size-4*u,y+4*u,
-    x+size-4*u,y+size-4*u, x+size-c,y+size, x+size,y+size-c)
-
-  -- Firm top/bottom metal lips.
-  GoldCompat.setUIColor("trim",0.30,0.32,0.30,1)
-  g.setLineWidth(math.max(1,2.2*u))
-  g.line(x+c,y+1*u, x+size-c,y+1*u)
-  g.line(x+c,y+size-1*u, x+size-c,y+size-1*u)
-
-  -- Continuous dark keyline immediately around the artwork opening.
-  local i=3*u
-  local ic=4*u
-  g.setColor(0.025,0.030,0.030,1)
-  g.setLineWidth(math.max(1,1.8*u))
-  g.line(x+ic+i,y+i, x+size-ic-i,y+i)
-  g.line(x+size-ic-i,y+i, x+size-i,y+ic+i)
-  g.line(x+size-i,y+ic+i, x+size-i,y+size-ic-i)
-  g.line(x+size-i,y+size-ic-i, x+size-ic-i,y+size-i)
-  g.line(x+size-ic-i,y+size-i, x+ic+i,y+size-i)
-  g.line(x+ic+i,y+size-i, x+i,y+size-ic-i)
-  g.line(x+i,y+size-ic-i, x+i,y+ic+i)
-  g.line(x+i,y+ic+i, x+ic+i,y+i)
-
-  -- Bright outside highlight restores the complete plated silhouette.
-  g.setColor(0.40,0.42,0.39,0.95)
-  g.setLineWidth(math.max(1,1.0*u))
-  g.line(x+c,y, x+size-c,y)
-  g.line(x,y+c, x,y+size-c)
-  g.line(x+size,y+c, x+size,y+size-c)
+  local r=9*u
+  GoldCompat.setUIColor("trim",0.32,0.66,0.66,0.90)
+  g.setLineWidth(math.max(1,1.2*u))
+  roundCard("line",x+0.7*u,y+0.7*u,size-1.4*u,size-1.4*u,r)
 end
 
 local function hpColor(ratio)
@@ -1247,7 +1140,7 @@ local function hpBar(x,y,w,h,b,u)
     g.rectangle("fill",x+2*u,y+2*u,fill,h-4*u)
   end
 
-  g.setColor(0.88,0.86,0.62,0.9)
+  GoldCompat.setUIColor("trim",0.28,0.62,0.64,0.85)
   g.rectangle("fill",x,y,2*u,h)
 end
 
@@ -1524,9 +1417,9 @@ local function drawStatusCard(game,battle,b,side)
   local u=scaleForWindow()
   local mobile=mobileBattleUIEnabled()
 
-  -- Colosseum reference proportions: long shallow status bar + square portrait
-  -- attached to the OUTER edge. Font/profile choices may reflow or shrink text
-  -- inside this silhouette, but must never grow the plate itself.
+  -- Long shallow status bar + square portrait on the OUTER edge. Font/profile
+  -- choices may reflow or shrink text inside this silhouette, but must never
+  -- grow the plate itself.
   local readOption=GoldCompat and GoldCompat.optionValue
   local widthMode=type(readOption)=="function"
     and tostring(readOption("battleHudWidth") or "normal") or "normal"
@@ -1739,18 +1632,11 @@ local function drawStatusCard(game,battle,b,side)
     local expY=y+cardH-2*u
     local expW=cardW-54*u
 
-    love.graphics.setColor(0.055,0.070,0.068,0.97)
-    love.graphics.rectangle("fill",expX,expY,expW,expH)
-    love.graphics.polygon("fill",
-      expX-8*u,expY,
-      expX,expY,
-      expX,expY+expH,
-      expX-5*u,expY+expH-4*u
-    )
-    love.graphics.setColor(0.23,0.26,0.24,1)
-    love.graphics.setLineWidth(math.max(1,0.8*u))
-    love.graphics.line(expX,expY,expX+expW,expY)
-    love.graphics.line(expX,expY+expH,expX+expW-5*u,expY+expH)
+    GoldCompat.setUIColor("surface",0.045,0.06,0.065,0.94)
+    roundCard("fill",expX,expY,expW,expH,4*u)
+    GoldCompat.setUIColor("trim",0.22,0.48,0.50,0.80)
+    love.graphics.setLineWidth(math.max(1,0.7*u))
+    roundCard("line",expX,expY,expW,expH,4*u)
 
     local expDesired=8*u
     local expSize=fitUiTextSize("EXP",expDesired,30*u,expH-3*u,4*u)
@@ -1774,36 +1660,25 @@ local function drawStatusCard(game,battle,b,side)
   drawPartyCounter(battle,side,partyX,y-8*u,u)
 end
 
--- Bottom panels use a beveled long-console shape rather than rounded app cards.
+-- Bottom command / message panels use the same rounded glass as the HUD cards.
 local function consolePanel(x,y,w,h,u)
   local g=love.graphics
-  local c=13*u
+  local r=12*u
 
-  g.setColor(0,0,0,0.36)
-  polygon(
-    x+c+5*u,y+6*u,x+w-c+5*u,y+6*u,
-    x+w+5*u,y+c+6*u,x+w-c+5*u,y+h+6*u,
-    x+c+5*u,y+h+6*u,x+5*u,y+h-c+6*u,x+5*u,y+c+6*u
-  )
+  g.setColor(0,0,0,0.26)
+  roundCard("fill",x+4*u,y+5*u,w,h,r)
 
-  GoldCompat.setUIColor("surface",0.095,0.11,0.105,0.91)
-  polygon(
-    x+c,y,x+w-c,y,x+w,y+c,
-    x+w-c,y+h,x+c,y+h,x,y+h-c,x,y+c
-  )
+  GoldCompat.setUIColor("surface",0.06,0.08,0.09,0.92)
+  roundCard("fill",x,y,w,h,r)
 
-  GoldCompat.setUIColor("trim",0.50,0.52,0.47,0.90)
-  g.setLineWidth(math.max(1,1.4*u))
-  g.line(x+c+3*u,y+3*u,x+w-c-3*u,y+3*u)
-  g.line(x+4*u,y+c+2*u,x+4*u,y+h-c-2*u)
+  GoldCompat.setUIColor("trim",0.28,0.62,0.64,0.88)
+  g.setLineWidth(math.max(1,1.2*u))
+  roundCard("line",x+0.8*u,y+0.8*u,w-1.6*u,h-1.6*u,r)
 end
 
 local function selector(x,y,h,u)
-  GoldCompat.setUIColor("accent",0.90,0.23,0.13,1)
-  love.graphics.polygon("fill",
-    x+8*u,y+h*0.50,
-    x,y+h*0.28,
-    x,y+h*0.72)
+  GoldCompat.setUIColor("accent",0.22,0.78,0.76,1)
+  roundCard("fill",x,y+h*0.18,3.2*u,h*0.64,1.4*u)
 end
 
 local function commandRect()
@@ -1991,14 +1866,12 @@ local function drawMoveMenu(battle)
 
   consolePanel(x,y,w,h,u)
 
-  -- Selected-mon tab protrudes from the upper edge like the GameCube UI.
-  -- On mobile keep that rise shallow so the tab cannot become the one piece
-  -- that reaches back into the battlefield after the main panel is docked.
+  -- Selected-mon tab sits on the upper edge of the command panel.
+  -- On mobile keep that rise shallow so the tab cannot reach back into
+  -- the battlefield after the main panel is docked.
   local tabRise=(mobile and 9 or 17)*u
-  love.graphics.setColor(0.19,0.21,0.20,0.95)
-  love.graphics.polygon("fill",
-    x+25*u,y-tabRise,x+205*u,y-tabRise,
-    x+218*u,y,x+18*u,y)
+  GoldCompat.setUIColor("surface",0.10,0.13,0.14,0.95)
+  roundCard("fill",x+22*u,y-tabRise,190*u,tabRise+8*u,8*u)
   -- Center the selected Pokémon name inside the authored header/tab itself.
   -- Fixed baselines drift upward as UI/text scale changes, which is why names
   -- such as LARVITAR were colliding with the top divider in wide battles.
@@ -2039,14 +1912,12 @@ local function drawMoveMenu(battle)
     local moveNameY=clamp(cy+4*u,cy+2*u,cy+math.max(2*u,cellH-moveNameH-2*u))
 
     if selected then
-      GoldCompat.setUIColor("selection",0.32,0.34,0.31,0.82)
-      love.graphics.polygon("fill",
-        cx+7*u,cy+2*u,cx+cellW-5*u,cy+2*u,
-        cx+cellW,cy+cellH-3*u,cx+7*u,cy+cellH-3*u)
+      GoldCompat.setUIColor("selection",0.14,0.32,0.32,0.88)
+      roundCard("fill",cx+4*u,cy+2*u,cellW-6*u,cellH-4*u,6*u)
       local indicatorH=clamp(moveNameH*0.62,8*u,cellH*0.46)
       local indicatorY=clamp(moveNameY+(moveNameH-indicatorH)*0.5,
         cy+2*u,cy+cellH-indicatorH-2*u)
-      selector(cx-4*u,indicatorY,indicatorH,u)
+      selector(cx-2*u,indicatorY,indicatorH,u)
     end
 
     if mv then
@@ -2481,7 +2352,7 @@ function ColosseumUI.install(mod)
   mod.exports.doublesUI=ColosseumUI.doubles
   dramatic.connect()
   if mod and mod.log then
-    mod.log:info("Colosseum battle UI renderer loaded")
+    mod.log:info("Terrarium battle UI renderer loaded")
   end
 end
 
@@ -2532,6 +2403,7 @@ end
 return ColosseumUI
 
 end)()
+GoldCompat.MainUI = GoldCompat.ColosseumUI
 
 local DexUI = { active=nil, action=nil, entry=nil }
 
@@ -3490,56 +3362,55 @@ function GoldCompat.measureFontWidth(fontObject,text)
   return width
 end
 
--- Central standalone theme adapter. The mature donor renderers deliberately
--- remain responsible for data, geometry and native-flow ownership, but every
--- legacy neutral surface is translated into one Colosseum material language.
--- Texture draws keep an exact white tint, so Pokémon/item artwork is untouched.
+-- Shared theme adapter. Donor renderers keep data, geometry and native-flow
+-- ownership; every legacy paper/cream surface becomes one Terrarium glass
+-- language. Texture draws keep a white tint, so Pokémon/item art is untouched.
 function GoldCompat.colosseumColor(r,g,b,a)
   a=a==nil and 1 or a
   local function near(x,y) return math.abs(x-y)<0.022 end
 
-  -- Cream/light Gen 3 paper -> translucent black-teal glass.
+  -- Cream/light Gen 3 paper -> translucent charcoal glass.
   if (r>=0.985 or (r>=0.925 and r<=0.955))
       and g>0.88 and b<0.985 then
-    return 0.025,0.060,0.065,math.min(a,0.92)
+    return 0.045,0.055,0.065,math.min(a,0.90)
   end
 
-  -- Remaining warm near-white card fills use either normal glass or the red
-  -- selected-card material. printText normalizes off-white glyphs first.
+  -- Remaining warm near-white card fills use either normal glass or a
+  -- cool selected-card lift. printText normalizes off-white glyphs first.
   if r>=0.96 and r<0.985 and g>0.93 and b<0.95 then
     if r>=0.972 and b<0.915 then
-      return 0.48,0.075,0.045,math.min(a,0.94)
+      return 0.10,0.28,0.30,math.min(a,0.92)
     end
-    return 0.035,0.080,0.082,math.min(a,0.80)
+    return 0.055,0.075,0.082,math.min(a,0.82)
   end
 
   -- Exact neutral dark geometry becomes the deepest glass layer. Text colors
   -- are lifted separately inside printText(), where their role is unambiguous.
   if near(r,g) and near(g,b) and r>=0.052 and r<=0.088 then
-    return 0.012,0.030,0.034,math.min(a,0.84)
+    return 0.020,0.028,0.034,math.min(a,0.84)
   end
 
-  -- Warm-black structural fills become deep teal rather than paper borders.
+  -- Warm-black structural fills become cool charcoal rather than paper borders.
   if r<=0.095 and g<=0.095 and b<g then
-    return 0.018,0.040,0.044,math.min(a,0.84)
+    return 0.028,0.038,0.044,math.min(a,0.84)
   end
 
-  -- Old selected black rows become the Colosseum red focus treatment.
+  -- Old selected black rows become a cyan focus treatment.
   if near(r,g) and near(g,b) and r>0.088 and r<0.115 then
-    return 0.62,0.10,0.065,math.min(a,0.90)
+    return 0.12,0.32,0.34,math.min(a,0.90)
   end
 
-  -- Neutral card rims and secondary fills become steel.
+  -- Neutral card rims and secondary fills become cool steel.
   if math.abs(r-g)<0.035 and math.abs(g-b)<0.045
       and r>=0.105 and r<=0.48 then
-    if r<0.18 then return 0.20,0.34,0.34,math.min(a,0.96) end
-    if r<0.32 then return 0.55,0.67,0.65,a end
-    return 0.42,0.66,0.67,a
+    if r<0.18 then return 0.22,0.32,0.36,math.min(a,0.96) end
+    if r<0.32 then return 0.48,0.62,0.64,a end
+    return 0.38,0.64,0.66,a
   end
 
-  -- Donor gold/brown accents become the red-orange Colosseum focus rim.
+  -- Donor gold/brown accents become a cyan focus rim.
   if r>0.42 and g>0.30 and g<0.72 and b<0.32 then
-    return 0.96,0.25,0.12,a
+    return 0.28,0.78,0.76,a
   end
 
   return r,g,b,a
@@ -3586,7 +3457,7 @@ function GoldCompat.withColosseumSkin(fn,...)
     return nativeSetColor(nr,ng,nb,na)
   end
 
-  -- Colosseum screens are hanging panels, never opaque donor canvases.
+  -- Terrarium screens are hanging panels, never opaque donor canvases.
   -- Suppress only exact full-frame fills while the shared skin is active.
   if nativeRectangle then
     graphics.rectangle=function(mode,x,y,w,h,...)
@@ -4015,7 +3886,7 @@ DexUI.uiRows={
   {key="colosseumBattleUI",label="BATTLE UI",kind="toggle"},
   {key="battlePortraits",label="BATTLE PORTRAITS",kind="toggle"},
   {key="colosseumPokemonMenu",label="POKéMON MENU",kind="toggle"},
-  {key="colosseumIcons",label="COLOSSEUM ICONS",kind="toggle"},
+  {key="colosseumIcons",label="SPECIES ICONS",kind="toggle"},
   {key="colosseumTitleIntro",label="MENU INTRO",kind="toggle"},
   {key="uiPrimaryColor",label="PRIMARY COLOR",kind="choice",values=GoldCompat.UI_COLOR_VALUES},
   {key="uiSecondaryColor",label="SECONDARY COLOR",kind="choice",values=GoldCompat.UI_COLOR_VALUES},
@@ -4668,7 +4539,7 @@ local function installVerifiedOptions(mod)
     {
       key = "colosseumIcons",
       type = "toggle",
-      label = "COLOSSEUM ICONS",
+      label = "SPECIES ICONS",
       default = true,
     },
     {
@@ -5958,16 +5829,19 @@ end
 
 local function drawPanelBase(rect)
   local g = love.graphics
+  local r = 14
+  local style = GoldCompat.currentBorderStyle and GoldCompat.currentBorderStyle()
+  if style=="sharp" then r=4 elseif style=="classic" then r=8 end
 
-  g.setColor(0.02,0.03,0.04,0.42)
-  roundedRect("fill", rect.x+8, rect.y+10, rect.w, rect.h, 17)
+  g.setColor(0.02,0.03,0.04,0.32)
+  roundedRect("fill", rect.x+6, rect.y+7, rect.w, rect.h, r)
 
-  g.setColor(0.95,0.95,0.92,0.98)
-  roundedRect("fill", rect.x, rect.y, rect.w, rect.h, 15)
+  GoldCompat.setUIColor("surface",0.05,0.07,0.08,0.90)
+  roundedRect("fill", rect.x, rect.y, rect.w, rect.h, r)
 
-  g.setLineWidth(2.5)
-  g.setColor(0.18,0.21,0.25,0.95)
-  roundedRect("line", rect.x+1.25, rect.y+1.25, rect.w-2.5, rect.h-2.5, 14)
+  g.setLineWidth(1.6)
+  GoldCompat.setUIColor("trim",0.28,0.62,0.64,0.90)
+  roundedRect("line", rect.x+1, rect.y+1, rect.w-2, rect.h-2, math.max(2,r-1))
 end
 
 function GoldCompat.realtimeBattleUiActive(battle)
@@ -7947,39 +7821,34 @@ local function finalCanvas()
   return ox, oy, scale
 end
 
--- Colosseum service menus are flat hardware rails that run off the right side
--- of the logical screen. They deliberately avoid the donor UI's rounded card
--- silhouette while retaining the hanging, translucent overworld treatment.
+-- Overworld service menus are hanging rounded rails. They keep the
+-- translucent field treatment without the old GameCube runoff silhouette.
 local function drawColosseumRunoffPanel(x,y,w,h,headerH)
   local g=love.graphics
   local right=math.min(162,x+w+6)
+  local panelW=math.max(8,right-x)
   headerH=headerH or 14
-  g.setColor(0.00,0.01,0.015,0.34)
-  g.polygon("fill",x+5,y+3,right,y+3,right,y+h+3,x+5,y+h+3,
-    x,y+h-2,x,y+8)
-  -- Lift the glass above the underlying field without making it opaque. The
-  -- previous near-black fill swallowed unselected START labels on dark maps.
-  GoldCompat.setUIColor("surface",0.030,0.105,0.108,0.88)
-  g.polygon("fill",x+5,y,right,y,right,y+h,x+5,y+h,x,y+h-5,x,y+5)
-  GoldCompat.setUIColor("surface",0.040,0.175,0.165,0.80)
-  g.polygon("fill",x+4,y+3,right,y+3,right,y+headerH,x+7,y+headerH,
-    x+3,y+headerH-4)
-  GoldCompat.setUIColor("trim",0.36,0.63,0.61,0.95)
-  g.setLineWidth(1.2)
-  g.line(x+6,y,right,y)
-  g.line(x+6,y+h,right,y+h)
-  g.line(x,y+6,x,y+h-6)
-  GoldCompat.setUIColor("trim",0.12,0.45,0.38,0.86)
-  g.rectangle("fill",x+8,y+headerH,right-x-10,1)
+  g.setColor(0.00,0.01,0.015,0.28)
+  roundedRect("fill",x+3,y+3,panelW,h,6)
+  GoldCompat.setUIColor("surface",0.040,0.070,0.080,0.88)
+  roundedRect("fill",x,y,panelW,h,6)
+  GoldCompat.setUIColor("surface",0.055,0.12,0.13,0.55)
+  roundedRect("fill",x+3,y+3,panelW-4,headerH-2,4)
+  GoldCompat.setUIColor("trim",0.32,0.68,0.66,0.92)
+  g.setLineWidth(1.05)
+  roundedRect("line",x,y,panelW,h,6)
+  GoldCompat.setUIColor("trim",0.22,0.52,0.50,0.80)
+  g.rectangle("fill",x+8,y+headerH,panelW-12,1)
 end
 
 local function drawColosseumRunoffSelection(x,y,w,h)
   local g=love.graphics
   local right=math.min(162,x+w+5)
-  GoldCompat.setUIColor("selection",0.075,0.285,0.275,0.96)
-  g.polygon("fill",x+6,y,right,y,right,y+h,x+6,y+h,x+2,y+h*0.5)
-  GoldCompat.setUIColor("accent",1.00,0.34,0.16,1)
-  g.polygon("fill",x+5,y+h*0.5,x+1,y+h*0.22,x+1,y+h*0.78)
+  local rowW=math.max(8,right-x)
+  GoldCompat.setUIColor("selection",0.10,0.30,0.32,0.94)
+  roundedRect("fill",x+2,y,rowW-2,h,3)
+  GoldCompat.setUIColor("accent",0.28,0.78,0.76,1)
+  roundedRect("fill",x+4,y+1.4,1.2,math.max(1,h-2.8),0.5)
 end
 
 -- Full-screen interfaces must honor the real display bounds at every UI box
@@ -9450,14 +9319,13 @@ end
 
 local function drawPCBackground(game,title,subtitle)
   local g=love.graphics
-  -- One shared PC shell for both generations. The old cobalt donor card is
-  -- deliberately gone; this is the same flat steel/green glass used by the
-  -- standalone Colosseum service menus.
+  -- One shared PC shell for both generations. Inner well matches the hanging
+  -- glass used by the rest of the Terrarium menus.
   drawColosseumRunoffPanel(2,3,156,135,18)
-  GoldCompat.setUIColor("surface",0.006,0.028,0.031,0.84)
-  g.polygon("fill",7,24,162,24,162,126,11,126,7,122)
-  GoldCompat.setUIColor("trim",0.19,0.46,0.43,0.72)
-  g.line(8,24,159,24)
+  GoldCompat.setUIColor("surface",0.018,0.032,0.038,0.80)
+  roundedRect("fill",7,24,152,102,5)
+  GoldCompat.setUIColor("trim",0.22,0.48,0.50,0.55)
+  g.line(12,24,155,24)
   local headerTitle=title or "POKéMON PC"
   local titleSize=4.2
   local titleLimit=subtitle and 104 or 140
@@ -9474,10 +9342,8 @@ end
 
 local function drawPCGlassPanel(x,y,w,h,selected)
   local g=love.graphics
-  -- Selection stays INSIDE the card. 2.2.6's neon-green outline plus an
-  -- external orange arrow made the active row look larger than its neighbors
-  -- and visually invaded the gutter. Keep one fixed card silhouette and use a
-  -- restrained teal lift + short internal orange locator instead.
+  -- Selection stays INSIDE the card. Keep one fixed silhouette and a
+  -- restrained cyan lift plus a short internal locator.
   GoldCompat.setUIColor(selected and "selection" or "surface",selected and {0.030,0.145,0.140,0.96}
     or {0.008,0.047,0.051,0.84})
   roundedRect("fill",x,y,w,h,2.3)
@@ -9493,7 +9359,7 @@ end
 
 function GoldCompat.drawPCPortraitLocator(x,y,h)
   local g=love.graphics
-  GoldCompat.setUIColor("accent",1.00,0.36,0.16,1)
+  GoldCompat.setUIColor("accent",0.28,0.78,0.76,1)
   roundedRect("fill",x,y,1.05,math.max(2,h),0.48)
 end
 
@@ -9507,7 +9373,7 @@ function GoldCompat.drawPCSelectionRail(x,y,w,h)
   GoldCompat.setUIColor("accent",0.34,0.68,0.64,0.90)
   g.setLineWidth(0.9)
   roundedRect("line",x,y,w,h,1.8)
-  GoldCompat.setUIColor("accent",1.00,0.36,0.16,1)
+  GoldCompat.setUIColor("accent",0.28,0.78,0.76,1)
   roundedRect("fill",x+2,y+1.6,1.1,math.max(1,h-3.2),0.45)
 end
 
@@ -10065,8 +9931,8 @@ local function drawPCAccessFinal(game,state,suppressFooter)
   local x=87
   local y=10
   drawColosseumRunoffPanel(x,y,w,h,12)
-  GoldCompat.setUIColor("surface",0.006,0.028,0.031,0.87)
-  g.polygon("fill",x+5,y+15,162,y+15,162,y+h-4,x+8,y+h-4,x+5,y+h-7)
+  GoldCompat.setUIColor("surface",0.018,0.032,0.038,0.82)
+  roundedRect("fill",x+5,y+15,math.max(8,157-(x+5)),math.max(8,h-19),4)
 
   for i,item in ipairs(items) do
     local rowTop=y+16.5+(i-1)*rowH
@@ -10099,12 +9965,11 @@ local function drawPCAccessFinal(game,state,suppressFooter)
 
   if not suppressFooter then
   local bx,by,bw,bh=8,111,144,25
-  GoldCompat.setUIColor("surface",0.004,0.021,0.024,0.94)
-  g.polygon("fill",bx+4,by,bx+bw,by,bx+bw+3,by+4,
-    bx+bw,by+bh,bx+4,by+bh,bx,by+bh-4,bx,by+4)
-  GoldCompat.setUIColor("trim",0.31,0.61,0.59,0.94)
-  g.line(bx+5,by,bx+bw-1,by)
-  g.line(bx+5,by+bh,bx+bw-1,by+bh)
+  GoldCompat.setUIColor("surface",0.03,0.05,0.055,0.92)
+  roundedRect("fill",bx,by,bw,bh,5)
+  GoldCompat.setUIColor("trim",0.32,0.66,0.64,0.90)
+  g.setLineWidth(1.05)
+  roundedRect("line",bx,by,bw,bh,5)
   local prompt=tostring(state.prompt or "Access whose PC?")
     :gsub("<PK><MN>","POKéMON"):gsub("#MON","POKéMON")
   partyText(prompt,bx+7,by+7,3.5,{0.92,0.98,0.94,1},"left",bw-14)

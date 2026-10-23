@@ -3914,6 +3914,46 @@ local function initializeColosseumIntegration()
 
   colosseumRuntimeAllowed = colosseumBuildStatus.visualReady == true and colosseumBuildStatus.audioReady == true
 
+  -- Terrarium UI (UIMain.lua) is this mod's own presentation layer. It must
+  -- install even when the Colosseum disc is missing or the 3D runtime did not
+  -- come up: menus, battle HUD, and dialogue never require GC6E01. Portraits
+  -- and 3D models still use Colosseum assets when that runtime is ready.
+  local function installMainUI(generation)
+    if mod.exports.mainUIInstalled then return end
+    local MAIN_UI_VERSION = "1.0.0"
+    mod.exports.mainUIVersion = MAIN_UI_VERSION
+    -- Keep the historical export names so older settings / companion checks
+    -- still resolve after the Colosseum UI merge.
+    mod.exports.colosseumUIVersion = MAIN_UI_VERSION
+    mod.exports.colosseumUIReleaseBuild = "terrarium-ui-" .. MAIN_UI_VERSION
+
+    local uiSource = mod:read("UIMain.lua")
+    if not uiSource then
+      if mod.log then mod.log:warn("main_ui: missing UIMain.lua") end
+      return
+    end
+    local uiChunk, uiChunkErr = load(uiSource, "@" .. tostring(mod.path or mod.id) .. "/UIMain.lua")
+    if not uiChunk then
+      if mod.log then mod.log:warn("main_ui: failed to load UIMain.lua: " .. tostring(uiChunkErr)) end
+      return
+    end
+    local okUIChunk, uiInstall = pcall(uiChunk, mod)
+    if not okUIChunk then
+      if mod.log then mod.log:warn("main_ui: UIMain.lua chunk failed: " .. tostring(uiInstall)) end
+      return
+    end
+    if type(uiInstall) ~= "function" then return end
+    local okUIMain, errUIMain = pcall(uiInstall, mod)
+    if not okUIMain then
+      if mod.log then mod.log:warn("UIMain installation failed: " .. tostring(errUIMain)) end
+      return
+    end
+    mod.exports.mainUIInstalled = true
+    if mod.log then
+      mod.log:info("UIMain installed independently for generation " .. tostring(generation or "?"))
+    end
+  end
+
   -- ---- Colosseum runtime modules: loaded exactly once (never inside
   -- installColosseumRuntime, which reruns on mods.loaded -- reloading a
   -- register-once module there would double-register its content).
@@ -4123,37 +4163,6 @@ end
     BattleRuntime = loadColosseumModule("BattleRuntime")
     namespace.BattleRuntime = BattleRuntime
 
-    -- Colosseum UI overhaul loader (unchanged from this merged mod's prior
-    -- integration): read UIMain.lua, load it as a chunk against this mod,
-    -- call the chunk with `mod`, then call the returned install(mod).
-    do
-      local COLOSSEUM_UI_VERSION = "3.1.0"
-      mod.exports.colosseumUIVersion = COLOSSEUM_UI_VERSION
-      mod.exports.colosseumUIReleaseBuild = "colosseum-ui-3.1.0"
-
-      local uiSource = mod:read("UIMain.lua")
-      if not uiSource then
-        if mod.log then mod.log:warn("colosseum_ui_overhaul: missing UIMain.lua") end
-      else
-        local uiChunk, uiChunkErr = load(uiSource, "@" .. tostring(mod.path or mod.id) .. "/UIMain.lua")
-        if not uiChunk then
-          if mod.log then mod.log:warn("colosseum_ui_overhaul: failed to load UIMain.lua: " .. tostring(uiChunkErr)) end
-        else
-          local okUIChunk, uiInstall = pcall(uiChunk, mod)
-          if not okUIChunk then
-            if mod.log then mod.log:warn("colosseum_ui_overhaul: UIMain.lua chunk failed: " .. tostring(uiInstall)) end
-          elseif type(uiInstall) == "function" then
-            local okUIMain, errUIMain = pcall(uiInstall, mod)
-            if not okUIMain then
-              if mod.log then mod.log:warn("UIMain installation failed: " .. tostring(errUIMain)) end
-            else
-              if mod.log then mod.log:info("UIMain installed successfully for generation " .. tostring(generation)) end
-            end
-          end
-        end
-      end
-    end
-
     namespace.DoublesCore = colosseumModule("doubles/Core", namespace)
     namespace.DoublesItems = colosseumModule("doubles/Items", namespace)
     namespace.DoublesNativeAdapter = colosseumModule("doubles/NativeAdapter", namespace)
@@ -4220,6 +4229,15 @@ end
     loadColosseumModule("QuickCachePlanner")
     loadColosseumModule("CacheScreen")
     BattleCache = loadColosseumModule("BattleCache")
+  end
+
+  do
+    local generation = 1
+    if GenerationCompat and type(GenerationCompat.current) == "function" then
+      local okGen, current = pcall(GenerationCompat.current)
+      if okGen and current then generation = current end
+    end
+    installMainUI(generation)
   end
 
   -- Colosseum runtime installation: only ever calls install()/attach() on
