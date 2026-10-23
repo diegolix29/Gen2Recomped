@@ -71,7 +71,41 @@ local function packName(dir, species, shiny)
               or ("%s/%03d.dsm"):format(dir, species)
 end
 
+-- Stadium 2's own packs (DSM4, NNN.dsm / NNN_shiny.dsm), cache then shipped.
+local function readStadium2Pack(species, shiny)
+  local mod = V.mod
+  local name = shiny and ("%03d_shiny.dsm"):format(species) or ("%03d.dsm"):format(species)
+  if love and love.filesystem and love.filesystem.getInfo then
+    local rel2 = "dramatic_shape/" .. name
+    local okInfo, info = pcall(love.filesystem.getInfo, rel2, "file")
+    if okInfo and info then
+      local ok, bytes = pcall(love.filesystem.read, rel2)
+      if ok and type(bytes) == "string" and #bytes > 4 then return bytes end
+    end
+  end
+  if mod and mod.read then
+    local ok, bytes = pcall(mod.read, mod, "assets/stadium2/" .. name)
+    if ok and type(bytes) == "string" and #bytes > 4 then return bytes end
+  end
+  return nil
+end
+
+-- SOURCE ORDER. Terrarium's model chain is ORAS > Colosseum > Stadium 2 >
+-- Stadium 1 > HD sheets, so a species both Stadium games cover is served from
+-- Stadium 2 first. Set false to restore the old Stadium 1-first order.
+StadiumPack.PREFER_STADIUM2 = true
+
+local readStadium1Pack
+
 local function readPack(species, shiny)
+  if StadiumPack.PREFER_STADIUM2 then
+    local bytes = readStadium2Pack(species, shiny)
+    if bytes then return bytes end
+  end
+  return readStadium1Pack(species, shiny)
+end
+
+readStadium1Pack = function(species, shiny)
   -- The cache only counts when StadiumInstall's marker says it is a
   -- complete, CURRENT build -- an old cache (a rev the extractor has since
   -- fixed, a format that moved) must not shadow a fresh shipped set, and a
@@ -104,34 +138,10 @@ local function readPack(species, shiny)
                           packName(StadiumPack.DIR, species, shiny))
   if ok and type(bytes) == "string" and #bytes > 4 then return bytes end
 
-  -- Also check Stadium 2 cache directory for DSM4 files
-  -- Stadium 2 uses different naming: NNN_shiny.dsm instead of NNNs.dsm
-  local rel2
-  if shiny then
-    rel2 = ("dramatic_shape/%03d_shiny.dsm"):format(species)
-  else
-    rel2 = ("dramatic_shape/%03d.dsm"):format(species)
+  -- Stadium 2 last when Stadium 1 is preferred (see PREFER_STADIUM2).
+  if not StadiumPack.PREFER_STADIUM2 then
+    return readStadium2Pack(species, shiny)
   end
-  if love and love.filesystem and love.filesystem.getInfo then
-    local okInfo, info = pcall(love.filesystem.getInfo, rel2, "file")
-    if okInfo and info then
-      local ok, bytes = pcall(love.filesystem.read, rel2)
-      if ok and type(bytes) == "string" and #bytes > 4 then return bytes end
-    end
-  end
-
-  -- Check Stadium 2 shipped assets
-  if mod and mod.read then
-    local shippedPath
-    if shiny then
-      shippedPath = ("assets/stadium2/%03d_shiny.dsm"):format(species)
-    else
-      shippedPath = ("assets/stadium2/%03d.dsm"):format(species)
-    end
-    local ok, bytes = pcall(mod.read, mod, shippedPath)
-    if ok and type(bytes) == "string" and #bytes > 4 then return bytes end
-  end
-
   return nil
 end
 

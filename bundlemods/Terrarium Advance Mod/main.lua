@@ -4499,10 +4499,68 @@ end
     return context, nil
   end
 
+  -- The actor service menus may use: the full Colosseum runtime when it is
+  -- allowed, otherwise the ORAS-only runtime (lib/ORASRuntime.lua), which
+  -- serves every species built from the player's ORAS dump without GC6E01.
+  -- Either way PokemonActors resolves ORAS first, then Colosseum, per species.
+  local function informationActorService()
+    if colosseumRuntimeAllowed and PokemonActors then return PokemonActors.service end
+    local orasActors = V.PokemonActors
+    if type(orasActors) == "table" and orasActors.service then return orasActors.service end
+    return nil
+  end
+
+  local stadiumUiActors
+  local function stadiumActorService()
+    if stadiumUiActors == nil then
+      local ok, svc = pcall(V.require, "StadiumUiActors")
+      stadiumUiActors = (ok and type(svc) == "table") and svc or false
+    end
+    return stadiumUiActors or nil
+  end
+
   mod.exports.informationModels = {
-    version = 7,
+    version = 8,
+    -- MODEL CHAIN for every menu surface, first that can show the species:
+    --   ORAS -> Colosseum (resolveColosseum) -> Stadium 2 -> Stadium 1
+    --   (resolveStadium) -> HD sheets / sprites (UIMain's 2D resolver)
+    chain = { "oras", "colosseum", "stadium2", "stadium1", "hdsheets" },
     selected = function(_, request)
-      return BattleCache and BattleCache.enabled(request and request.game or mod.game)
+      local game = request and request.game or mod.game
+      if BattleSettings and type(BattleSettings.pokemonModelsEnabled) == "function" then
+        local ok, value = pcall(BattleSettings.pokemonModelsEnabled, game)
+        if ok and value == false then return false end
+      end
+      if colosseumRuntimeAllowed and BattleCache then return BattleCache.enabled(game) end
+      return informationActorService() ~= nil or stadiumActorService() ~= nil
+    end,
+    -- Per-species: can this provider show `dex` right now (or build it)?
+    speciesAvailable = function(_, request, providerId)
+      request = type(request) == "table" and request or {}
+      local dex = tonumber(request.dex)
+      if not dex then return false end
+      if providerId == "terrarium:stadium-models" then
+        local svc = stadiumActorService()
+        return svc ~= nil and svc.available("menu", dex) == true
+      end
+      local svc = informationActorService()
+      if not (svc and type(svc.available) == "function") then return false end
+      local ok, value = pcall(svc.available, "information", dex)
+      return ok and value == true
+    end,
+    -- True when this species was built from the player's ORAS dump. UIMain
+    -- uses it to put an ORAS model ahead of the Colosseum headshot icons.
+    hasOras = function(_, dex)
+      local D = V.ColosseumDex
+      if not (type(D) == "table" and type(D.orasHas) == "function") then return false end
+      local ok, value = pcall(D.orasHas, tonumber(dex))
+      return ok and value == true
+    end,
+    resolveStadium = function(_, request)
+      local svc = stadiumActorService()
+      if not svc then return nil, "stadium-ui-actors-unavailable" end
+      local context = cbeInformationContext(request)
+      return svc, svc.id, context or {}, mod.id
     end,
     resolve = function(_, request)
       if not (colosseumRuntimeAllowed and CurrentSpriteModels) then return nil, "cbe-runtime-unavailable" end
@@ -4513,10 +4571,11 @@ end
       return CurrentSpriteModels.informationActorProvider(request)
     end,
     resolveColosseum = function(_, request)
-      if not colosseumRuntimeAllowed then return nil, "cbe-runtime-unavailable" end
+      local service = informationActorService()
+      if not service then return nil, "cbe-runtime-unavailable" end
       local context, reason = cbeInformationContext(request)
       if not context then return nil, reason end
-      return PokemonActors.service, "cbe:colosseum-pokemon", context, mod.id
+      return service, "cbe:colosseum-pokemon", context, mod.id
     end,
     resolveShowroom = function(_, request)
       if not colosseumRuntimeAllowed then return nil, "cbe-runtime-unavailable" end

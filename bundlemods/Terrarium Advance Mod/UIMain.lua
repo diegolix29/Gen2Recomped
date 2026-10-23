@@ -1005,8 +1005,25 @@ function dramatic.connect()
 end
 
 
+-- ORAS FIRST: a species built from the player's ORAS dump is shown as that
+-- 3D model ahead of the Colosseum headshot atlas. Declining here sends every
+-- caller (battle pods, party cards, PC cells) to its model path instead.
+function GoldCompat.speciesPrefersOrasModel(game,mon)
+  if not (mon and not mon.isEgg and not mon.egg) then return false end
+  if not (GoldCompat.colosseumModelsSelected and GoldCompat.colosseumModelsSelected(game)) then
+    return false
+  end
+  local bridge=GoldCompat.cbeInformationBridge and GoldCompat.cbeInformationBridge()
+  if not (bridge and type(bridge.hasOras)=="function") then return false end
+  local dex=GoldCompat.stadiumUiDexNumber(game,mon)
+  if not dex then return false end
+  local ok,yes=pcall(bridge.hasOras,bridge,dex)
+  return ok and yes==true
+end
+
 local function drawStadiumPortrait(game,mon,x,y,w,h)
   if not colosseumIconsEnabled then return false,false end
+  if GoldCompat.speciesPrefersOrasModel(game,mon) then return false,false end
   local img=colosseumIconFrame(game,mon)
   if not img or not State.visualCache then return false,false end
   return State.visualCache.drawPortrait(img,x,y,w,h)
@@ -1731,53 +1748,150 @@ local function realtimeBattleUiActive(battle)
   return false
 end
 
+-- -----------------------------------------------------------------------
+-- Command menu shape, per generation.
+--
+-- The engine owns the cursor (BattleState.menuIndex) and walks a different
+-- grid per game, so the drawing has to follow the grid the engine walks or
+-- the cursor appears to jump:
+--   Gen 1/2/3  2x2  -- Gen 1/2 read FIGHT/PKMN over ITEM/RUN, Gen 3 reads
+--                      FIGHT/BAG over PKMN/RUN (menuActions() says which)
+--   Gen 4/5    FIGHT across the whole top row, BAG / RUN / POKeMON under it
+--              (Gen4Battle.actionMove + ACTION_BOTTOM)
+-- Labels always come from the engine's own action ids, never a fixed list.
+-- -----------------------------------------------------------------------
+local COMMAND_LABELS={fight="FIGHT",pkmn="POKéMON",party="POKéMON",
+  item="BAG",bag="BAG",run="RUN",ball="BALL",bait="BAIT",rock="ROCK",mud="MUD"}
+
+-- Packed without holes: ipairs stops at the first nil, and `source` is nil
+-- whenever the presentation battle is the engine battle itself.
+local function commandSources(battle,source)
+  local out={}
+  for _,b in ipairs({source or false,battle or false,
+      (battle and battle.__gen3Source) or false}) do
+    if type(b)=="table" then out[#out+1]=b end
+  end
+  return out
+end
+
+function GoldCompat.battleUsesFightTopLayout(battle,source)
+  for _,b in ipairs(commandSources(battle,source)) do
+    if type(b)=="table" and type(b.gen4Layout)=="function" then
+      local ok,value=pcall(b.gen4Layout,b)
+      if ok then return value==true end
+    end
+  end
+  return false
+end
+
+function GoldCompat.battleCommandCells(battle,source)
+  local safari=GoldCompat.resolvedSafariState(source or battle)~=nil
+  local fightTop=GoldCompat.battleUsesFightTopLayout(battle,source)
+  local actions
+  if safari then
+    -- Engine order for both Kanto and Sinnoh safari: ball, bait, rock, run.
+    actions={"ball","bait",fightTop and "mud" or "rock","run"}
+  else
+    for _,b in ipairs(commandSources(battle,source)) do
+      if type(b)=="table" and type(b.menuActions)=="function" then
+        local ok,list=pcall(b.menuActions,b)
+        if ok and type(list)=="table" and #list>=4 then actions=list;break end
+      end
+    end
+    actions=actions or {"fight","pkmn","item","run"}
+  end
+  local function label(i)
+    local id=tostring(actions[i] or "")
+    return COMMAND_LABELS[id] or GoldCompat.humanizeIdentifier(id):upper()
+  end
+
+  local cells={}
+  if fightTop then
+    local bottom={2,4,3}
+    local okG,Gen4Battle=pcall(require,"src.battle.Gen4Battle")
+    if okG and type(Gen4Battle)=="table" and type(Gen4Battle.ACTION_BOTTOM)=="table"
+        and #Gen4Battle.ACTION_BOTTOM==3 then
+      bottom=Gen4Battle.ACTION_BOTTOM
+    end
+    cells[1]={index=1,label=label(1),col=0,row=0,span=3,primary=true}
+    for c,idx in ipairs(bottom) do
+      cells[#cells+1]={index=idx,label=label(idx),col=c-1,row=1,span=1}
+    end
+    return cells,{cols=3,rows=2,kind="fight-top"}
+  end
+  for i=1,4 do
+    cells[i]={index=i,label=label(i),col=(i-1)%2,row=math.floor((i-1)/2),span=1}
+  end
+  return cells,{cols=2,rows=2,kind="grid"}
+end
+
+-- Cell rectangles inside a command panel. FIGHT-top gives the top row ~56%
+-- of the height so FIGHT reads as the primary action, as on the DS.
+function GoldCompat.battleCommandRects(cells,shape,x,y,w,h,pad,gap)
+  local out={}
+  local rowH={}
+  if shape.kind=="fight-top" then
+    local inner=h-pad*2-gap
+    rowH[0]=inner*0.56
+    rowH[1]=inner-rowH[0]
+  else
+    rowH[0]=(h-pad*2-gap)/2
+    rowH[1]=rowH[0]
+  end
+  local colW=(w-pad*2-gap*(shape.cols-1))/shape.cols
+  for i,cell in ipairs(cells) do
+    local cy=y+pad+(cell.row==1 and (rowH[0]+gap) or 0)
+    local cx=x+pad+cell.col*(colW+gap)
+    local cw=colW*cell.span+gap*(cell.span-1)
+    out[i]={x=cx,y=cy,w=cw,h=rowH[cell.row] or rowH[0]}
+  end
+  return out
+end
+
 local function drawCommandMenu(battle)
   if battle.phase~="menu" then return end
   if realtimeBattleUiActive(battle) then return end
 
   local r=commandRect()
   local u=r.u
+  local cells,shape=GoldCompat.battleCommandCells(battle,activeSourceBattle)
+  if shape.kind=="fight-top" then
+    -- FIGHT gets a full-width row of its own: grow upward, keep the bottom
+    -- edge on the same dock line as the dialogue and move panels.
+    local grow=r.h*0.30
+    r={x=r.x,y=r.y-grow,w=r.w,h=r.h+grow,u=u,mobile=r.mobile}
+  end
   consolePanel(r.x,r.y,r.w,r.h,u)
 
-  local labels=resolvedSafariState(battle)
-      and {"SNAG","BAIT","ROCK","RUN"}
-      or {"FIGHT","POKéMON","BAG","RUN"}
-  local padX=26*u
-  local padY=12*u
-  local gapX=16*u
-  local cellW=(r.w-padX*2-gapX)/2
-  local cellH=(r.h-padY*2)/2
+  local rects=GoldCompat.battleCommandRects(cells,shape,r.x,r.y,r.w,r.h,
+    10*u,6*u)
 
-  for i,label in ipairs(labels) do
-    local col=(i-1)%2
-    local row=math.floor((i-1)/2)
-    local x=r.x+padX+col*(cellW+gapX)
-    local y=r.y+padY+row*cellH
-    local selected=battle.menuIndex==i
+  for i,cell in ipairs(cells) do
+    local cr=rects[i]
+    local x,y,cellW,cellH=cr.x,cr.y,cr.w,cr.h
+    local selected=battle.menuIndex==cell.index
 
-    local labelSize=17*u
+    local labelSize=fitUiTextSize(cell.label,(cell.primary and 20 or 16)*u,
+      cellW-28*u,cellH-4*u,9*u)
     local labelFont=font(labelSize)
     local labelH=labelFont and labelFont:getHeight() or labelSize
-    local baseLabelY=y+cellH*0.18
-    local labelY=clamp(baseLabelY,y+2*u,y+math.max(2*u,cellH-labelH-2*u))
+    local labelY=y+math.max(0,(cellH-labelH)*0.5)
 
     if selected then
-      GoldCompat.setUIColor("selection",0.33,0.35,0.32,0.80)
-      love.graphics.polygon("fill",
-        x+8*u,y+2*u,x+cellW-5*u,y+2*u,
-        x+cellW,y+cellH-2*u,x+8*u,y+cellH-2*u)
-
-      -- The selector follows the actual text row, not a hard-coded cell center.
-      -- This keeps it visually attached to FIGHT/POKéMON/BAG/RUN at every
-      -- supported text profile/size without resizing the command panel.
-      local indicatorH=clamp(labelH*0.62,8*u,cellH*0.48)
-      local indicatorY=clamp(labelY+(labelH-indicatorH)*0.5,
-        y+2*u,y+cellH-indicatorH-2*u)
-      selector(x-4*u,indicatorY,indicatorH,u)
+      GoldCompat.setUIColor("selection",0.14,0.32,0.32,0.88)
+      roundCard("fill",x,y,cellW,cellH,7*u)
+      local indicatorH=clamp(labelH*0.62,8*u,cellH*0.6)
+      selector(x+5*u,y+(cellH-indicatorH)*0.5,indicatorH,u)
+    else
+      GoldCompat.setUIColor("surface",0.10,0.13,0.14,0.55)
+      roundCard("fill",x,y,cellW,cellH,7*u)
     end
 
-    text(label,x+14*u,labelY,labelSize,
-      selected and {0.97,0.94,0.76,1} or {0.76,0.79,0.72,1})
+    -- Every label is centered in its own cell: a 1+3 row and a 2x2 grid then
+    -- read the same way and the selector never collides with the text.
+    text(cell.label,x+12*u,labelY,labelSize,
+      selected and {0.97,0.96,0.86,1} or {0.76,0.80,0.76,1},
+      "center",cellW-24*u)
   end
 end
 
@@ -3084,6 +3198,31 @@ local spritePortraitResolver = (function()
       return image, meta
     end
 
+    -- HD SHEETS: the last 3D-chain fallback before the cartridge sprite --
+    -- animated HD battle art for National Dex 1-721 (lib/HDPokemonSheets).
+    local hd = R.hdSheets
+    if hd == nil then
+      local exp = R.mod and R.mod.exports
+      hd = exp and (exp.hdPokemonSheets or (exp.lib and exp.lib.HDPokemonSheets)) or false
+      if type(hd) ~= "table" or type(hd.frame) ~= "function" then hd = false end
+      R.hdSheets = hd
+    end
+    local hdOn = hd and true or false
+    if hd and type(hd.isEnabled) == "function" then
+      local okOn, on = pcall(hd.isEnabled, game)
+      hdOn = not (okOn and on == false)
+    end
+    if hdOn and not (mon.isEgg or mon.egg) then
+      local dex = GoldCompat.stadiumUiDexNumber(game, mon)
+      if dex then
+        local okFrame, hdImage = pcall(hd.frame, {
+          dex = dex, facing = "front", shiny = GoldCompat.monIsShiny(mon),
+          key = "ui:" .. tostring(kind or "menu"),
+        })
+        if okFrame and hdImage then return hdImage, { trueColor = true } end
+      end
+    end
+
     local image,trueColor=enginePortrait(game,mon,kind)
     return image, image and {trueColor=trueColor and true or false} or nil
   end
@@ -3887,6 +4026,7 @@ DexUI.uiRows={
   {key="battlePortraits",label="BATTLE PORTRAITS",kind="toggle"},
   {key="colosseumPokemonMenu",label="POKéMON MENU",kind="toggle"},
   {key="colosseumIcons",label="SPECIES ICONS",kind="toggle"},
+  {key="terrariumCrossGenScreens",label="GEN 3-5 SCREENS",kind="toggle"},
   {key="colosseumTitleIntro",label="MENU INTRO",kind="toggle"},
   {key="uiPrimaryColor",label="PRIMARY COLOR",kind="choice",values=GoldCompat.UI_COLOR_VALUES},
   {key="uiSecondaryColor",label="SECONDARY COLOR",kind="choice",values=GoldCompat.UI_COLOR_VALUES},
@@ -4540,6 +4680,12 @@ local function installVerifiedOptions(mod)
       key = "colosseumIcons",
       type = "toggle",
       label = "SPECIES ICONS",
+      default = true,
+    },
+    {
+      key = "terrariumCrossGenScreens",
+      type = "toggle",
+      label = "GEN 3-5 SCREENS",
       default = true,
     },
     {
@@ -5898,23 +6044,17 @@ local function drawCommandMenu(battle)
   local u = rect.u or battleMenuScale()
   local pad = 15*u
   local gap = 11*u
-  local cellW = (rect.w-pad*2-gap)/2
-  local cellH = (rect.h-pad*2-gap)/2
 
-  -- Preserve engine semantics: 1 FIGHT, 2 PKMN, 3 ITEM, 4 RUN.
-  local labels=battle.safari
-    and {"SNAG","BAIT","ROCK","RUN"}
-    or {"FIGHT","POKéMON","BAG","RUN"}
-  local options = {
-    {index=1, label=labels[1], col=0,row=0},
-    {index=2, label=labels[2], col=1,row=0},
-    {index=3, label=labels[3], col=0,row=1},
-    {index=4, label=labels[4], col=1,row=1},
-  }
+  -- Labels and grid shape come from the engine (see battleCommandCells):
+  -- 2x2 on Gen 1-3, FIGHT across the top + three buttons on Gen 4/5.
+  local options,shape = GoldCompat.battleCommandCells(battle,
+    GoldCompat.sourceBattleState(battle))
+  local rects = GoldCompat.battleCommandRects(options,shape,
+    rect.x,rect.y,rect.w,rect.h,pad,gap)
 
-  for _, opt in ipairs(options) do
-    local x = rect.x+pad+opt.col*(cellW+gap)
-    local y = rect.y+pad+opt.row*(cellH+gap)
+  for i, opt in ipairs(options) do
+    local x, y = rects[i].x, rects[i].y
+    local cellW, cellH = rects[i].w, rects[i].h
     local selected = battle.menuIndex == opt.index
 
     local labelSize=cellH*0.43
@@ -14591,6 +14731,41 @@ function GoldCompat.drawColosseumModelStatus(game,mon,x,y,w,h,kind,why)
   return true
 end
 
+-- MODEL CHAIN, per species: ORAS -> Colosseum (one PokemonActors service,
+-- which already prefers an ORAS-built species) -> Stadium 2 -> Stadium 1
+-- (StadiumUiActors; StadiumPack prefers Stadium 2) -> nil, which callers
+-- answer with the 2D resolver (Battle Arts -> HD sheets -> engine sprite).
+-- Answers are cached briefly: an ORAS build in progress adds species live.
+GoldCompat.MODEL_CHAIN={
+  {id="cbe:colosseum-pokemon",resolver="resolveColosseum"},
+  {id="terrarium:stadium-models",resolver="resolveStadium"},
+}
+GoldCompat.__modelChainCache=GoldCompat.__modelChainCache or {}
+
+function GoldCompat.modelChainProvider(game,mon)
+  local bridge=GoldCompat.cbeInformationBridge()
+  if not (bridge and tonumber(bridge.version or 0)>=8
+      and type(bridge.speciesAvailable)=="function") then
+    return nil
+  end
+  local dex=GoldCompat.stadiumUiDexNumber(game,mon)
+  if not dex or dex<1 then return false end
+  local now=GoldCompat.stadiumUiClock()
+  local epoch=GoldCompat.__presentationProviderEpoch or 0
+  local cached=GoldCompat.__modelChainCache[dex]
+  if cached and cached.epoch==epoch and now-cached.at<2.0 then return cached.link end
+  local found=false
+  for _,link in ipairs(GoldCompat.MODEL_CHAIN) do
+    local ok,yes=pcall(bridge.speciesAvailable,bridge,{game=game,dex=dex,mon=mon},link.id)
+    if ok and yes==true and type(bridge[link.resolver])=="function" then
+      found=link
+      break
+    end
+  end
+  GoldCompat.__modelChainCache[dex]={epoch=epoch,at=now,link=found}
+  return found
+end
+
 function GoldCompat.cbeInformationModelService(game,mon,kind)
   local supported=(kind=="summary" or kind=="pokedex" or kind=="pc"
     or kind=="evolution" or kind=="hatch" or tostring(kind):match("^portrait:"))
@@ -14598,6 +14773,25 @@ function GoldCompat.cbeInformationModelService(game,mon,kind)
 
   local request={game=game,mon=mon,kind=kind}
   local cbeOnly=GoldCompat.colosseumModelsSelected(game) or (kind=="pc" or kind=="evolution" or kind=="hatch")
+
+  -- Chain-aware bridge (v8+): pick the first source that has THIS species.
+  if cbeOnly then
+    local link=GoldCompat.modelChainProvider(game,mon)
+    if link==false then return nil,"no-3d-source-for-species" end
+    if link and link.id~="cbe:colosseum-pokemon" then
+      local bridge=GoldCompat.cbeInformationBridge()
+      local ok,api,providerId,context,owner=pcall(bridge[link.resolver],bridge,request)
+      if ok and type(api)=="table" and type(api.acquire)=="function"
+          and type(api.withRenderer)=="function" then
+        if type(context)=="table" then
+          context.sides=context.sides or {player={battler={mon=mon}}}
+        end
+        return api,tostring(providerId or link.id),context,owner
+      end
+      return nil,"stadium-resolve-failed"
+    end
+  end
+
   local providerEpoch=GoldCompat.__presentationProviderEpoch or 0
   local stable=GoldCompat.__stableInformationProvider
   if stable and stable.epoch==providerEpoch and stable.game==game
@@ -15055,7 +15249,9 @@ function GoldCompat.drawStadiumUiModel(game,mon,x,y,w,h,kind,serviceKind)
   local slots=GoldCompat.__stadiumUiActors
   local entry=slots[kind]
   local strict=GoldCompat.colosseumModelsSelected(game)
-  if entry and ((strict and entry.providerId~="cbe:colosseum-pokemon")
+  local chainOwned=entry and (entry.providerId=="cbe:colosseum-pokemon"
+    or entry.providerId=="terrarium:stadium-models")
+  if entry and ((strict and not chainOwned)
       or (not strict and entry.providerId=="cbe:colosseum-pokemon")) then
     GoldCompat.releaseStadiumUiActor(kind);entry=nil
   end
@@ -15426,6 +15622,13 @@ function GoldCompat.drawInformationPortrait(game,mon,x,y,w,h,modelKind,spriteKin
   local modelOk,modelDrew=pcall(
     GoldCompat.drawStadiumUiModel,game,mon,x,y,w,h,modelKind,serviceKind)
   if modelOk and modelDrew==true then return true end
+  -- No 3D source in the chain has this species at all (e.g. a Gen 5 mon
+  -- without an ORAS build, or no model packs installed): that is not a
+  -- pending model, it is the end of the 3D chain -- draw the 2D fallback
+  -- (Battle Arts -> HD sheets -> engine sprite) instead of LOADING forever.
+  if GoldCompat.modelChainProvider(game,mon)==false then
+    return GoldCompat.drawResolvedSpritePortrait(game,mon,x,y,w,h,spriteKind)
+  end
   -- A pending or failed 3D preparation is not a successful model draw.
   -- Consume the cell with an explicit state, not a different provider.
   if GoldCompat.colosseumModelsSelected(game) then
@@ -15461,8 +15664,12 @@ function GoldCompat.drawCleanResolvedPortrait(game,mon,x,y,w,h,kind)
     local slot=("portrait:%s:%d:%d:%d:%d"):format(tostring(kind or "menu"),math.floor(x+.5),math.floor(y+.5),math.floor(w+.5),math.floor(h+.5))
     return GoldCompat.drawInformationPortrait(game,mon,x,y,w,h,slot,kind,slot)
   end
-  -- Explicitly models-OFF (or an egg) retains the configured sprite resolver.
-  -- This branch is never used to hide a failed Colosseum model acquisition.
+  return GoldCompat.drawResolvedSpritePortrait(game,mon,x,y,w,h,kind)
+end
+
+-- The 2D end of the model chain: Battle Arts -> HD sheets -> engine sprite
+-- (spritePortraitResolver.resolve). Never calls back into the 3D path.
+function GoldCompat.drawResolvedSpritePortrait(game,mon,x,y,w,h,kind)
   local ok,image,meta=pcall(spritePortraitResolver.resolve,game,mon,kind)
   if not (ok and image) then return false end
   image,meta=GoldCompat.prepareCleanResolvedPortrait(image,meta)
@@ -27027,6 +27234,31 @@ return function(mod)
     end
   end
 
+  -- Current engines answer the same question through moveGridNavigate(index,
+  -- count, input) -> newIndex|nil, and only for wide/Gen 3/Gen 4 layouts. A
+  -- classic Gen 1 move list is vertical (down = next move), while the
+  -- Terrarium move panel is a 2x2 -- so down visibly moved the cursor RIGHT.
+  -- Walk the grid that is on screen whenever our move panel owns the frame.
+  if type(BattleState.moveGridNavigate)=="function"
+      and not BattleState.__terrariumMoveGridPatched then
+    BattleState.__terrariumMoveGridPatched=true
+    local nativeNavigate=BattleState.moveGridNavigate
+    local okWide,WideBattle=pcall(require,"src.battle.WideBattle")
+    BattleState.moveGridNavigate=function(self,index,count,input,...)
+      local native=nativeNavigate(self,index,count,input,...)
+      if native~=nil then return native end
+      if okWide and type(WideBattle)=="table" and type(WideBattle.navigate)=="function"
+          and (self.phase=="moveSelect" or self.phase=="mimicSelect")
+          and featureEnabled("colosseumBattleUI")
+          and GoldCompat.battlePresentationEnabledFor(self)
+          and not GoldCompat.realtimeBattleUiActive(self)
+          and not GoldCompat.resolvedSafariState(self) and not self.demo then
+        return WideBattle.navigate(index,count,input)
+      end
+      return native
+    end
+  end
+
   -- Gold uses the shared TextBox / ChoiceBox path for overworld dialogue.
   -- This is a genuine cross-generation seam, so reuse the proven Gen 3
   -- dialogue presentation instead of leaving Gold dialogue vanilla.
@@ -27373,5 +27605,36 @@ return function(mod)
 
   mod.hooks:wrap("render.hud", GoldCompat.locationBannerHud, 10900)
   mod.hooks:wrap("render.hud", DexUI.hud, 11000)
+
+  -- Gen 3 / 4 / 5 screens (lib/CrossGenUI.lua): the same Terrarium look on
+  -- Hoenn / Sinnoh / Unova start and party menus. Draw-only; each screen's
+  -- own logic and input stay native, and any failure restores the cartridge
+  -- screen for that class.
+  do
+    local src=mod:read("lib/CrossGenUI.lua")
+    local chunk=src and load(src,"@ColosseumUI/lib/CrossGenUI.lua")
+    local okCG,CrossGen=false,nil
+    if chunk then
+      okCG,CrossGen=pcall(chunk,{
+        GoldCompat=GoldCompat,mod=mod,
+        font=function(size) return font(size) end,
+        enabled=function() return featureEnabled("terrariumCrossGenScreens") end,
+      })
+    end
+    if okCG and type(CrossGen)=="table" then
+      GoldCompat.CrossGenUI=CrossGen
+      pcall(CrossGen.install)
+      mod.hooks:wrap("render.hud",function(next,game,viewport)
+        local out=next(game,viewport)
+        local okHud,errHud=pcall(CrossGen.hud,game)
+        if not okHud and mod.log then
+          mod.log:warn("Terrarium Gen 3-5 screens: "..tostring(errHud))
+        end
+        return out
+      end,11500)
+    elseif mod.log then
+      mod.log:warn("Terrarium Gen 3-5 screens unavailable: "..tostring(CrossGen))
+    end
+  end
 
 end
