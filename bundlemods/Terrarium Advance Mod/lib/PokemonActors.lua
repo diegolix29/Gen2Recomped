@@ -829,6 +829,7 @@ local function loadScene(dex,diskOnly,checkpoint)
     morphFrames=math.max(0,math.min(12,tonumber(cache.morphFrames) or 0)),
     idleDuration=tonumber(cache.idleDuration) or 0,
     stem=cache.stem,source=cache.source,
+    nativeHeight=tonumber(cache.nativeHeight),nativeSpan=tonumber(cache.nativeSpan),
     vertexCount=tonumber(cache.vertexCount) or 0,
     groupCount=tonumber(cache.groupCount) or #groups,
     requestedDecodeMode=tostring(cache.requestedDecodeMode or "auto"),
@@ -2453,6 +2454,24 @@ function A.acquire(source,dex,variant,opts)
   local floor=TINY_SPECIES_FLOOR[dex] or MIN_READABLE_RELATIVE
   local ceiling=LARGE_SPECIES_CEILING[dex] or MAX_READABLE_RELATIVE
   local relative=math.min(math.max(normalizedRelative,floor),ceiling)
+  -- ORAS models are authored at real size (centimetres) and the cache records
+  -- their posed extent (lib/ORASActorCache.lua): nativeHeight tall, nativeSpan
+  -- across.  The readability curve and floor apply to the LARGEST dimension
+  -- (Wingull's wingspan, Rayquaza's length), and height follows the model's
+  -- own proportions; the giant ceiling still caps height.  The Pokedex number
+  -- -- often a length or wingspan -- is not used for these.
+  local sc=actor.scene
+  local nh,ns=sc and tonumber(sc.nativeHeight),sc and tonumber(sc.nativeSpan)
+  if sc and sc.source=="ORAS" and nh and nh>0 then
+    local size=math.max(nh,ns or 0)/100
+    local aspect=(nh/100)/size
+    rawRelative=size/HUMAN_REFERENCE_METERS
+    curveRelative=math.max(.04,rawRelative)^SCALE_CURVE_EXP
+    bodyFactor=aspect
+    normalizedRelative=curveRelative*aspect
+    meters=nh/100
+    relative=math.min(math.max(normalizedRelative,floor*aspect),ceiling)
+  end
   local ctx=opts and opts.context
   local figureScale=tonumber(ctx and ctx.arena and ctx.arena.figureScale) or DEFAULT_FIGURE_SCALE
   figureScale=math.max(.08,figureScale)

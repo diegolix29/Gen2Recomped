@@ -246,6 +246,41 @@ local function eyeBlinks(g, base, model)
   return out
 end
 
+-- Posed size.  The bind pose is a poor guide to how big a Pokemon is drawn:
+-- Rayquaza stands straight up in it (about 11 m) but coils far lower in its
+-- idle, and some meshes sit away from where the animation puts them
+-- (Bulbasaur).  So the size recorded is the extent over every idle slot of
+-- the body groups (glows excluded), in cache units, plus the same extent in
+-- the model's own units -- Game Freak models are authored at real size, in
+-- centimetres.  PokemonActors sizes ORAS species from these (nativeHeight /
+-- nativeSpan) instead of the Pokedex number, which for wide or long species
+-- (Wingull's wingspan, Rayquaza's length) is not a height at all.
+local function newExtent()
+  return { lo = { math.huge, math.huge, math.huge }, hi = { -math.huge, -math.huge, -math.huge } }
+end
+local function grow(ext, x, y, z)
+  local lo, hi = ext.lo, ext.hi
+  if x < lo[1] then lo[1] = x end; if x > hi[1] then hi[1] = x end
+  if y < lo[2] then lo[2] = y end; if y > hi[2] then hi[2] = y end
+  if z < lo[3] then lo[3] = z end; if z > hi[3] then hi[3] = z end
+end
+-- writes the posed size into meta; `s` is cache units per model unit
+local function applyExtent(meta, ext, s)
+  if not (ext.hi[2] > ext.lo[2]) then return false end
+  local h = ext.hi[2] - ext.lo[2]
+  local span = math.max(ext.hi[1] - ext.lo[1], ext.hi[3] - ext.lo[3])
+  meta.posedHeight = h
+  meta.nativeHeight = h / s
+  meta.nativeSpan = span / s
+  local b = meta.bounds or {}
+  meta.bounds = {
+    min = { (b.min and b.min[1]) or ext.lo[1], ext.lo[2], (b.min and b.min[3]) or ext.lo[3] },
+    max = { (b.max and b.max[1]) or ext.hi[1], ext.hi[2], (b.max and b.max[3]) or ext.hi[3] },
+    center = { 0, (ext.lo[2] + ext.hi[2]) / 2, 0 },
+  }
+  return true
+end
+
 -- Build one species. Returns a summary string, or nil and a reason.
 function C.buildSpecies(mod, rom, g, index, dex)
   local GF1 = V.require("GF1Motion")
@@ -460,6 +495,18 @@ function C.buildSpecies(mod, rom, g, index, dex)
   local idle = motions[IDLE_SLOT]
   local basePositions = sampleBank(idle, idle and idle.frames or 0, true)
   local baseFloor, vertexTotal = writeBank(basePositions, function(m) return ("%s/base_%02d.f32"):format(rt, m) end)
+  local posed = newExtent()
+  for m, entry in ipairs(kept) do
+    if not entry.glow then
+      for slot = 0, MORPH_SLOTS do
+        local list = basePositions[m][slot]
+        for _, vi in ipairs(entry.order) do
+          local q = list[vi]
+          grow(posed, q[1], q[2], q[3])
+        end
+      end
+    end
+  end
 
   -- action banks, written straight into PokemonActors' runtime sidecar form
   local actions, baked = {}, {}
@@ -523,6 +570,7 @@ function C.buildSpecies(mod, rom, g, index, dex)
     jointPositions = {}, jointFrames = {},
     actions = actions, groups = groups,
   }
+  applyExtent(meta, posed, s)
   -- base.lua is what PokemonActors loads (its stamp matches rev.txt);
   -- model_cache.lua is the same table, which marks the species as present
   assert(writeLua(mod, rt .. "/base.lua", meta), "runtime base write failed")
@@ -535,6 +583,59 @@ function C.buildSpecies(mod, rom, g, index, dex)
     tostring(model.name), #groups, #glows, blinkCount, vertexTotal, texCount, skipped,
     idle and ("%.2fs"):format(idle.frames / FPS) or "none",
     #baked > 0 and table.concat(baked, ", ") or "none", base, base + 7)
+end
+
+-- A species built before posed sizes were recorded: measure it from its
+-- cached base bank (44 floats a row: slot-0 position, uv, normal, then slots
+-- 1-12) and the model's bind height (to recover the cache scale), then
+-- rewrite its metadata.  No banks are rebuilt.
+local function patchSize(mod, g, index, dex)
+  if not ffi then return false end
+  local rt = root(dex) .. "/runtime_mesh_v1"
+  local okS, src = pcall(mod.cache.read, mod.cache, rt .. "/base.lua")
+  if not (okS and type(src) == "string") then return false end
+  local chunk = loadstring(src)
+  local okM, meta = pcall(chunk or error)
+  if not (okM and type(meta) == "table" and type(meta.groups) == "table") then return false end
+  if meta.nativeHeight then return false end
+  local okF, base, _, _, model = pcall(findSpecies, g, index, dex)
+  if not (okF and base and model) then return false end
+  local prefix = (model.name or ""):match("^(pm%d+)") or "pm"
+  local lo, hi = math.huge, -math.huge
+  for _, mesh in ipairs(model.meshes) do
+    local mat = model.materials[mesh.materialIndex + 1] or {}
+    local tname = mat.textures and mat.textures[1]
+    if tname and tname:sub(1, #prefix) == prefix then
+      for _, v in ipairs(H3D.bindPose(model, mesh)) do
+        if v.position[2] < lo then lo = v.position[2] end
+        if v.position[2] > hi then hi = v.position[2] end
+      end
+    end
+  end
+  if not (hi > lo) then return false end
+  local s = TARGET_HEIGHT / (hi - lo)
+  local posed = newExtent()
+  for _, grp in ipairs(meta.groups) do
+    if not grp.glow and grp.runtimeBin then
+      local okB, data = pcall(mod.cache.read, mod.cache, grp.runtimeBin)
+      if okB and type(data) == "string" and #data >= 44 * 4 then
+        local f = ffi.cast("const float*", data)
+        for r = 0, math.floor(#data / (44 * 4)) - 1 do
+          local o = r * 44
+          grow(posed, f[o], f[o + 1], f[o + 2])
+          for k = 0, MORPH_SLOTS - 1 do
+            local q = o + 8 + k * 3
+            grow(posed, f[q], f[q + 1], f[q + 2])
+          end
+        end
+      end
+      checkpoint()
+    end
+  end
+  if not applyExtent(meta, posed, s) then return false end
+  assert(writeLua(mod, rt .. "/base.lua", meta), "runtime base write failed")
+  assert(writeLua(mod, root(dex) .. "/model_cache.lua", meta), "model cache write failed")
+  return true
 end
 
 -- Build `list` (dex numbers) and register them.  `log(fmt, ...)` reports each
@@ -579,6 +680,8 @@ function C.build(mod, list, log, progress)
     local current = okRev and rev == C.STAMP and listed[dex]
     if current then
       skipped = skipped + 1
+      local okP, patched = pcall(patchSize, mod, g, index, dex)
+      if okP and patched then log("ORAS dex %d: posed size recorded", dex) end
     else
       -- pcall does not cross a coroutine yield in plain Lua 5.1, but does in
       -- LuaJIT (which this runs on): yields inside buildSpecies are fine
