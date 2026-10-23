@@ -133,6 +133,10 @@ uniform vec4 shinyRouteR;
 uniform vec4 shinyRouteG;
 uniform vec4 shinyRouteB;
 uniform vec3 shinyGain;
+// ORAS effect meshes (flames): unlit, additive, the texture scrolling up
+// over time (lib/ORASActorCache.lua bakes their luminance into rgb/alpha)
+uniform float emissive;
+uniform float glowTime;
 varying vec3 worldPos;
 varying vec3 worldNormal;
 
@@ -140,6 +144,12 @@ varying vec3 worldNormal;
 // Rare-model species use their separate source texture and bypass this filter.
 // RGB only: alpha remains the source texture/material transparency.
 vec4 effect(vec4 color, Image texture, vec2 uv, vec2 screen) {
+  if (emissive > 0.5) {
+    vec4 glow = Texel(texture, uv + vec2(0.0, glowTime*0.9));
+    float ga = glow.a * opacity * color.a * (0.85 + 0.15*sin(glowTime*11.0 + uv.y*9.0));
+    if (ga < 0.02) discard;
+    return vec4(glow.rgb * materialColor.rgb, ga);
+  }
   vec4 texel = Texel(texture,uv);
   float texAlpha = mix(1.0, texel.a, useTexture);
   float a = texAlpha * materialColor.a * tintColor.a * opacity * color.a;
@@ -433,6 +443,21 @@ local function applyVertexMap(mesh,path)
   return ok,setErr
 end
 
+-- glow groups (ORAS flames): additive blend + the shader's unlit branch.
+-- Sends are pcall'd: a driver that optimized an unused uniform away must not
+-- turn a cosmetic flame into a draw failure.
+local function setGlow(on)
+  if not shader then return end
+  pcall(shader.send,shader,"emissive",on and 1 or 0)
+  if on then
+    local t=(love and love.timer and love.timer.getTime and love.timer.getTime()) or 0
+    pcall(shader.send,shader,"glowTime",t%1000)
+    love.graphics.setBlendMode("add","alphamultiply")
+  else
+    love.graphics.setBlendMode("alpha","alphamultiply")
+  end
+end
+
 local function ensureShader()
   if shader then return shader end
   if not (love and love.graphics and love.graphics.newShader) then return nil,"LOVE graphics unavailable" end
@@ -578,7 +603,7 @@ local function loadScene(dex,diskOnly,checkpoint)
       mesh=mesh,image=img,textured=img~=nil,vertexMap=g.vertexMap,
       diffuse={tonumber(d[1]) or 1,tonumber(d[2]) or 1,tonumber(d[3]) or 1},
       alpha=tonumber(g.alpha) or 1,
-      xlu=g.xlu==true,noz=g.noz==true,
+      xlu=g.xlu==true,noz=g.noz==true,glow=g.glow==true,
       renderFlags=tonumber(g.renderFlags) or 0,
       shadow=g.shadow==true,effect=g.effect==true,
       textureSlot=tonumber(g.textureSlot) or -1,
@@ -683,7 +708,7 @@ local function loadScene(dex,diskOnly,checkpoint)
       end
       if baseg.image then mesh:setTexture(baseg.image) end
       agroups[i]={mesh=mesh,image=baseg.image,textured=baseg.textured,diffuse=baseg.diffuse,alpha=baseg.alpha,
-        xlu=baseg.xlu,noz=baseg.noz,renderFlags=baseg.renderFlags,shadow=baseg.shadow,effect=baseg.effect,textureSlot=baseg.textureSlot}
+        xlu=baseg.xlu,noz=baseg.noz,glow=baseg.glow,renderFlags=baseg.renderFlags,shadow=baseg.shadow,effect=baseg.effect,textureSlot=baseg.textureSlot}
     end
     if type(floorSlots)~="table" then
       local fm=select(1,RuntimeMeshCache.readLua(runtimeActionFloorPath(dex,name)))
@@ -738,7 +763,7 @@ local function loadScene(dex,diskOnly,checkpoint)
       end
       agroups[i]={
         mesh=mesh,image=baseg.image,textured=baseg.textured,
-        diffuse=baseg.diffuse,alpha=baseg.alpha,xlu=baseg.xlu,noz=baseg.noz,
+        diffuse=baseg.diffuse,alpha=baseg.alpha,xlu=baseg.xlu,noz=baseg.noz,glow=baseg.glow,
         renderFlags=baseg.renderFlags,shadow=baseg.shadow,effect=baseg.effect,
         textureSlot=baseg.textureSlot,
       }
@@ -1795,9 +1820,11 @@ function Actor:draw(matrix)
       shader:send("materialColor",MATERIAL_RGBA)
       shader:send("useTexture",grp.textured and 1 or 0)
       if love.graphics.setDepthMode then
-        love.graphics.setDepthMode("lequal",not (grp.noz or grp.xlu))
+        love.graphics.setDepthMode("lequal",not (grp.noz or grp.xlu or grp.glow))
       end
+      setGlow(grp.glow)
       local okDraw=grp.mesh and pcall(love.graphics.draw,grp.mesh)
+      setGlow(false)
       if not okDraw then drawFault=true;break end
     end
   end
@@ -1813,8 +1840,10 @@ function Actor:draw(matrix)
         MATERIAL_RGBA[3]=(d and d[3]) or 1;MATERIAL_RGBA[4]=grp.alpha or 1
         shader:send("materialColor",MATERIAL_RGBA)
         shader:send("useTexture",grp.textured and 1 or 0)
-        if love.graphics.setDepthMode then love.graphics.setDepthMode("lequal",not (grp.noz or grp.xlu)) end
+        if love.graphics.setDepthMode then love.graphics.setDepthMode("lequal",not (grp.noz or grp.xlu or grp.glow)) end
+        setGlow(grp.glow)
         if grp.mesh then pcall(love.graphics.draw,grp.mesh) end
+        setGlow(false)
       end
     end
     perf.actionDrawFallbacks=(perf.actionDrawFallbacks or 0)+1

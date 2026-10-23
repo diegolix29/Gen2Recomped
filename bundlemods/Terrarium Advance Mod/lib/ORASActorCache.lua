@@ -158,10 +158,24 @@ local ACTIONS = {
   { name = "faint", slot = 17 },      -- ba41_down
 }
 local IDLE_SLOT = 0                   -- ba10_waitA
+
+-- effect textures that are intensity maps: L8, A8, LA4, L4, A4 (PICA.FORMAT)
+local GLOW_FORMATS = { [7] = true, [8] = true, [9] = true, [10] = true, [11] = true }
+-- Flame colours.  The outer flame's material constant reads 0x801A32FF
+-- (255, 50, 26); the core is drawn white-hot in the game.
+local function glowColor(name)
+  name = tostring(name or "")
+  if name:find("Fire") and name:find("Core") then return { 1.0, 0.82, 0.38 } end
+  if name:find("Fire") then return { 1.0, 0.36, 0.12 } end
+  return { 1.0, 1.0, 1.0 }
+end
 local FPS = 30
 -- bumped whenever the cache layout changes: a species whose rev.txt holds an
 -- older stamp is rebuilt, one with this stamp is skipped
-local ORAS_STAMP = "oras-actor=4\n"
+local ORAS_STAMP = "oras-actor=5\n"
+-- the stamp before glow groups: such a species is rebuilt only if its model
+-- has effect meshes (see C.build), otherwise just re-stamped
+local PRE_GLOW_STAMP = "oras-actor=4\n"
 C.STAMP = ORAS_STAMP
 
 -- set by a background build (ORASModels) to yield between stages
@@ -201,29 +215,44 @@ function C.buildSpecies(mod, rom, g, index, dex)
   -- kept meshes (effect meshes skipped, see below), their bind data and
   -- skinning recipes; bounds from the bind pose normalize every frame alike
   local prefix = (model.name or ""):match("^(pm%d+_%d+)") or "pm"
-  local kept, skipped = {}, 0
+  local kept, glows, skipped = {}, {}, 0
   local lo, hi = { math.huge, math.huge, math.huge }, { -math.huge, -math.huge, -math.huge }
   for _, mesh in ipairs(model.meshes) do
     local mat = model.materials[mesh.materialIndex + 1] or {}
     local tname = mat.textures and mat.textures[1]
     -- Effect meshes (flames, glows: FireCoreA, FireStenA, ...) sample shared
     -- effect textures through the game's additive/stencil shaders.  Drawn as
-    -- ordinary surfaces they are black and white blobs, so only meshes whose
-    -- base texture is the species' own (pmNNNN_FF_...) are kept.
-    if tname and tname:sub(1, #prefix) == prefix then
+    -- ordinary surfaces they are black and white blobs.  Those whose texture
+    -- is an intensity map (luminance / alpha formats) become GLOW groups:
+    -- the intensity is baked into a flame colour and PokemonActors draws them
+    -- unlit and additive, after the body.  Anything else is still skipped.
+    local own = tname and tname:sub(1, #prefix) == prefix
+    local t = tname and textures[tname]
+    local glow = not own and t and GLOW_FORMATS[t.format]
+    if own or glow then
       local bind = H3D.bindPose(model, mesh)
-      kept[#kept + 1] = { mesh = mesh, mat = mat, tname = tname, bind = bind,
-                          skin = H3D.skinning(model, mesh) }
-      for _, v in ipairs(bind) do
-        for k = 1, 3 do
-          if v.position[k] < lo[k] then lo[k] = v.position[k] end
-          if v.position[k] > hi[k] then hi[k] = v.position[k] end
+      local entry = { mesh = mesh, mat = mat, tname = tname, bind = bind,
+                      skin = H3D.skinning(model, mesh) }
+      if glow then
+        entry.glow = true
+        entry.glowColor = glowColor(tname)
+        glows[#glows + 1] = entry
+      else
+        kept[#kept + 1] = entry
+        -- only the body sizes the model: a tail flame must not shrink it
+        for _, v in ipairs(bind) do
+          for k = 1, 3 do
+            if v.position[k] < lo[k] then lo[k] = v.position[k] end
+            if v.position[k] > hi[k] then hi[k] = v.position[k] end
+          end
         end
       end
     else
       skipped = skipped + 1
     end
   end
+  -- glow groups draw after every body group
+  for _, entry in ipairs(glows) do kept[#kept + 1] = entry end
   if #kept == 0 then return nil, "no drawable meshes" end
   local height = hi[2] - lo[2]
   if not (height > 0) then return nil, "model has no height" end
@@ -260,6 +289,15 @@ function C.buildSpecies(mod, rom, g, index, dex)
   local function decodeTo(data, t, path, entry)
     local okT, img = pcall(PICA.decodeTexture, data, t.address, t.width, t.height, t.format)
     if not (okT and img) then return nil end
+    if entry.glow then
+      -- intensity (luminance x alpha) -> the flame colour, with the
+      -- intensity as alpha: additive blending adds colour * intensity
+      local c = entry.glowColor
+      img:mapPixel(function(_, _, r, _, _, a)
+        local v = r * a
+        return c[1], c[2], c[3], v
+      end)
+    end
     assert(mod.cache:write(path, img:getString()) ~= false, "texture write failed: " .. path)
     checkpoint()
     return { path = path, w = t.width, h = t.height,
@@ -393,8 +431,9 @@ function C.buildSpecies(mod, rom, g, index, dex)
     groups[m] = {
       material = entry.mat.name or ("mesh" .. m), texture = texPaths[entry.tname],
       textureShiny = shinyPaths[entry.tname] or texPaths[entry.tname],
+      glow = entry.glow == true,
       diffuse = { 1, 1, 1 }, ambient = { 1, 1, 1 }, specular = { 0, 0, 0 }, alpha = 1, shininess = 0,
-      xlu = false, noz = false, renderFlags = 0, shadow = false, effect = false, textureSlot = -1,
+      xlu = entry.glow == true, noz = false, renderFlags = 0, shadow = false, effect = entry.glow == true, textureSlot = -1,
       vertexStride = 44, runtimeBin = ("%s/base_%02d.f32"):format(rt, m),
       vertexMap = entry.vertexMap,
     }
@@ -422,8 +461,8 @@ function C.buildSpecies(mod, rom, g, index, dex)
   assert(writeLua(mod, dir .. "/model_cache.lua", meta), "model cache write failed")
   mod.cache:write(dir .. "/rev.txt", ORAS_STAMP)
 
-  return ("%s: %d groups, %d verts, %d textures, %d effect meshes skipped, idle %s, actions %s (members %d-%d)"):format(
-    tostring(model.name), #groups, vertexTotal, texCount, skipped,
+  return ("%s: %d groups (%d glow), %d verts, %d textures, %d effect meshes skipped, idle %s, actions %s (members %d-%d)"):format(
+    tostring(model.name), #groups, #glows, vertexTotal, texCount, skipped,
     idle and ("%.2fs"):format(idle.frames / FPS) or "none",
     #baked > 0 and table.concat(baked, ", ") or "none", base, base + 7)
 end
@@ -467,7 +506,26 @@ function C.build(mod, list, log, progress)
   local built, failed, skipped = 0, 0, 0
   for n, dex in ipairs(list) do
     local okRev, rev = pcall(mod.cache.read, mod.cache, root(dex) .. "/rev.txt")
-    if okRev and rev == C.STAMP and listed[dex] then
+    local current = okRev and rev == C.STAMP and listed[dex]
+    if not current and okRev and rev == PRE_GLOW_STAMP and listed[dex] then
+      -- glow groups are the only change since: a model without effect
+      -- meshes has nothing to gain from a rebuild
+      local okF, base, _, _, model = pcall(findSpecies, g, index, dex)
+      if okF and base and model then
+        local prefix = (model.name or ""):match("^(pm%d+_%d+)") or "pm"
+        local effects = false
+        for _, mesh in ipairs(model.meshes) do
+          local mat = model.materials[mesh.materialIndex + 1] or {}
+          local tname = mat.textures and mat.textures[1]
+          if tname and tname:sub(1, #prefix) ~= prefix then effects = true; break end
+        end
+        if not effects then
+          mod.cache:write(root(dex) .. "/rev.txt", C.STAMP)
+          current = true
+        end
+      end
+    end
+    if current then
       skipped = skipped + 1
     else
       -- pcall does not cross a coroutine yield in plain Lua 5.1, but does in
