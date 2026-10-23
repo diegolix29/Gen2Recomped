@@ -225,6 +225,45 @@ local function newFfiSink(cap0)
       end
       nQuads = nQuads + 1
     end,
+    -- VoxelDiskCache.store: the stream it reads back is NON-indexed triangles
+    -- (VoxelDiskCache.loadRawMesh makes a mesh with no vertex map), so each
+    -- quad is written out as its six corners.
+    vertexCount = function()
+      return nQuads * 6
+    end,
+    writeRaw = function(_, path)
+      local okF, file = pcall(love.filesystem.newFile, path)
+      if not (okF and file) then return false, "could not create " .. tostring(path) end
+      local okO, opened = pcall(file.open, file, "w")
+      if not okO or opened == false then return false, "could not open " .. tostring(path) end
+      local CHUNK = 8192                                    -- quads per write
+      local out = ffi.new("float[?]", CHUNK * 6 * 7)
+      local ok, err = pcall(function()
+        local q = 0
+        while q < nQuads do
+          local count = math.min(CHUNK, nQuads - q)
+          local o = 0
+          for qi = q, q + count - 1 do
+            for k = 1, 6 do
+              local src = (qi * 4 + TRI_ORDER[k] - 1) * 7
+              for f = 0, 6 do out[o + f] = buf[src + f] end
+              o = o + 7
+            end
+          end
+          local bytes = count * 6 * 7 * 4
+          local data = love.data.newByteData(bytes)
+          ffi.copy(data:getFFIPointer(), out, bytes)
+          local wrote = file:write(data)
+          data:release()
+          if wrote == false then error("short write to " .. tostring(path)) end
+          q = q + count
+          Budget.check()
+        end
+      end)
+      pcall(file.close, file)
+      if not ok then return false, tostring(err) end
+      return true
+    end,
     finish = function()
       if nQuads == 0 then return nil end
       local n = nQuads * 4
@@ -346,6 +385,10 @@ end
 local function runGeometry(map, bodyOnly, masks, sink, waterSink)
   local push = sink.push
   local waterPush = waterSink and waterSink.push or nil
+  -- a divertSink (tile overrides) is told the shape class of each cell, so
+  -- only ground, cliff and ramp faces change texture -- never a building or
+  -- a tree that happens to share one of their 8x8 tiles
+  local gate = sink.gate
   local tileset = map.tileset
   local S = Structures.forMap(map)
   local perRow = tileset.tilesPerRow or 16
@@ -634,6 +677,8 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
                 apron = true }
         end
       end
+
+      if gate then gate(S.skip[k] and "ground" or (s and s.class)) end
 
       if s and S.skip[k] then
         local g = S.ground[k]
@@ -1551,6 +1596,9 @@ local function runGeometry(map, bodyOnly, masks, sink, waterSink)
     return scUV
   end
 
+  -- props and round trees keep their atlas art
+  if gate then gate(false) end
+
   for _, q in ipairs(S.objectQuads) do
     Budget.tick()
     local x0 = math.min(q[1][1], q[2][1], q[3][1], q[4][1])
@@ -1657,7 +1705,14 @@ local function meshPlanFor(map)
   return nil
 end
 
-local function divertSink(map, base, plan)
+-- `newSub` makes each texture's sink (default: chunked, for the live path; a
+-- bake passes newSink so the parts can be written to the disk cache).
+-- `gate(class)` is called by runGeometry per cell: only a class listed in
+-- plan.classes is diverted.
+local function divertSink(map, base, plan, newSub)
+  newSub = newSub or newChunkedSink
+  local classes = plan.classes or {}
+  local allow = false
   local tileset = map.tileset
   local perRow = tileset.tilesPerRow or 16
   local atlasW = tileset.imageWidth or (perRow * 8)
@@ -1674,7 +1729,7 @@ local function divertSink(map, base, plan)
 
   local function push(c, uv, shade, sky, water)
     local o
-    if type(uv) == "table" and uv[4] and c and c[4] then
+    if allow and type(uv) == "table" and uv[4] and c and c[4] then
       local u1, v1 = uv[1][1], uv[1][2]
       local u2, v2 = uv[2][1], uv[2][2]
       local u3, v3 = uv[3][1], uv[3][2]
@@ -1712,7 +1767,7 @@ local function divertSink(map, base, plan)
 
     local sub = subs[o.file]
     if not sub then
-      sub = { sink = newChunkedSink(), image = o.image }
+      sub = { sink = newSub(), image = o.image, file = o.file }
       subs[o.file] = sub
       order[#order + 1] = sub
     end
@@ -1734,7 +1789,21 @@ local function divertSink(map, base, plan)
     return main
   end
 
-  return setmetatable({ push = push, finish = finish }, { __index = base })
+  local function gate(class)
+    allow = (class and classes[class]) and true or false
+  end
+
+  local function parts() return order end
+
+  return setmetatable({ push = push, finish = finish, gate = gate, parts = parts },
+                      { __index = base })
+end
+
+-- texture file -> Image, for chunks read back from the disk cache
+local function imagesByFile(plan)
+  local out = {}
+  for _, o in pairs(plan and plan.mesh or {}) do out[o.file] = o.image end
+  return out
 end
 
 function ChunkMesher.geometry(map, bodyOnly, masks, split)
@@ -1768,16 +1837,24 @@ function ChunkMesher.bake(map, slot, masks)
     if okHas and hit then return false, "cached" end
   end
   local sink = newSink()
-  -- NOTE: newFfiSink does not define writeRaw, so this always declines and
-  -- no bake (warmDisk / write-back) ever reaches the disk. Add writeRaw to
-  -- the ffi sink to match whatever VoxelDiskCache.store expects.
+  -- only the ffi sink can write itself out (the table fallback cannot)
   if type(sink.writeRaw) ~= "function" then
     return false, "no ffi sink"
   end
   local waterSink = newSink()
-  local okGeom, err = pcall(runGeometry, map, slot == "body", masks, sink, waterSink)
+  -- with tile overrides the overridden faces bake into one part per texture,
+  -- stored beside the terrain stream (VoxelDiskCache keys them on plan.key)
+  local geomSink, divert = sink, meshPlanFor(map)
+  if divert then geomSink = divertSink(map, sink, divert, newSink) end
+  local okGeom, err = pcall(runGeometry, map, slot == "body", masks, geomSink, waterSink)
   if not okGeom then return false, tostring(err) end
-  local okStore, stored = pcall(DiskCache.store, map, slot, masks, sink, waterSink)
+  local parts = {}
+  if divert then
+    for _, sub in ipairs(geomSink.parts()) do
+      parts[#parts + 1] = { file = sub.file, sink = sub.sink }
+    end
+  end
+  local okStore, stored = pcall(DiskCache.store, map, slot, masks, sink, waterSink, parts)
   if not okStore then return false, tostring(stored) end
   return stored and true or false, stored and nil or "store declined"
 end
@@ -1944,7 +2021,7 @@ end
 -- does arithmetic on the box (a centre, an extent, a light-frustum fit):
 -- inf - inf. Over-drawing is slow and under-drawing is a hole in the world,
 -- so the box errs large -- it just has to be a number.
-local function wrapCachedMesh(map, terrainMesh, waterMesh)
+local function wrapCachedMesh(map, terrainMesh, waterMesh, parts, plan)
   local def = map and map.def
   local pad = RING * 32 + CHUNK_MARGIN
   local x0, z0 = -pad, -pad
@@ -1957,6 +2034,14 @@ local function wrapCachedMesh(map, terrainMesh, waterMesh)
     if m then
       chunks[#chunks + 1] = { mesh = m, x0 = x0, z0 = z0,
                               x1 = x1, z1 = z1, ymax = ymax }
+    end
+  end
+  -- tile-override parts wear their own PNG (see divertSink)
+  local byFile = imagesByFile(plan)
+  for _, p in ipairs(parts or {}) do
+    if p.mesh then
+      chunks[#chunks + 1] = { mesh = p.mesh, texture = byFile[p.file],
+                              x0 = x0, z0 = z0, x1 = x1, z1 = z1, ymax = ymax }
     end
   end
   if #chunks == 0 then return nil end
@@ -2095,15 +2180,15 @@ local function runJob(job)
   -- being fully written by VoxelPrebake/warmDisk -- was never read back on
   -- the live path; every arrival re-ran Structures + runGeometry from
   -- scratch. Actually ask VoxelDiskCache first.
-  local cachedTerrain, cachedWater
-  -- the disk cache holds the UNdiverted terrain, so a map with texture
-  -- overrides neither reads from it nor writes to it
+  local cachedTerrain, cachedWater, cachedParts
+  -- a map with texture overrides is cached too: its entry carries one part
+  -- per texture and is keyed on the override plan (VoxelDiskCache)
   local divert = meshPlanFor(map)
-  if not divert and DiskCache and (type(DiskCache.enabled) ~= "function" or DiskCache.enabled()) then
-    local okLoad, hit, terrainMesh, waterMesh =
+  if DiskCache and (type(DiskCache.enabled) ~= "function" or DiskCache.enabled()) then
+    local okLoad, hit, terrainMesh, waterMesh, parts =
       pcall(DiskCache.load, map, job.slot, job.masks)
     if okLoad and hit then
-      cachedTerrain, cachedWater = terrainMesh, waterMesh
+      cachedTerrain, cachedWater, cachedParts = terrainMesh, waterMesh, parts
     end
   end
   if cachedTerrain == nil then
@@ -2116,9 +2201,9 @@ local function runJob(job)
       return
     end
     swapSlot(c, job.slot, mesh or false)
-    if mesh and not divert then pcall(queueWriteBack, map, job.slot, job.masks) end
+    if mesh then pcall(queueWriteBack, map, job.slot, job.masks) end
   else
-    local mesh = wrapCachedMesh(map, cachedTerrain, cachedWater)
+    local mesh = wrapCachedMesh(map, cachedTerrain, cachedWater, cachedParts, divert)
     if (gen[job.id] or 0) ~= job.gen then
       if mesh and mesh.release then pcall(mesh.release, mesh) end
       return

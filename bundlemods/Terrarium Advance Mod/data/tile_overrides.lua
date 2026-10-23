@@ -6,10 +6,15 @@
 -- voxel mode.  There is no randomness in this file: a pick is a pick.
 --
 -- Tile ids are the hex numbers `idOverlay` prints on the world (0x01 = "01").
--- Keys under `tilesets` are tileset ids; the key "*" is the entry for EVERY
--- tileset that has none of its own, so the test below applies wherever you
--- are.  (The mod logs "TileOverrides: tileset <id> seen on map ..." once per
--- tileset if you want the exact spelling to give one its own entry.)
+-- Keys under `tilesets` are tileset ids.  Ids are PER TILESET (0x01 in a
+-- house tileset is not 0x01 outdoors), so give each tileset its own entry
+-- rather than "*" (every tileset), which re-textured walls and trees in
+-- towns, caves and interiors.  (The mod logs "TileOverrides: tileset <id>
+-- seen on map ..." once per tileset for the exact spelling of a new one.)
+--
+-- Only faces of the shape classes in `classes` change (default: ground,
+-- grass, terrace, ledge, cliff, slope).  Buildings, roofs, trees and props
+-- keep their art even where they share an 8x8 tile with the ground.
 --
 -- mode = "mesh" (default): those tiles' faces are taken out of the terrain and
 --   rebuilt as their own meshes wearing the PNG at FULL RESOLUTION, tiled in
@@ -44,13 +49,15 @@ local TEST = {
     [0x34] = "edges.png",
     [0x37] = "edges.png",
     [0x5B] = "flagstone.png",
-    [0x34] = "edges.png",
     [0x35] = "edges.png",
     [0x36] = "edges.png",
     [0x13] = "edges.png",
     [0x02] = "edges.png",
     [0x1E] = "edges.png",
-    [0x2C] = "grass.png",
+    [0x2C] = "edges.png",
+    [0x23] = "road.png",
+    [0x62] = "edges.png",
+    [0x01] = "edges.png",
 
     [0x39] = "road.png",
     [0x50] = "highgrass.png",
@@ -77,7 +84,7 @@ return {
   -- stamp every OTHER tile slot with its own id (two hex digits on a coloured
   -- square).  true = every Gen 1-2 tileset, or a list: { "TilesetKanto" }.
   -- Picks under `tilesets` still win.  false = off.
-  idOverlay = false,
+  idOverlay = true,
 
   -- where the PNGs live, relative to the mod root
   dir = "assets/ground/grass/",
@@ -91,7 +98,12 @@ return {
     "trees.png", "waterp.png", "wild.png",
   },
 
+  -- shape classes mesh mode may re-texture (see the note at the top)
+  classes = { "ground", "grass", "terrace", "ledge", "cliff", "slope", "wall", "cave", "tree" },
+
   tilesets = {
-    ["*"] = TEST,
+    -- the outdoor sets: Gen 2 Johto and the Gen 1 overworld
+    TilesetJohto = TEST,
+    OVERWORLD = TEST,
   },
 }
