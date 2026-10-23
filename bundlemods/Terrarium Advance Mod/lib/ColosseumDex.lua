@@ -589,4 +589,38 @@ end
 D.totalCompressedBytes=60519712
 D.speciesCount=386
 
+-- The highest dex any model source covers: Colosseum's 386, or further when
+-- the ORAS build reaches past it. speciesCount stays the Colosseum roster
+-- (cache tiers count against it); pickers and dex range checks use this.
+function D.maxDex()
+  D.orasHas(nil)  -- loads the ORAS index on first use
+  local top=D.speciesCount
+  for dex in pairs(D.orasDex) do if dex>top then top=dex end end
+  return top
+end
+
+-- Display name for any dex: Colosseum's names cover 1-386, the HD sheet
+-- name lists cover 387-721.
+local nameOfDex
+function D.displayName(dex)
+  dex=D.number(dex)
+  if not dex then return nil end
+  local V=type(loaderArg)=="table" and loaderArg or nil
+  local okN,names=pcall(function() return V and V.require("ColosseumDexNames") end)
+  local shouty=okN and type(names)=="table" and names[dex] or nil
+  if not shouty then
+    if not nameOfDex then
+      nameOfDex={}
+      local okH,HD=pcall(function() return V and (V.HDPokemonSheets or V.require("HDPokemonSheets")) end)
+      if okH and type(HD)=="table" and type(HD.names)=="function" then
+        local okL,list=pcall(HD.names)
+        if okL and type(list)=="table" then nameOfDex=list end
+      end
+    end
+    shouty=nameOfDex[dex]
+  end
+  if not shouty then return "Dex "..dex end
+  return (shouty:gsub("(%a)([%a]*)",function(a,b) return a:upper()..b:lower() end))
+end
+
 return D

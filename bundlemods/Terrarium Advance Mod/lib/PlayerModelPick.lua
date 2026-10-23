@@ -484,14 +484,14 @@ function PlayerModelPick.cyclePokemonPlayer(dir)
   if dir > 0 then
     -- Forward (right arrow): count up
     nextDex = current + 1
-    if nextDex > ColosseumDex.speciesCount then
+    if nextDex > ColosseumDex.maxDex() then
       nextDex = 0  -- Disable (back to normal player sprite)
     end
   else
     -- Backward (left arrow): count down
     if current == 0 then
       -- If currently disabled, go to the last species (386)
-      nextDex = ColosseumDex.speciesCount
+      nextDex = ColosseumDex.maxDex()
     else
       nextDex = current - 1
       if nextDex < 0 then
@@ -509,11 +509,8 @@ function PlayerModelPick.cyclePokemonPlayer(dir)
     PlayerModelInstall.writeMarker("")
     print("PlayerModelPick.cyclePokemonPlayer: Stadium player model disabled")
   else
-    local shouty = ColosseumDexNames[nextDex]
-    local speciesName = shouty and (shouty:gsub("(%a)([%a]*)", function(first, rest)
-      return first:upper() .. rest:lower()
-    end)) or ("Dex " .. nextDex)
-    
+    local speciesName = ColosseumDex.displayName(nextDex)
+
     local ok = PlayerModel.loadStadium(nextDex)
     if ok then
       PlayerModelInstall.writeMarker("stadium_player_" .. nextDex)
@@ -580,7 +577,7 @@ function PlayerModelPick.mewtwoRow()
           return species.name
         end
       end
-      return "DEX " .. current
+      return V.require("ColosseumDex").displayName(current) or ("DEX " .. current)
     end,
     step = function(game, dir)
       pcall(PlayerModelPick.cyclePokemonPlayer, dir)
@@ -664,7 +661,7 @@ function PlayerModelPick.pokemonFollowerRow()
         end)
       end
       
-      return "DEX " .. currentDex
+      return V.require("ColosseumDex").displayName(currentDex) or ("DEX " .. currentDex)
     end,
     step = function(game, dir)
       pcall(StadiumFollower.cycleSpecies, dir)

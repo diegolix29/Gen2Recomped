@@ -155,6 +155,18 @@ local function dexFromName(species)
   return nameToDex[nameKey(species)]
 end
 
+-- dex -> NAME for 387..721 (ColosseumDex.displayName's source past 386)
+function M.names()
+  local out, n = {}, 386
+  for _, list in ipairs({ G4_NAMES, G5_NAMES, G6_NAMES }) do
+    for word in list:gmatch("%S+") do
+      n = n + 1
+      out[n] = word
+    end
+  end
+  return out
+end
+
 -- ------- metadata (geometry ported from KIM, plus optional Gen 4 sidecar) ----
 
 local meta

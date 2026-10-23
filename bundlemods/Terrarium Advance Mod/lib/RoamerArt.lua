@@ -66,7 +66,7 @@ local function getDexFromSpecies(species)
   
   -- Try to get dex from various fields
   local dex = tonumber(mon.nationalDex) or tonumber(mon.dex) or tonumber(mon.number) or tonumber(mon.id)
-  if dex and dex >= 1 and dex <= 493 then return dex end
+  if dex and dex >= 1 and dex <= 721 then return dex end
   
   return nil
 end

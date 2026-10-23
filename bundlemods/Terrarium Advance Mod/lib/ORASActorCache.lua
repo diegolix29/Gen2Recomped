@@ -214,7 +214,7 @@ function C.buildSpecies(mod, rom, g, index, dex)
 
   -- kept meshes (effect meshes skipped, see below), their bind data and
   -- skinning recipes; bounds from the bind pose normalize every frame alike
-  local prefix = (model.name or ""):match("^(pm%d+_%d+)") or "pm"
+  local prefix = (model.name or ""):match("^(pm%d+)") or "pm"  -- Natu (pm0177) drops the _00
   local kept, glows, skipped = {}, {}, 0
   local lo, hi = { math.huge, math.huge, math.huge }, { -math.huge, -math.huge, -math.huge }
   for _, mesh in ipairs(model.meshes) do
@@ -512,7 +512,7 @@ function C.build(mod, list, log, progress)
       -- meshes has nothing to gain from a rebuild
       local okF, base, _, _, model = pcall(findSpecies, g, index, dex)
       if okF and base and model then
-        local prefix = (model.name or ""):match("^(pm%d+_%d+)") or "pm"
+        local prefix = (model.name or ""):match("^(pm%d+)") or "pm"  -- Natu (pm0177) drops the _00
         local effects = false
         for _, mesh in ipairs(model.meshes) do
           local mat = model.materials[mesh.materialIndex + 1] or {}

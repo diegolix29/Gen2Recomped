@@ -69,7 +69,7 @@ local function readMarker()
   local dex = tonumber(dexStr)
   -- Was capped at 151 (StadiumPack's own range) before the Colosseum fallback
   -- existed. Now covers the complete Gen I-III roster (see setSpecies below).
-  return dex and (dex > 0 and dex <= ColosseumDex.speciesCount) and dex or nil
+  return dex and (dex > 0 and dex <= ColosseumDex.maxDex()) and dex or nil
 end
 
 -- Write the marker file with the current follower species
@@ -227,7 +227,7 @@ function StadiumFollower.setSpecies(dex)
   usingSpriteFallback = false
   usingColosseum = false
   
-  if not dex or dex < 1 or dex > 493 then
+  if not dex or dex < 1 or dex > ColosseumDex.maxDex() then
     -- Save the disabled state
     writeMarker(nil)
     return true  -- Disabled
@@ -604,14 +604,14 @@ function StadiumFollower.cycleSpecies(dir)
   if dir > 0 then
     -- Forward (right arrow): count up
     nextDex = current + 1
-    if nextDex > ColosseumDex.speciesCount then
+    if nextDex > ColosseumDex.maxDex() then
       nextDex = 0  -- Disable (back to normal follower)
     end
   else
     -- Backward (left arrow): count down
     if current == 0 then
       -- If currently disabled, go to the last species (386)
-      nextDex = ColosseumDex.speciesCount
+      nextDex = ColosseumDex.maxDex()
     else
       nextDex = current - 1
       if nextDex < 0 then
@@ -625,11 +625,8 @@ function StadiumFollower.cycleSpecies(dir)
     StadiumFollower.setSpecies(nil)
     print("StadiumFollower.cycleSpecies: Stadium follower disabled")
   else
-    local shouty = ColosseumDexNames[nextDex]
-    local speciesName = shouty and (shouty:gsub("(%a)([%a]*)", function(first, rest)
-      return first:upper() .. rest:lower()
-    end)) or ("Dex " .. nextDex)
-    
+    local speciesName = ColosseumDex.displayName(nextDex)
+
     local ok = StadiumFollower.setSpecies(nextDex)
     if ok then
       print("StadiumFollower.cycleSpecies: Follower set to", speciesName, "(dex", nextDex .. ")")

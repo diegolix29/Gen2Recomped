@@ -699,7 +699,7 @@ function PlayerModel.loadInstalled()
   local dexStr = filename:match("stadium_player_(%d+)")
   if dexStr then
     local dex = tonumber(dexStr)
-    if dex and dex >= 1 and dex <= 386 then
+    if dex and dex >= 1 and dex <= V.require("ColosseumDex").maxDex() then
       return PlayerModel.loadStadium(dex)
     end
   end

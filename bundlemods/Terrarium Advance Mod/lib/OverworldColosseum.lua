@@ -22,7 +22,7 @@
 --              and ds.exports.lib.require("OverworldColosseum")
 --   if ow then ow.tag(npc, "PIKACHU") end
 --
--- Accepted tags are National Dex numbers (1-493, Platinum) or engine species strings.
+-- Accepted tags are National Dex numbers (1-721) or engine species strings.
 local V = ...
 
 local ColosseumDex = nil  -- Load lazily
@@ -159,7 +159,9 @@ local function cleanName(v)
   return s ~= "" and s or nil
 end
 
-local NATIONAL_DEX_MAX = 493
+-- every species any model source can cover (ORAS reaches 721); whether a
+-- model exists is ColosseumMon.available's call, not this range's
+local NATIONAL_DEX_MAX = 721
 
 local function dexNumber(v)
   if type(v) == "number" then
@@ -184,14 +186,27 @@ local function speciesDex(v)
     -- Try to resolve English species name using game data
     local data = gameData()
     if data and data.pokemon then
+      -- the species id itself (Gen 5 keys data.pokemon by id, not number)
+      local def = data.pokemon[v]
+      if type(def) == "table" then
+        local n = dexNumber(def.dex or def.nationalDex)
+        if n then return n end
+      end
       -- Try exact match first
       for dex, mon in pairs(data.pokemon) do
-        if mon.name and mon.name:upper() == v:upper() then
-          local dexNum = tonumber(dex)
-          if dexNum and dexNum >= 1 and dexNum <= NATIONAL_DEX_MAX then
-            return dexNum
-          end
+        if type(mon) == "table" and type(mon.name) == "string" and mon.name:upper() == v:upper() then
+          local dexNum = dexNumber(mon.dex or mon.nationalDex) or dexNumber(dex)
+          if dexNum then return dexNum end
         end
+      end
+    end
+    -- names past Colosseum's roster (Sinnoh / Unova / Kalos)
+    local okHd, HD = pcall(V.require, "HDPokemonSheets")
+    if okHd and type(HD) == "table" and type(HD.dexOf) == "function" then
+      local okD, d = pcall(HD.dexOf, v, data)
+      if okD then
+        local n = dexNumber(type(d) == "table" and d.dex or d)
+        if n then return n end
       end
     end
   end
@@ -543,6 +558,15 @@ function OverworldColosseum.resolveDex(entity)
   if species then
     local result = speciesDex(species)
     if result then return remember(result) end
+  end
+
+  -- Last: the HD sheets' entity resolver, which also reads the native
+  -- worlds' sprite defs (def.hdDex / def.dsSpecies on Platinum and B/W).
+  local okHd, HD = pcall(V.require, "HDPokemonSheets")
+  if okHd and type(HD) == "table" and type(HD.dexOf) == "function" then
+    local okD, d = pcall(HD.dexOf, entity)
+    d = okD and dexNumber(d) or nil
+    if d then return remember(d) end
   end
 
   return nil

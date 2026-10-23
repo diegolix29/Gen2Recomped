@@ -92,7 +92,7 @@ end
 local function dexNumber(v)
   if type(v) == "number" then
     local n = math.floor(v)
-    if n >= 1 and n <= ColosseumDex.speciesCount then return n end
+    if n >= 1 and n <= ColosseumDex.maxDex() then return n end
   elseif type(v) == "string" then
     local n = tonumber(v)
     if n then return dexNumber(n) end

@@ -103,7 +103,7 @@ local colosseumActorCache = {}
 -- riggable model (staticPose).
 local function speciesRig(species)
   local dex = dexOf(species)
-  if not dex or dex < 1 or dex > 386 then return nil end
+  if not dex or dex < 1 or dex > V.require("ColosseumDex").maxDex() then return nil end
 
   local cached = rigCache[dex]
   if cached then return cached end
