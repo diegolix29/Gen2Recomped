@@ -45,40 +45,76 @@ end
 -- chunk build asks 16 times, so remember the last answer for the same def.
 local lastDef, lastLayout
 
-function Cells.behaviour(map, cx, cy)
-  if not map then return nil end
-  -- cellBehaviour is the real behaviour byte on both Platinum outdoor
-  -- (permission low byte via Gen4Ground) and B/W (behaviorCells). blockAt
-  -- on B/W is 0/255 collision, so it must not be asked first.
+-- ---------------------------------------------------------------- Black / White --
+--
+-- B/W keep their tile behaviour in `def.behaviorCells` (one byte a cell, read by
+-- `Map:cellBehaviour`) -- NOT in `def.blocks`, which Gen5Field fills with "\0\0" /
+-- "\255\0" (open / blocked) for the rails. So `Map:blockAt` is useless for B/W
+-- and the numbers are B/W's own, not Platinum's: 0x04 / 0x05 / 0x21 are grass,
+-- 0x06 / 0x07 / 0x22 dark grass, 0x08 / 0x09 tall (rustling) grass, 0x0C / 0x23
+-- sand, and 0x03 is a dirt path (Platinum's "very tall grass"). Read as Platinum's
+-- they plant 3D grass on dirt paths and miss every real meadow.
+-- The sets come from the engine's own table (src/world/Gen5FieldRules.lua) when it
+-- loads, so they cannot drift from what the game rolls encounters on.
+local BW_GRASS = { [0x04] = true, [0x05] = true, [0x21] = true, [0x08] = true,
+                   [0x06] = true, [0x07] = true, [0x22] = true, [0x09] = true }
+local BW_SAND = { [0x0C] = true, [0x23] = true }
+do
+  local ok, R = pcall(require, "src.world.Gen5FieldRules")
+  if ok and type(R) == "table" and type(R.GRASS) == "table" then BW_GRASS = R.GRASS end
+end
+Cells.BW_GRASS, Cells.BW_SAND = BW_GRASS, BW_SAND
+
+function Cells.isBW(map)
+  local def = map and map.def
+  return def ~= nil and def.gen5 and true or false
+end
+
+-- Does behaviour number `b` mean wild-Pokemon grass on this map's cartridge?
+-- Platinum: TALL_GRASS 2 / VERY_TALL_GRASS 3. Black / White: BW_GRASS.
+function Cells.isGrassValue(map, b)
+  if b == nil then return false end
+  if Cells.isBW(map) then return BW_GRASS[b] == true end
+  return b == 2 or b == 3
+end
+
+-- ...and beach sand. `platinumSet` is the caller's own list (Gen4Sand.BEHAVIOURS).
+function Cells.isSandValue(map, b, platinumSet)
+  if b == nil then return false end
+  if Cells.isBW(map) then return BW_SAND[b] == true end
+  return platinumSet ~= nil and platinumSet[b] == true
+end
+
+-- a B/W layout's behaviour byte for a cell of the shared grid (outside the crop)
+local function bwBehaviour(map, cx, cy)
   if map.inBounds and map:inBounds(cx, cy) then
-    if type(map.cellBehaviour) == "function" then
-      local okC, b = pcall(map.cellBehaviour, map, cx, cy)
-      if okC and type(b) == "number" then return b end
-    end
-    if map.blockAt then
-      local ok, b = pcall(map.blockAt, map, cx, cy)
-      if ok and type(b) == "number" then return b end
-    end
+    if type(map.cellBehaviour) ~= "function" then return nil end
+    local ok, b = pcall(map.cellBehaviour, map, cx, cy)
+    if ok and type(b) == "number" then return b end
     return nil
   end
-  local ground = map.renderer and map.renderer.gen4Ground
-  if ground and type(ground.behaviourAt) == "function" then
-    local okG, gb = pcall(ground.behaviourAt, ground, cx, cy)
-    if okG and type(gb) == "number" then return gb end
+  local def = map.def
+  local layout = layoutFor(map)
+  local cells = layout and layout.behaviorCells
+  if type(cells) ~= "string" then return nil end
+  local stride = layout.width or def.width
+  local rows = layout.height or def.height
+  if not (stride and rows) then return nil end
+  local gx, gy = (def.originX or 0) + cx, (def.originY or 0) + cy
+  if gx < 0 or gy < 0 or gx >= stride or gy >= rows then return nil end
+  return cells:byte(gy * stride + gx + 1)
+end
+
+function Cells.behaviour(map, cx, cy)
+  if not map then return nil end
+  if Cells.isBW(map) then return bwBehaviour(map, cx, cy) end
+  if map.inBounds and map.blockAt and map:inBounds(cx, cy) then
+    local ok, b = pcall(map.blockAt, map, cx, cy)
+    if ok and type(b) == "number" then return b end
+    return nil
   end
   local def = map.def
   if not def then return nil end
-  local cells = def.behaviorCells
-  if type(cells) == "string" then
-    local w = tonumber(def.width) or 0
-    local h = tonumber(def.height) or 0
-    if w > 0 and cx >= 0 and cy >= 0 and cx < w and cy < h then
-      local v = cells:byte(cy * w + cx + 1)
-      if v then return v end
-    end
-  end
-  -- B/W layout.blocks is collision (0/255), not behaviour.
-  if def.gen5 then return nil end
   local layout
   if lastDef == def and lastLayout then
     layout = lastLayout

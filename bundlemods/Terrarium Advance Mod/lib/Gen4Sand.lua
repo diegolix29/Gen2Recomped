@@ -48,7 +48,7 @@ local Mat4 = V.require("Mat4")
 local Sand = {
   enabled = true,
   MODE = "stamp",
-  BEHAVIOURS = { [33] = true },   -- Platinum SAND (0x21); B/W uses NativeWorld.GEN5_SAND
+  BEHAVIOURS = { [33] = true },   -- SAND
   CHUNK = 4,                      -- cells per side of one baked mesh
   WINDOW = 2,                     -- engine chunks each way (Gen4Ground FREE_RADIUS)
   RADIUS = 3,                     -- fallback chunks around the focus without a chunk grid
@@ -116,29 +116,22 @@ local function groundTexture(Grass3D)
   return nil
 end
 
-local fieldMod
-local function field()
-  if fieldMod ~= nil then return fieldMod or nil end
-  fieldMod = optional("NativeWorld") or false
-  return fieldMod or nil
-end
-
 local function isSand(map, cx, cy)
-  local N = field()
-  local sand
-  if N and N.isSand then
-    sand = N.isSand(map, cx, cy)
-  else
-    local Cells = getCells()
-    local b
-    if Cells then b = Cells.behaviour(map, cx, cy)
-    elseif map.blockAt and map.inBounds and map:inBounds(cx, cy) then
-      local okB, v = pcall(map.blockAt, map, cx, cy)
-      b = okB and v or nil
-    end
-    sand = Sand.BEHAVIOURS[b] == true
+  -- Gen4Cells: the live Map inside its crop, the shared layout beyond it, so
+  -- the beach carries on over the neighbouring maps.
+  local Cells = getCells()
+  local b
+  if Cells then b = Cells.behaviour(map, cx, cy)
+  elseif map.blockAt and map.inBounds and map:inBounds(cx, cy) then
+    local okB, v = pcall(map.blockAt, map, cx, cy)
+    b = okB and v or nil
   end
-  if not sand then return false end
+  if Cells and Cells.isSandValue then
+    -- Black / White number their sand differently (Gen4Cells.BW_SAND)
+    if not Cells.isSandValue(map, b, Sand.BEHAVIOURS) then return false end
+  elseif not Sand.BEHAVIOURS[b] then
+    return false
+  end
   if map.isWaterCell and map.inBounds and map:inBounds(cx, cy) then
     local okW, water = pcall(map.isWaterCell, map, cx, cy)
     if okW and water then return false end

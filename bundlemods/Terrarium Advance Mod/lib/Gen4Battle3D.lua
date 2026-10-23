@@ -265,7 +265,10 @@ end
 -- the only case where anything visible changes.
 function M.begin(state, battle)
   M.finish()
-  if not (Bridge.isNativeWorld() and Bridge.installed) then return false end
+  if not (Bridge.isGen4() and Bridge.installed) then return false end
+  -- Black / White: staged battles are unverified there; Bridge.gen5Off.battle3d = true
+  -- keeps B/W on the engine's own battle scene
+  if Bridge.isGen5() and Bridge.gen5Off and Bridge.gen5Off.battle3d then return false end
   if not (state and state.map and state.player and battle) then return false end
   local ground = state.map.renderer and state.map.renderer.gen4Ground
   if not (ground and ground.freeMode and ground.groundY) then return false end
@@ -426,7 +429,7 @@ end
 
 function M.install()
   if M.installed then return true end
-  if not Bridge.isNativeWorld() then return false end
+  if not Bridge.isGen4() then return false end
   local okG, Ground = pcall(require, "src.render.Gen4Ground")
   local okV, View = pcall(require, "src.render.Gen4View")
   local okB, BattleState = pcall(require, "src.battle.BattleState")
