@@ -366,6 +366,14 @@ function SettingsMenu.rows(catId, game)
       out[#out + 1] = hdRow
     end
 
+    -- ORAS models (3D Pokemon 1-721 from the player's decrypted 3DS dump)
+    local okOR, orasRow = pcall(function()
+      return V.require("ORASModels").row()
+    end)
+    if okOR and orasRow and not rowExists(orasRow.id) then
+      out[#out + 1] = orasRow
+    end
+
     -- Stadium 2 status display (informational only)
     local okS2, Stadium2Setting = pcall(V.require, "Stadium2Setting")
     if okS2 and Stadium2Setting then

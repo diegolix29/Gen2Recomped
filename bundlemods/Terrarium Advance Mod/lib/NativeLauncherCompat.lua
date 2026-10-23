@@ -322,8 +322,15 @@ local function makeLogicalImports(base,status)
   end
 
   local imports={}
+  -- Only the Colosseum disc gets the normalized view; any other import the
+  -- manifest declares (the ORAS dump, lib/ORASModels.lua) passes straight
+  -- through to the launcher's own facade.
+  local function passthrough(method,id,...)
+    if type(base[method])~="function" then return nil,"unknown import: "..tostring(id) end
+    return base[method](base,id,...)
+  end
   function imports:info(id)
-    if id~=IMPORT_ID then return nil,"unknown import: "..tostring(id) end
+    if id~=IMPORT_ID then return passthrough("info",id) end
     local d,err=detect();if not d then return nil,err end
     local out=copyInfo(d.upstream)
     out.id=IMPORT_ID;out.size=EXPECTED_SIZE;out.logicalSize=EXPECTED_SIZE
@@ -334,7 +341,7 @@ local function makeLogicalImports(base,status)
     return out
   end
   function imports:read(id,offset,length)
-    if id~=IMPORT_ID then return nil,"unknown import: "..tostring(id) end
+    if id~=IMPORT_ID then return passthrough("read",id,offset,length) end
     local d,err=detect();if not d then return nil,err end
     return logicalRead(d,offset,length)
   end

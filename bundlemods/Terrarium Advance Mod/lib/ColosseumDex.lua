@@ -14,6 +14,9 @@
 -- species names. Do not "correct" them.
 
 local D={version=1,discId="GC6E01",memberType=0x1E}
+-- whatever loaded this module (the mod namespace, or nothing); used only to
+-- find mod.cache for the ORAS index below
+local loaderArg=...
 
 -- [dex]={stem,compressedArchiveBytes}
 D.species={
@@ -504,8 +507,42 @@ function D.modelKey(dex,variant)
   local n=D.number(dex);if not n then return nil end
   return D.variant(dex,variant)=="shiny" and D.rare[n] and (tostring(n)..":shiny") or n
 end
+-- ORAS models (lib/ORASActorCache.lua) are written in this same cache format
+-- under oras/pokemon/<dex>, built from the player's own Omega Ruby / Alpha
+-- Sapphire dump.  A species listed in oras/pokemon/index.lua is served from
+-- there for its normal variant; a separate-source shiny keeps Colosseum's.
+-- Several instances of this module are loaded (main.lua's, the Colosseum
+-- namespace's, V.require copies), so each one reads the index itself on first
+-- use rather than relying on one instance being told.
+D.orasDex={}
+D.orasLoaded=false
+D.ORAS_INDEX="oras/pokemon/index.lua"
+function D.loadOras(mod)
+  D.orasDex={}
+  D.orasLoaded=true
+  if not (mod and mod.cache and type(mod.cache.read)=="function") then return 0 end
+  local ok,src=pcall(mod.cache.read,mod.cache,D.ORAS_INDEX)
+  if not ok or type(src)~="string" then return 0 end
+  local chunk=load(src,"@"..D.ORAS_INDEX)
+  local okRun,list=pcall(chunk or function() end)
+  local n=0
+  if okRun and type(list)=="table" then
+    for _,dex in ipairs(list) do if tonumber(dex) then D.orasDex[tonumber(dex)]=true;n=n+1 end end
+  end
+  return n
+end
+function D.isOras(dex,variant)
+  if not D.orasLoaded then
+    local m=type(loaderArg)=="table" and loaderArg.mod or nil
+    if m then pcall(D.loadOras,m) else D.orasLoaded=true end
+  end
+  local n=D.number(dex)
+  return n~=nil and D.orasDex[n]==true and type(D.modelKey(dex,variant))~="string"
+end
+
 function D.cacheRoot(dex,variant)
   local n=D.number(dex) or 0
+  if D.isOras(dex,variant) then return ("oras/pokemon/%d"):format(n) end
   return ("cache/pokemon/%d"):format(n)..(type(D.modelKey(dex,variant))=="string" and "/shiny" or "")
 end
 

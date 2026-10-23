@@ -45,6 +45,14 @@
         "a2d58d82c6b76b42653dcd25c8966de7"
       ],
       "magic": "474336453031"
+    },
+    {
+      "id": "pokemon_oras",
+      "name": "Pokemon Omega Ruby / Alpha Sapphire (decrypted .3ds)",
+      "description": "Optional. A DECRYPTED Omega Ruby or Alpha Sapphire cartridge image (.3ds/.cci, or a .cxi) for the ORAS MODELS option: 3D Pokemon models for all 721 species, built from your own copy. Decrypt with GodMode9 or dump decrypted from Azahar/Citra.",
+      "file": "pokemon_oras.3ds",
+      "magic": ["4E435344", "4E434348"],
+      "magic_offset": 256
     }
   ]
 }

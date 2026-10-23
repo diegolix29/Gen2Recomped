@@ -2597,8 +2597,15 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
   local okPick2, importRow2 = pcall(function()
     return V.require("Stadium2RomPick").row()
   end)
-  if okPick2 and importRow2 and not rowExists(importRow2.id) then 
-    table.insert(out, importRow2) 
+  if okPick2 and importRow2 and not rowExists(importRow2.id) then
+    table.insert(out, importRow2)
+  end
+
+  local okOras, orasRow = pcall(function()
+    return V.require("ORASModels").row()
+  end)
+  if okOras and orasRow and not rowExists(orasRow.id) then
+    table.insert(out, orasRow)
   end
 
   local okMewtwo, mewtwoRow = pcall(function()
@@ -3720,6 +3727,8 @@ local function initializeColosseumIntegration()
     local TrainerThrowSource = colosseumPackage("extract/TrainerThrowSource.lua")
     local TrainerExtractor = colosseumPackage("extract/TrainerExtractor.lua", { HSD = HSD, FSYS = FSYS, PayloadPreserver = PayloadPreserver, TrainerThrowSource = TrainerThrowSource })
     local ColosseumDex = colosseumPackage("lib/ColosseumDex.lua")
+    -- species whose models were built from the ORAS dump (lib/ORASActorCache.lua)
+    pcall(ColosseumDex.loadOras, mod)
     local ShinySupport = colosseumPackage("lib/ShinySupport.lua")
     local PKXMetadata = colosseumPackage("extract/PKXMetadata.lua", { FSYS = FSYS, ColosseumDex = ColosseumDex, ShinySupport = ShinySupport })
     local PokemonExtractor = colosseumPackage("extract/PokemonExtractor.lua", { HSD = HSD, FSYS = FSYS, ColosseumDex = ColosseumDex, PKXMetadata = PKXMetadata, ShinySupport = ShinySupport, PayloadPreserver = PayloadPreserver })
@@ -4360,8 +4369,19 @@ end
         end
       end)
     end
-  elseif mod.log and mod.log.warn then
-    pcall(mod.log.warn, mod.log, "Colosseum runtime withheld because required cache is not ready (%s)", tostring(cacheGateOutcome or colosseumBuildStatus.state))
+  else
+    if mod.log and mod.log.warn then
+      pcall(mod.log.warn, mod.log, "Colosseum runtime withheld because required cache is not ready (%s)", tostring(cacheGateOutcome or colosseumBuildStatus.state))
+    end
+    -- ORAS models (OPTIONS -> ORAS MODELS) need no Colosseum disc: bring up
+    -- just the Pokemon actor runtime for them (lib/ORASRuntime.lua)
+    local okOras, ORASRuntime = pcall(V.require, "ORASRuntime")
+    if okOras and ORASRuntime then
+      local okRun, actors, why = pcall(ORASRuntime.install, mod, colosseumPackage)
+      if not (okRun and actors) and mod.log and mod.log.info then
+        pcall(mod.log.info, mod.log, "ORAS actor runtime not started: %s", tostring(okRun and why or actors))
+      end
+    end
   end
 
   -- ---- Colosseum exports ----

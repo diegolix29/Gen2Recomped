@@ -245,6 +245,13 @@ local function speciesCacheReady(dex)
   dex=modelKey(dex)
   if not (dex and extractor) then return false,nil end
   local expected=expectedSpeciesStamp()
+  -- An ORAS-built species (ColosseumDex.isOras) is ready whenever its cache
+  -- exists.  It is never re-extracted from the Colosseum disc: that would
+  -- write a Colosseum model into the ORAS folder the dex is routed to.
+  if Dex.isOras and Dex.isOras(dex) then
+    local info=GeneratedAssets and GeneratedAssets.info and GeneratedAssets.info(extractor.cachePath(dex))
+    return type(info)=="table",expected
+  end
   if type(expected)=="string" and speciesCacheValidity[dex]==expected then return true,expected end
 
   -- Route cache validity through GeneratedAssets so Hard Cache Save's persisted
@@ -2143,6 +2150,18 @@ local function dexHeightMeters(opts,dex)
   end
   return nil
 end         -- runtime multiplier, adjusted with F7/F8
+
+-- The stamp a species' rev.txt must hold to be treated as current; the ORAS
+-- cache writer (lib/ORASActorCache.lua) stamps its caches with it.
+function A.cacheStamp() return expectedSpeciesStamp() end
+
+-- Drop a resident scene so the next acquire reloads it from the cache (used
+-- after ORAS models replace a species mid-session).
+function A.forgetScene(dex)
+  local key=modelKey(dex)
+  if key and scenes[key] then scenes[key]=nil end
+  if key then sceneErrors[key]=nil;speciesCacheValidity[key]=nil end
+end
 
 function A.available(source,dex)
   dex=tonumber(dex)
