@@ -50,7 +50,7 @@ local Grass = {
                          -- the ground's chunk grid is not available
   BUILDS_PER_FRAME = 24, -- most chunk meshes built in one frame
   BUILD_BUDGET = 0.004,  -- seconds of building per frame (at least one is built)
-  TALL_GRASS = 2,        -- Gen 4 tile behaviours (Platinum)
+  TALL_GRASS = 2,        -- Gen 4 tile behaviours
   VERY_TALL_GRASS = 3,
 }
 
@@ -93,29 +93,24 @@ end
 local chunks = {}
 local win = { list = {}, dirty = true }
 
-local fieldMod
-local function field()
-  if fieldMod ~= nil then return fieldMod or nil end
-  fieldMod = optional("NativeWorld") or false
-  return fieldMod or nil
-end
-
 local function isTallGrass(map, cx, cy)
-  local N = field()
-  local grass
-  if N and N.isGrass then
-    grass = N.isGrass(map, cx, cy)
-  else
-    local Cells = getCells()
-    local b
-    if Cells then b = Cells.behaviour(map, cx, cy)
-    elseif map.blockAt and map.inBounds and map:inBounds(cx, cy) then
-      local okB, v = pcall(map.blockAt, map, cx, cy)
-      b = okB and v or nil
-    end
-    grass = (b == Grass.TALL_GRASS or b == Grass.VERY_TALL_GRASS)
+  -- Gen4Cells reads the live Map inside its crop and the shared layout beyond
+  -- it, so grass grows on the neighbouring maps' ground too (a Gen 4 Map is
+  -- only a rectangle cut out of the grid the engine draws around you).
+  local Cells = getCells()
+  local b
+  if Cells then b = Cells.behaviour(map, cx, cy)
+  elseif map.blockAt and map.inBounds and map:inBounds(cx, cy) then
+    local okB, v = pcall(map.blockAt, map, cx, cy)
+    b = okB and v or nil
   end
-  if not grass then return false end
+  if Cells and Cells.isGrassValue then
+    if not Cells.isGrassValue(map, b) then return false end
+  elseif not (b == Grass.TALL_GRASS or b == Grass.VERY_TALL_GRASS) then
+    return false
+  end
+  -- never on water, whatever the behaviour byte says (only the live Map can
+  -- be asked; beyond its crop the behaviour byte alone has to do)
   if map.isWaterCell and map.inBounds and map:inBounds(cx, cy) then
     local okW, water = pcall(map.isWaterCell, map, cx, cy)
     if okW and water then return false end

@@ -241,6 +241,15 @@ end
 function Spawn.isOutdoor(map)
   local def = map and map.def
   if type(def) ~= "table" then return false end
+  -- Black / White: the field importer records it on the terrain record
+  -- (Gen5Field: `outdoors = g4.headers ~= nil`), and Gen4Ground keeps it as
+  -- `ground.outdoors`. The def itself carries no outdoor field, and a size
+  -- guess calls Nuvema Town (a small outdoor map) indoors.
+  if def.gen5 then
+    local r = map.renderer
+    local ground = r and r.gen4Ground
+    if ground and ground.outdoors ~= nil then return ground.outdoors and true or false end
+  end
   if def.outdoor ~= nil then return def.outdoor and true or false end
   if def.isOutdoor ~= nil then return def.isOutdoor and true or false end
   for _, field in ipairs({ "mapType", "type", "environment", "kind", "category" }) do
