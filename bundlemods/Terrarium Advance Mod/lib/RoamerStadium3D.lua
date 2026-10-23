@@ -163,37 +163,13 @@ function M.draw(species, x, y, facing, animTime, moving)
 
   -- Handle Colosseum models for Gen 3 Pokemon
   if entry.isColosseum then
-    -- Use the same camera approach as PlayerModel for Gen4 games
-    local FirstPerson = V.require("FirstPerson")
+    -- A roamer keeps its own world facing: it never turns with the camera
+    -- (only the player's Pokemon and followers do).
     local Cam = V.require("Gen4ActorCam")
-    local b = FirstPerson.cardBlend()
-
     local fx, fz
-
-    -- In camera-relative modes, use camera facing vectors directly, not grid-based towardFor
-    if Cam and Cam.freeRoam and Cam.freeRoam() then
-      local yaw = Cam.modelYaw()
-      fx, fz = math.sin(yaw), math.cos(yaw)
-    elseif Cam and Cam.active and Cam.active() then
+    if Cam and Cam.active and Cam.active() then
       fx, fz = Cam.facingVector(facing)
-    elseif b > 0 then
-      local cameraYaw = FirstPerson.cardYaw(x, y)
-      local face = type(facing) == "string" and string.lower(facing) or facing
-      local yaw = 0
-      if face == "down" then
-        yaw = (cameraYaw + math.pi) * b
-      elseif face == "up" then
-        yaw = cameraYaw * b
-      elseif face == "left" then
-        yaw = (cameraYaw + math.pi / 2) * b
-      elseif face == "right" then
-        yaw = (cameraYaw - math.pi / 2) * b
-      else
-        yaw = cameraYaw * b
-      end
-      fx, fz = math.sin(yaw), math.cos(yaw)
     else
-      -- Only use grid-based towardFor when not in camera-relative mode
       fx, fz = ColosseumMon.towardFor(facing)
     end
 
@@ -222,37 +198,12 @@ function M.draw(species, x, y, facing, animTime, moving)
   end)
   if not ok then return false end
 
-  -- Use the same camera approach as PlayerModel for Gen4 games
-  local FirstPerson = V.require("FirstPerson")
+  -- world facing only: a roamer never turns with the camera
   local Cam = V.require("Gen4ActorCam")
-  local b = FirstPerson.cardBlend()
-
   local m = Mat4.translate(x, 0, y)
   local yaw = YAW_BY_FACING[facing] or 0
-
-  -- Apply camera-relative rotation using PlayerModel's yawForDraw logic
-  if Cam and Cam.freeRoam and Cam.freeRoam() then
-    yaw = Cam.modelYaw()
-  elseif Cam and Cam.active and Cam.active() then
+  if Cam and Cam.active and Cam.active() then
     yaw = -Cam.worldYaw(facing)
-  elseif b > 0 then
-    local cameraYaw = FirstPerson.cardYaw(x, y)
-    local face = type(facing) == "string" and string.lower(facing) or facing
-    -- Use "awayCam" kind like PlayerModel
-    if face == "down" then
-      yaw = (cameraYaw + math.pi) * b
-    elseif face == "up" then
-      yaw = cameraYaw * b
-    elseif face == "right" then
-      yaw = (cameraYaw - math.pi / 2) * b
-    elseif face == "left" then
-      yaw = (cameraYaw + math.pi / 2) * b
-    else
-      yaw = cameraYaw * b
-    end
-  else
-    -- Use grid-based yaw when not in camera-relative mode
-    yaw = YAW_BY_FACING[facing] or 0
   end
 
   if yaw ~= 0 then m = Mat4.mul(m, Mat4.rotateY(yaw)) end

@@ -1339,23 +1339,33 @@ function Actor:transition(state)
   if self.state~=state then self.state=state;self.stateAge=0 end
 end
 
-function Actor:spawn(progress)
+-- ORAS send-out (curled up -> unfurled, lib/ORASActorCache.lua "appear"),
+-- once per actor; update() hands it to idle when done.
+function Actor:startAppear()
+  if self._appearTried then return false end
+  self._appearTried=true
+  local sc=self.scene
+  local has=sc and sc.source=="ORAS" and ((sc.actions and sc.actions.appear) or (sc.actionSpecs and sc.actionSpecs.appear))
+  if has and self:selectNativeSlot("appear") then
+    self.action="appear";self.actionAge=0
+    return true
+  end
+  return false
+end
+
+function Actor:spawn(progress,opts)
   local p=clamp(tonumber(progress) or 1,0,1)
   self.spawnScale=p
   if p<1 then
     if self.state~="faint" and self.state~="removal" then self:transition("spawn") end
-    -- ORAS send-out (curled up -> unfurled, lib/ORASActorCache.lua "appear"),
-    -- once per actor, over the grow-in; update() hands it to idle when done.
-    -- Overworld actors go straight to spawn(1) and never play it.
-    if not self._appearTried and self.state=="spawn" then
-      self._appearTried=true
-      local sc=self.scene
-      local has=sc and sc.source=="ORAS" and ((sc.actions and sc.actions.appear) or (sc.actionSpecs and sc.actionSpecs.appear))
-      if has and self:selectNativeSlot("appear") then
-        self.action="appear";self.actionAge=0
-      end
-    end
+    -- played over the grow-in
+    if self.state=="spawn" then self:startAppear() end
   elseif self.state=="spawn" then
+    -- A battle host with no grow-in (or a model that loaded after it) reports
+    -- full size from the first frame: play the send-out then.  Battle callers
+    -- pass {side=...}; overworld callers (ColosseumMon) pass nothing and
+    -- never play it.
+    if self.action~="appear" and type(opts)=="table" and opts.side~=nil then self:startAppear() end
     if self.action=="appear" then
       self:transition("appear")
     else
@@ -3792,7 +3802,9 @@ function A.persistentModelState(dex,variant,progress)
   local base=select(1,RuntimeMeshCache.readLua(runtimeBasePath(key)))
   if not runtimeBaseUsable(base,stamp,key,true) then return missing("base sidecars") end
   local metadata=select(1,readLua(metadataCachePath(key)))
-  if not (type(metadata)=="table" and (tonumber(metadata.revision) or 0)>=4
+  -- ORAS species carry no PKX metadata (see prepareSessionModel)
+  if Dex.isOras and Dex.isOras(n,variant) then metadata=metadata or {}
+  elseif not (type(metadata)=="table" and (tonumber(metadata.revision) or 0)>=4
       and type(metadata.slots)=="table" and (Dex.rare[n] or (metadata.shinyFilter and validFilter(metadata.shinyFilter)) or not metadata.shinyFilter)) then
     return missing("native/shiny metadata")
   end
@@ -3843,6 +3855,23 @@ function A.prepareSessionModel(dex,variant,progress)
   local stamp=expectedSpeciesStamp()
   local checkpoint=progress or workCheckpoint
   local mobile=platformOS()=="Android" or platformOS()=="iOS"
+
+  -- ORAS-built species (lib/ORASActorCache.lua) arrive complete: action banks
+  -- and textures are already baked, and there is no Colosseum PKX metadata
+  -- to read, validate or bake from (the path below indexed that nil).
+  if Dex.isOras and Dex.isOras(n,variant) then
+    if sessionPrepared[key]==stamp and A.peek("session",n,variant).resident then return true,"resident" end
+    sceneErrors[key]=nil;pendingExtract[key]=nil
+    if not speciesCacheReady(key) then return false,"ORAS model not built yet (Settings: ORAS MODELS)" end
+    checkpoint("Loading shared model "..n.." / "..variant)
+    local scene,err=loadScene(key,false,checkpoint)
+    if not scene then return false,err end
+    sessionPrepared[key]=stamp
+    sceneUseSerial=sceneUseSerial+1;scene.__cbeLastUse=sceneUseSerial
+    if not mobile then sessionPinned[key]=true
+    else A.trimRuntimeMemory({keepRecent=8,softLimit=12}) end
+    return true,"prepared"
+  end
 
   -- Session flags are acceleration only. On a fresh startup recognize complete
   -- disk artifacts before entering any extractor/text-geometry/action bake path.

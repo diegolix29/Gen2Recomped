@@ -204,7 +204,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
   do
     local def = entity.sprite and entity.sprite.def
     local tagged = tonumber(def and def.hdDex)
-    if tagged and tagged >= 1 and tagged <= 493 then return tagged end
+    if tagged and tagged >= 1 and tagged <= 721 then return tagged end
   end
 
   do
@@ -227,7 +227,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
     if nestedSpecies then
       -- If it's already a number, return it
       local num = tonumber(nestedSpecies)
-      if num and num >= 1 and num <= 493 then
+      if num and num >= 1 and num <= 721 then
         return num
       end
       
@@ -236,7 +236,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
         local dexStr = nestedSpecies:match("SPECIES_(%d+)")
         if dexStr then
           local dexNum = tonumber(dexStr)
-          if dexNum and dexNum >= 1 and dexNum <= 493 then
+          if dexNum and dexNum >= 1 and dexNum <= 721 then
             return dexNum
           end
         end
@@ -249,7 +249,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
   
   -- If it's already a number, return it
   local num = tonumber(species)
-  if num and num >= 1 and num <= 493 then
+  if num and num >= 1 and num <= 721 then
     return num
   end
   
@@ -258,7 +258,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
     local dexStr = species:match("SPECIES_(%d+)")
     if dexStr then
       local dexNum = tonumber(dexStr)
-      if dexNum and dexNum >= 1 and dexNum <= 493 then
+      if dexNum and dexNum >= 1 and dexNum <= 721 then
         return dexNum
       end
     end
@@ -267,7 +267,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
   -- NEW: Try to get from sprite.dsSpecies (dex number set by sprite system)
   if entity.sprite and entity.sprite.dsSpecies then
     local spriteDex = tonumber(entity.sprite.dsSpecies)
-    if spriteDex and spriteDex >= 1 and spriteDex <= 493 then
+    if spriteDex and spriteDex >= 1 and spriteDex <= 721 then
       return spriteDex
     end
   end
@@ -276,14 +276,14 @@ function StadiumWilds.getEntitySpeciesDex(entity)
   if entity.sprite and entity.sprite.species then
     local spriteSpecies = entity.sprite.species
     local spriteNum = tonumber(spriteSpecies)
-    if spriteNum and spriteNum >= 1 and spriteNum <= 493 then
+    if spriteNum and spriteNum >= 1 and spriteNum <= 721 then
       return spriteNum
     end
     if type(spriteSpecies) == "string" then
       local dexStr = spriteSpecies:match("SPECIES_(%d+)")
       if dexStr then
         local dexNum = tonumber(dexStr)
-        if dexNum and dexNum >= 1 and dexNum <= 493 then
+        if dexNum and dexNum >= 1 and dexNum <= 721 then
           return dexNum
         end
       end
@@ -297,7 +297,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
     local mon = game.data.pokemon[species]
     if mon and mon.dex then
       local dexNum = tonumber(mon.dex)
-      if dexNum and dexNum >= 1 and dexNum <= 493 then
+      if dexNum and dexNum >= 1 and dexNum <= 721 then
         return dexNum
       end
     end
@@ -306,13 +306,13 @@ function StadiumWilds.getEntitySpeciesDex(entity)
     for id, def in pairs(game.data.pokemon) do
       if def and def.name and def.name:upper() == tostring(species):upper() then
         local dexNum = tonumber(def.dex)
-        if dexNum and dexNum >= 1 and dexNum <= 493 then
+        if dexNum and dexNum >= 1 and dexNum <= 721 then
           return dexNum
         end
       end
       if tostring(id):upper() == tostring(species):upper() then
         local dexNum = tonumber(def.dex)
-        if dexNum and dexNum >= 1 and dexNum <= 493 then
+        if dexNum and dexNum >= 1 and dexNum <= 721 then
           return dexNum
         end
       end
@@ -460,21 +460,12 @@ function StadiumWilds.drawEntity(entity)
   -- Determine facing direction
   local facing = entity.facing or "down"
   
-  -- Check if we're in free-roam mode (1st or 3rd person)
-  local FirstPerson = V.require("FirstPerson")
-  local b = FirstPerson.cardBlend()
-  
+  -- A wild Pokemon keeps its own world facing in every camera mode: it never
+  -- turns with the camera (only the player's Pokemon and followers do).
   local fx, fz = 0, 1
-  if b > 0 then
-    -- In free-roam mode, use camera-relative direction
-    local yaw = FirstPerson.cardYaw(x + 8, y + 8)
-    fx, fz = math.sin(yaw), math.cos(yaw)
-  else
-    -- In normal mode, use entity's facing direction
-    if facing == "up" then fx, fz = 0, -1
-    elseif facing == "left" then fx, fz = -1, 0
-    elseif facing == "right" then fx, fz = 1, 0
-    end
+  if facing == "up" then fx, fz = 0, -1
+  elseif facing == "left" then fx, fz = -1, 0
+  elseif facing == "right" then fx, fz = 1, 0
   end
 
   -- Colosseum actor: same x+8/gh/y+8/fx,fz call shape as the Stadium branch

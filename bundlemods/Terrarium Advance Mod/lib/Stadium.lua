@@ -209,20 +209,22 @@ end
 -- than a table of its own.
 local function dexOf(species)
   if not species then return nil end
+  -- up to 721: an ORAS-built model covers Unova and Kalos too (the model
+  -- sources decide per species whether one exists)
   if type(species) == "number" then
     local n = math.floor(species)
-    if n >= 1 and n <= 493 then return n end
+    if n >= 1 and n <= 721 then return n end
   end
   local asNumber = tonumber(species)
   if asNumber then
     local n = math.floor(asNumber)
-    if n >= 1 and n <= 493 then return n end
+    if n >= 1 and n <= 721 then return n end
   end
   local data = game() and game().data
   local poke = data and data.pokemon
   if not poke then return nil end
   local def = poke[species] or (asNumber and poke[asNumber])
-  return def and (def.dex or asNumber) or nil
+  return def and (tonumber(def.dex) or tonumber(def.nationalDex) or asNumber) or nil
 end
 
 -- Whether this side is showing a TRAINER rather than a Pokemon.

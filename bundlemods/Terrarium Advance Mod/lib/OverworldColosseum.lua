@@ -761,9 +761,21 @@ function OverworldColosseum.draw(p)
   local renderFacing = p.facing or "down"
   local fx, fz
 
-  -- Handle camera rotation using the same approach as PlayerModel
+  -- Only the player's own Pokemon and followers turn with the camera (the
+  -- same approach as PlayerModel); wild Pokemon and roamers keep their own
+  -- world facing whatever way the camera looks.
+  local e = p.entity
+  local followsCamera = p.isPlayer or p.isFollower or (type(e) == "table" and (
+    e.isFollower == true or e.wildsFollower == true or e.pikachuFollower == true
+    or e.follower == true or e._wildsFollowerSpecies ~= nil)) or false
   local okCam, Cam = pcall(V.require, "Gen4ActorCam")
-  if okCam and Cam and Cam.freeRoam and Cam.freeRoam() then
+  if not followsCamera then
+    if okCam and Cam and Cam.facingVector then
+      fx, fz = Cam.facingVector(renderFacing)
+    else
+      fx, fz = facingVector(renderFacing)
+    end
+  elseif okCam and Cam and Cam.freeRoam and Cam.freeRoam() then
     local yaw = Cam.modelYaw()
     fx, fz = math.sin(yaw), math.cos(yaw)
   elseif okCam and Cam and Cam.active and Cam.active() then

@@ -289,7 +289,8 @@ end
 -- states ("spawn", "hit", "recall", "removal") are never asked for BY NAME
 -- from here (Stadium.lua's hooks only ever request "entrance", "attack",
 -- "faint" or "idle" -- see Stadium.install), so they do not need entries.
-local RANK = { idle = 0, entrance = 1, attack = 2, faint = 3 }
+-- "appear" is the actor's own state while an ORAS send-out plays (see :play)
+local RANK = { idle = 0, entrance = 1, appear = 1, attack = 2, faint = 3 }
 
 -- `moveDef` is an extra, optional 4th argument nothing outside this file
 -- passes except :attack() below -- it exists purely so the attack branch
@@ -325,8 +326,19 @@ function ColosseumBattleMon:play(state, animIndex, auxIndex, moveDef)
     actor.pendingFaint, actor.pendingHits = nil, nil
     actor.pendingAttack, actor.pendingRecall = nil, nil
     actor.action, actor.actionAge = nil, 0
-    pcall(actor.selectNativeSlot, actor, "idle")
-    pcall(actor.transition, actor, "idle")
+    -- an ORAS model does have an entrance: its send-out clip ("appear"),
+    -- which Actor:update hands on to idle when it finishes
+    local okA, appeared = false, false
+    if state == "entrance" and type(actor.startAppear) == "function" then
+      actor._appearTried = nil
+      okA, appeared = pcall(actor.startAppear, actor)
+    end
+    if okA and appeared then
+      pcall(actor.transition, actor, "appear")
+    else
+      pcall(actor.selectNativeSlot, actor, "idle")
+      pcall(actor.transition, actor, "idle")
+    end
   end
   self.state = actor.state
   self.done = false

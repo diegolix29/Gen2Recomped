@@ -455,6 +455,17 @@ local function facingVector(facing)
   return 0, 1 -- down, nil, and unknown values use Stadium's native +Z
 end
 
+-- Only the player's own Pokemon, followers and a ridden Sky Ride mount turn
+-- with the camera; wild Pokemon and roamers keep their own world facing.
+local function followsCamera(p)
+  if not p then return false end
+  if p.isPlayer or p.isFollower then return true end
+  local e = p.entity
+  return type(e) == "table" and (e.isFollower == true or e.wildsFollower == true
+    or e.pikachuFollower == true or e.follower == true
+    or e._wildsFollowerSpecies ~= nil or e._stadiumSkyRideAnchorFacing ~= nil) or false
+end
+
 local function dtForFrame()
   local dt = 1 / 60
   if love and love.timer and love.timer.getDelta then
@@ -924,7 +935,10 @@ local function prepareOneColosseum(p, dex, dt)
 
   -- Camera-relative facing using the same approach as PlayerModel
   local okCam, Cam = pcall(V.require, "Gen4ActorCam")
-  if okCam and Cam and Cam.freeRoam and Cam.freeRoam() then
+  if not followsCamera(p) then
+    if okCam and Cam and Cam.facingVector then fx, fz = Cam.facingVector(renderFacing)
+    else fx, fz = facingVector(renderFacing) end
+  elseif okCam and Cam and Cam.freeRoam and Cam.freeRoam() then
     local yaw = Cam.modelYaw()
     fx, fz = math.sin(yaw), math.cos(yaw)
   elseif okCam and Cam and Cam.active and Cam.active() then
@@ -1036,7 +1050,10 @@ local function prepareOne(p, dex, dt)
   local useCameraRotation = false
   local fx, fz
 
-  if okCam and Cam and Cam.freeRoam and Cam.freeRoam() then
+  if not followsCamera(p) then
+    if okCam and Cam and Cam.facingVector then fx, fz = Cam.facingVector(renderFacing)
+    else fx, fz = facingVector(renderFacing) end
+  elseif okCam and Cam and Cam.freeRoam and Cam.freeRoam() then
     local yaw = Cam.modelYaw()
     fx, fz = math.sin(yaw), math.cos(yaw)
   elseif okCam and Cam and Cam.active and Cam.active() then
