@@ -164,6 +164,14 @@ local function outdoorNow()
   local ow = okG and type(Game) == "table" and Game.overworld or nil
   local map = ow and ow.map
   if not map then return false end
+  -- Black/White: the importer's own flag (Spawn.isOutdoor is a size guess
+  -- there). It only ever adds "outdoors"; the checks below still run.
+  local okN, NW = pcall(V.require, "NativeWorld")
+  if okN and type(NW) == "table" and NW.outdoors then
+    local ground = map.renderer and map.renderer.gen4Ground
+    local okO, o = pcall(NW.outdoors, ground)
+    if okO and o == true then return true end
+  end
   local okS, Spawn = pcall(V.require, "Gen4Spawn")
   if okS and type(Spawn) == "table" and Spawn.isOutdoor then
     local ok, r = pcall(Spawn.isOutdoor, map)

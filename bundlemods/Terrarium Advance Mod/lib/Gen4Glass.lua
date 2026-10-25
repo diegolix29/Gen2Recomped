@@ -51,6 +51,17 @@
 -- wall that lights up like a lamp is a texture to add to DENY_NAMES; a window
 -- that never lights is a texture to add to ALLOW.
 --
+-- BLACK / WHITE
+--
+-- On a Gen 5 ground (NativeWorld.groundIsGen5) the same pass runs with
+-- NativeWorld.GEN5_LIGHTS: Unova window names make a texture whole-pane, the
+-- lit-pixel test is a little looser than Platinum's white, and windows baked
+-- into the CHUNK models (not only placed props) are found too, by name or --
+-- under a much stricter share-of-picture limit -- by pixel. The outdoor test
+-- trusts the importer's own `ground.outdoors` there. Every texture analysed
+-- is logged, so a wall that lights (DENY) or a window that does not (ALLOW /
+-- GLASS patterns) can be fixed from real names.
+--
 -- NOT VERIFIED: written without a ROM or a LOVE runtime to hand. It is isolated
 -- the way the other Gen 4 passes are (Bridge disables an effect that throws).
 -- Bridge.setEffect("glass", false) turns it off.
@@ -84,6 +95,7 @@ local function optional(name)
 end
 
 local DayNight = optional("DayNight")
+local NW = optional("NativeWorld")
 local Distance = optional("Gen4Distance")
 local Mat4 = V.require("Mat4")
 local Budget = optional("Gen4Budget") or { allow = function() return true end, charge = function() end }
@@ -201,16 +213,35 @@ local function scanTexels(data, w, h, whole, white)
   return bits, count
 end
 
-local function analyse(path, textureName, materialName)
-  local hit = textures[path]
+local function analyse(path, textureName, materialName, terrain)
+  -- a chunk-model texture is judged by stricter rules than a prop's, so the
+  -- two verdicts for one picture are kept apart
+  local key = terrain and (path .. "#terrain") or path
+  local hit = textures[key]
   if hit ~= nil then return hit or nil end
-  textures[path] = false
+  textures[key] = false
   Glass.stats.textures = Glass.stats.textures + 1
 
+  local g5 = NW ~= nil and NW.GEN5_LIGHTS ~= nil and NW.isGen5 ~= nil and NW.isGen5()
+  local cfg = g5 and NW.GEN5_LIGHTS or nil
+
   local tex, mat = lowered(textureName), lowered(materialName)
-  if hasAny(tex, Glass.DENY_NAMES) or hasAny(mat, Glass.DENY_NAMES) then
-    if Glass.LOG then note("deny:" .. path, "%s (%s): skipped, name is denied", tex, mat) end
+  if hasAny(tex, Glass.DENY_NAMES) or hasAny(mat, Glass.DENY_NAMES)
+     or (cfg and NW.isGlassDenied(tex, mat)) then
+    if Glass.LOG then note("deny:" .. key, "%s (%s): skipped, name is denied", tex, mat) end
     return nil
+  end
+
+  local whole = Glass.ALLOW[tex] == true
+                or hasAny(tex, Glass.GLASS_NAMES) or hasAny(mat, Glass.GLASS_NAMES)
+                or (cfg ~= nil and NW.isGlassName(tex, mat))
+  -- chunk models are mostly ground: without a window NAME, only read the
+  -- picture when Gen 5 pixel matching is on for them
+  if terrain and not whole and not (cfg and cfg.terrainByPixel) then return nil end
+  local white = cfg and cfg.white or Glass.WHITE
+  local maxFraction = Glass.MAX_FRACTION
+  if cfg then
+    maxFraction = terrain and cfg.terrainMaxFraction or cfg.maxFraction
   end
 
   -- `Assets.image` hands back a placeholder for a path that is not there, so
@@ -219,21 +250,20 @@ local function analyse(path, textureName, materialName)
     return love.image.newImageData(Assets.resolve(path))
   end)
   if not (okData and data) then
-    note("read:" .. path, "%s: could not read the texture", tostring(path))
+    note("read:" .. key, "%s: could not read the texture", tostring(path))
     return nil
   end
   local w, h = data:getDimensions()
   if w < 1 or h < 1 then return nil end
 
-  local whole = Glass.ALLOW[tex] == true
-                or hasAny(tex, Glass.GLASS_NAMES) or hasAny(mat, Glass.GLASS_NAMES)
-  local bits, count = scanTexels(data, w, h, whole, Glass.WHITE)
+  local bits, count = scanTexels(data, w, h, whole, white)
 
   local fraction = count / (w * h)
-  local keep = count >= Glass.MIN_TEXELS and (whole or fraction <= Glass.MAX_FRACTION)
+  local keep = count >= Glass.MIN_TEXELS and (whole or fraction <= maxFraction)
   if Glass.LOG then
-    note("tex:" .. path, "%s (%s) %dx%d: %d glass texels (%.0f%%)%s -> %s",
+    note("tex:" .. key, "%s (%s) %dx%d: %d glass texels (%.0f%%)%s%s%s -> %s",
          tex, mat, w, h, count, fraction * 100, whole and ", whole pane" or "",
+         terrain and ", chunk model" or "", g5 and ", gen5" or "",
          keep and "GLASS" or "no glass")
   end
   if not keep then return nil end            -- no ImageData allocated for a miss
@@ -252,7 +282,7 @@ local function analyse(path, textureName, materialName)
 
   local okImg, image = pcall(love.graphics.newImage, out)
   if not (okImg and image) then
-    note("img:" .. path, "%s: could not make the glass image", tostring(path))
+    note("img:" .. key, "%s: could not make the glass image", tostring(path))
     return nil
   end
   image:setFilter("nearest", "nearest")
@@ -260,7 +290,7 @@ local function analyse(path, textureName, materialName)
   -- `bits` is the CPU-side mask (a whole-pane texture needs none)
   local entry = { image = image, bits = (not whole) and bits or nil,
                   w = w, h = h, texels = count, whole = whole }
-  textures[path] = entry
+  textures[key] = entry
   Glass.stats.glassTextures = Glass.stats.glassTextures + 1
   return entry
 end
@@ -481,19 +511,71 @@ end
 local function harvestBuildingTerrain(ground, record, pts)
   local building = buildingLightNames()
   if not (record and record.shapes) then return end
+  local g5 = NW ~= nil and NW.GEN5_LIGHTS ~= nil and NW.groundIsGen5 ~= nil
+             and NW.groundIsGen5(ground)
   for _, s in ipairs(record.shapes) do
     local tex = lowered(s.texture or s.srcTexture)
-    if building[tex] then
+    -- Gen 5: a lamp-NAMED surface wider than a post is a lit building front
+    -- (the narrow ones are poles, Gen4Lamps')
+    local lampNamed = g5 and NW.isLampName(s.texture or s.srcTexture, s.material)
+    if building[tex] or lampNamed then
       local pos = readTerrainPos(ground, s, record.posScale or 1)
       if pos and #pos > 0 then
         local sx, sy, sz, n = 0, 0, 0, 0
+        local xmin, xmax, zmin, zmax = HUGE, -HUGE, HUGE, -HUGE
         for _, p in ipairs(pos) do
           sx, sy, sz, n = sx + p[1], sy + p[2], sz + p[3], n + 1
+          xmin, xmax = math.min(xmin, p[1]), math.max(xmax, p[1])
+          zmin, zmax = math.min(zmin, p[3]), math.max(zmax, p[3])
         end
-        pts[#pts + 1] = { sx / n, sy / n, sz / n }
+        local wide = math.max(xmax - xmin, zmax - zmin) > NW.GEN5_LIGHTS.maxNamedFoot
+        if building[tex] or wide then
+          pts[#pts + 1] = { sx / n, sy / n, sz / n }
+        end
       end
     end
   end
+end
+
+-- Gen 5: windows baked into the CHUNK's own models. Each terrain shape whose
+-- texture is glass (by name, or a small lit share of its picture) is copied
+-- into the same per-texture buckets the props use. Terrain shapes carry no
+-- `image`; it is `ground.set.textures[texture]`, exactly as
+-- Gen4Ground:modelFor resolves it.
+local IDENTITY = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 }
+
+local function harvestChunkGlass(ground, record, buckets, order)
+  local set = ground.set
+  local table_ = set and set.textures
+  if not (table_ and ground.slice and record and record.shapes) then return 0 end
+  local added = 0
+  for _, s in ipairs(record.shapes) do
+    local name = s.texture
+    local rec = name and ((s.palette and table_[name .. "#" .. s.palette]) or table_[name])
+    local path = rec and rec.path
+    if path then
+      local entry = analyse(path, name, s.material, true)
+      if entry then
+        local vdata = ground:slice(s.vertexAt, s.vertexBytes)
+        local idata = ground:slice(s.indexAt, s.indexBytes)
+        if vdata and idata then
+          local key = "chunk:" .. path
+          local bk = buckets[key]
+          if not bk then
+            bk = newBucket(entry)
+            buckets[key] = bk
+            order[#order + 1] = bk
+          end
+          local shape = { vertices = vdata, indices = idata,
+                          vertexCount = s.vertexCount, triangleCount = s.triangleCount }
+          if addShape(bk, shape, record.posScale or 1, IDENTITY) then
+            added = added + 1
+          end
+        end
+      end
+    end
+  end
+  return added
 end
 
 local function buildLand(ground, land)
@@ -535,6 +617,15 @@ local function buildLand(ground, land)
       end
     end
   end
+  local chunkShapes = 0
+  if NW and NW.GEN5_LIGHTS and NW.groundIsGen5 and NW.groundIsGen5(ground) then
+    local ok, added = pcall(harvestChunkGlass, ground, record, buckets, order)
+    if ok then
+      chunkShapes = added or 0
+    else
+      note("chunk", "a land's chunk-model glass failed and was skipped: %s", tostring(added))
+    end
+  end
   local pts = {}
   for _, bk in ipairs(order) do
     seal(bk)
@@ -553,8 +644,9 @@ local function buildLand(ground, land)
   Glass.stats.lands = Glass.stats.lands + 1
   if Glass.LOG and #out.lights > 0 then
     note("lights:" .. tostring(land),
-         "land %s: %d glass flame(s) from %d pane triangle(s)",
-         tostring(land), #out.lights, #pts)
+         "land %s: %d glass flame(s) from %d pane triangle(s)%s",
+         tostring(land), #out.lights, #pts,
+         chunkShapes > 0 and (" (%d chunk-model shape(s))"):format(chunkShapes) or "")
   end
   return out
 end
@@ -723,6 +815,11 @@ end
 -- engine's own reading of the same fact.
 local function outdoorNow(ground)
   if ground.outdoors == false then return false end
+  -- Black/White: the importer's flag, not Spawn's size guess (see NativeWorld)
+  if NW and NW.outdoors then
+    local o = NW.outdoors(ground)
+    if o ~= nil then return o end
+  end
   local map = ground.terrariumMap
   local Spawn = optional("Gen4Spawn")
   if map and Spawn and Spawn.isOutdoor then
