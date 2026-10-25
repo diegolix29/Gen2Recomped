@@ -149,6 +149,13 @@ return {
     },
     description = "Controls which 2D battle effects are shown: authentic Stadium effects, all effects, or none.",
   },
+  {
+    key = "perfOverlay",
+    type = "toggle",
+    label = "PERF OVERLAY",
+    default = false,
+    description = "Shows frame time, hitches, GPU stats and world-loading work on screen. F3 or a three-finger tap also toggles it.",
+  },
   -- Battle Canvas Background Options (managed by BattleCanvas module)
   {
     key = "battleCanvasEnabled",

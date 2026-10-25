@@ -32,12 +32,79 @@ local field = nil
 --   POSE_EPS     world units / radians the arena pose may drift before the
 --                cached world is thrown away. At ~20 px per unit, 0.05 is ~1 px,
 --                so the actors cannot visibly slide against a reused world.
-M.WORLD_SCALE = 1
-M.REFRESH = 0.25
+--   HOLD_DRIFT   hold BattleCam's slow parallax drift still on a native world.
+--                The drift moves the pose ~0.014 units a frame, so it crossed
+--                POSE_EPS every ~4 frames and forced a full world re-render
+--                about 15 times a second. Gen 1-3 voxel fields never read this.
+--   SUPERSAMPLE  false renders the arena world at the engine's 1x target even
+--                when the player's Gen 4 RENDER SCALE row supersamples walking.
+--
+-- Each knob left nil here takes its value from the device tier below. Set
+-- one (e.g. M.WORLD_SCALE = 1) to override the tier on every device.
+M.WORLD_SCALE = nil
+M.REFRESH = nil
+M.HOLD_DRIFT = nil
+M.SUPERSAMPLE = nil
 M.POSE_EPS = 0.05
 M.POSE_EPS_FOV = 0.0005
 M.LOG_STATS = true
 M.STATS_EVERY = 5      -- seconds between running-total log lines during a fight
+-- A world render that FAILS used to be retried every frame -- a full Sinnoh
+-- pass per frame, all thrown away. Now a failure waits FAIL_RETRY seconds
+-- (doubling per consecutive failure, capped at FAIL_RETRY_MAX) before trying
+-- again. The arena draws its backdrop meanwhile.
+M.FAIL_RETRY = 0.5
+M.FAIL_RETRY_MAX = 4
+-- While Gen4Budget is still building meshes for the arena window (grass,
+-- sand, trees arriving over the first frames), a reused world would freeze a
+-- half-built picture. Until the builds stop, the refresh is at most this.
+M.WARM_REFRESH = 0.25
+
+-- Device tiers. "mobile" is Android/iOS. A phone pays for every world render
+-- in fill on a tiler, so it renders the world at 3/4 size (1280x720 arena ->
+-- 960x540 world, scaled back up) and only re-renders when the camera moves
+-- (water and wind hold still between moves). Desktop keeps full size and a
+-- 4 Hz refresh so animated water still moves. Safe to shrink: renderPose
+-- draws in "third" mode, whose fov does not depend on the canvas height, so
+-- the actors still sit on the ground.
+--   MOTION_SCALE  while the camera is moving (a drag, a zoom), the world is
+--                 rendered at this fraction of WORLD_SCALE; one full-size render
+--                 follows as soon as it stops. The eye cannot read detail in a
+--                 moving picture, but it does feel every dropped frame.
+--   MOTION_EVERY  while moving, render the world on one frame in this many and
+--                 keep the last picture between (actors still move every frame).
+M.TIERS = {
+  desktop = { WORLD_SCALE = 1, REFRESH = 0.25, HOLD_DRIFT = true, SUPERSAMPLE = true,
+              MOTION_SCALE = 1, MOTION_EVERY = 1 },
+  mobile = { WORLD_SCALE = 0.75, REFRESH = math.huge, HOLD_DRIFT = true, SUPERSAMPLE = false,
+             MOTION_SCALE = 0.5, MOTION_EVERY = 2 },
+}
+M.MOTION_SCALE = nil
+M.MOTION_EVERY = nil
+M.TIER = nil           -- nil = pick by OS; or "desktop" / "mobile" to force
+
+local mobileOS = nil
+local function isMobile()
+  if mobileOS == nil then
+    local ok, name = pcall(function() return love.system.getOS() end)
+    mobileOS = ok and (name == "Android" or name == "iOS") or false
+  end
+  return mobileOS
+end
+
+function M.tierName()
+  if M.TIER == "desktop" or M.TIER == "mobile" then return M.TIER end
+  return isMobile() and "mobile" or "desktop"
+end
+
+-- A knob's live value: the module override when set, else the tier's.
+local function knob(name)
+  local v = M[name]
+  if v ~= nil then return v end
+  local t = M.TIERS[M.tierName()] or M.TIERS.desktop
+  return t[name]
+end
+M.knob = knob
 
 local function log(level, fmt, ...)
   local m = V.mod
@@ -175,7 +242,19 @@ function M.capture(battle, stateHint)
   }
   if native then
     local B = voxel("Gen4Bridge")
+    local Budget = voxel("Gen4Budget")
+    if Budget then
+      if type(Budget.flushBurst) == "function" then pcall(Budget.flushBurst) end
+      Budget.peakMs, Budget.peakKind = 0, nil
+    end
     field.stats = { frames = 0, renders = 0, reuses = 0, ms = 0,
+                    failures = 0, backoff = 0,
+                    why = { first = 0, size = 0, refresh = 0, warm = 0, pose = 0, settle = 0 },
+                    motionSkips = 0,
+                    poseEye = 0, poseFocus = 0, poseFov = 0,
+                    dtMax = 0, dt25 = 0, dt50 = 0, dt100 = 0,
+                    build0 = Budget and tonumber(Budget.total) or 0,
+                    buildMs0 = Budget and tonumber(Budget.totalMs) or 0,
                     dc = 0, cs = 0, ss = 0,
                     draws0 = (Host.stats and Host.stats.draws) or 0,
                     bridge0 = (B and B.stats and B.stats.runs) or 0,
@@ -205,7 +284,27 @@ local function logStats(label)
       .. "(%.2f per arena frame), scale %.2f, refresh %.2fs",
       st.frames, st.renders, 100 * st.renders / st.frames, st.reuses,
       st.renders > 0 and st.ms / st.renders or 0, own, own / st.frames,
-      tonumber(M.WORLD_SCALE) or 1, tonumber(M.REFRESH) or 0)
+      tonumber(knob("WORLD_SCALE")) or 1, tonumber(knob("REFRESH")) or 0)
+  do
+    local w = st.why or {}
+    local Budget = voxel("Gen4Budget")
+    log("info", "Gen4 arena world (" .. (label or "fight over") .. "): camera-motion: %d frames kept the "
+        .. "last world, %d full-size renders after the camera stopped", st.motionSkips or 0, w.settle or 0)
+    log("info", "Gen4 arena world (" .. (label or "fight over") .. "): re-render reasons -- first %d, "
+        .. "size %d, refresh %d, meshes-building %d, camera-moved %d (largest move: eye %.3f, focus %.3f, "
+        .. "fov %.5f rad); frames: worst %.0f ms, %d over 25 ms, %d over 50 ms, %d over 100 ms; "
+        .. "mesh builds this fight: %d, %.0f ms total, slowest %.0f ms (%s)",
+        w.first or 0, w.size or 0, w.refresh or 0, w.warm or 0, w.pose or 0,
+        st.poseEye or 0, st.poseFocus or 0, st.poseFov or 0,
+        (st.dtMax or 0) * 1000, st.dt25 or 0, st.dt50 or 0, st.dt100 or 0,
+        Budget and ((tonumber(Budget.total) or 0) - (st.build0 or 0)) or 0,
+        Budget and ((tonumber(Budget.totalMs) or 0) - (st.buildMs0 or 0)) or 0,
+        Budget and tonumber(Budget.peakMs) or 0, tostring(Budget and Budget.peakKind or "-"))
+  end
+  log("info", "Gen4 arena world (" .. (label or "fight over") .. "): tier %s, %d failed renders, "
+      .. "%d frames skipped by the retry backoff, drift held %s",
+      M.tierName(), st.failures or 0, st.backoff or 0,
+      tostring(knob("HOLD_DRIFT") and true or false))
   local tag = "Gen4 arena world (" .. (label or "fight over") .. "): "
   -- Is any effect pass running more often than there are world passes?
   local B = voxel("Gen4Bridge")
@@ -282,7 +381,14 @@ function M.cameraPose()
   if not (field and field.pocket) then return nil end
   local BattleCam = voxel("BattleCam")
   if not (BattleCam and type(BattleCam.rig) == "function") then return nil end
+  -- A native world re-renders whenever the pose moves, so on Gen 4/5 the
+  -- drift is held for this pose only (see HOLD_DRIFT). Steering, zoom and the
+  -- free-look layer on top are untouched.
+  local hold = field.gen4 and knob("HOLD_DRIFT") and true or false
+  local held = BattleCam.holdDrift
+  if hold then BattleCam.holdDrift = true end
   local ok, cam = pcall(BattleCam.rig, field.pocket, field.groundY or 0)
+  BattleCam.holdDrift = held
   if not (ok and cam and cam.eye and cam.focus and cam.fov) then return nil end
   return cam
 end
@@ -375,14 +481,17 @@ local function copyPose(p)
            focus = { p.focus[1], p.focus[2], p.focus[3] }, fov = p.fov }
 end
 
+-- Returns moved, plus the largest eye / focus / fov change (for the stats).
 local function poseMoved(a, b)
-  if not (a and b) then return true end
+  if not (a and b) then return true, 0, 0, 0 end
   local eps = tonumber(M.POSE_EPS) or 0.05
+  local de, df = 0, 0
   for i = 1, 3 do
-    if math.abs((a.eye[i] or 0) - (b.eye[i] or 0)) > eps then return true end
-    if math.abs((a.focus[i] or 0) - (b.focus[i] or 0)) > eps then return true end
+    de = math.max(de, math.abs((a.eye[i] or 0) - (b.eye[i] or 0)))
+    df = math.max(df, math.abs((a.focus[i] or 0) - (b.focus[i] or 0)))
   end
-  return math.abs((a.fov or 0) - (b.fov or 0)) > (tonumber(M.POSE_EPS_FOV) or 0.0005)
+  local dv = math.abs((a.fov or 0) - (b.fov or 0))
+  return de > eps or df > eps or dv > (tonumber(M.POSE_EPS_FOV) or 0.0005), de, df, dv
 end
 
 -- Render the native world through the arena pose, or reuse the last render.
@@ -397,6 +506,15 @@ local function drawNative(w, h, pose)
     -- A run that ends mid-fight (crash, closed window) never reaches clear();
     -- log the running totals every few seconds so the numbers survive.
     local tn = now()
+    -- frame pacing, measured between arena frames (this runs once per frame)
+    if field.frameAt then
+      local fdt = tn - field.frameAt
+      if fdt > (st.dtMax or 0) then st.dtMax = fdt end
+      if fdt > 0.025 then st.dt25 = st.dt25 + 1 end
+      if fdt > 0.050 then st.dt50 = st.dt50 + 1 end
+      if fdt > 0.100 then st.dt100 = st.dt100 + 1 end
+    end
+    field.frameAt = tn
     field.statAt = field.statAt or tn
     if tn - field.statAt >= (tonumber(M.STATS_EVERY) or 5) then
       field.statAt = tn
@@ -418,32 +536,89 @@ local function drawNative(w, h, pose)
     return false
   end
 
-  local scale = tonumber(M.WORLD_SCALE) or 1
+  -- is the camera moving RIGHT NOW (since last frame, not since the last render)?
+  local camMoving = field.prevPose ~= nil and poseMoved(field.prevPose, cam) or false
+  field.prevPose = copyPose(cam)
+  local motionEvery = math.max(1, math.floor(tonumber(knob("MOTION_EVERY")) or 1))
+  if camMoving and field.worldColour and motionEvery > 1 then
+    field.motionFrame = (field.motionFrame or 0) + 1
+    if field.motionFrame % motionEvery ~= 0 then
+      if st then st.motionSkips = (st.motionSkips or 0) + 1 end
+      return true                 -- keep last frame's world for this frame
+    end
+  end
+  local lowRes = false
+  local scale = tonumber(knob("WORLD_SCALE")) or 1
+  local motionScale = tonumber(knob("MOTION_SCALE")) or 1
+  if camMoving and motionScale < 1 then
+    scale = scale * motionScale
+    lowRes = true
+  end
   if scale < 0.25 then scale = 0.25 elseif scale > 1 then scale = 1 end
   local rw = math.max(2, math.floor(w * scale + 0.5))
   local rh = math.max(2, math.floor(h * scale + 0.5))
 
   local t0 = now()
-  local refresh = tonumber(M.REFRESH) or 0
-  if refresh > 0 and field.worldColour and field.worldSize
-      and field.worldSize[1] == rw and field.worldSize[2] == rh
-      and (t0 - (field.worldAt or -math.huge)) < refresh
-      and not poseMoved(field.worldPose, cam) then
+  local refresh = tonumber(knob("REFRESH")) or 0
+  -- meshes still arriving: do not freeze a half-built window
+  local Budget = voxel("Gen4Budget")
+  local builds = Budget and tonumber(Budget.total) or nil
+  if builds and builds ~= field.worldBuilds then
+    refresh = math.min(refresh, tonumber(M.WARM_REFRESH) or 0.25)
+  end
+  local moved, de, df, dv = poseMoved(field.worldPose, cam)
+  local sameSize = field.worldSize and field.worldSize[1] == rw and field.worldSize[2] == rh
+  local fresh = (t0 - (field.worldAt or -math.huge)) < refresh
+  -- a low-resolution motion picture is never kept once the camera settles
+  local settle = field.worldLowRes and not lowRes
+  if refresh > 0 and field.worldColour and sameSize and fresh and not moved and not settle then
     if st then st.reuses = st.reuses + 1 end
     return true
   end
+  -- why this frame is about to pay for a world render (stats only)
+  local reason
+  if not field.worldColour then reason = "first"
+  elseif settle then reason = "settle"
+  elseif not sameSize then reason = "size"
+  elseif moved then reason = "pose"
+  elseif refresh < (tonumber(knob("REFRESH")) or 0) then reason = "warm"
+  else reason = "refresh" end
 
+  -- back off after a failure instead of paying for a full world pass that
+  -- will be thrown away again on the very next frame
+  if field.failUntil and t0 < field.failUntil then
+    if st then st.backoff = (st.backoff or 0) + 1 end
+    return false
+  end
+
+  if st and st.why then
+    st.why[reason] = (st.why[reason] or 0) + 1
+    if reason == "pose" then
+      if de > st.poseEye then st.poseEye = de end
+      if df > st.poseFocus then st.poseFocus = df end
+      if dv > st.poseFov then st.poseFov = dv end
+    end
+  end
   field.worldColour = nil
   local gpuBefore = gpuStats()
-  local colour, whyNot = Host.renderPose(field.state, field.pocket, cam, rw, rh)
+  local colour, whyNot = Host.renderPose(field.state, field.pocket, cam, rw, rh,
+                                         { noSupersample = not knob("SUPERSAMPLE") })
   local gpuAfter = gpuStats()
   if not colour then
+    field.failCount = (field.failCount or 0) + 1
+    local wait = (tonumber(M.FAIL_RETRY) or 0.5) * 2 ^ math.min(field.failCount - 1, 6)
+    field.failUntil = now() + math.min(wait, tonumber(M.FAIL_RETRY_MAX) or 4)
+    if st then st.failures = (st.failures or 0) + 1 end
     if field.warned ~= whyNot then
       field.warned = whyNot
-      log("warn", "native arena world not drawn: %s", tostring(whyNot))
+      log("warn", "native arena world not drawn: %s (retrying with backoff)",
+          tostring(whyNot))
     end
     return false
   end
+  field.failCount, field.failUntil = 0, nil
+  field.worldLowRes = lowRes
+  field.worldBuilds = builds
   field.worldColour = colour
   local lf = Host.lastFov
   if lf and lf.eff and lf.want and math.abs(lf.eff - lf.want) > 0.05 and not field.fovWarned then

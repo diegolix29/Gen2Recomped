@@ -1252,7 +1252,11 @@ local function copyFreeColour(w, h)
   return ok and dest or nil
 end
 
-function Host.renderPose(state, pocket, pose, w, h)
+-- opts (optional): { noSupersample = true } renders at the engine's 1x target
+-- even when the player picked a supersampled Gen 4 RENDER SCALE for walking.
+-- The arena copy is scaled to w x h anyway, so on a phone the extra pixels
+-- are pure fill cost.
+function Host.renderPose(state, pocket, pose, w, h, opts)
   do local S = sun(); if S then pcall(S.suspend) end end
   w, h = math.floor(tonumber(w) or 0), math.floor(tonumber(h) or 0)
   if w < 2 or h < 2 then return nil, "bad size" end
@@ -1291,6 +1295,8 @@ function Host.renderPose(state, pocket, pose, w, h)
   if g and g.origin then pcall(g.origin) end
 
   local result, why
+  local GroundMod = engineRequire("src.render.Gen4Ground")
+  local scaleWas = nil
   local okAll, errAll = pcall(function()
     local ox, oz = ground.offsetX or 0, ground.offsetY or 0
     local ex, ey, ez = pose.eye[1] + ox, pose.eye[2], pose.eye[3] + oz
@@ -1316,6 +1322,12 @@ function Host.renderPose(state, pocket, pose, w, h)
 
     Host._inBattle = true
     Host._poseDraw = true
+    local Ground = GroundMod
+    if opts and opts.noSupersample and Ground and Ground.renderScaleIndex
+       and Ground.renderScaleIndex ~= 1 then
+      scaleWas = Ground.renderScaleIndex
+      Ground.renderScaleIndex = 1
+    end
     local painted = drawFree(ground, w, h)
     if not painted then
       why = "the engine declined to draw the world"
@@ -1324,32 +1336,45 @@ function Host.renderPose(state, pocket, pose, w, h)
     end
 
     -- The colour has to be taken AFTER the bridge's passes (grass, water,
-    -- sand) and BEFORE the engine closes the canvas. Bridge.after is exactly
-    -- that window; with no bridge there is nothing to wait for.
+    -- sand) and BEFORE the engine closes the canvas.
+    --
+    -- This used to hang the copy on Bridge.after and rely on `endFree` to run
+    -- the bridge. But `endFree` here is Host._endFree: whatever endFree was
+    -- when THIS module installed. When the host installs before Gen4Bridge,
+    -- that is the engine's raw endFree, which never runs the bridge, so the
+    -- hook never fired. The fallback copy then ran after endFree had already
+    -- cleared Gen4Ground.freeColour. Every arena frame drew the whole world
+    -- and threw it away ("could not copy the world's colour" in the log, with
+    -- 0 world renders in the stats).
+    --
+    -- So the bridge is run here, explicitly, on the still-open pass, and the
+    -- colour is copied straight after it. Bridge.run dedupes on ground.clock,
+    -- which is frozen while a battle is on top, so the dedupe stamp is cleared
+    -- first or every re-render after the first would lose water and grass.
+    -- The bridge is then switched off for the endFree call, so a wrapped
+    -- endFree cannot run the effects a second time.
     local Bridge = V.Gen4Bridge
-    local hook
-    local fired = false
-    local function capture()
-      if fired then return end
-      fired = true
-      result = copyFreeColour(w, h)
-    end
-    if Bridge and type(Bridge.after) == "table" then
-      hook = function() capture() end
-      Bridge.after[#Bridge.after + 1] = hook
-    else
-      capture()
-    end
-    local okEnd, errEnd = pcall(endFree, ground)
-    if hook then
-      for i = #Bridge.after, 1, -1 do
-        if Bridge.after[i] == hook then table.remove(Bridge.after, i) break end
+    local ranBridge = false
+    if Bridge and Bridge.installed and Bridge.enabled ~= false
+       and type(Bridge.run) == "function"
+       and Ground and Ground.freeOpen and ground.freeW then
+      if type(Bridge.lastRunFrame) == "table" then
+        Bridge.lastRunFrame[ground] = nil
       end
+      local okRun = pcall(Bridge.run, ground)
+      ranBridge = okRun
     end
-    if not fired then capture() end   -- the bridge never reached its hook
+    result = copyFreeColour(w, h)
+    local bridgeWas = Bridge and Bridge.enabled
+    if ranBridge then Bridge.enabled = false end
+    local okEnd, errEnd = pcall(endFree, ground)
+    if ranBridge then Bridge.enabled = bridgeWas end
     if not okEnd then why = "endFree failed: " .. tostring(errEnd) end
   end)
 
+  -- restored out here so a throw inside the pass cannot leave the walking
+  -- world stuck at 1x
+  if scaleWas and GroundMod then GroundMod.renderScaleIndex = scaleWas end
   Host._inBattle = false
   Host._poseDraw = false
   if state then state.entities, state.ghosts = savedEntities, savedGhosts end

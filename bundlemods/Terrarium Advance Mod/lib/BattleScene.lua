@@ -441,12 +441,18 @@ function BattleScene.render(state, arena, textures, token)
                    and BattleCanvas.usingPaintedStage()
                    and BattleCanvas.getCanvasForBattle
                    and BattleCanvas.getCanvasForBattle(state.map, arena) ~= nil
-    -- Debug logging for painted stage detection
+    -- Debug logging for painted stage detection. This runs every battle
+    -- frame, so it logs only when the answer changes: a format plus a log
+    -- write per frame was a steady cost on Android's slower storage.
     if BattleCanvas and BattleCanvas.usingPaintedStage then
-      local mod = V and V.mod
-      if mod and mod.log then
-        mod.log:info("[BattleScene] paintedStage=%s, map.id=%s", 
-          tostring(paintedStage), tostring(state.map and state.map.id))
+      local key = tostring(paintedStage) .. "@" .. tostring(state.map and state.map.id)
+      if BattleScene._paintedLogKey ~= key then
+        BattleScene._paintedLogKey = key
+        local mod = V and V.mod
+        if mod and mod.log then
+          mod.log:info("[BattleScene] paintedStage=%s, map.id=%s",
+            tostring(paintedStage), tostring(state.map and state.map.id))
+        end
       end
     end
   end)

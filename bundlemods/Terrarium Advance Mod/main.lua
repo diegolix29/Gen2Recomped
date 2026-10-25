@@ -2906,6 +2906,8 @@ end
 -- so this file keeps naming every engine seam the mod touches.
 OverworldBattle.install()
 pcall(Gen4WorldHost.install)
+-- on-screen performance readout (PERF OVERLAY row, F3, three-finger tap)
+pcall(function() V.require("PerfOverlay").install() end)
 
 
 -- ------- shiny Pokemon (restored from DRAMATIC_SHAPE)

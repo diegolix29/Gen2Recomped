@@ -221,6 +221,9 @@ function H.begin(battle)
 end
 
 local releaseGen1PresentationFaints
+-- defined further down, beside the rest of the visible-boundary sync; declared
+-- here so H.update sees the local and not an (absent) global of the same name
+local ageVisible
 
 function H.update(dt)
   local s=H.session
@@ -232,6 +235,7 @@ function H.update(dt)
   -- presentation is visible. Release a buffered KO only when the engine says
   -- its actual faint slide has begun, so CBE cannot collapse/remove the model
   -- while the HP bar is still draining (especially obvious at 4x).
+  if ageVisible then pcall(ageVisible,s,dt) end
   if releaseGen1PresentationFaints then releaseGen1PresentationFaints(s) end
   local realtimeOn=RealtimeBattle and type(RealtimeBattle.enabled)=="function"
     and RealtimeBattle.enabled(s.context.game)
@@ -325,6 +329,7 @@ releaseGen1PresentationFaints=function(s)
       -- fxFaintActive, never as the early HP==0 semantic used by onFaint().
       if not active and battler and battler.fainted==true then active=true end
       if active then
+        if s.visibleHolds and #s.visibleHolds>0 then H.releaseVisible(battle,true) end
         H.presentationFaintEvents=(H.presentationFaintEvents or 0)+1
         H.gen1PresentationFaintEvents=(H.gen1PresentationFaintEvents or 0)+1
         H.event("battle.presentation_faint",visiblePayload(s,battle,"faint",side,{
@@ -396,9 +401,173 @@ local function captureUiOwned(s,battle)
   return s.captureHold.hideUI==true
 end
 
+-- ------------------------------------------------------------------------
+-- VISIBLE-BOUNDARY SYNC for the shared Gen 1 / Gen 3-5 BattleState.
+--
+-- That engine raises battle.move_used (performMove) and battle.damage_dealt
+-- (EffectRegistry) while it is BUILDING the turn's queue: the same logic step
+-- inserts the "X used Y!" text, the move's anim row, the HP drain row and the
+-- effectiveness text, and emits both events. The queue then plays those rows
+-- over the next few seconds. CBE reacted to the events, so the attacker's
+-- swing, its Waza FX and the target's hit reaction all started together,
+-- before the text had even typed, while the engine's own animation hold and
+-- HP drain came seconds later -- the desync in the reports. Gen 2 never had
+-- this: its events are released at advanceQueue below. Only the faint was
+-- already deferred here (releaseGen1PresentationFaints).
+--
+-- So on Gen 4/5 the two events are now held, each against the queue row that
+-- shows it on screen, and released when the engine consumes that row:
+--   move_used   -> the move's anim row (battle.moveAnimRow), released on the
+--                  frame the animation actually starts (after MOVE_ANIM_PRE),
+--                  so the CBE swing runs during the engine's animation hold;
+--                  no anim row (a suppressed animation) -> the "used X!" text.
+--   damage_dealt -> that hit's HP drain row, released when the drain begins,
+--                  so the hit reaction and the bar move together. No drain
+--                  row (0 damage, a substitute) -> released right after the
+--                  move's own release.
+-- Holds release strictly in order (a damage never overtakes its move), are
+-- forced out after VISIBLE_HOLD_MAX seconds or when the queue goes idle, and
+-- never apply to Gen 2 (which has its own boundary) or Gen 1-3 (unchanged).
+H.VISIBLE_SYNC=true
+H.VISIBLE_SYNC_ALL_GENS=false
+H.VISIBLE_HOLD_MAX=8
+
+local function rawBattle(s,payload)
+  local b=type(payload)=="table" and payload.battle or nil
+  if type(b)=="table" and type(b.queue)=="table" then return b end
+  b=s and s.battle
+  if type(b)=="table" and type(b.queue)=="table" then return b end
+  return nil
+end
+
+local function visibleSyncFor(s,battle)
+  if not (H.VISIBLE_SYNC and s and battle) then return false end
+  if battle.__cbePresentationQueueSync~=true and not (s.battle and s.battle.__cbePresentationQueueSync==true) then return false end
+  if Compat and Compat.isGen2Battle and Compat.isGen2Battle(s.battle) then return false end
+  if H.VISIBLE_SYNC_ALL_GENS then return true end
+  local ok,g4=pcall(function() return type(battle.gen4Layout)=="function" and battle:gen4Layout() end)
+  return ok and g4==true
+end
+
+local function inQueue(battle,row)
+  local q=battle and battle.queue
+  if type(q)~="table" or row==nil then return false end
+  for i=1,#q do if q[i]==row then return true end end
+  return false
+end
+
+local function anchorFor(s,battle,name,payload)
+  local q=battle.queue
+  if name=="battle.move_used" then
+    local row=battle.moveAnimRow
+    if row and inQueue(battle,row) then return row,"anim" end
+    local text=q[tonumber(battle.nextInsert) or 0]
+    if type(text)=="table" and text.text then return text,"text" end
+    return nil
+  end
+  -- damage: the newest drain row for this target, at or before the insert point
+  local target=type(payload)=="table" and payload.target or nil
+  local top=math.min(#q,math.max(1,tonumber(battle.nextInsert) or #q))
+  for i=top,1,-1 do
+    local row=q[i]
+    if type(row)=="table" and row.drain and (target==nil or row.battler==target) then return row,"drain" end
+  end
+  return nil,"after-move"
+end
+
+-- true when the event was held (the caller must not dispatch it now)
+function H.holdVisible(name,payload)
+  local s=H.session
+  if not (s and (name=="battle.move_used" or name=="battle.damage_dealt")) then return false end
+  if s.releasingVisible and s.releasingVisible[payload] then return false end
+  local battle=rawBattle(s,payload)
+  if not visibleSyncFor(s,battle) then return false end
+  local anchor,kind=anchorFor(s,battle,name,payload)
+  s.visibleHolds=s.visibleHolds or {}
+  if not anchor and kind~="after-move" then return false end
+  if not anchor then
+    -- nothing to wait for on its own: ride behind the last held event, if any
+    if #s.visibleHolds==0 then return false end
+  end
+  s.visibleHolds[#s.visibleHolds+1]={name=name,payload=payload,anchor=anchor,kind=kind,battle=battle,age=0}
+  H.visibleHeld=(H.visibleHeld or 0)+1
+  return true
+end
+
+-- Would H.event hold this? BattleRuntime asks before it hands the same event
+-- to BattleDirector / MoveFXOwnership, which must see it at the same moment.
+function H.willHoldVisible(name,payload)
+  local s=H.session
+  if not (s and (name=="battle.move_used" or name=="battle.damage_dealt")) then return false end
+  if s.releasingVisible and s.releasingVisible[payload] then return false end
+  local battle=rawBattle(s,payload)
+  if not visibleSyncFor(s,battle) then return false end
+  local anchor,kind=anchorFor(s,battle,name,payload)
+  if anchor then return true end
+  return kind=="after-move" and s.visibleHolds~=nil and #s.visibleHolds>0
+end
+
+local function releaseHold(s,h)
+  s.releasingVisible=s.releasingVisible or setmetatable({},{__mode="k"})
+  local payload=h.payload
+  if type(payload)=="table" then s.releasingVisible[payload]=true end
+  H.visibleReleased=(H.visibleReleased or 0)+1
+  -- H.event reaches BattleDirector and MoveFXOwnership itself, the two
+  -- consumers BattleRuntime.dispatch skipped for this event (willHoldVisible)
+  H.event(h.name,payload)
+end
+
+-- Release every hold whose row has been consumed, in order; `force` releases
+-- them all. `pre` = called before updateQueue runs this step: only an anim
+-- anchor that this very step is about to start is released (so the move's
+-- source audio is armed before the native sound would play).
+local function engineFree(b)
+  return (tonumber(b.waitFrames) or 0)<=0 and not b.waitingSound and not b.draining
+    and not b.expFilling and not b.animPlaying and not b.current and not b.waitingUI
+end
+function H.releaseVisible(battle,force,pre)
+  local s=H.session
+  local holds=s and s.visibleHolds
+  if not (holds and #holds>0) then return 0 end
+  local n=0
+  while #holds>0 do
+    local h=holds[1]
+    local ready=force
+    if not ready then
+      if h.anchor==nil then
+        ready=true                                  -- rides behind the previous release
+      elseif pre then
+        ready=h.kind=="anim" and h.anchor.animDelayed==true and h.battle.queue[1]==h.anchor
+          and engineFree(h.battle)
+      else
+        ready=not inQueue(h.battle,h.anchor)
+      end
+    end
+    if not ready then break end
+    table.remove(holds,1)
+    releaseHold(s,h)
+    n=n+1
+  end
+  return n
+end
+
+ageVisible=function(s,dt)
+  local holds=s and s.visibleHolds
+  if not (holds and #holds>0) then return end
+  local h=holds[1]
+  h.age=(h.age or 0)+(tonumber(dt) or 0)
+  local b=h.battle
+  -- the queue went idle (back to the menu) or the hold is overdue: let it go
+  if h.age>(tonumber(H.VISIBLE_HOLD_MAX) or 8) or (b and b.phase~="messages" and #(b.queue or {})==0) then
+    if h.age>(tonumber(H.VISIBLE_HOLD_MAX) or 8) then H.visibleForced=(H.visibleForced or 0)+1 end
+    H.releaseVisible(b,true)
+  end
+end
+
 function H.event(name,payload)
   local s=H.session
   if not s then return end
+  if H.holdVisible(name,payload) then return end
   if name=="battle.ball_thrown" then
     s.captureHold={active=true,stripped=false,hideUI=true,released=false,caught=type(payload)=="table" and payload.caught or nil}
     H.captureQueueHolds=(H.captureQueueHolds or 0)+1
@@ -864,7 +1033,11 @@ function H.install(force)
         end
         return result
       end
-      return inner(self,...)
+      local held=s and s.visibleHolds and #s.visibleHolds>0
+      if held then H.releaseVisible(self,false,true) end
+      local result=inner(self,...)
+      if held then H.releaseVisible(self,false,false) end
+      return result
     end
     BattleState.updateQueue=H.updateQueueWrapper
   end
@@ -1104,6 +1277,9 @@ function H.finish(reason)
   if RealtimeBattle and type(RealtimeBattle.finish)=="function" then pcall(RealtimeBattle.finish,RealtimeBattle,s.context,reason) end
   if Camera and s.cameraActive then pcall(Camera.finish,Camera,s.context,reason) end
   if Arena then pcall(Arena.finish,Arena,s.context,reason) end
+  -- held move/damage events die with the session: replaying them into
+  -- providers that have just finished would restart their animations
+  s.visibleHolds=nil
   if s.battle then s.battle.__cbePresentationQueueSync=nil end
   if Compat then Compat.release(s.battle) end
   H.session=nil

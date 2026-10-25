@@ -215,6 +215,13 @@ BattleCam.steerable = true
 -- from a fixed seat.
 BattleCam.still = false
 
+-- Hold ONLY the drift (and its dolly breath) still, leaving the steer and
+-- zoom live. Set for the length of one rig() call by a caller whose picture
+-- is expensive to redraw whenever the pose moves -- the Colosseum arena on a
+-- native Gen 4/5 world (ArenaOverworldSnapshot.HOLD_DRIFT). Off by default,
+-- so every other shot is exactly what it always was.
+BattleCam.holdDrift = false
+
 BattleCam.t = 0
 
 -- Only the DRIFT's phase, so every fight opens on the same breath. Where
@@ -521,12 +528,13 @@ function BattleCam.rig(arena, groundY, canonical)
   -- arena's own axis, and the room the player has is all on the far side of
   -- that -- out toward square-on. (orbitRange measures exactly that room.)
   local steer = steered and -BattleCam.orbit * BattleCam.orbitRange(arena) or 0
-  local yaw = steer + (fixed and 0
+  local noDrift = fixed or BattleCam.holdDrift
+  local yaw = steer + (noDrift and 0
               or BattleCam.PAN_YAW * phase(BattleCam.t, BattleCam.PAN_PERIOD))
   local c, s = math.cos(yaw), math.sin(yaw)
   -- the breath scales the whole offset, height included, so the eye moves
   -- along its own line to the arena and the pitch of the shot never changes
-  local k = fixed and 1
+  local k = noDrift and 1
             or 1 + BattleCam.PAN_DOLLY
                    * phase(BattleCam.t, BattleCam.DOLLY_PERIOD)
   local dx = (R.side * c - R.back * s) * k

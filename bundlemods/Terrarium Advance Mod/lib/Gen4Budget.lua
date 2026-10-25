@@ -31,6 +31,10 @@ local B = {
   covered = false,     -- set by Gen4Bridge: a warp fade hides the world
   idle = 0,            -- frames since the last build (burst detection)
   burst = nil,         -- { n, ms, max, kinds = { kind -> { n, ms, max } } }
+  total = 0,           -- builds ever charged; a reader compares it to see "still building"
+  totalMs = 0,         -- milliseconds ever charged (same use: diff two readings)
+  peakMs = 0,          -- slowest single build since a caller last zeroed it
+  peakKind = nil,      -- ...and which pass it was
   LOG = true,
 }
 
@@ -71,6 +75,11 @@ local function flush()
   end
 end
 
+-- Log whatever burst is open now and start a fresh one. ArenaOverworldSnapshot
+-- calls it when a fight starts, so the walk's builds and the fight's builds
+-- are reported on separate lines.
+B.flushBurst = flush
+
 -- May a pass start another build right now? `warm` = the pass is still filling
 -- its window (water, trees on a new ground), which earns the larger limit.
 function B.allow(warm)
@@ -79,12 +88,27 @@ function B.allow(warm)
   return B.spent < limit(warm)
 end
 
+-- Seconds of the frame's build limit still unspent (warm = the window is still
+-- filling, which earns the larger limit; a covering fade earns the largest).
+-- A cooperative builder sizes its slice from this, so a cold window loads as
+-- fast as the frame allows instead of at the steady-state trickle.
+function B.remaining(warm)
+  if B.stamp and clock() - B.stamp > 0.25 then reset() end
+  return math.max(0, limit(warm) - B.spent)
+end
+
 -- Report a finished build that started at t0 (clock()).
 function B.charge(t0, kind)
   local t = clock()
   local ms = (t - t0) * 1000
   if not B.stamp then B.stamp = t0 end
   B.builds = B.builds + 1
+  B.total = B.total + 1
+  B.totalMs = B.totalMs + ms
+  if ms > B.peakMs then B.peakMs, B.peakKind = ms, kind or "?" end
+  -- the on-screen PerfOverlay listens here while it is showing
+  local hook = B.onCharge
+  if hook then pcall(hook, kind, ms) end
   B.spent = B.spent + (t - t0)
   local b = B.burst
   if not b then b = { n = 0, ms = 0, kinds = {} }; B.burst = b end

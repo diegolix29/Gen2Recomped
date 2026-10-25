@@ -175,6 +175,70 @@ local northLit = false -- camera mode: draw the north-lit variant (the camera lo
 local resident = 0     -- built lands in landEntries
 local tick = 0         -- bumps per window recompute; entry.used = last tick the land was wanted
 
+-- ------------------------------------------------- cooperative build --
+--
+-- One land of trees measured 590 ms on average and up to 1070 ms to build on
+-- desktop (Gen4Budget burst log), and the budget always lets one build through
+-- per frame -- so every new land in view was a frame frozen for half a second
+-- or more, worse on a phone. buildLand now runs as a coroutine that yields
+-- between shapes and cards once its slice is spent, and is resumed on later
+-- frames. A land that is not finished yet keeps its native cards (the same
+-- thing a land outside the draw distance does). LuaJIT can yield across the
+-- pcall around each shape, which is what lets the slice boundary fall inside.
+local function detectMobile()
+  local ok, name = pcall(function() return love.system.getOS() end)
+  return ok and (name == "Android" or name == "iOS") or false
+end
+GT.SLICE = detectMobile() and 0.003 or 0.005   -- seconds of tree building per frame
+GT.COOPERATIVE = true
+local inflight = nil      -- { co, land, ground, result }
+local sliceEnd = math.huge
+
+local function checkpoint()
+  if clock() < sliceEnd then return end
+  local co, main = coroutine.running()
+  if co and not main and inflight and inflight.co == co then coroutine.yield() end
+end
+
+-- PHONE DETAIL. Measured on Android (PerfOverlay): tree building was 30-45% of
+-- every second while a map filled in, single slices hit 610-634 ms, and the Lua
+-- heap climbed past 550 MB of vertex tables. A block of 4x4 texels instead of
+-- 2x2 is a quarter of the quads -- a quarter of the build time, the memory, the
+-- upload and the draw -- for trees that read a little blockier up close.
+GT.MOBILE = detectMobile()
+if GT.MOBILE then
+  GT.TEX_STEP = 4
+  GT.MAX_QUADS = 150000
+end
+
+-- UPLOAD IN PIECES. love.graphics.newMesh(format, verts) converts every vertex
+-- table in one call -- a land of trees is up to MAX_QUADS * 4 of them, the one
+-- step of a build no checkpoint could reach. Inside the cooperative build the
+-- mesh is created empty and filled UPLOAD_CHUNK vertices at a time instead,
+-- with a checkpoint between pieces. Outside it, the old single call.
+GT.UPLOAD_CHUNK = 4096
+local function uploadMesh(verts, map)
+  local co, main = coroutine.running()
+  local cooperative = co and not main and inflight and inflight.co == co
+  local count = #verts
+  if not cooperative or count <= GT.UPLOAD_CHUNK then return Voxel3D.newMesh(verts, map) end
+  local ok, mesh = pcall(love.graphics.newMesh, Voxel3D.FORMAT, count, "triangles", "static")
+  if not (ok and mesh) then return Voxel3D.newMesh(verts, map) end
+  local step, chunk = GT.UPLOAD_CHUNK, {}
+  for start = 1, count, step do
+    local n = math.min(step, count - start + 1)
+    for i = 1, n do chunk[i] = verts[start + i - 1] end
+    for i = #chunk, n + 1, -1 do chunk[i] = nil end
+    if not pcall(mesh.setVertices, mesh, chunk, start) then
+      pcall(mesh.release, mesh)
+      return Voxel3D.newMesh(verts, map)
+    end
+    checkpoint()
+  end
+  if map and #map > 0 then pcall(mesh.setVertexMap, mesh, map) end
+  return mesh
+end
+
 -- ----------------------------------------------------------- decoding --
 
 local function s16(data, at)
@@ -205,6 +269,7 @@ local function readShape(ground, s, posScale)
   local uvAt = 6
   local pos = {}
   for i = 1, count do
+    if i % 512 == 0 then checkpoint() end
     local at = (i - 1) * stride
     pos[i] = {
       s16(vdata, at) / FX16 * posScale,
@@ -313,10 +378,12 @@ local function cardsFromTris(positions, tris, maxUvW, leanOnly)
   -- paired: two ground triangles share an edge and would pass as a "card"
   local isCard = {}
   for i, t in ipairs(tris) do
+    if i % 256 == 0 then checkpoint() end
     local pa, pb, pc = positions[t[1]], positions[t[2]], positions[t[3]]
     if not leanOnly or (pa and pb and pc and isCardTri(pa, pb, pc)) then isCard[i] = true else used[i] = 'x' end
   end
   for i = 1, #tris - 1, 2 do
+    if i % 128 == 1 then checkpoint() end
     local verts = uniquePosList(positions, tris[i], tris[i + 1])
     if isCard[i] and isCard[i + 1] and acceptCard(positions, verts, maxUvW) then
       used[i], used[i + 1] = true, true
@@ -325,8 +392,10 @@ local function cardsFromTris(positions, tris, maxUvW, leanOnly)
   end
   for i = 1, #tris do
     if not used[i] then
+      checkpoint()
       local bestJ, bestN
       for j = i + 1, #tris do
+        if j % 64 == 0 then checkpoint() end
         if not used[j] then
           local verts = uniquePosList(positions, tris[i], tris[j])
           if acceptCard(positions, verts, maxUvW) then
@@ -465,6 +534,7 @@ local function finishBucket(b)
   for k, fv in ipairs(facings) do
     local s = {}
     for i = 1, count do
+      if i % 2048 == 0 then checkpoint() end
       local v = verts[i]
       local value = surfaceShade(v[8], v[9], v[10], fv[1], fv[2])
       if GT.DEBUG_LAYERS and v[12] then value = value * (DEBUG_TINT[v[12]] or DEBUG_TINT[#DEBUG_TINT]) end
@@ -473,14 +543,18 @@ local function finishBucket(b)
     shades[k] = s
   end
   for i = 1, count do                      -- strip the bookkeeping fields
+    if i % 4096 == 0 then checkpoint() end
     local v = verts[i]
     v[8], v[9], v[10], v[11], v[12] = nil, nil, nil, nil, nil
   end
   local meshes = {}
   for k = 1, #facings do
     local s = shades[k]
-    for i = 1, count do verts[i][6] = s[i] end
-    meshes[k] = Voxel3D.newMesh(verts, b.map)
+    for i = 1, count do
+      if i % 4096 == 0 then checkpoint() end
+      verts[i][6] = s[i]
+    end
+    meshes[k] = uploadMesh(verts, b.map)
   end
   return meshes[1], meshes[2]
 end
@@ -1144,6 +1218,7 @@ local function buildLand(ground, land)
   local skipped = {}
 
   local function takeShape(s, posScale, texSet, place)
+    checkpoint()
     local skip
     local named = GT.isTreeName(s)
     local strip = namesOf(s):find("conttree", 1, true) ~= nil
@@ -1213,6 +1288,7 @@ local function buildLand(ground, land)
            (function() local t = {} for k = 1, 6 do if sizes[k] then t[#t + 1] = k .. "=" .. sizes[k] end end return table.concat(t, " ") end)())
     end
     for idx, comp in ipairs(comps) do
+      checkpoint()
       local n, failed = buildCard(b, tex, positions, comp, strip, layerOfCard[idx], shapeKey)
       if failed then bad = bad + 1 end
       built = built + n
@@ -1379,6 +1455,20 @@ function GT.prepare(ground)
   end
   table.sort(want, function(a, b) return a[1] < b[1] end)
 
+  -- a half-built land that left the window, or belongs to a ground that has
+  -- been replaced, is dropped (it has made no GPU meshes yet: those are only
+  -- created by finishBucket at the very end)
+  if inflight then
+    local still = inflight.ground == ground
+    if still then
+      still = false
+      for _, w in ipairs(want) do
+        if w[4] == inflight.land then still = true break end
+      end
+    end
+    if not still then inflight = nil end
+  end
+
   local builds = 0
   local sig = {}
   local failedNames = {}
@@ -1396,7 +1486,44 @@ function GT.prepare(ground)
     local land = w[4]
     local entry = land and landEntries[land]
     if not entry then
-      if builds < cap and Budget.allow(warm) then
+      local mine = inflight and inflight.land == land
+      if GT.COOPERATIVE and (mine or not inflight) and builds < cap and Budget.allow(warm) then
+        builds = builds + 1
+        if not mine then
+          inflight = { land = land, ground = ground }
+          inflight.co = coroutine.create(function()
+            local ok, built = pcall(buildLand, ground, land)
+            inflight.ok, inflight.result = ok, built
+          end)
+        end
+        local job = inflight
+        local t0 = clock()
+        -- at least GT.SLICE; more when the shared budget has room (a filling
+        -- window or a covering fade), so a new map loads its trees quickly
+        local slice = tonumber(GT.SLICE) or 0.005
+        if type(Budget.remaining) == "function" then
+          local okR, room = pcall(Budget.remaining, warm)
+          if okR and tonumber(room) and room > slice then slice = room end
+        end
+        sliceEnd = t0 + slice
+        local okR, errR = coroutine.resume(job.co)
+        sliceEnd = math.huge
+        Budget.charge(t0, "trees")
+        if not okR then job.ok, job.result = false, errR end
+        if coroutine.status(job.co) == "dead" then
+          inflight = nil
+          if job.ok then
+            entry = job.result
+          else
+            entry = { buckets = {}, shapes = {}, quads = 0, failed = {}, coveredKeys = {} }
+            once("build", "a land chunk failed to build and was skipped: %s", tostring(job.result))
+          end
+          landEntries[land] = entry
+          resident = resident + 1
+        else
+          pending = pending + 1
+        end
+      elseif not GT.COOPERATIVE and builds < cap and Budget.allow(warm) then
         builds = builds + 1
         local t0 = clock()
         local ok, built = pcall(buildLand, ground, land)
@@ -1426,6 +1553,10 @@ function GT.prepare(ground)
   end
   -- a name that failed in ANY land of the window is not safe to hide by name
   for k in pairs(failedNames) do names[k] = nil end
+  -- order-independent: `want` is sorted by distance to the EYE, so turning the
+  -- camera reordered an unchanged set and bumped coverVersion, which makes
+  -- Gen4Hide re-filter every shape of every drawn model
+  table.sort(sig)
   local signature = table.concat(sig, ",")
   if signature ~= lastSignature or window.ground ~= ground then
     lastSignature = signature
@@ -1438,6 +1569,7 @@ function GT.prepare(ground)
   window.ground, window.qx, window.qy, window.W, window.reach = ground, qx, qy, W, reach
   window.active, window.list, window.names, window.lands = active, list, names, lands
   window.done = pending == 0
+  GT.pendingLands = pending          -- read by the PerfOverlay ("trees waiting")
 
   -- EVICT. landEntries was never freed before invalidate(), so every land the
   -- player had ever walked past kept its baked trees in GPU memory. Keep the
@@ -1539,6 +1671,7 @@ function GT.invalidate()
     end
   end
   landEntries = setmetatable({}, { __mode = "k" })
+  inflight = nil
   resident = 0
   window = {}
   lastSignature = ""

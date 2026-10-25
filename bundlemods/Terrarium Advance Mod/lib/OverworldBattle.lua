@@ -689,6 +689,12 @@ end
 function OverworldBattle.finish()
   if not session then return end
   local endedOn = session.state
+  -- one line per fight: how many frames the hidden Gen 4/5 world under a CBE
+  -- arena was reused instead of re-rendered (see cbeOwnsNativeWorld)
+  if (session.ownedReuses or 0) > 0 then
+    V.mod.log:info("[OverworldBattle] CBE owned the Gen 4/5 world: hidden battle-scene "
+                   .. "render skipped on %d frame(s)", session.ownedReuses)
+  end
   restoreCast()
   session = nil
   Voxel3D.camera = nil
@@ -708,6 +714,41 @@ function OverworldBattle.finish()
     end
     OverworldBattle.colosseumActors = nil
   end
+end
+
+-- ------- the hidden world under a CBE arena (Gen 4/5)
+--
+-- On a native Gen 4/5 map, a Colosseum Battle Environments OVERWORLD fight
+-- draws its own world (ArenaOverworldSnapshot -> Gen4WorldHost.renderPose)
+-- and hands the renderer that surface as the world override AFTER this
+-- module's draw, so the shot rendered here is never seen. It was still
+-- rendered every frame: a full NSBMD world pass (Gen4WorldHost.renderBattle),
+-- a second Stadium pose, a second CurrentSpriteModels draw of every actor,
+-- the depth of field and the frosted HUD glass. On Gen 1-3 the same pass is
+-- a cheap voxel draw; on Gen 4/5 it was most of the frame.
+--
+-- What this module still owes that fight is the HUD layer (snapHUDs, the
+-- glass under it), which only needs a backdrop to frost. So once the CBE
+-- surface is being presented, the last finished shot is kept and reused;
+-- only the HUDs are re-snapped each frame. Gen 1-3 never reach this
+-- (nativeWorld() is false on a voxel field).
+OverworldBattle.OWNED_RETRY = 1.0   -- seconds between tries while no shot exists
+
+local function cbeOwnsNativeWorld()
+  local Snap = V.ArenaOverworldSnapshot
+  if not (Snap and type(Snap.nativeWorld) == "function") then return false end
+  local okN, native = pcall(Snap.nativeWorld)
+  if not (okN and native) then return false end
+  local okH, H = pcall(V.require, "StandaloneHost")
+  local s = okH and type(H) == "table" and H.session or nil
+  return (s and s.started == true and s.presented == true
+          and s.failOpen ~= true) and true or false
+end
+OverworldBattle.cbeOwnsNativeWorld = cbeOwnsNativeWorld
+
+local function clockNow()
+  local t = love and love.timer and love.timer.getTime
+  return t and t() or os.clock()
 end
 
 -- ------- per-frame
@@ -803,6 +844,25 @@ function OverworldBattle.update(dt)
     local okA, anim = pcall(OverworldBattle.animTexture, session.battle)
     if okA then session.animTex = anim end
   end
+  -- CBE is presenting its own world on a Gen 4/5 map: keep the last shot
+  -- (same window size) and only re-snap the HUDs. See cbeOwnsNativeWorld.
+  if cbeOwnsNativeWorld() then
+    local prev = session.shot
+    local okL, _, _, _, lpw, lph = pcall(BattleScene.letterbox)
+    local sameSize = prev and prev.canvas and okL
+                     and prev.pw == lpw and prev.ph == lph
+    if sameSize then
+      session.ownedReuses = (session.ownedReuses or 0) + 1
+      local okHud, up = pcall(OverworldBattle.snapHUDs, session.battle, prev)
+      session.snapped = (okHud and up) and true or false
+      return
+    end
+    -- no usable shot yet: try, but not every frame
+    local t = clockNow()
+    if session.ownedRetryAt and t < session.ownedRetryAt then return end
+    session.ownedRetryAt = t + (OverworldBattle.OWNED_RETRY or 1)
+  end
+
   session.token = (session.token or 0) + 1
   local ok, shot = pcall(BattleScene.render, session.state, session.arena,
                          textures, session.token)

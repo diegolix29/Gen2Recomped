@@ -318,6 +318,10 @@ function Lamps.prepare(ground)
     end
   end
   Lamps.active = active
+  -- order-independent: `want` is sorted by distance to the EYE, so turning the
+  -- camera reordered an unchanged set and bumped coverVersion, which makes
+  -- Gen4Hide re-filter every shape of every drawn model
+  table.sort(sig)
   local coverSig = table.concat(sig, ",")
   if coverSig ~= lastCoverSig then
     lastCoverSig = coverSig

@@ -179,10 +179,20 @@ local function dispatch(name,payload)
         {allowExtract=false,deferCold=true})
     end
   end
-  if BattleDirector and type(BattleDirector.event)=="function" then
+  -- On Gen 4/5 the standalone host holds battle.move_used / damage_dealt until
+  -- the engine's queue reaches the row that shows them (see
+  -- StandaloneHost.holdVisible). The director and the FX-ownership gate must
+  -- see the event at that same moment, so they are skipped here and reached
+  -- through StandaloneHost.event when the hold is released.
+  local held=false
+  if StandaloneHost and type(StandaloneHost.willHoldVisible)=="function" then
+    local okHold,value=pcall(StandaloneHost.willHoldVisible,name,payload)
+    held=okHold and value==true
+  end
+  if not held and BattleDirector and type(BattleDirector.event)=="function" then
     pcall(BattleDirector.event,BattleDirector,ctx,name,payload)
   end
-  if MoveFXOwnership and type(MoveFXOwnership.event)=="function" then
+  if not held and MoveFXOwnership and type(MoveFXOwnership.event)=="function" then
     pcall(MoveFXOwnership.event,MoveFXOwnership,ctx,name,payload)
   end
   if StandaloneHost then StandaloneHost.event(name,payload) end

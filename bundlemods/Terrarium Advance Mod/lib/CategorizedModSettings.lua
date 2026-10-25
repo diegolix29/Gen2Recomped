@@ -53,6 +53,7 @@ local CATEGORIES = {
     description = "Resolution, shadows, draw distance and streaming budgets.",
     keys = {
       renderScale=true, shadowQuality=true, drawDistance=true, gen4DrawDist=true,
+      perfOverlay=true,
     },
   },
   {
