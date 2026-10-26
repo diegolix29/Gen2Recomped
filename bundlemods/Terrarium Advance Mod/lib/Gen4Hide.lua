@@ -96,6 +96,10 @@ local Hide = {
                        "long_grass", "short_grass" },
   -- never hide as grass: the walkable lawn under the tufts
   GRASS_KEEP = { ngrass = true, bf_ngrass = true },
+  -- encounter-grass FLOORS: kept (and repainted grass.png by Gen4Lawn) while
+  -- only their standing "...Cards" shape is hidden; false = the old behaviour
+  GRASS_FLOORS = { nectgr = true, lgreen = true, lgreenp = true },
+  KEEP_GRASS_FLOOR = true,
 }
 
 local logged = {}
@@ -126,6 +130,16 @@ function Hide.isGrassCards(shape)
   end
   local m, t = namesOf(shape)
   if Hide.GRASS_KEEP[m] or Hide.GRASS_KEEP[t] then return false end
+  -- THE FLOOR STAYS. On Platinum the encounter grass is two shapes: the flat
+  -- floor (nectgr / lgreen / lgreenp) and the engine-stamped "...Cards" shape
+  -- standing on it (caught above). Hiding the floor too left a HOLE under the
+  -- 3D tufts -- the water sheet below the terrain showed through wherever the
+  -- tufts were sparse (G4 DETAIL FAST plants two per cell) or past the grass
+  -- reach. Gen4Lawn paints these floors with grass.png, the same picture as
+  -- the lawn around them, so kept they read as ground under the tufts.
+  if Hide.KEEP_GRASS_FLOOR and Hide.GRASS_FLOORS[m] or Hide.KEEP_GRASS_FLOOR and Hide.GRASS_FLOORS[t] then
+    return false
+  end
   if Hide.GRASS_NAMES[m] or Hide.GRASS_NAMES[t] then return true end
   local nm = lowered(name)
   for _, n in ipairs({ m, t, nm }) do

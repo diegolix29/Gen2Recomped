@@ -11,8 +11,8 @@
 --
 --   FAST (default)                      FULL (the old behaviour)
 --   trees  4x4-texel blocks, 150k quads/land   2x2 blocks, 450k quads/land
---   grass  within 512 units of the player,     the whole engine window,
---          2 of every 4 tiles                  every tile
+--   grass  within 1024 units of the player     the whole engine window
+--          (768 on a phone), every tile        every tile
 --   people 2x texture atlas, 1 smoothing pass  4x atlas, 2 passes
 --   arena  world at 0.6 size while the camera  full size while moving
 --          moves, full size once it stops
@@ -31,10 +31,20 @@ if okS and type(ModSetting) == "table" and ModSetting.new then
   D.setting = ModSetting.new(D.KEY, D.LABEL, { "fast", "full" }, { "FAST", "FULL" })
 end
 
+-- Grass reach on FAST, in world units from the player (16 per tile). Full
+-- density everywhere it grows: two tufts per cell read as striped rows (seen
+-- on HGSS), so the saving comes from the reach alone. A phone gets less.
+local MOBILE = false
+do
+  local ok, name = pcall(function() return love.system.getOS() end)
+  MOBILE = ok and (name == "Android" or name == "iOS") or false
+end
+D.GRASS_REACH_FAST = MOBILE and 768 or 1024
+
 D.LEVELS = {
   fast = {
     trees = { texStep = 4, maxQuads = 150000 },
-    grass = { reach = 512, tilesPerCell = 2 },
+    grass = { reach = D.GRASS_REACH_FAST, tilesPerCell = 4 },
     npc = { texScale = 2, blur = 1 },
     arena = { motionScale = 0.6 },
   },
