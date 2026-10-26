@@ -56,6 +56,7 @@ check(all:find("trees waiting: 3", 1, true), "trees waiting")
 check(all:find("build ms, last 5s: grass", 1, true) or all:find("build ms, last 5s: trees", 1, true), "by-type line")
 check(all:find("arena world: [45] renders/s"), "arena renders per second (one every 15 frames)")
 check(all:find("tier mobile", 1, true), "tier")
+check(all:find("log: %d+ lines/s"), "log cost line")
 
 -- off: draws nothing and measures nothing
 V.mod.options.get = function() return false end

@@ -73,7 +73,33 @@ local frameBuildMs, frameBuilds, frameEngMs, frameEngN = 0, 0, 0, 0
 local kindAcc, kindShown, kindAt = {}, {}, nil
 local peak = { ms = 0, kind = nil, t = -math.huge }
 local perSec = { t = nil, builds = 0, buildMs = 0, engN = 0, engMs = 0, renders = 0, reuses = 0, skips = 0 }
-local shown = { builds = 0, buildMs = 0, engN = 0, engMs = 0, renders = 0, reuses = 0, skips = 0 }
+local shown = { builds = 0, buildMs = 0, engN = 0, engMs = 0, renders = 0, reuses = 0, skips = 0,
+                logN = 0, logMs = 0 }
+
+-- LOG COST. Every engine and mod log line goes through src.core.Logger (the
+-- mod's V.mod.log included). Counted always (one add); timed only while the
+-- overlay shows. The time is what the logger itself spends (format, the
+-- repeat limiter, print to the console / logcat, the buffered file write) --
+-- not the caller building its own message string first.
+local logN, logMs = 0, 0
+local logLast = { n = 0, ms = 0, t = nil }
+local function hookLogger()
+  local okL, Logger = pcall(require, "src.core.Logger")
+  if not (okL and type(Logger) == "table") or Logger.__perfOverlayHooked then return end
+  Logger.__perfOverlayHooked = true
+  for _, level in ipairs({ "info", "warn", "error", "debug", "report" }) do
+    local inner = Logger[level]
+    if type(inner) == "function" then
+      Logger[level] = function(...)
+        logN = logN + 1
+        if not P.visible then return inner(...) end
+        local t0 = clock()
+        inner(...)
+        logMs = logMs + (clock() - t0) * 1000
+      end
+    end
+  end
+end
 local arenaLast = nil
 local gpu = nil
 
@@ -172,6 +198,8 @@ local function sampleSecond(now)
     arenaLast = st and { ref = st, renders = st.renders or 0, reuses = st.reuses or 0,
                          skips = st.motionSkips or 0 } or nil
     perSec.t, perSec.builds, perSec.buildMs, perSec.engN, perSec.engMs = now, 0, 0, 0, 0
+    shown.logN, shown.logMs = (logN - logLast.n) / span, (logMs - logLast.ms) / span
+    logLast.n, logLast.ms = logN, logMs
     hookEngine()                 -- Gen4Ground may load after the overlay first showed
   end
   -- by-type totals roll every 5 s
@@ -209,6 +237,7 @@ local function lines()
   end
   out[#out + 1] = string.format("loading: %.0f builds/s %.0f ms/s   slowest %s ms (%s)%s",
     shown.builds, shown.buildMs, fmt(peak.ms), tostring(peak.kind or "-"), trees)
+  out[#out + 1] = string.format("log: %.0f lines/s  %.1f ms/s in the logger", shown.logN, shown.logMs)
   if shown.engN > 0 or shown.engMs > 0 then
     out[#out + 1] = string.format("engine models: %.1f loads/s  %.0f ms/s", shown.engN, shown.engMs)
   end
@@ -286,6 +315,7 @@ function P.install()
   local okG, Game = pcall(require, "src.core.Game")
   if not (okG and type(Game) == "table" and type(Game.draw) == "function") then return false end
   P.installed = true
+  hookLogger()
 
   local innerDraw = Game.draw
   function Game:draw(...)

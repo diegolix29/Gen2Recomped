@@ -547,9 +547,18 @@ function Spawn.encounterDef(Game, map)
       table.sort(names)
       local data = Game and Game.data
       local def = map.def or {}
-      once("dump", "Game.data.encounters shape: %s",
-           shape(data and data.encounters, 5):sub(1, 1800))
-      once("defshape:" .. tostring(map.id), "map.def shape: %s", shape(def, 2):sub(1, 1500))
+      -- BUILT ONLY WHEN IT WILL BE LOGGED. These were once()'s arguments, so
+      -- Lua built them before once() could say "already said": a 5-deep walk
+      -- of the whole encounter table, sorting keys at every level -- repeated
+      -- every 2 s (negUntil) on any map with no encounter table, i.e. every
+      -- town, for as long as the player stood in it.
+      if not warned["dump"] then
+        once("dump", "Game.data.encounters shape: %s",
+             shape(data and data.encounters, 5):sub(1, 1800))
+      end
+      if not warned["defshape:" .. tostring(map.id)] then
+        once("defshape:" .. tostring(map.id), "map.def shape: %s", shape(def, 2):sub(1, 1500))
+      end
       once("dumpkeys:" .. tostring(map.id),
            "map keys tried: id=%s def.id=%s def.name=%s def.index=%s",
            tostring(map.id), tostring(def.id), tostring(def.name), tostring(def.index))
