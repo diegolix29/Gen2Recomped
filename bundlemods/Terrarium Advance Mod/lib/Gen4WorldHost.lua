@@ -1143,6 +1143,21 @@ function Host.afterBattle(state)
     if c and c.release then pcall(c.release, c) end
     Host._poseCanvas, Host._poseW, Host._poseH = nil, nil, nil
   end
+  do -- ...and the arena world's own live targets (see renderPose)
+    local okG, Game = pcall(require, "src.core.Game")
+    local renderer = okG and Game and Game.renderer
+    local live = Host.groundOf(state)
+    for _, t in pairs(Host._arenaTargets or {}) do
+      if not (live and live.liveColour == t[1]) then
+        if renderer and renderer.worldOverride == t[1] and renderer.setWorldOverride then
+          pcall(renderer.setWorldOverride, renderer, nil)
+        end
+        if t[1] and t[1].release then pcall(t[1].release, t[1]) end
+        if t[2] and t[2].release then pcall(t[2].release, t[2]) end
+      end
+    end
+    Host._arenaTargets, Host._arenaTargetSwap = {}, nil
+  end
   if not ground then return false end
   ground.cameraPlaced = nil
 
@@ -1328,6 +1343,24 @@ function Host.renderPose(state, pocket, pose, w, h, opts)
       scaleWas = Ground.renderScaleIndex
       Ground.renderScaleIndex = 1
     end
+    -- THE ARENA DRAWS INTO ITS OWN TARGET. The ground keeps ONE live colour +
+    -- depth target and frees and re-allocates it whenever the asked-for size
+    -- changes. The arena world (scaled, and smaller again while the camera
+    -- moves) and the overworld pass that still runs during a fight ask for
+    -- different sizes, so every switch between them destroyed and rebuilt the
+    -- target -- an allocation burst per switch, worst on a phone. The arena's
+    -- targets are swapped in for this call only and kept per size.
+    local liveSaved = { ground.liveColour, ground.liveDepthBuf, ground.liveW, ground.liveH }
+    local sc = (Ground and type(Ground.renderScale) == "function") and (tonumber(Ground.renderScale()) or 1) or 1
+    local targetKey = (w * sc) .. "x" .. (h * sc)
+    Host._arenaTargets = Host._arenaTargets or {}
+    local own = Host._arenaTargets[targetKey]
+    if own then
+      ground.liveColour, ground.liveDepthBuf, ground.liveW, ground.liveH = own[1], own[2], own[3], own[4]
+    else
+      ground.liveColour, ground.liveDepthBuf, ground.liveW, ground.liveH = nil, nil, nil, nil
+    end
+    Host._arenaTargetSwap = { ground = ground, saved = liveSaved, key = targetKey }
     local painted = drawFree(ground, w, h)
     if not painted then
       why = "the engine declined to draw the world"
@@ -1375,6 +1408,33 @@ function Host.renderPose(state, pocket, pose, w, h, opts)
   -- restored out here so a throw inside the pass cannot leave the walking
   -- world stuck at 1x
   if scaleWas and GroundMod then GroundMod.renderScaleIndex = scaleWas end
+  -- ...and the overworld's own live target put back, the arena's kept by size
+  -- (at most two: the settled size and the camera-motion size)
+  local swap = Host._arenaTargetSwap
+  if swap and swap.ground == ground then
+    Host._arenaTargetSwap = nil
+    if ground.liveColour then
+      Host._arenaTargets[swap.key] = { ground.liveColour, ground.liveDepthBuf, ground.liveW, ground.liveH,
+                                       used = Host.stats.draws }
+      Host._arenaTargetUse = (Host._arenaTargetUse or 0) + 1
+      Host._arenaTargets[swap.key].used = Host._arenaTargetUse
+    end
+    local keys = {}
+    for k in pairs(Host._arenaTargets) do keys[#keys + 1] = k end
+    if #keys > 2 then
+      table.sort(keys, function(a, b) return (Host._arenaTargets[a].used or 0) < (Host._arenaTargets[b].used or 0) end)
+      for i = 1, #keys - 2 do
+        local t = Host._arenaTargets[keys[i]]
+        if t[1] ~= swap.saved[1] then
+          if t[1] and t[1].release then pcall(t[1].release, t[1]) end
+          if t[2] and t[2].release then pcall(t[2].release, t[2]) end
+        end
+        Host._arenaTargets[keys[i]] = nil
+      end
+    end
+    ground.liveColour, ground.liveDepthBuf, ground.liveW, ground.liveH =
+      swap.saved[1], swap.saved[2], swap.saved[3], swap.saved[4]
+  end
   Host._inBattle = false
   Host._poseDraw = false
   if state then state.entities, state.ghosts = savedEntities, savedGhosts end

@@ -217,6 +217,15 @@ function H.begin(battle)
   if s.battle then s.battle.__cbePresentationQueueSync=true end
   H.lastError=nil;H.lastUpdateError=nil
   log("info","standalone arena host began: arena=%s actor=current-sprites",tostring(s.context.arena and s.context.arena.id))
+  -- where a fight's GPU memory goes: compare with Gen4WorldHost's "fight start"
+  -- line and the arena world's "first render" figure
+  do
+    local okS,st=pcall(function() return love.graphics.getStats() end)
+    if okS and type(st)=="table" then
+      log("info","GPU after arena begin: textures %.0f MB, %d canvases, %d images",
+        (tonumber(st.texturememory) or 0)/1048576,tonumber(st.canvases) or 0,tonumber(st.images) or 0)
+    end
+  end
   return true
 end
 

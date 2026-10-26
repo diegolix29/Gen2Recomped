@@ -226,9 +226,17 @@ local function lines()
   out[#out + 1] = string.format("draw %s ms   update+wait %s ms   lua %.0f MB",
     fmt(w1.draw), fmt(math.max(0, w1.avg * 1000 - w1.draw)), collectgarbage("count") / 1024)
   if gpu then
-    out[#out + 1] = string.format("gpu: %d draws  %d canvas  %d shader  tex %.0f MB",
+    out[#out + 1] = string.format("gpu: %d draws  %d canvas sw  %d shader  tex %.0f MB (%d canvases, %d images)",
       gpu.drawcalls or 0, gpu.canvasswitches or 0, gpu.shaderswitches or 0,
-      (gpu.texturememory or 0) / 1048576)
+      (gpu.texturememory or 0) / 1048576, gpu.canvases or 0, gpu.images or 0)
+    -- the Gen 4/5 world: lands skipped this frame because the camera cannot see them
+    local G = package.loaded["src.render.Gen4Ground"]
+    local okG, Game = pcall(require, "src.core.Game")
+    local ow = okG and Game and Game.overworld
+    local ground = ow and ow.map and ow.map.renderer and ow.map.renderer.gen4Ground
+    if G and ground and ground.culledLands then
+      out[#out + 1] = string.format("world: %d land(s) outside the view skipped", ground.culledLands)
+    end
   end
   local trees = ""
   local okT, GT = pcall(V.require, "Gen4Trees")

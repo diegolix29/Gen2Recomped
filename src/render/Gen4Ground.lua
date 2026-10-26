@@ -2474,6 +2474,43 @@ function Gen4Ground:drawFree(vw, vh)
   -- so no other caller inherits it.
   Gen4Model.billboardYaw = view.yaw or 0
   local drawn = 0
+  -- LANDS THE CAMERA CANNOT SEE ARE NOT DRAWN.
+  --
+  -- The window is every land within FREE_RADIUS of the eye -- 25 of them, each
+  -- a model of many shapes plus its buildings, one draw call per shape -- and
+  -- a third-person camera looks at about half of it. Measured on Android: 550
+  -- draw calls a frame with nothing loading, at 12 fps. Each land is tested as
+  -- a sphere against the cone round the view frustum, widened by a margin and
+  -- with a radius that covers the tallest building, so it only says "no" for a
+  -- land well outside the picture. Off for orthographic interiors (no cone)
+  -- and the Distortion World's forced camera; CULL_LANDS = false turns it off.
+  local cullLand = nil
+  self.culledLands = 0
+  local ortho = view.mode == "field3d" and view.config and view.config.projection == "orthographic"
+  if Gen4Ground.CULL_LANDS ~= false and not ortho and not Gen4Camera.forceField3d
+     and view.forward and view.effectiveFovY then
+    local okF, cfx, cfy, cfz = pcall(view.forward, view)
+    local okV, fovDeg = pcall(view.effectiveFovY, view, th)
+    fovDeg = okV and tonumber(fovDeg) or nil
+    if okF and cfx and fovDeg and fovDeg > 0 and fovDeg < 179 then
+      local aspect = tw / math.max(th, 1)
+      local halfCone = math.atan(math.tan(math.rad(fovDeg) / 2) * math.sqrt(1 + aspect * aspect))
+                       + (Gen4Ground.CULL_MARGIN or 0.3)
+      local ex, ey, ez = view.x or 0, view.y or 0, view.z or 0
+      local radius = px * 0.75 + (Gen4Ground.CULL_PAD or 192)
+      local acos, asin, sqrt = math.acos, math.asin, math.sqrt
+      cullLand = function(cx, cy)
+        local x = cx * px + self.half - ex
+        local y = self:chunkLift(cx, cy) - ey
+        local z = cy * px + self.half - ez
+        local d = sqrt(x * x + y * y + z * z)
+        if d <= radius then return false end
+        local c = (x * cfx + y * cfy + z * cfz) / d
+        if c > 1 then c = 1 elseif c < -1 then c = -1 end
+        return acos(c) - asin(radius / d) > halfCone
+      end
+    end
+  end
   local fy0, fy1, fx0, fx1 = camCy - FREE_RADIUS, camCy + FREE_RADIUS, camCx - FREE_RADIUS, camCx + FREE_RADIUS
   if self.drawAllChunks then fy0, fy1, fx0, fx1 = 0, grid.height - 1, 0, grid.width - 1 end
   -- A DISTORTION WORLD CAMERA (Gen4DistSurface) can swing to 18 degrees above
@@ -2483,7 +2520,10 @@ function Gen4Ground:drawFree(vw, vh)
   if Gen4Camera.forceField3d then fy0, fy1, fx0, fx1 = 0, grid.height - 1, 0, grid.width - 1 end
   for cy = fy0, fy1 do
     for cx = fx0, fx1 do
-      if cx >= 0 and cy >= 0 and cx < grid.width and cy < grid.height then
+      local culled = cullLand ~= nil and cx >= 0 and cy >= 0 and cx < grid.width
+                     and cy < grid.height and cullLand(cx, cy)
+      if culled then self.culledLands = self.culledLands + 1 end
+      if not culled and cx >= 0 and cy >= 0 and cx < grid.width and cy < grid.height then
         local land = grid.land[cy * grid.width + cx + 1]
         local model = self:liveModel(land)
         if model then
