@@ -59,6 +59,34 @@ function A.images(rom)
       if img then img.originX, img.originY = -side * 4, -side * 4; out["ball_" .. b] = img end
     end
   end
+  -- THE PERFORMANCE STARS (sub_0208B89C's sprites 0x4F-0x6C, resource set 44
+  -- = cldat 85: char 66, palette 65 row 0, cells 67, anims 68): perf_<c>,
+  -- c = the cell -- 0 a star at the base (seq 0), 1 above it (seq 1), 2
+  -- below it (seq 2), 3 an empty slot (seq 3), 4 / 5 the Aprijuice arrows
+  -- up / down (seqs 4 / 5); each 16 x 16 about its centre
+  do
+    local C = require("src.import.Gen4Cells")
+    local sheet, bank, pp = G.tiles(m(66)), C.parse(m(67), G), G.palette(m(65), true)
+    if sheet and bank and pp then
+      local row = {}
+      for k = 1, 16 do row[k] = pp[k] or { 0, 0, 0 } end
+      for c = 0, 5 do
+        local cell = bank.cells[c + 1]
+        if cell then
+          local flat = { oam = {} }
+          for k, v in pairs(cell) do if k ~= "oam" then flat[k] = v end end
+          for j, o in ipairs(cell.oam) do
+            local cp = {}
+            for k, v in pairs(o) do cp[k] = v end
+            cp.palette = 0
+            flat.oam[j] = cp
+          end
+          local pic = C.assemble(flat, sheet, row, bank, G)
+          if pic then pic.originX, pic.originY = C.extent(flat); out["perf_" .. c] = pic end
+        end
+      end
+    end
+  end
   for k, v in pairs(A.pstImages(rom) or {}) do out[k] = v end
   return out
 end

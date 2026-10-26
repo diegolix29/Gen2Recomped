@@ -958,11 +958,21 @@ end
 -- have made it three again.
 function Gen4Ground:propMaterials(object, frame)
   if not object then return nil end
+  -- a map def's own script controls (Pastoria Gym's buttons, Gen4PropControl.sync)
+  if self.def and self.def.gen4PropControl ~= self.propControlFrom then
+    require("src.render.Gen4PropControl").sync(self)
+  end
   local records, images = self:animationsFor(object.model, object.archive)
   -- `frame` is the engine clock; the cartridge steps a prop's texture
   -- animation once per FIELD frame (30 Hz), see Gen4PropClock.fieldFrame
   local mats = records and Gen4TexAnim.materials(records,
     require("src.render.Gen4PropClock").fieldFrame(frame), images) or nil
+  -- a script's paused / once-played animations on their own frames
+  -- (Gen4PropControl)
+  if records and self.propControl and self.propControl[object.model] then
+    mats = require("src.render.Gen4PropControl").materials(self, object.model, records,
+      require("src.render.Gen4PropClock").fieldFrame(frame), images) or mats
+  end
   if object.archive == "fldeff" then return mats end
   local slots = self.oneShots
   if not slots then return mats end
@@ -1080,6 +1090,13 @@ function Gen4Ground:animationsFor(index, archive)
   end
   if not self.claimsOnly then add(packed.name and self.animsByName[packed.name]) end
   add(self.animsByProp and self.animsByProp[index])
+  -- ...and what a script has attached though the list holds it back
+  -- (Gen4PropControl: HGSS ScrCmd_710's hideout generators)
+  if self.propControl then
+    for _, record in ipairs(require("src.render.Gen4PropControl").attached(self, index) or {}) do
+      if not seen[record] then seen[record] = true; list = list or {}; list[#list + 1] = record end
+    end
+  end
   if not (list and Gen4TexAnim.animates(list, images)) then return nil end
   return list, images
 end
@@ -1325,7 +1342,7 @@ function Gen4Ground:runtimePropsFor(land)
         if at then
           byLand[at] = byLand[at] or {}
           table.insert(byLand[at], { model = p.model, archive = p.archive, live = p.live, x = mx - cx * unitsPerChunk - half,
-            y = p.y or 0, z = mz - cy * unitsPerChunk - half, rotY = p.rotY, ground = p.ground,
+            y = p.y or 0, z = mz - cy * unitsPerChunk - half, rotY = p.rotY, rotX = p.rotX, ground = p.ground,
             scaleX = p.scale or 1, scaleY = p.scale or 1, scaleZ = p.scale or 1 })
         end
       end
@@ -1338,15 +1355,17 @@ end
 
 -- The healing balls are map props in Platinum, placed relative to the
 -- console, so they participate in the same depth/camera pass as its ROM art.
-function Gen4Ground:setHealingBalls(count, visible)
+-- `machineName` (optional): the machine prop the balls sit on -- Platinum's
+-- Hall of Fame (Gen4FieldScenes) passes pokemon_league_hall_of_fame_machine
+function Gen4Ground:setHealingBalls(count, visible, machineName)
   self.healScreenActive=(count or 0)>0
-  local key = tostring(count or 0) .. ':' .. tostring(visible)
+  local key = tostring(count or 0) .. ':' .. tostring(visible) .. ':' .. tostring(machineName)
   if self.healingPropsKey == key then return end
   self.healingPropsKey, self.healingProps = key, nil
   if count and count > 0 and visible ~= false then
     local A = require('src.import.Gen4Archives')
     local path = '/fielddata/build_model/build_model.narc'
-    local machine = A.find(path, 'pokecenter_healing_machine.nsbmd')
+    local machine = A.find(path, machineName or 'pokecenter_healing_machine.nsbmd')
     local ball = A.find(path, 'pokecenter_healing_machine_mini_pokeball.nsbmd')
     if self.def.cameraFamily == 'hgss' then
       -- PokecenterAnimCreate/Run (HGSS overlay 2): prop 0x24 is the
@@ -1413,6 +1432,20 @@ local function placement(object)
   -- placement, `rotY` in degrees about the vertical). Platinum's records
   -- carry no rotation and have no `rotY`, so their matrix is unchanged.
   local yaw = object.rotY and object.rotY ~= 0 and math.rad(object.rotY) or nil
+  -- A PITCH (`rotX`, degrees), which a script's MapPropManager_LoadOne
+  -- rotation can carry: Sunyshore Gym's upright gears turn about x.
+  -- MTX_Rot33Vec is X then Y (fx_util.c), so the matrix is RotY * RotX.
+  local pitch = object.rotX and object.rotX ~= 0 and math.rad(object.rotX) or nil
+  if pitch then
+    local c, s = math.cos(yaw or 0), math.sin(yaw or 0)
+    local cx, sx_ = math.cos(pitch), math.sin(pitch)
+    return {
+      c * sx,  s * sx_ * sy, s * cx * sz,  object.x or 0,
+      0,       cx * sy,      -sx_ * sz,    object.y or 0,
+      -s * sx, c * sx_ * sy, c * cx * sz,  object.z or 0,
+      0,       0,            0,            1,
+    }
+  end
   if yaw then
     local c, s = math.cos(yaw), math.sin(yaw)
     return {
@@ -2084,6 +2117,16 @@ function Gen4Ground:livePass(camX, camY, vw, vh, yCut)
       Logger.warn("gen4 field fx: %s", tostring(errF))
     end
   end
+  -- HGSS's legendary wing (HgssLegendCutscene.showWing), the same pass
+  if not yCut then
+    local LC = package.loaded["src.world.HgssLegendCutscene"]
+    if LC and LC.wing and LC.drawLive then pcall(LC.drawLive, self, left, top, vw, vh) end
+  end
+  -- HGSS's hideout floor trap going off (HgssHideoutFx, ScrCmd_708), the same pass
+  if not yCut then
+    local HF = package.loaded["src.world.HgssHideoutFx"]
+    if HF and HF.trap then pcall(HF.drawLive, self, left, top, vw, vh) end
+  end
   -- PLATINUM'S SURF MOUNT (Gen4SurfMount), in with the ground and under the
   -- sprites -- not in the canopy pass, which paints over them
   if not yCut then
@@ -2093,6 +2136,15 @@ function Gen4Ground:livePass(camX, camY, vw, vh, yCut)
     if not okM and not self.mountWarned then
       self.mountWarned = true
       Logger.warn("gen4 surf mount: %s", tostring(errM))
+    end
+  end
+  -- PLATINUM'S GYM FIELD EFFECTS (Gen4GymFx: Hearthome's flashlights,
+  -- Veilstone's bags, Eterna's fountains), in the fog but able to leave it
+  if not yCut and self.def and (self.def.gen4GymFx or self.def.gen4GymFxProvider) then
+    local okG, errG = pcall(function() require("src.world.Gen4GymFx").drawLive(self, left, top, vw, vh) end)
+    if not okG and not self.gymFxWarned then
+      self.gymFxWarned = true
+      Logger.warn("gen4 gym fx: %s", tostring(errG))
     end
   end
   require("src.render.Gen4DepthFog").finish()
@@ -2266,6 +2318,9 @@ vec4 position(mat4 transform_projection, vec4 vertex_position)
 }
 #endif
 #ifdef PIXEL
+// THE FIELD'S DEPTH FOG on a character of the free pass (Gen4DepthFog
+// spriteAt): rgb the fog colour, a the density; 0 for none
+uniform vec4 spriteFog;
 vec4 effect(vec4 colour, Image tex, vec2 uv, vec2 screen)
 {
     vec4 texel = Texel(tex, uv);
@@ -2273,10 +2328,72 @@ vec4 effect(vec4 colour, Image tex, vec2 uv, vec2 screen)
     // character would occlude whatever is behind it -- the same rule the model
     // shader states for a leaf and the sprite shader states for a character.
     if (texel.a < 0.02) { discard; }
-    return texel * colour;
+    vec4 c = texel * colour;
+    c.rgb = mix(c.rgb, spriteFog.rgb, spriteFog.a);
+    return c;
 }
 #endif
 ]]
+
+-- THE CARTRIDGE'S BILLBOARD AS A PLANE, for a tilt rung's 3D camera.
+--
+-- Reported from play (HeartGold, Violet's academy, at a CAM TILT rung): the
+-- students sitting behind their desks were hidden by them -- heads gone, legs
+-- showing under the desk. One depth at the feet is the cartridge's billboard
+-- seen FROM THE CARTRIDGE'S CAMERA: a quad square to that view, so one depth
+-- across it. A rung draws the world through a steeper perspective camera, and
+-- from there a desk top 16 units up a tile to the north is nearer the eye
+-- than the feet by far more than the billboard's 6-unit nudge.
+--
+-- So on a rung the sprite is given the depth of the plane the cartridge's quad
+-- actually lies in -- through the billboard origin, square to the MAP
+-- HEADER'S own camera -- at each of its pixels. Whatever surface is visible at
+-- a pixel is then in front of the sprite exactly when it is on the camera side
+-- of that plane, which is the verdict the cartridge's own depth test gives.
+-- NDC depth over a plane is affine in screen position under either
+-- projection, so the plane is three numbers: `spritePlane` = (origin x,
+-- origin y, d/dx, d/dy) in the target's pixels, around `spriteZ`.
+local PLANE_SPRITE_SHADER = [[
+#ifdef VERTEX
+uniform float spriteZ;
+uniform vec4 spritePlane;
+vec4 position(mat4 transform_projection, vec4 vertex_position)
+{
+    vec4 p = transform_projection * vertex_position;
+    vec4 t = TransformMatrix * vertex_position;
+    float z = spriteZ + spritePlane.z * (t.x - spritePlane.x)
+                      + spritePlane.w * (t.y - spritePlane.y);
+    p.z = z * p.w;
+    return p;
+}
+#endif
+#ifdef PIXEL
+// THE FIELD'S DEPTH FOG on a character of the free pass (Gen4DepthFog
+// spriteAt): rgb the fog colour, a the density; 0 for none
+uniform vec4 spriteFog;
+vec4 effect(vec4 colour, Image tex, vec2 uv, vec2 screen)
+{
+    vec4 texel = Texel(tex, uv);
+    if (texel.a < 0.02) { discard; }
+    vec4 c = texel * colour;
+    c.rgb = mix(c.rgb, spriteFog.rgb, spriteFog.a);
+    return c;
+}
+#endif
+]]
+
+local planeSprite
+local function ensurePlaneSprite()
+  if planeSprite == nil then
+    local ok, made = pcall(love.graphics.newShader, PLANE_SPRITE_SHADER)
+    planeSprite = (ok and made) or false
+    if not planeSprite then
+      Logger.warn("gen4 ground: the plane-sprite shader would not compile (%s)"
+                  .. " -- a rung's characters keep one depth", tostring(made))
+    end
+  end
+  return planeSprite or nil
+end
 
 local depthSprite
 local function ensureDepthSprite()
@@ -2574,13 +2691,18 @@ function Gen4Ground:drawFree(vw, vh)
   -- bells, rings and waves the Kimono Girls' dance draws
   do
     local LC = package.loaded["src.world.HgssLegendCutscene"]
-    if LC and LC.state then
+    if LC and (LC.state or LC.wing) then
       local okL, errL = pcall(LC.drawFree, self, vp)
       if not okL and not self.legendWarned then
         self.legendWarned = true
         Logger.warn("hgss legend cutscene: %s", tostring(errL))
       end
     end
+  end
+  -- HGSS's hideout floor trap (HgssHideoutFx, ScrCmd_708)
+  do
+    local HF = package.loaded["src.world.HgssHideoutFx"]
+    if HF and HF.trap then pcall(HF.drawFree, self, vp) end
   end
   -- HGSS'S OBSTACLE ANIMATIONS (Gen4FieldFx), with the world's depth
   do
@@ -2596,6 +2718,14 @@ function Gen4Ground:drawFree(vw, vh)
     if not okM and not self.mountWarned then
       self.mountWarned = true
       Logger.warn("gen4 surf mount: %s", tostring(errM))
+    end
+  end
+  -- PLATINUM'S GYM FIELD EFFECTS (Gen4GymFx), with the world's depth
+  if self.def and (self.def.gen4GymFx or self.def.gen4GymFxProvider) then
+    local okG, errG = pcall(function() require("src.world.Gen4GymFx").drawFree(self, vp) end)
+    if not okG and not self.gymFxWarned then
+      self.gymFxWarned = true
+      Logger.warn("gen4 gym fx: %s", tostring(errG))
     end
   end
   -- THE TARGET STAYS BOUND, and that is the whole of the masking fix.
@@ -2845,7 +2975,48 @@ local FEET_Y, FEET_X = Gen4Ground.FEET_Y, Gen4Ground.FEET_X
 -- ABOVE the feet instead of at them, while it is still placed exactly as the
 -- owner's sprite is. Sinnoh's "!" hangs 32 units up (Gen4Emotes): tested at
 -- the feet it lost to every treetop behind its trainer and never showed.
-function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw, depthLift, pose)
+-- billboardPlane(x, y, z, vw, vh) -> { ox, oy, ddx, ddy, depth } or nil
+--
+-- The cartridge billboard's plane (PLANE_SPRITE_SHADER) through the world
+-- point (x, y, z), in the current target's pixels. Only on a tilt rung's
+-- field camera looking the cartridge's way: the cartridge rung needs no plane
+-- (its quad is square to the view already), and from `third` / `first`, or
+-- turned far round, the header's camera is not the one being looked through.
+function Gen4Ground:billboardPlane(x, y, z, vw, vh)
+  local view = self.view3d
+  if not (view and view.mode == "field3d") then return nil end
+  if math.abs(math.deg(view.yaw or 0)) > 45 then return nil end
+  local cam = self.camera
+  local pitch = cam and tonumber(cam.pitch)
+  if not pitch or pitch >= 89.99 then return nil end
+  local rung = tonumber(cam.rungPitch)
+  if not rung or math.abs(rung - pitch) < 0.01 then return nil end
+  local sp, cp = math.sin(math.rad(pitch)), math.cos(math.rad(pitch))
+  local g = love.graphics
+  local function at(px, py, pz)
+    local sx, sy, _, d = view:project(px, py, pz, vw, vh)
+    if not (sx and d) then return nil end
+    local tx, ty = g.transformPoint(sx, sy)
+    return tx, ty, d
+  end
+  -- the origin, a step across the plane, and a step up it (square to the
+  -- header's view: up the screen is +y by cos and north by sin)
+  local x0, y0, d0 = at(x, y, z)
+  local x1, y1, d1 = at(x + 16, y, z)
+  local x2, y2, d2 = at(x, y + 16 * cp, z - 16 * sp)
+  if not (x0 and x1 and x2) then return nil end
+  local ax, ay, bx, by = x1 - x0, y1 - y0, x2 - x0, y2 - y0
+  local det = ax * by - ay * bx
+  if math.abs(det) < 1e-6 then return nil end
+  local da, db = d1 - d0, d2 - d0
+  local ddx = (da * by - db * ay) / det
+  local ddy = (db * ax - da * bx) / det
+  return { x0, y0, ddx, ddy, d0 }
+end
+
+-- `fogged`: the field's depth fog on it (Gen4DepthFog.spriteAt), for the
+-- characters the live pass fogs too (OverworldController's entity pass)
+function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw, depthLift, pose, fogged)
   if not self:freeMode() then return false end
   local vw, vh = self.freeW, self.freeH
   if not (vw and vh and draw) then return true end
@@ -2896,13 +3067,36 @@ function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw, depthLift, po
   -- rejects equal.
   local shader, mode, write
   if Gen4Ground.freeOpen and depth then
-    local sp = ensureDepthSprite()
+    local plane = self:billboardPlane(gx + (self.offsetX or 0), footY + (depthLift or 0),
+                                      gz + Gen4Ground.BILLBOARD_Z_OFFSET + (self.offsetY or 0),
+                                      vw, vh)
+    local sp = plane and ensurePlaneSprite() or ensureDepthSprite()
     if sp then
       shader = g.getShader()
       mode, write = g.getDepthMode()
       g.setShader(sp)
-      sp:send("spriteZ", depth)
+      sp:send("spriteZ", plane and plane[5] or depth)
+      if plane then sp:send("spritePlane", { plane[1], plane[2], plane[3], plane[4] }) end
       g.setDepthMode("lequal", true)
+    end
+  end
+  -- THE FIELD'S DEPTH FOG ON THE CHARACTER, at its billboard origin's depth
+  -- on this pass's own projection -- what the live pass's tint does
+  -- (Gen4GymFx.spriteFog), here mixed toward the fog's own colour by the
+  -- sprite shader; without one, a dark fog as a tint
+  local fogShader, fogTint
+  if fogged and depth then
+    local fr, fg, fb, fd = require("src.render.Gen4DepthFog").spriteAt(depth)
+    if fd then
+      local cur = mode ~= nil and g.getShader() or nil
+      if cur then
+        cur:send("spriteFog", { fr, fg, fb, fd })
+        fogShader = cur
+      elseif fr + fg + fb < 0.3 then
+        fogTint = { g.getColor() }
+        local k = 1 - fd
+        g.setColor(fogTint[1] * k, fogTint[2] * k, fogTint[3] * k, fogTint[4])
+      end
     end
   end
   -- ...AND FACES THE WAY IT IS GOING ON SCREEN: the world step, projected,
@@ -2940,6 +3134,8 @@ function Gen4Ground:freeEntity(mapX, mapY, camX, camY, rise, draw, depthLift, po
   draw()
   if dr then g.setColor(dr, dg, db, da) end
   g.pop()
+  if fogShader then fogShader:send("spriteFog", { 0, 0, 0, 0 }) end
+  if fogTint then g.setColor(fogTint[1], fogTint[2], fogTint[3], fogTint[4]) end
   if facer then facer.facing = savedFacing end
   if mode then
     g.setDepthMode(mode, write)
@@ -4676,8 +4872,8 @@ function Gen4Ground:bwSlopeHeight(px, py)
   for _, axis in ipairs({ { 1, 0 }, { 0, 1 } }) do
     local dx, dy = axis[1], axis[2]
     local a, b = 0, 0
-    while a < 12 and isSlope(tx - dx * (a + 1), ty - dy * (a + 1)) do a = a + 1 end
-    while b < 12 and isSlope(tx + dx * (b + 1), ty + dy * (b + 1)) do b = b + 1 end
+    while a < 48 and isSlope(tx - dx * (a + 1), ty - dy * (a + 1)) do a = a + 1 end
+    while b < 48 and isSlope(tx + dx * (b + 1), ty + dy * (b + 1)) do b = b + 1 end
     local ha = flat(tx - dx * (a + 1), ty - dy * (a + 1))
     local hb = flat(tx + dx * (b + 1), ty + dy * (b + 1))
     local diff = math.abs(hb - ha)
@@ -4691,7 +4887,79 @@ function Gen4Ground:bwSlopeHeight(px, py)
       best, bestDiff = ha + (hb - ha) * s, diff
     end
   end
-  return best
+  if best then return best end
+  -- NO RUN WITH TWO DIFFERENT ENDS: a flight whose landings both sit beside
+  -- more slope (a turn, a ridge, a stair that meets a hill), or whose ends
+  -- the scan reads as the same height. Without this the tile kept the bottom's
+  -- height all the way up and the player stepped onto the top in one jump.
+  -- The slope region is relaxed between the flat heights round it, once per
+  -- map, and the point blends the four tile centres about it.
+  local field = self:bwSlopeField()
+  local here = field[tx .. "," .. ty] or flat(tx, ty)
+  local blocks, w = def.blocks, tonumber(def.width) or 0
+  local function at(x, y)
+    local k = x .. "," .. y
+    if slopes[k] then return field[k] or here end
+    -- a wall or cliff face beside the flight is not ground to blend toward
+    if type(blocks) == "string" and x >= 0 and y >= 0 and x < w
+       and blocks:byte((y * w + x) * 2 + 1) == 255 then
+      return here
+    end
+    return flat(x, y)
+  end
+  local fx, fy = px / 16 - 0.5, py / 16 - 0.5
+  local x0, y0 = math.floor(fx), math.floor(fy)
+  local u, v = fx - x0, fy - y0
+  local a, b = at(x0, y0), at(x0 + 1, y0)
+  local c, d = at(x0, y0 + 1), at(x0 + 1, y0 + 1)
+  return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v
+end
+
+-- every slope tile's centre height, relaxed (Gauss-Seidel) between the
+-- WALKABLE flat tiles bordering its region -- the walls and cliff faces beside
+-- a flight are not its landings, and counting them sagged the ramp; computed
+-- on first use, kept on the ground
+Gen4Ground.SLOPE_PASSES = 400
+function Gen4Ground:bwSlopeField()
+  if self._bwSlopeField then return self._bwSlopeField end
+  local def = self.def
+  local slopes, edits = def.gen5SlopeTiles or {}, def.gen4HeightEdits or {}
+  local h, list = {}, {}
+  local function flat(x, y) local e = edits[x .. "," .. y]; return type(e) == "number" and e or 0 end
+  local blocks, w, hgt = def.blocks, tonumber(def.width) or 0, tonumber(def.height) or 0
+  local function walkable(x, y)
+    if x < 0 or y < 0 or x >= w or y >= hgt then return false end
+    if type(blocks) ~= "string" then return true end
+    return blocks:byte((y * w + x) * 2 + 1) ~= 255
+  end
+  for k in pairs(slopes) do
+    local x, y = k:match("^(%-?%d+),(%-?%d+)$")
+    x, y = tonumber(x), tonumber(y)
+    if x then
+      list[#list + 1] = { k, x, y }
+      h[k] = 0
+    end
+  end
+  -- start from the mean of each tile's flat neighbours, then relax
+  local N = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } }
+  for pass = 1, Gen4Ground.SLOPE_PASSES do
+    local change = 0
+    for _, e in ipairs(list) do
+      local sum, n = 0, 0
+      for _, d in ipairs(N) do
+        local x, y = e[2] + d[1], e[3] + d[2]
+        local nk = x .. "," .. y
+        if slopes[nk] then sum, n = sum + h[nk], n + 1
+        elseif walkable(x, y) then sum, n = sum + flat(x, y), n + 1 end
+      end
+      local nv = n > 0 and sum / n or h[e[1]]
+      change = math.max(change, math.abs(nv - h[e[1]]))
+      h[e[1]] = nv
+    end
+    if change < 0.01 then break end
+  end
+  self._bwSlopeField = h
+  return h
 end
 
 function Gen4Ground:heightAtPixel(px, py)

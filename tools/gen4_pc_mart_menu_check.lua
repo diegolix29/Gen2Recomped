@@ -19,7 +19,8 @@ package.loaded['src.core.Strings'] = function(s) return s end
 package.loaded['src.core.Sound'] = { play = function() end }
 package.loaded['src.core.GameVersion'] = { isGen4 = function() return true end, isGen3 = function() return false end,
   isGen2 = function() return false end, get = function() return 'platinum' end,
-  info = function() return {family='platinum'} end }
+  info = function() return {family='platinum'} end, generation = function() return 4 end,
+  isGen5 = function() return false end }
 
 local pressed = {}
 local input = { wasPressed = function(_, k) return pressed[k] end, isDown = function() return false end }

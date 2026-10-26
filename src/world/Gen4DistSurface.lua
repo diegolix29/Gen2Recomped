@@ -414,6 +414,16 @@ function S.update(ow)
         st.moveDir = a.dir
         p.facing = S.FACE[st.kind][a.dir]
       end
+      -- A STEP ALONG A PLATFORM ENDS HERE, NOT IN Player:update.  The march
+      -- that animates it finishes a frame before this (it started counting
+      -- on the frame the key was taken; this counts from the next), so the
+      -- overworld's onStepComplete asked HandleEventAt about the tile the
+      -- step LEFT and this tile was never asked: B2F's upper rafts (events
+      -- 11..20, all on platform tiles) never moved.  The step's own end asks
+      -- it now; the march's early ask still sees the tile it left, already
+      -- recorded, and does nothing.  A jump is the overlay's own task
+      -- (JumpOnFloatingPlatform), not a step.
+      if not a.jump then S.stepEnded(ow) end
     end
   end
   if ow.dwSurface and ow.dwSurface.hold and ow.dwSurface.hold > 0 then
@@ -502,6 +512,16 @@ function S.stepEnded(ow)
   local x, y, z = S.position(ow, m)
   local key = ("%d,%d,%d"):format(x, y, z)
   if ow.dwLastTile == key then return end
+  -- A TILE IS NEVER RECORDED UNASKED.  This used to note the tile first and
+  -- let onPosition refuse it under a running event, and the refused tile
+  -- was then "already seen" for good (the Giratina room's z 17 and z 14).
+  -- The field gate (Gen4DistPlatforms.fieldTask) keeps the player's own
+  -- steps out of a task now, as the cartridge does.  What still ends under
+  -- one is the task's or a script's own move, which the cartridge never
+  -- asks about either -- Field_ProcessStep runs only out of FieldInput_-
+  -- Process -- so it is passed over, not recorded: the next step the
+  -- player takes is asked as usual.
+  if require("src.world.Gen4DistPlatforms").fieldTask(ow) then return end
   ow.dwLastTile = key
   require("src.world.Gen4DistPlatforms").onPosition(ow, m, dw, x, y, z)
 end

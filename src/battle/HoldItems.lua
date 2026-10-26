@@ -51,6 +51,9 @@ end
 function HoldItems.effectOf(battler)
   local def = HoldItems.defOf(battler)
   if not def then return nil end
+  -- EMBARGO (Platinum / HGSS): Battler_HeldItemEffect answers HOLD_EFFECT_NONE
+  -- for its five turns (src/battle/Gen4MoveEffects.lua)
+  if (tonumber(battler.g4Embargo) or 0) > 0 then return nil end
   local effect,param=require('src.inventory.PolishedBerries').held(def,battler.mon)
   if effect then return effect,param,def end
   local effect = def.holdEffect

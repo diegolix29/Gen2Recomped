@@ -15,12 +15,19 @@
 
 local Font = require("src.render.Font")
 local Sound = require("src.core.Sound")
+local Strings = require("src.core.Strings")
 local Gen4Text = require("src.import.Gen4Text")
 
 local S = {}
 S.__index = S
 S.isOpaque = true
-S.SELF_BANK, S.OPP_BANK = 199, 201
+-- the two menus' words: Platinum's banks 199 / 201, HeartGold /
+-- SoulSilver's 31 / 33 -- read by family
+S.BANKS = { platinum = { SELF_BANK = 199, OPP_BANK = 201 }, hgss = { SELF_BANK = 31, OPP_BANK = 33 } }
+setmetatable(S, { __index = function(_, k)
+  local okB, Bands = pcall(require, "src.import.Gen4ScriptBands")
+  return S.BANKS[(okB and Bands.family == "hgss") and "hgss" or "platinum"][k]
+end })
 
 function S:uiSize() return 256, 192 end
 function S:wantsFillScale() return true end
@@ -38,6 +45,13 @@ end
 function S:say(bank, n, ...)
   Gen4Text.buffer(self.game, ...)
   return (Gen4Text.resolve(self.data, bank, n, self.game) or ""):gsub("\n", " ")
+end
+-- HGSS blanks the self app's SUMMARY / MOVES / YES / NO (its buttons are
+-- drawn), so a blank line falls back to `alt` -- another line, or a string
+function S:label(bank, n, alt)
+  local s = self:say(bank, n)
+  if s:match("%S") then return s end
+  return type(alt) == "function" and alt() or alt
 end
 function S:bank() return (self.mode == "self") and S.SELF_BANK or S.OPP_BANK end
 
@@ -67,8 +81,8 @@ end
 -- a yes / no on `text`; `yes` runs on YES
 function S:confirm(text, yes)
   self:push({ kind = "list", text = text, items = {
-    { label = self:say(S.SELF_BANK, 30), fn = function() self:pop(); yes() end },
-    { label = self:say(S.SELF_BANK, 31), fn = function() self:pop() end },
+    { label = self:label(S.SELF_BANK, 30, Strings("YES")), fn = function() self:pop(); yes() end },
+    { label = self:label(S.SELF_BANK, 31, Strings("NO")), fn = function() self:pop() end },
   } })
 end
 -- a purchase's answer: refused for want of CP (or rank), or done
@@ -104,8 +118,8 @@ function S:monMenu(i)
     return { kind = "list", text = self:say(S.SELF_BANK, 14), items = {
       { label = self:say(S.SELF_BANK, 9), fn = function() self:push(self:healMenu(i)) end },
       { label = self:say(S.SELF_BANK, 10), fn = function() self:push(self:rentalMenu(i)) end },
-      { label = self:say(S.SELF_BANK, 11), fn = function() self:push(self:summary(mon, true)) end },
-      { label = self:say(S.SELF_BANK, 12), fn = function() self:push(self:moves(mon)) end },
+      { label = self:label(S.SELF_BANK, 11, function() return self:say(S.OPP_BANK, 33) end), fn = function() self:push(self:summary(mon, true)) end },
+      { label = self:label(S.SELF_BANK, 12, function() return self:say(S.OPP_BANK, 34) end), fn = function() self:push(self:moves(mon)) end },
       { label = self:say(S.SELF_BANK, 13), fn = function() self:pop() end },
     } }
   end

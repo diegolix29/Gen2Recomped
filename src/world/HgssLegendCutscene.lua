@@ -52,6 +52,7 @@ M.CORNERS_HG = { { 200, -73, 144 }, { -198, -73, 144 }, { 200, -73, -270 }, { -1
 M.CORNERS_SS = { { 128, 32, -180 }, { -128, 32, -180 } }
 
 M.SE_EYE_GLIMMER = 2317         -- SEQ_SE_GS_RUGIA_MENOHIKARI
+M.SE_WING = 2319                -- SEQ_SE_GS_STOPPERKAIJO
 M.SE_FLAP_LUGIA = 2318          -- SEQ_SE_GS_RUGIA_HABATAKI
 M.SE_FLAP_HO_OH = 2314          -- SEQ_SE_GS_HOUOU_HABATAKI
 M.BIRD_OBJECT = 5               -- obj_D17R0110_hou_obj01 / obj_D40R0107_lug_obj01
@@ -328,6 +329,38 @@ function M.reset()
   forceView(false)
 end
 
+-- ---------------------------------------------------- the legendary wing --
+-- ShowLegendaryWing <n> (overlay 2 0x0224618C, its task ov02_022461DC): the
+-- Silver / Rainbow Wing over the player at the Tin Tower (0) and the Whirl
+-- Islands (1). The model goes down at the player's position with
+-- SEQ_SE_GS_STOPPERKAIJO and plays its first set; when that ends the second
+-- set (and the map's third script is queued); when that ends the third; then
+-- the object goes. Independent of the dance (M.state), so it ticks and draws
+-- through the same hooks with M.wing alone.
+M.wing = nil
+
+function M.showWing(variant)
+  local base = (tonumber(variant) or 0) == 1 and "wingWhirl" or "wingTin"
+  local x, y, z = anchor(overworld())
+  local obj = newObject(base)
+  obj.active = true
+  M.wing = { base = base, phase = 0, obj = obj, x = x, y = y, z = z }
+  playSe(M.SE_WING)
+end
+
+local function tickWing()
+  local w = M.wing
+  if not (w and partOf(w.obj.part)) then M.wing = nil return end
+  if not advance(w.obj, false) then return end
+  if w.phase == 0 then
+    w.phase, w.obj.part, w.obj.frame = 1, w.base .. "Shine", 0
+  elseif w.phase == 1 then
+    w.phase, w.obj.part, w.obj.frame = 2, w.base .. "Fade", 0
+  else
+    M.wing = nil
+  end
+end
+
 -- --------------------------------------------------------------- one tick --
 local function tickBird(st, ow)
   local b = st.bird
@@ -387,6 +420,7 @@ local function tickBird(st, ow)
 end
 
 function M.tick(ow)
+  if M.wing then tickWing() end
   local st = M.state
   if not st then return end
   if ow and ow.map and st.mapId and ow.map.id ~= st.mapId then M.reset() return end
@@ -499,8 +533,35 @@ local function drawObject(obj, ground, vp, ox, oy, oz)
   mdl:draw(m, pose, mats)
 end
 
+-- the field camera's live pass (Gen4Ground, beside Gen4FieldFx): the wing
+-- in the ordinary field view, placed the way the obstacle animations are
+function M.drawLive(ground, left, top, vw, vh)
+  local w = M.wing
+  if not (w and w.obj.active) then return end
+  local mdl = modelFor(w.obj.part)
+  local part = partOf(w.obj.part)
+  if not (mdl and part) then return end
+  local Gen4Ground = require("src.render.Gen4Ground")
+  local Anim = require("src.import.Gen4Anim")
+  local frame = w.obj.frame
+  local motion = part.motion
+  local pose = motion and mdl:posed(function(node)
+    local track = motion.tracks[node]
+    return track and Anim.unpackFrame(track, math.min(frame, (motion.frames or 1) - 1)) or nil
+  end) or nil
+  local mats = require("src.render.Gen4TexAnim").materials(part.records, frame, part.model.patternImages)
+  local half = ground.half or 0
+  local base = ground:screenMatrix(w.x + (ground.offsetX or 0) - left - half,
+                                   w.z + (ground.offsetY or 0) - top - half, vw, vh)
+  local m = Gen4Ground.liftMatrix(base, w.y)
+  local spread = Gen4Ground.liftedSpread and Gen4Ground.liftedSpread(ground.spread, w.y) or ground.spread
+  mdl:draw(m, pose, mats, nil, spread)
+end
+
 -- the 3D view's pass (Gen4Ground:drawFree), with the world's depth
 function M.drawFree(ground, vp)
+  local w = M.wing
+  if w then drawObject(w.obj, ground, vp, w.x, w.y, w.z) end
   local st = M.state
   if not st then return end
   local ow = overworld()

@@ -345,7 +345,7 @@ local SBC_OPERANDS = {
 --
 -- `draws` is { { shape = n, material = n, matrix = n }, ... } in draw order.
 function Gen4Nsbmd.renderCommands(data, at, limit)
-  local draws, material, matrix = {}, nil, 0
+  local draws, material, matrix, node = {}, nil, 0, nil
   local pos = at
   while pos < limit do
     local byte = u8(data, pos)
@@ -372,13 +372,17 @@ function Gen4Nsbmd.renderCommands(data, at, limit)
       -- invariant below is what turns that into a reported failure.
       return draws, byte
     end
-    if op == 0x03 then
+    if op == 0x02 then
+      -- NODE (id, visible): the node the shapes that follow hang from -- what
+      -- a visibility animation switches off
+      node = u8(data, pos)
+    elseif op == 0x03 then
       matrix = u8(data, pos) or matrix
     elseif op == 0x04 then
       material = u8(data, pos)
     elseif op == 0x05 then
       draws[#draws + 1] = {
-        shape = u8(data, pos), material = material, matrix = matrix,
+        shape = u8(data, pos), material = material, matrix = matrix, node = node,
       }
     end
     pos = pos + n

@@ -394,6 +394,53 @@ function love.load()
       file:write(canvas:newImageData():encode("png"):getString());file:close()
     else canvas:newImageData():encode("png", ("battle_%s.png"):format(TAG))end
     print("wrote battle_" .. TAG .. ".png")
+    -- COMPOSITE=WxH: the whole frame through Game.draw and the renderer, at
+    -- that window size -- what a player sees, letterbox and all
+    local comp = os.getenv("COMPOSITE")
+    if comp and out then
+      local cw, ch = comp:match("(%d+)x(%d+)")
+      cw, ch = tonumber(cw) or 1280, tonumber(ch) or 720
+      local Game = require("src.core.Game")
+      local Renderer = require("src.render.Renderer")
+      Game.renderer = Game.renderer or Renderer
+      if not Game.stack then Game.stack = require("src.core.StateStack"); Game.stack:init() end
+      if Game.stack.states then Game.stack.states = { battle } end
+      battle.game = battle.game or Game
+      local gfx = love.graphics
+      local realDims = gfx.getDimensions
+      gfx.getDimensions = function() return cw, ch end
+      local realPix = gfx.getPixelDimensions
+      gfx.getPixelDimensions = function() return cw, ch end
+      local okW, wfn = pcall(function() return love.window.getMode end)
+      local realGetMode = love.window.getMode
+      love.window.getMode = function() return cw, ch, {} end
+      local target = gfx.newCanvas(cw, ch)
+      local setCanvas = gfx.setCanvas
+      gfx.setCanvas = function(c, ...)
+        if c == nil then return setCanvas({ target, depth = true }) end
+        return setCanvas(c, ...)
+      end
+      setCanvas({ target, depth = true })
+      gfx.clear(0, 0, 0, 1)
+      local okG, errG = pcall(Game.draw, Game)
+      gfx.setCanvas = setCanvas
+      setCanvas()
+      gfx.getDimensions = realDims
+      gfx.getPixelDimensions = realPix
+      love.window.getMode = realGetMode
+      if not okG then print("composite raised: " .. tostring(errG)) end
+      local file=assert(io.open(out..("/battle_%s_comp.png"):format(TAG),"wb"))
+      file:write(target:newImageData():encode("png"):getString());file:close()
+      print("wrote battle_" .. TAG .. "_comp.png")
+    end
+    -- the single-screen battle's supersampled picture (src/render/SuperSample.lua)
+    local SSm = package.loaded["src.render.SuperSample"]
+    local hi = SSm and SSm.canvas
+    if hi and out and os.getenv("SINGLE") then
+      local file=assert(io.open(out..("/battle_%s_hd.png"):format(TAG),"wb"))
+      file:write(hi:newImageData():encode("png"):getString());file:close()
+      print("wrote battle_" .. TAG .. "_hd.png")
+    end
   end, debug.traceback)
   if not ok then print("FAILED:\n" .. tostring(err)) end
   love.event.quit(ok and 0 or 1)

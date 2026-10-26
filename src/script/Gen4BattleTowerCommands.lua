@@ -288,7 +288,7 @@ end
 
 -- `messageseenbanlistspecies <first> <count> ...`: the line that names the
 -- banned species the player has SEEN, `first + how many`
-function Commands.g4_bt_banlist_message(ctx, first, count)
+function Commands.g4_bt_banlist_message(ctx, first, count, bank)
   local game = ctx.game
   local seen = (ctx.save.pokedex and ctx.save.pokedex.seen) or {}
   local names = { tostring(valueOf(ctx, count)) }
@@ -300,6 +300,7 @@ function Commands.g4_bt_banlist_message(ctx, first, count)
   end
   game.stringBuffers = {}
   for i, v in ipairs(names) do game.stringBuffers[i] = v end
+  if bank == "map" then return Commands.g4_message(ctx, (tonumber(first) or 0) + #names - 1) end
   return Commands.g4_message_bank(ctx, 304, (tonumber(first) or 91) + #names - 1)
 end
 
@@ -311,7 +312,7 @@ function Commands.g4_frontier_scene(ctx, scene)
   -- THE SCENES THE FRONTIER ENGINE RUNS (src/ui/Gen4FrontierScene.lua): the
   -- field script waits here until the scene leaves the frontier
   local Scene = require("src.ui.Gen4FrontierScene")
-  if Scene.SCENES[scene] then
+  if Scene.specFor(scene) then
     local runner = ctx.runner
     ctx.game.stack:push(Scene.new(ctx.game, { scene = scene, onExit = function() runner:resume() end }))
     runner:yield()
@@ -395,7 +396,7 @@ function Commands.g4_bt_call(ctx, fn, arg, dest)
   elseif fn == FN.UNK_03 then BT.record(save).tower = {}
   elseif fn == FN.UNK_04 then v = BT.record(save).tower.inProgress and 1 or 0
   elseif fn == FN.SET_COMMUNICATION_CLUB_ACCESSIBLE then M.setSpecialLocation(ctx)
-  elseif fn == FN.CLEAR_COMMUNICATION_CLUB_ACCESSIBLE then save.gen4SpecialLocation = nil
+  elseif fn == FN.CLEAR_COMMUNICATION_CLUB_ACCESSIBLE then M.clearSpecialLocation(save)
   elseif fn == FN.UNK_08 then v = BT.currentStreak(save, a)
   elseif fn == FN.UNK_09 or fn == FN.UNK_10 or fn == FN.UNK_12 or fn == FN.UNK_15 then v = 0   -- Wi-Fi rank
   elseif fn == FN.UNK_11 or fn == FN.UNK_16 then v = nil                                     -- Wi-Fi upload
@@ -460,16 +461,59 @@ function M.setSpecialLocation(ctx)
   local ow = ctx.overworld
   local p = ow and ow.player
   if not (ow and ow.map and p) then return end
-  ctx.save.gen4SpecialLocation = { map = ow.map.id, x = p.cellX, y = p.cellY }
+  -- HGSS (ScrCmd_412 case 5, sub_0204A6A8): the dynamic warp facing north,
+  -- and FLAG_UNK_966 -- the flag its continue asks (src/world/Gen4HgssContinue.lua)
+  -- ...and PLATINUM'S IS THE SAME PAIR (pokeplatinum unk_02049D08.c
+  -- BattleTower_SetCommunicationClubAccessible): Location_Set(special
+  -- location, here, -1, x, z, 0 = north) and FLAG_COMMUNICATION_CLUB_ACCESSIBLE,
+  -- which is 0x966 on both cartridges. The flag is what FieldTask_LoadSavedGameMap
+  -- asks; the slot alone means nothing, because every lift car writes it too.
+  local Hgss = require("src.world.Gen4HgssContinue")
+  return Hgss.mark(ctx.save, ow.map.id, p.cellX, p.cellY, "up")
 end
 
--- ...and on Continue: the flag is spent, the player stands there
+-- BT_FUNC_CLEAR_COMMUNICATION_CLUB_ACCESSIBLE. HGSS's (case 6, sub_0204A6E8)
+-- clears FLAG_UNK_966 and leaves the dynamic warp as it was.
+-- Platinum's (BattleTower_ClearCommunicationClubAccessible) is the same: the
+-- flag only. The slot is the lifts' as much as the tower's and is left alone.
+function M.clearSpecialLocation(save)
+  local Hgss = require("src.world.Gen4HgssContinue")
+  save.flags = save.flags or {}
+  save.flags[Hgss.FLAG] = false
+end
+
+-- ...and on Continue (Platinum; HGSS's is Gen4HgssContinue.apply): THE FLAG
+-- DECIDES, NOT THE SLOT. pokeplatinum field_map_change.c
+-- FieldTask_LoadSavedGameMap:
+--
+--   if (SystemFlag_CheckCommunicationClubAccessible(varsFlags)) {
+--       SystemFlag_ClearCommunicationClubAccessible(varsFlags);
+--       FieldMapChange_SetNewLocation(fieldSystem, specialLocation); ...
+--   } else {
+--       FieldMapChange_SetNewLocation(fieldSystem, NULL); ...   // where the save stands
+--   }
+--
+-- This used to move the player whenever the slot held anything, and the slot
+-- is written by every lift car (setspeciallocation, Warp.noteGen4Entrance):
+-- a save made after riding the Veilstone store's lift to 5F and walking to
+-- (8,6) continued at the car door (18,2) -- measured, a real disk round trip.
+-- The slot is not cleared (the cartridge leaves it; the next lift reads it).
+--
+-- A slot this module wrote before the flag existed is the bare { map, x, y }
+-- -- no warp id (a lift's) and no facing (the Underground's), no flag
+-- either way -- and is still honoured, so a Battle Tower "Rest" save from
+-- then does not continue inside the challenge.
 function M.applySpecialLocation(save)
   local loc = type(save) == "table" and save.gen4SpecialLocation
-  if not (loc and loc.map and save.player) then return false end
+  if not (loc and loc.map and type(save.player) == "table") then return false end
+  local Hgss = require("src.world.Gen4HgssContinue")
+  local flags = type(save.flags) == "table" and save.flags or {}
+  local legacy = flags[Hgss.FLAG] == nil and not loc.club and loc.warp == nil and loc.facing == nil
+  if not (Hgss.flagSet(save) or legacy) then return false end
+  save.flags = flags
+  flags[Hgss.FLAG] = false
   save.player.map, save.player.x, save.player.y = loc.map, loc.x, loc.y
-  save.player.facing = save.player.facing or "up"
-  save.gen4SpecialLocation = nil
+  save.player.facing = loc.facing or "up"
   return true
 end
 

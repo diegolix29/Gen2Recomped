@@ -89,10 +89,34 @@ function M.build(x)
     specialty[id] = list(M.FIRST + M.SPECIALTY + id)
   end
   return {
-    tiers = tiers, regular = regular, specialty = specialty,
+    tiers = tiers, regular = regular, specialty = specialty, buyers = M.buyers(rom),
     source = ("ROM:ov21 ptr table @%X (%d lists), counts @%X%s"):format(
       endAt - #ptrs * 4, #ptrs, countsAt, tierAt and (", tiers @%X"):format(tierAt - 1) or ", tiers fallback"),
   }
+end
+
+-- THE SPECIAL BUYERS (0x14E mode 1 and 0x20E): /a/2/0/8, one member per
+-- buyer, entries { u16 item, u16 0, u32 price } -- the price the buyer pays
+-- outright. The kind a script names picks the member through ov21's byte
+-- table at 0x021D99D0 (kind 0 -> 0, 1 -> 3, 2 -> 2, 3 -> 1): the gourmet
+-- maid's foods and Berries, the Rare Bone, the relics and Flutes, the
+-- treasures, stones and Gems. Returns { [kind] = { { item, price }... } }
+M.BUYER_MEMBER = { [0] = 0, 3, 2, 1 }
+function M.buyers(rom)
+  local okA, bytes = pcall(function() return rom:read("/a/2/0/8") end)
+  if not (okA and bytes) then return nil end
+  local okN, arc = pcall(require("src.import.NarcArchive").parse, bytes)
+  if not (okN and arc) then return nil end
+  local out = {}
+  for kind, member in pairs(M.BUYER_MEMBER) do
+    local d = member < arc.count and arc:get(member)
+    local list = {}
+    for o = 0, (d and #d or 0) - 8, 8 do
+      list[#list + 1] = { item = u16(d, o), price = u32(d, o + 4) }
+    end
+    out[kind] = list
+  end
+  return out
 end
 
 -- The stock for one 0x149 call: shop 255 is the regular counter by badges.

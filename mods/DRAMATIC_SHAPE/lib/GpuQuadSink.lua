@@ -1,5 +1,5 @@
--- Keep four corners on the CPU; the compute shader expands them into six
--- drawable vertices. Fixed-size blocks bound allocations and dispatch time.
+-- Keep four corners on the CPU and in indexed GPU terrain buffers. Dense
+-- instanced hulls retain six vertices. Fixed blocks bound dispatch/allocation.
 local V=...
 local ffi=require("ffi")
 local GPU=V.require("GpuMesher")
@@ -46,6 +46,11 @@ function M.new()
   return data
  end
  local sink={push=append,vertexCount=function()return total end}
+ function sink.cacheBlocks()
+  local out={}
+  for _,b in ipairs(blocks)do out[#out+1]={b.count*6,b.bounds}end
+  return out
+ end
  -- Disk caches retain their existing CPU format. Expand only when a cache
  -- write is requested, never read the live GPU buffer back to the CPU.
  function sink.rawBlocks(fn)
@@ -91,15 +96,16 @@ function M.new()
   local ok,err=pcall(function()
    for i,b in ipairs(blocks)do
     Budget.check()
-    local part=GPU.part(b.data,b.count)
+    local part,compact=GPU.part(b.data,b.count,nil,sink.indexedQuads~=false)
     if part then
      batch.parts[#batch.parts+1]=part;batch.count=batch.count+b.count*6
-     Bounds.set(part,b.bounds)
+     if not compact and sink.indexedQuads~=false then V.require("QuadIndices").apply(part,b.count*6) end
+     Bounds.set(part,Bounds.encloseFloats(b.bounds))
     else
      -- Allocation, shader and dispatch failures all keep the original quad
      -- data intact, so this block and subsequent builds can fall back safely.
      local data=expand(b)
-     Batch.add(batch,Format,data,b.count*6)
+     Batch.add(batch,Format,data,b.count*6,nil,sink.indexedQuads)
      Budget.disown(data);data:release()
     end
     Budget.disown(b.data);b.data:release();blocks[i]=false

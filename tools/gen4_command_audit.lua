@@ -67,6 +67,10 @@ local KEEP = {
   ["src.core.GameVersion"]=true, ["src.pokemon.Contest"]=true,
   ["src.import.Gen4TrainerMessages"]=true, ["src.world.VsSeeker"]=true,
   ["src.import.Gen4ScriptOps"]=true, ["src.core.Music"]=true,
+  -- Platinum's rematch rung (g4_get_rematch_trainer_id's non-HGSS branch) and
+  -- the family that picks the branch: stubbed, the armed case read 0 from the
+  -- inert table -- the trap described above, one module along
+  ["src.world.Gen4VsSeeker"]=true, ["src.import.Gen4ScriptBands"]=true,
 }
 -- src.script.Commands is the SHARED verb table Gen4Commands assigns onto, so it
 -- must be a real table (Commands.meta = Commands.meta or {} needs a table, not
@@ -444,12 +448,17 @@ expect("g4_get_rematch_trainer_id", function(ctx)
 -- ...AND THE OTHER DIRECTION, which is the half that makes the first one mean
 -- anything: a handler hard-coded to 0 passes the case above and fails this.
 -- The V.S. Seeker store is keyed "<map id>:<local id>", per object and not per
--- trainer, because one trainer id can stand on two maps.
+-- trainer, because one trainer id can stand on two maps. It holds the trainer's
+-- BASE id (src/world/Gen4VsSeeker.lua, sRematchData's first column) and the
+-- rung comes off the rematch table: row 21 -> 627 / 628 / - / 629, the first
+-- rung once its level flag (0x97F) is set.
 expect("g4_get_rematch_trainer_id", function(ctx)
          ctx.npc = { def = { localId = 3 } }
-         ctx.save.vsSeeker = { steps = 0, rematches = { ["C01:3"] = 412 } }
+         ctx.save.vsSeeker = { steps = 0, rematches = { ["C01:3"] = 21 } }
+         ctx.save.flags = ctx.save.flags or {}
+         ctx.save.flags.FLAG_G4_097F = true
          return { 5, VAR }
-       end, VAR, 412, "an armed object answers with its rematch trainer id")
+       end, VAR, 627, "an armed object answers with its rematch trainer id")
 -- destination-writing commands: (args..., destVar) per the lowering
 expect("g4_item_pocket",     {413, VAR}, VAR, 3, "TM86 is in pocket 3")
 expect("g4_item_is_plate",   {298, VAR}, VAR, 1, "Flame Plate starts the plate run")

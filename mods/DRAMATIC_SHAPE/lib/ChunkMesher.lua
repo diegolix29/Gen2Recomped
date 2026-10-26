@@ -187,7 +187,8 @@ end
 
 local function newTableSink()
   local verts, indices, quads = {}, {}, 0
-  return {
+  local sink
+  sink = {
     push = function(c, uv, shade)
       local flat = type(shade) ~= "table"
       for i = 1, 4 do
@@ -218,13 +219,14 @@ local function newTableSink()
           for i = first, math.min(#indices, first + 65531) do
             part[#part+1] = verts[indices[i]]
           end
-          Batch.addTable(mesh, Voxel3D.FORMAT, part)
+          Batch.addTable(mesh, Voxel3D.FORMAT, part,sink.indexedQuads)
         end
       end)
       if not ok then mesh:release(); return nil end
       return mesh
     end,
   }
+  return sink
 end
 
 local TRI_ORDER = { 1, 2, 3, 1, 3, 4 }
@@ -264,12 +266,64 @@ local TRI_ORDER = { 1, 2, 3, 1, 3, 4 }
 -- limit, so small border chunks do not each reserve a multi-megabyte block.
 local BLOCK = 32766
 
+local function emptyBounds()
+  return {math.huge,math.huge,math.huge,-math.huge,-math.huge,-math.huge}
+end
+local function includeQuad(b,c)
+  local a,d,e,f=c[1],c[2],c[3],c[4]
+  b[1]=math.min(b[1],a[1],d[1],e[1],f[1]);b[4]=math.max(b[4],a[1],d[1],e[1],f[1])
+  b[2]=math.min(b[2],a[2],d[2],e[2],f[2]);b[5]=math.max(b[5],a[2],d[2],e[2],f[2])
+  b[3]=math.min(b[3],a[3],d[3],e[3],f[3]);b[6]=math.max(b[6],a[3],d[3],e[3],f[3])
+end
+local function includeStamp(b,t,x,y,z)
+  local s=t.bounds
+  if not s then
+    s=emptyBounds()
+    for i=0,t.count-1 do
+      local a=i*7
+      for axis=1,3 do
+        local value=t.data[a+axis-1]
+        s[axis]=math.min(s[axis],value);s[axis+3]=math.max(s[axis+3],value)
+      end
+      if i%768==0 then Budget.check() end
+    end
+    t.bounds=s
+  end
+  b[1]=math.min(b[1],s[1]+x);b[4]=math.max(b[4],s[4]+x)
+  b[2]=math.min(b[2],s[2]+y);b[5]=math.max(b[5],s[5]+y)
+  b[3]=math.min(b[3],s[3]+z);b[6]=math.max(b[6],s[6]+z)
+end
+
 local function newFfiSink()
-  local blocks = { ffi.new("float[?]", BLOCK * 6) }
+  -- Most spatial cells never fill a 768 KiB upload block. Start at 48 KiB
+  -- and grow only this bounded block; no route-sized reallocations return.
+  local capacity=2046
+  local function allocate(count)
+    local data=Budget.own(love.data.newByteData(count*24))
+    return data,ffi.cast("float*",data:getFFIPointer())
+  end
+  local firstData,firstPointer=allocate(capacity)
+  local blockData,blocks={firstData},{firstPointer}
+  local bounds={emptyBounds()}
   local nb = 1        -- blocks in use
   local fill = 0      -- vertices written into blocks[nb]
   local n = 0         -- vertices in the whole stream
   local sink
+  local function growOrNext()
+    if capacity<BLOCK then
+      local nextCapacity=math.min(BLOCK,capacity*2)
+      if nextCapacity>BLOCK-32 then nextCapacity=BLOCK end
+      local nextData,nextBuffer=allocate(nextCapacity)
+      ffi.copy(nextBuffer,blocks[nb],fill*24)
+      Budget.disown(blockData[nb]);blockData[nb]:release()
+      blockData[nb]=nextData
+      blocks[nb]=nextBuffer;capacity=nextCapacity
+    else
+      nb=nb+1;capacity=2046;fill=0
+      blockData[nb],blocks[nb]=allocate(capacity);bounds[nb]=emptyBounds()
+    end
+    Budget.check()
+  end
   -- the stream as (block, vertex count) pairs, in order; the last block is
   -- the only partial one, because push only advances on an exact fill
   local function eachBlock(fn)
@@ -280,20 +334,15 @@ local function newFfiSink()
   end
   sink = {
     rawBlocks = eachBlock,
+    cacheBlocks = function()
+      local out={}
+      eachBlock(function(_,count,i)out[#out+1]={count,bounds[i]}end)
+      return out
+    end,
     push = function(c, uv, shade)
-      if fill + 6 > BLOCK then
-        nb = nb + 1
-        local nxt = blocks[nb]
-        if nxt == nil then
-          nxt = ffi.new("float[?]", BLOCK * 6)
-          blocks[nb] = nxt
-        end
-        fill = 0
-        -- 768 KiB of geometry has just been emitted; a frame that wants its
-        -- slice back can have it here
-        Budget.check()
-      end
+      if fill + 6 > capacity then growOrNext() end
       local buf = blocks[nb]
+      includeQuad(bounds[nb],c)
       local flat = type(shade) ~= "table"
       local base = fill * 6
       for k = 1, 6 do
@@ -367,11 +416,20 @@ local function newFfiSink()
       local mesh = Batch.new()
       local ok = pcall(function()
         eachBlock(function(buf, count, bi)
-          local data = love.data.newByteData(count * 6 * 4)
-          ffi.copy(data:getFFIPointer(), buf, count * 6 * 4)
-          local added, err = pcall(Batch.add, mesh, Voxel3D.FORMAT, data, count)
+          -- A view keeps the owned raw block alive during upload without
+          -- allocating and copying a second block. Older runtimes retain
+          -- the original bounded-copy path.
+          local data
+          if love.data.newDataView then
+            data=love.data.newDataView(blockData[bi],0,count*24)
+          else
+            data=love.data.newByteData(count*24)
+            ffi.copy(data:getFFIPointer(),buf,count*24)
+          end
+          local added, err = pcall(Batch.add, mesh, Voxel3D.FORMAT, data, count, bounds[bi],sink.indexedQuads)
           data:release()
           blocks[bi]=nil -- drop raw CPU buffers as each GPU chunk lands
+          Budget.disown(blockData[bi]);blockData[bi]:release();blockData[bi]=nil
           if not added then error(err) end
         end)
       end)
@@ -381,11 +439,9 @@ local function newFfiSink()
   }
   function sink.pushStamp(template,mx,my,mz)
     local src=template.data
+    includeStamp(bounds[nb],template,mx,my,mz)
     for vi=0,template.count-1 do
-      if fill==BLOCK then
-        nb=nb+1;blocks[nb]=ffi.new("float[?]",BLOCK*6);fill=0
-        Budget.check()
-      end
+      if fill==capacity then growOrNext();includeStamp(bounds[nb],template,mx,my,mz) end
       local a,b=vi*7,fill*6
       local buf=blocks[nb]
       local y=src[a+1]+my
@@ -398,6 +454,26 @@ local function newFfiSink()
     end
     return true
   end
+  function sink.pushHull(quads,height)
+    for qi,q in ipairs(quads)do
+      if fill+6>capacity then growOrNext() end
+      local buf=blocks[nb];local at=fill*6;local flat=type(q.shade)~="table"
+      local b=bounds[nb]
+      for k=1,6 do
+        local i=TRI_ORDER[k];local p=q[i];local t=q.uv and q.uv[i]
+        local y=p[2]+height;local shade=flat and q.shade or q.shade[i]
+        if flat and y<6 then shade=shade*(1-(0.12*2.4)*(1-y/6)) end
+        buf[at],buf[at+1],buf[at+2]=p[1],y,p[3]
+        buf[at+3],buf[at+4],buf[at+5]=t and t[1] or q.u,t and t[2] or q.v,shade
+        b[1]=math.min(b[1],p[1]);b[4]=math.max(b[4],p[1])
+        b[2]=math.min(b[2],y);b[5]=math.max(b[5],y)
+        b[3]=math.min(b[3],p[3]);b[6]=math.max(b[6],p[3])
+        at=at+6
+      end
+      fill=fill+6;n=n+6
+      if qi%128==0 then Budget.check() end
+    end
+  end
   return sink
 end
 
@@ -405,14 +481,19 @@ end
 -- entire route. Pack quads into bounded binary blocks as they are emitted.
 local function newPackedSink()
   local blocks, pieces, fill, total = {}, {}, 0, 0
+  local bounds,currentBounds={},emptyBounds()
   local unpackValues=table.unpack or unpack
   local format=string.rep("f",36)
   local function flush()
-    if fill>0 then blocks[#blocks+1]=table.concat(pieces);pieces={};fill=0 end
+    if fill>0 then
+      blocks[#blocks+1]=table.concat(pieces);bounds[#blocks]=currentBounds
+      currentBounds=emptyBounds();pieces={};fill=0
+    end
   end
   local sink={}
   function sink.push(c,uv,shade)
     if fill+6>BLOCK then flush();Budget.check() end
+    includeQuad(currentBounds,c)
     local values={}
     for _,i in ipairs(TRI_ORDER)do
       local v,t=c[i],uv[i]
@@ -426,7 +507,12 @@ local function newPackedSink()
   function sink.vertexCount()return total end
   function sink.rawStrings(fn)
     flush()
-    for i,bytes in ipairs(blocks)do fn(bytes,i) end
+    for i,bytes in ipairs(blocks)do fn(bytes,i,bounds[i]) end
+  end
+  function sink.cacheBlocks()
+    flush();local out={}
+    for i,bytes in ipairs(blocks)do out[#out+1]={#bytes/24,bounds[i]}end
+    return out
   end
   function sink:writeRaw(path)
     local file=love.filesystem.newFile(path)
@@ -443,9 +529,9 @@ local function newPackedSink()
     if total==0 then return nil end
     local Batch=V.require("MeshBatch");local mesh=Batch.new()
     local ok,err=pcall(function()
-      sink.rawStrings(function(bytes,i)
+      sink.rawStrings(function(bytes,i,box)
         local data=love.data.newByteData(bytes)
-        local added,why=pcall(Batch.add,mesh,Voxel3D.FORMAT,data,#bytes/24)
+        local added,why=pcall(Batch.add,mesh,Voxel3D.FORMAT,data,#bytes/24,box,sink.indexedQuads)
         data:release()
         if not added then error(why) end
         blocks[i]=false
@@ -456,8 +542,9 @@ local function newPackedSink()
   end
   function sink.pushStamp(template,mx,my,mz)
     local src,values=template.data,{}
+    includeStamp(currentBounds,template,mx,my,mz)
     for vi=0,template.count-1,6 do
-      if fill+6>BLOCK then flush();Budget.check() end
+      if fill+6>BLOCK then flush();includeStamp(currentBounds,template,mx,my,mz);Budget.check() end
       local at=1
       for k=0,5 do
         local a=(vi+k)*7;local y=src[a+1]+my;local shade=src[a+5]
@@ -486,15 +573,35 @@ end
 
 function ChunkMesher.hullTemplate(quads,height)
   local sink=plainSink()
-  sink.pushStamp(V.require("StampStream").build(quads),0,height,0)
+  -- Dense hulls are instanced again in the sun pass. Index fetching there
+  -- cost more than duplicate-corner shading in measured full-scene frames.
+  sink.indexedQuads=false
+  if sink.pushHull then sink.pushHull(quads,height);return sink.finish() end
+  -- A shared template needs one upload, not an intermediate six-vertex
+  -- double stream followed by a second expansion into the upload buffer.
+  local c={{},{},{},{}};local uv={{},{},{},{}};local shades={}
+  for _,q in ipairs(quads)do
+    local flat=type(q.shade)~="table"
+    for i=1,4 do
+      local p,t=q[i],q.uv and q.uv[i]
+      local y=p[2]+height
+      local shade=flat and q.shade or q.shade[i]
+      if flat and y<6 then shade=shade*(1-(0.12*2.4)*(1-y/6)) end
+      c[i][1],c[i][2],c[i][3]=p[1],y,p[3]
+      uv[i][1],uv[i][2]=t and t[1] or q.u,t and t[2] or q.v
+      shades[i]=shade
+    end
+    sink.push(c,uv,shades);Budget.tick()
+  end
   return sink.finish()
 end
 
 -- Keep nearby faces together, including forests emitted after the ground.
 -- Each batch has tight bounds instead of spanning the whole map. All UVs,
 -- heights and triangles stay unchanged; this is only a submission layout.
-local function newSink(map,omitHulls)
+local function newSink(map,omitHulls,span)
   if not (map and Gen3.mapIsGen3(map)) then return plainSink() end
+  span=span or 128
   local children, order = {}, {}
   local lastX, lastZ, lastChild
   local sink = {}
@@ -506,7 +613,7 @@ local function newSink(map,omitHulls)
   function sink.push(c, uv, shade)
     local x=(c[1][1]+c[2][1]+c[3][1]+c[4][1])*.25
     local z=(c[1][3]+c[2][3]+c[3][3]+c[4][3])*.25
-    local cx,cz=math.floor(x/128),math.floor(z/128)
+    local cx,cz=math.floor(x/span),math.floor(z/span)
     local child=lastChild
     if cx~=lastX or cz~=lastZ then
       -- ROM map dimensions keep chunk x well inside this stride. Numeric
@@ -519,7 +626,7 @@ local function newSink(map,omitHulls)
     child.push(c,uv,shade)
   end
   function sink.pushStamp(template,mx,my,mz)
-    local key=math.floor(mz/128)*65536+math.floor(mx/128)
+    local key=math.floor(mz/span)*65536+math.floor(mx/span)
     local child=children[key]
     if not child then child=plainSink();children[key]=child;order[#order+1]=key end
     if not child.pushStamp then return false end
@@ -556,6 +663,15 @@ local function newSink(map,omitHulls)
     return (batch.count>0 or (batch.stamps and #batch.stamps>0)) and batch or nil
   end
   if love and love.data and love.data.newByteData and (ffi or love.data.pack) then
+    function sink.cacheBlocks()
+      local out={}
+      for _,key in ipairs(order)do
+        local child=children[key]
+        if not child.cacheBlocks then return nil end
+        for _,block in ipairs(child.cacheBlocks())do out[#out+1]=block end
+      end
+      return out
+    end
     function sink:writeRaw(path)
       local file=love.filesystem.newFile(path)
       if not file or not file:open("w") then return false,"could not write terrain cache" end
@@ -2878,9 +2994,9 @@ function ChunkMesher.bake(map, slot, masks)
   return stored and true or false, stored and nil or "store declined"
 end
 
-local function quadsMesh(quads)
+local function quadsMesh(quads,map)
   if #quads == 0 then return nil end
-  local sink=plainSink()
+  local sink=map and newSink(map,true,256) or plainSink()
   for _,q in ipairs(quads)do
     local uv=q.uv or {{q.u,q.v},{q.u,q.v},{q.u,q.v},{q.u,q.v}}
     sink.push(q,uv,q.shade)
@@ -2894,7 +3010,36 @@ end
 -- walker's feet (characters stamp over terrain, Gen 1 style, so ordinary
 -- terrain could never do this).
 local function buildGrassMesh(map)
-  return quadsMesh(Structures.forMap(map).grassQuads)
+  -- A long route's row-ordered grass used to span its entire width in each
+  -- GPU buffer. Group it spatially like terrain, so off-camera meadows are
+  -- culled rather than redrawn in every walking/battle frame.
+  local shapes=Structures.forMap(map)
+  if not shapes.grassStamps or #shapes.grassStamps==0 then
+    return quadsMesh(shapes.grassQuads,map)
+  end
+  local sink=newSink(map,true,256)
+  for _,q in ipairs(shapes.grassQuads)do sink.push(q,quadUV(q),q.shade);Budget.tick() end
+  -- Keep a tiny template plus placement in analysis, then translate directly
+  -- into bounded upload buffers. Instancing each tiny grass template raised
+  -- draw calls; combining the translated vertices retains the RAM saving
+  -- without that render overhead.
+  local streams={}
+  local corners={{},{},{},{}}
+  for _,stamp in ipairs(shapes.grassStamps)do
+    local stream=streams[stamp.quads]
+    if not stream then stream=V.require("StampStream").build(stamp.quads);streams[stamp.quads]=stream end
+    local copied=sink.pushStamp and sink.pushStamp(stream,stamp.x,stamp.y,stamp.z)
+    if not copied then
+      for _,q in ipairs(stamp.quads)do
+        for i=1,4 do
+          corners[i][1],corners[i][2],corners[i][3]=q[i][1]+stamp.x,q[i][2]+stamp.y,q[i][3]+stamp.z
+        end
+        sink.push(corners,quadUV(q),q.shade);Budget.tick()
+      end
+    end
+    Budget.tick()
+  end
+  return sink.finish()
 end
 
 -- The flower billboards as their own mesh, for the same reason as the
@@ -3495,7 +3640,9 @@ function ChunkMesher.refresh(mapId,reason)
   for i = #jobs, 1, -1 do
     local job = jobs[i]
     if job.id == mapId then
-      Budget.release(job.resources)
+      -- A second edit/seam refresh can supersede a partially built mesh.
+      -- Roll back analysis immediately, but keep driver frees off this update.
+      Budget.release(job.resources,retired)
       job.resources=nil;job.co=nil
       jobIndex[jobKey(job.id, job.slot)] = nil
       table.remove(jobs, i)
@@ -3575,12 +3722,13 @@ function ChunkMesher.setLive(live, currentId)
       history[c.id]=true;used=used+c.bytes
     end
   end
-  -- Unfinished, now-unseen jobs have no warm terrain to preserve. Release
-  -- their partial buffers now, instead of finishing another route indoors.
+  -- Unfinished, now-unseen jobs have no warm terrain to preserve. Roll back
+  -- CPU state now; retiring their partial GPU buffers is budgeted too, rather
+  -- than putting a neighbourhood's worth of driver frees on a seam crossing.
   for i=#jobs,1,-1 do
     local job=jobs[i]
     if not live[job.id] then
-      Budget.release(job.resources)
+      Budget.release(job.resources,retired)
       job.resources=nil;job.co=nil
       jobIndex[jobKey(job.id,job.slot)]=nil
       table.remove(jobs,i)

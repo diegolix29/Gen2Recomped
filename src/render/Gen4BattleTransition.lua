@@ -655,6 +655,23 @@ function Gen4BattleTransition.new(game, onDone, ctx)
              animTick = 0 }
   local script = E[self.name] or E.grass_low
   local S, T = self.S, self.ctx
+  -- HEARTGOLD / SOULSILVER choose their own (src/render/HgssBattleTransition.lua)
+  local okH, Hgss = pcall(require, "src.render.HgssBattleTransition")
+  if okH and Hgss.active() then
+    self.hgssEffect = Hgss.choose(self.ctx)
+    local own = Hgss.script(self.hgssEffect)
+    if own then
+      local K = { tick = tick, wait = wait, waitFor = waitFor, spawn = spawn,
+                  flash = flash, blackout = blackout, Lin = Lin, LinF = LinF, Quad = Quad,
+                  drive = drive, fade = fade, sprite = sprite, zoomFor = zoomFor, D0 = D0,
+                  fovZoom = fovZoom, FOV0 = FOV0 }
+      self.name = "hgss_" .. self.hgssEffect
+      script = function(S2, T2) own(S2, K, T2) end
+    else
+      self.name = Hgss.fallback(self.hgssEffect, self.ctx) or self.name
+      script = E[self.name] or E.grass_low
+    end
+  end
   self.main = coroutine.create(function() script(S, T) end)
   self.frame = 0
   self.finished = false
@@ -1031,6 +1048,41 @@ function Gen4BattleTransition:drawScreen(prog, ww, wh, Sx, Sy, source, ox, oy, v
       end
       g.setScissor()
     end
+  end
+
+  -- text BGs over the field (HeartGold / SoulSilver's water layers): each a
+  -- wrapping 256-wide map scrolled by its HOFS / VOFS, drawn in list order
+  -- (S.fieldFill: the field's layer off, the backdrop colour in its place;
+  -- a layer's `wrapW` is the BG's width when wider than its map, `alpha` its
+  -- blend, `clip` = { y0, y1 } a window band in DS lines)
+  if S.fieldFill then
+    local c = S.fieldFill
+    g.setColor(c[1], c[2], c[3], 1)
+    g.rectangle("fill", 0, 0, ww, wh)
+  end
+  for _, L in ipairs(S.layers or {}) do
+    if L.visible then
+      local img, im = imageFor(self.game, L.key, 0, L.palette)
+      if img then
+        g.setColor(1, 1, 1, L.alpha or 1)
+        if L.clip then
+          if L.clip[2] <= L.clip[1] then goto nextLayer end
+          g.setScissor(0, oy + L.clip[1] * k, ww, (L.clip[2] - L.clip[1]) * k)
+        end
+        local span = L.wrapW or im.w
+        local hofs, vofs = floor(L.hofs or 0) % span, floor(L.vofs or 0) % im.h
+        local x = ox - hofs * k
+        while x > 0 do x = x - span * k end
+        while x < ww do
+          for _, dy in ipairs({ -im.h, 0, im.h }) do
+            g.draw(img, x, oy + (dy - vofs) * k, 0, k, k)
+          end
+          x = x + span * k
+        end
+        g.setScissor()
+      end
+    end
+    ::nextLayer::
   end
 
   g.setColor(0, 0, 0, 1)

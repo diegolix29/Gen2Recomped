@@ -40,9 +40,18 @@ function Gen4EggMoves.parse(ov)
   return out, count
 end
 
+-- HEARTGOLD / SOULSILVER moved the same list out of the overlay into a
+-- NARC (pokeheartgold get_egg.c LoadEggMoves:
+-- NARC_fielddata_breeding_egg_move_list member 0), /a/2/2/9 on the cartridge.
+Gen4EggMoves.HGSS_PATH = "/a/2/2/9"
+
 function Gen4EggMoves.extract(rom)
   local ov = rom and rom:overlay(Gen4EggMoves.OVERLAY)
-  return (Gen4EggMoves.parse(ov))
+  local out = Gen4EggMoves.parse(ov)
+  if out or not rom then return out end
+  local bytes = rom:read(Gen4EggMoves.HGSS_PATH)
+  local ok, arc = pcall(function() return bytes and require("src.import.NarcArchive").parse(bytes) end)
+  return (Gen4EggMoves.parse(ok and arc and arc:get(0)))
 end
 
 -- LoadSpeciesEggMoves: the first sixteen of the species' list.

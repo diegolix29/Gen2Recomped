@@ -165,7 +165,7 @@ local GEN4_MODULES = {
 local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
                         "gen4_naming", "gen4_dex", "gen4_models",
                         "gen4_terrain", "gen4_distortion_world",
-                        "gen4_weather_sys", "gen4_mail_gra", "gen4_voltorb_flip", "gen4_follow_mon", "gen5_battle_ui", "gen5_battle_bag", "gen5_town_map", "gen5_xtransceiver", "gen5_battle_scene", "gen5_evolution", "gen4_hgss_menu_art", "gen4_hgss_bag_art", "gen4_hgss_summary_art", "gen5_menu_art", "gen5_bag_art", "gen5_summary_art", "gen4_hgss_dex_art", "gen4_hgss_box_art", "gen5_dex_art", "gen5_box_art", "gen4_hgss_pokegear_art", "gen4_legend_art", "gen4_hgss_safari", "gen4_alph_puzzle", "gen4_hgss_field_moves", "gen4_hgss_certificates",
+                        "gen4_weather_sys", "gen4_mail_gra", "gen4_voltorb_flip", "gen4_follow_mon", "gen5_battle_ui", "gen5_battle_bag", "gen5_town_map", "gen5_xtransceiver", "gen5_encounter_effects", "gen5_battle_scene", "gen5_evolution", "gen5_egg_hatch", "gen4_hgss_menu_art", "gen4_hgss_bag_art", "gen4_hgss_summary_art", "gen5_menu_art", "gen5_bag_art", "gen5_summary_art", "gen4_hgss_dex_art", "gen4_hgss_box_art", "gen5_dex_art", "gen5_box_art", "gen4_hgss_pokegear_art", "gen4_legend_art", "gen4_hgss_safari", "gen4_pal_park", "gen4_alph_puzzle", "gen4_hgss_field_moves", "gen4_hgss_certificates",
                         "gen4_species_sprites", "gen4_hgss_starter_art", "gen4_hgss_oak_art", "gen4_hgss_boot_art", "gen4_hgss_title_art", "gen5_boot_art", "gen5_main_menu_art", "gen5_juniper_art", "gen5_naming_art", "gen5_opening",
                         "gen4_move_anims", "gen4_particles",
                         "gen4_cellactors",
@@ -181,6 +181,12 @@ local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
                         -- ...and Platinum's, with its HM cut-in
                         -- (Gen4PtFieldFx: hiden_effect + field_cutin)
                         "gen4_pt_field_fx",
+                        -- the Canalave library TV (Gen4LibraryTv)
+                        "gen4_library_tv",
+                        -- the Spear Pillar cinematic (Gen4SpearPillarArt)
+                        "gen4_spear_pillar",
+                        -- the gyms' field-effect flipbooks (Gen4GymFxArt)
+                        "gen4_gym_fx",
                         -- the name -> archive member hop for `var_0`..`var_f`;
                         -- see the paragraph above for what its absence cost
                         "gen4_overworld",
@@ -289,6 +295,16 @@ local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
                         -- (Gen4EvolutionArt).
                         "gen4_poketch_art", "gen4_poketch_ink",
                         "gen4_evolution_art", "gen4_evolution_ink",
+                        -- the egg hatch cutscene's background, egg, bars and
+                        -- particles (Gen4EggHatchArt).
+                        "gen4_egg_hatch_art", "gen4_egg_hatch_ink",
+                        -- the Pokemon motion programs, pl_poke_anm.narc
+                        -- (Gen4PokeMotion, run by src/pokemon/Gen4MonMotion.lua).
+                        "gen4_poke_motion",
+                        -- Platinum's scratch-off cards (Gen4ScratchOffArt).
+                        "gen4_scratch_off_art", "gen4_scratch_off",
+                        -- HGSS Pokeathlon performance rows (Gen4HgssPokeathlon).
+                        "gen4_hgss_performance", "gen4_hgss_pokeathlon", "gen4_hgss_hurdle_dash", "gen4_hgss_block_smash", "gen4_hgss_relay_run", "gen4_hgss_pennant", "gen4_hgss_circle_push", "gen4_hgss_goal_roll", "gen4_hgss_snow_throw", "gen4_hgss_ring_drop", "gen4_hgss_lamp_jump", "gen4_hgss_disc_catch", "gen4_hgss_athlon_common", "gen4_hgss_athlon_team", "gen4_hgss_athlon_rooms",
                         -- the in-game trade cutscene's backgrounds, sprites and
                         -- Poke Ball (Gen4TradeArt; Platinum and HGSS alike).
                         "gen4_trade_art",
@@ -301,7 +317,7 @@ local GEN4_PREFIXED = { "gen4_menus", "gen4_graphics", "gen4_intro",
                         "gen5_move_anims", "gen5_particles",
                         -- Black / White's field effects: phenomena, the rod's
                         -- lure, ripples (Gen5FieldEffects, /a/0/7/5)
-                        "gen5_field_effects",
+                        "gen5_field_effects", "gen5_gym_fx",
                         -- the field start menu's icons in both palettes and
                         -- their swell/wiggle animations (Gen4StartMenuArt).
                         "gen4_start_menu_art", "gen4_start_menu_ink",
@@ -2378,6 +2394,20 @@ function Data:load()
       elseif not okM then
         Logger.warn("gen4 items: the machine records could not be derived (%s)",
                     tostring(stamped))
+      end
+    end
+    -- ...and which species can learn them, for a cache written without the
+    -- per-species lists (every HGSS cache; src/pokemon/Gen4MachineLearnsets.lua)
+    do
+      local okL, filled = pcall(function()
+        return require("src.pokemon.Gen4MachineLearnsets").fill(self)
+      end)
+      if okL and (filled or 0) > 0 then
+        Logger.info("gen4 species: %d TM/HM learnset(s) unpacked from the "
+                    .. "personal masks", filled)
+      elseif not okL then
+        Logger.warn("gen4 species: the TM/HM learnsets could not be unpacked (%s)",
+                    tostring(filled))
       end
     end
   end

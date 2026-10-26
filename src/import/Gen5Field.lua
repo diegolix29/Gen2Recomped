@@ -77,7 +77,24 @@ function F.mergeLayers(raw, layer2)
     local a, b = raw:sub(at + 1, at + 8), layer2:sub(at + 1, at + 8)
     local aShut = a:byte(7) % 2 == 1 or BW_WATER[a:byte(5)]
     local bOpen = b:byte(7) % 2 == 0 and not BW_WATER[b:byte(5)]
-    if aShut and bOpen and a ~= b then out[#out + 1] = b; changed = changed + 1 else out[#out + 1] = a end
+    -- ...AND ONLY WHERE LAYER TWO IS A RAISED SURFACE: a height (bytes 2-3) or
+    -- a slope (bytes 0-1). Layer two also repeats the ground with its low
+    -- walls left out, and taking that opened them: the Dreamyard's wall south
+    -- of its raised floor (row 19) was walked through. Where it is raised it
+    -- wins even over open ground beneath -- the deck the Dreamyard's stairs
+    -- climb to (x 30..39, y 5..14) sits over ground the single grid cannot
+    -- also keep, and the stairs must arrive on the deck: layer two carries the
+    -- whole flight (x 35..36, y 8..11), layer one only its foot.
+    -- ...OR a deck over WATER, or over a solid tile at ANOTHER height:
+    -- Pinwheel Forest's bridge is layer-two ground with no height of its own
+    -- laid over the river and its banks (height 0x2D) -- the way to Castelia.
+    -- A solid tile at the SAME height is a real wall layer two leaves out.
+    local bRaised = (b:byte(1) + b:byte(2) + b:byte(3) + b:byte(4)) ~= 0
+    local over = BW_WATER[a:byte(5)]
+                 or (a:byte(7) % 2 == 1 and (a:byte(3) ~= b:byte(3) or a:byte(4) ~= b:byte(4)))
+    if bOpen and (bRaised or over) and a ~= b then
+      out[#out + 1] = b; changed = changed + 1
+    else out[#out + 1] = a end
   end
   out[#out + 1] = raw:sub(4 + F.CHUNK * F.CHUNK * 8 + 1)
   return table.concat(out), changed
@@ -679,10 +696,9 @@ function F.build(x, save)
   end
   report.sprites, report.npcs, report.npcsWithSprite = spriteCount, npcs, placed
   -- CASTELIA GYM'S HONEY WALLS (zone 29's seven sprite-0 objects, script
-  -- 2000): the player pushes straight through them -- overlay 38 animates
-  -- the wax, nothing stops the step -- so they are made passable. (The
-  -- floor switches beside them are coord events; 0x18C pops the hidden
-  -- trainer out.)
+  -- 2000): made passable, because the wall's own rule is not the object's --
+  -- its centre lets the player through once its switches are down
+  -- (src/world/Gen5CasteliaGym.lua, overlays 37 and 38).
   for _, def in pairs(maps) do
     if def.header == 29 then
       for _, o in ipairs(def.objects or {}) do if o.gen5Gimmick then o.passable = true end end

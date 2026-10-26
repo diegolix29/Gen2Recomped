@@ -109,6 +109,28 @@ function C.build(st, seed, preferredVersion)
     for i,e in ipairs(roster)do wild[i]=e end
     for i=#wild,2,-1 do local j=ctx.rng(i);wild[i],wild[j]=wild[j],wild[i] end
     ctx.version=selected
+    -- THE GAME'S OWN POKEMON FIRST: the species its encounter tables name
+    -- (WalkerArt.wildSpecies) are `native`, weighted by how many slots name
+    -- them, and lead the list -- so a Black run is Unova's, a Crystal run
+    -- Johto's -- while the rest of the roster can still turn up, rarely
+    local okW, natives = pcall(Art.wildSpecies, selected)
+    if okW and type(natives) == "table" and next(natives) then
+      local front, back = {}, {}
+      for _, e in ipairs(wild) do
+        local n = natives[e.dex]
+        if n then
+          e.native, e.weight = true, math.min(C.NATIVE_CAP, n)
+          front[#front + 1] = e
+        else
+          back[#back + 1] = e
+        end
+      end
+      if #front > 0 then
+        wild = front
+        for _, e in ipairs(back) do wild[#wild + 1] = e end
+        ctx.natives = #front
+      end
+    end
     local present={}
     for _,e in ipairs(wild)do present[e.dex]=true end
     if ctx.standIn and not present[ctx.walker.dex] then
@@ -135,17 +157,41 @@ function C.build(st, seed, preferredVersion)
   return ctx
 end
 
--- a wild Pokemon, weighted C common / B less / A rare (the radar's 6 / 3 / 1)
+-- a wild Pokemon, weighted C common / B less / A rare (the radar's 6 / 3 / 1),
+-- and the game's own (`native`, Context.build) far ahead of the rest of its
+-- roster: NATIVE_BASE plus the slots that name it (to NATIVE_CAP), against
+-- STRAY for a species its wild never holds
 C.GROUP_WEIGHT = { A = 1, B = 3, C = 6 }
+C.NATIVE_BASE, C.NATIVE_CAP, C.STRAY = 4, 12, 0.25
+function C.weightOf(ctx, e)
+  local g = C.GROUP_WEIGHT[e.group] or 1
+  -- no natives marked (the game's encounters not imported): rarity only
+  if not (ctx.natives and ctx.natives > 0) then return g end
+  if e.native then return g * (C.NATIVE_BASE + (e.weight or 1)) end
+  return g * C.STRAY
+end
+
 function C.pickWild(ctx)
   local sum = 0
-  for _, e in ipairs(ctx.wild) do sum = sum + (C.GROUP_WEIGHT[e.group] or 1) end
-  local roll = ctx.rng(sum)
+  for _, e in ipairs(ctx.wild) do sum = sum + C.weightOf(ctx, e) end
+  local roll = ctx.rand() * sum
   for _, e in ipairs(ctx.wild) do
-    roll = roll - (C.GROUP_WEIGHT[e.group] or 1)
+    roll = roll - C.weightOf(ctx, e)
     if roll <= 0 then return e end
   end
   return ctx.wild[1]
+end
+
+-- n different wild Pokemon, by the same weights (natives first when drawn)
+function C.pickSeveral(ctx, n, exclude)
+  local out, seen = {}, {}
+  for k in pairs(exclude or {}) do seen[k] = true end
+  for _ = 1, n * 8 do
+    if #out >= n then break end
+    local e = C.pickWild(ctx)
+    if e and not seen[e.dex] then seen[e.dex] = true; out[#out + 1] = e end
+  end
+  return out
 end
 
 function C.pickItem(ctx)

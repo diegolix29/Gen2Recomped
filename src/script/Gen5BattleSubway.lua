@@ -804,8 +804,13 @@ function Commands.g5_object_pos(ctx, object, xVar, zVar)
   store(ctx, zVar, (tonumber(y) or 0) + oy)
 end
 
--- 0x13B <var>: wireless play on? Never here
-function Commands.g5_subway_wireless(ctx, dest) store(ctx, dest, 0) end
+-- 0x13B <var>: wireless play on? Never here -- except the Poke Transfer Lab,
+-- whose transfer is local in this port (src/world/Gen5PokeTransfer.lua)
+function Commands.g5_subway_wireless(ctx, dest)
+  local here = ctx.overworld and ctx.overworld.map and ctx.overworld.map.id
+  local okT, T = pcall(require, "src.world.Gen5PokeTransfer")
+  store(ctx, dest, (okT and T.isLab(here)) and 1 or 0)
+end
 
 -- 0x137 <var>: the save the "Saving..." boxes stand over; 1 = written
 function Commands.g5_subway_save(ctx, dest)

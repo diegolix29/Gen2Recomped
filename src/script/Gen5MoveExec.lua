@@ -127,6 +127,11 @@ function X.run(ctx, entity, id, steps)
       local ticks = Movement.ticks(a)
       local tiles = (a.tiles or 1) * count
       setStep(entity, ow, ticks)
+      -- TURN FIRST: the cartridge's walk sets the direction at the step's
+      -- start, and scriptMove only turns an NPC once its first cell is done,
+      -- so a seven-cell walk away began as a step backwards (Mom leaving the
+      -- player on Route 2 after the Running Shoes, still facing them)
+      if a.dir and not entity.g5DirLocked then entity.facing = a.dir end
       if kind == "jump" then
         -- one arc over the whole jump, Gen4Jump's sixteen-frame table
         entity.hopFrames = ticks * (a.tiles or 1) * count

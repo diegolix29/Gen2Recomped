@@ -64,6 +64,28 @@ function love.load()
       t.S = { bright = 0, other = 0, zoom = 1, sprites = {}, rects = {}, tasks = {}, animTick = 0 }
       local S, TT = t.S, t.ctx
       t.main = coroutine.create(function() T.EFFECTS[name](S, TT) end)
+      -- hgss_<id>: HeartGold / SoulSilver's own (src/render/HgssBattleTransition.lua)
+      local hid = tonumber(name:match("^hgss_(%d+)$"))
+      if hid then
+        package.loaded["src.import.Gen4ScriptBands"] = { family = "hgss" }
+        -- ROM=<hgss .nds>: the art straight from /a/1/0/9, in memory only
+        if os.getenv("ROM") and not (Data.gen4_encounter_effects or {}).images then
+          Data.gen4_encounter_effects = require("src.import.HgssEncounterEffects").extract(
+            require("src.import.NdsRom").open(os.getenv("ROM")))
+        end
+        local terrain = ({ [0] = "grass", "grass", "water", "water", "cave", "cave" })[hid % 6]
+        local class = hid == 46 and 109 or 1
+        if hid >= 12 and hid <= 28 then
+          local want = hid <= 27 and hid - 12 or 21
+          for c, p in pairs(require("src.render.HgssBattleTransition").CLASS_PARAM) do if p == want then class = c end end
+        end
+        class = ({ [29] = 87, [30] = 89, [31] = 112, [32] = 88, [33] = 86, [39] = 55, [40] = 118, [41] = 117, [42] = 116, [43] = 114, [44] = 124, [45] = 47 })[hid] or class
+        local legend = ({ [34] = 150, [35] = 250, [36] = 249 })[hid]
+        t = T.new(game, nil, { trainer = hid >= 6 and not legend, trainerClass = class, species = legend or 16, terrain = terrain,
+                               frontier = hid == 37 or nil, double = hid == 38 or nil,
+                               trainerName = os.getenv("NAME") or "FALKNER",
+                               hour = hid % 2 == 1 and 22 or 12 })
+      end
       t.frame, t.finished = 0, false
       local frames = {}
       local n = 0

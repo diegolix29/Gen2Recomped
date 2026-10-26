@@ -539,6 +539,14 @@ function Font.clearStyles()
   faceStack = {}
 end
 
+-- SMOOTHED GLYPHS (src/render/FontHD.lua), only while a supersampled pass
+-- (src/render/SuperSample.lua) has switched them on; otherwise the page itself
+Font.hd = false
+local function glyph(page, index, quad, x, y)
+  if Font.hd and require("src.render.FontHD").draw(page, index, x, y) then return end
+  love.graphics.draw(page.image, quad, x, y)
+end
+
 -- the unstyled blit; Font.drawCode below is this plus the active style
 local function blitCode(code, x, y)
   if FALLBACK.enabled then
@@ -575,11 +583,11 @@ local function blitCode(code, x, y)
   if page.preTinted and tintDepth == 0 then
     local r, g, b, a = love.graphics.getColor()
     love.graphics.setColor(1, 1, 1, a or 1)
-    love.graphics.draw(page.image, quad, x, y)
+    glyph(page, code - page.base, quad, x, y)
     love.graphics.setColor(r, g, b, a)
     return
   end
-  love.graphics.draw(page.image, quad, x, y)
+  glyph(page, code - page.base, quad, x, y)
 end
 
 function Font.drawCode(code, x, y)
@@ -610,7 +618,7 @@ function Font.drawCode(code, x, y)
     if Font.beginTwoTone(paint, shadow) then
       love.graphics.setColor(1, 1, 1, pa or 1)
       local quad = page.quads[code - page.base]
-      if quad then love.graphics.draw(page.image, quad, x, y) end
+      if quad then glyph(page, code - page.base, quad, x, y) end
       Font.endTwoTone()
       love.graphics.setColor(pr, pg, pb, pa)
       return

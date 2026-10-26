@@ -252,6 +252,15 @@ function Damage.compute(ruleset, attacker, defender, move, opts)
   if opts.bwBattle and not opts.typeless then
     bwLift, bwLevitate = require("src.battle.Gen5HoldItems").liftsImmunity(defender, move, opts.bwBattle)
   end
+  -- (PLATINUM / HGSS: Gravity and an Iron Ball ground a Levitate or Flying
+  -- Pokemon, Miracle Eye opens a Dark type to Psychic, and Magnet Rise makes
+  -- a Ground move do nothing -- src/battle/Gen4MoveEffects.lua `liftsImmunity`)
+  if opts.g4Battle and not opts.typeless then
+    local lift, grounded, immune = require("src.battle.Gen4MoveEffects").liftsImmunity(defender, move, opts.g4Battle)
+    if immune then return 0, { crit = false, typeMult = 0 } end
+    if lift then bwLift = true end
+    if grounded then bwLevitate = true end
+  end
   if not opts.typeless and Abilities.blocks(defender, move)
      and not (bwLevitate and Abilities.of(defender) == "LEVITATE") then
     return 0, { crit = false, typeMult = 0, ability = Abilities.of(defender) }

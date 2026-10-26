@@ -41,15 +41,41 @@ local R = {}
 R.MAX_STEP = 20
 
 -- PLATINUM ROOMS WHOSE MOVING FLOOR IS NOT PORTED, where the rule would wall
--- off ground the cartridge's moving plate reaches. Pastoria Gym's water floor
--- is a DynamicTerrainHeight plate over (1,2)-(25,39) at 0, 32 or 64 by the
--- button last pressed, with the H/M/L gates and the 0x59 tiles judged against
--- it (gym_features.c PastoriaGym_*); src/world/Gen4DynamicMapFeatures.lua keeps
--- its state, and the rule waits for the floor. Measured with the rule on:
--- the entrance reaches 70 of the gym's 708 cells.
-R.UNPORTED = {
-  C06GYM0101 = "Pastoria Gym's water floor",
-}
+-- off ground the cartridge's moving plate reaches. Empty now: Pastoria Gym's
+-- water floor (a DynamicTerrainHeight plate over (1,2)-(25,39) at 0, 32 or 64
+-- by the button last pressed, gym_features.c PastoriaGym_*) is the plate
+-- below (`def.gen4DynamicPlate`, src/world/Gen4PastoriaGym.lua), with its
+-- H/M/L gates and 0x59 tiles judged against it.
+R.UNPORTED = {}
+
+-- THE DYNAMIC PLATE (pokeplatinum terrain_collision_manager.c GetHeight): a
+-- rectangle of tiles whose height a gym moves (Pastoria's water floor),
+-- `def.gen4DynamicPlate = { x, y, w, h, height }` in tiles. Inside it the
+-- height an object takes is the BDHC plate nearest it, unless the dynamic
+-- one is ABOVE that plate and nearer the object (a tie is the BDHC's):
+--
+--   if (dynamicHeight <= bdhcHeight) -> BDHC
+--   else nearer of the two to the object's own height, BDHC on a tie
+--   (no BDHC plate at all -> the dynamic height)
+--
+-- Answers the height and where it came from ("bdhc" | "dynamic").
+function R.plateAt(map, x, y)
+  local p = map and map.def and map.def.gen4DynamicPlate
+  if type(p) ~= "table" then return nil end
+  if x >= p.x and x < p.x + p.w and y >= p.y and y < p.y + p.h then return p end
+  return nil
+end
+
+function R.resolve(map, x, y, list, objY)
+  local bdhc = (list and #list > 0) and R.nearest(list, objY or 0) or nil
+  local p = R.plateAt(map, x, y)
+  if not p then return bdhc, bdhc and "bdhc" or nil end
+  local dyn = tonumber(p.height) or 0
+  if not bdhc then return dyn, "dynamic" end
+  if dyn <= bdhc then return bdhc, "bdhc" end
+  if math.abs(bdhc - (objY or 0)) <= math.abs(dyn - (objY or 0)) then return bdhc, "bdhc" end
+  return dyn, "dynamic"
+end
 
 function R.applies(map)
   local def = map and map.def
@@ -132,20 +158,59 @@ function R.standingY(map, mover)
   local h
   if #list == 0 then h = held
   else h = R.nearest(list, held or 0) end
+  -- ...or the dynamic plate's (Pastoria's water floor), by GetHeight's rule
+  if R.plateAt(map, x, y) then h = R.resolve(map, x, y, list, held or 0) end
   mover.gen4Height, mover.gen4HeightMap = h, map
   mover.gen4HeightX, mover.gen4HeightY = x, y
   return h
 end
 
 -- true when `mover` may not step onto (tx, ty) for the height between them
+-- BLACK / WHITE'S FLOORS. Reported from play (the Dreamyard): you walk
+-- through the wall off the raised floor, and up the stairs without rising.
+-- The zone's heights are the imported flat values (`def.gen4HeightEdits`, a
+-- tile not listed being the ground at 0) and its stairs and hills are the
+-- slope tiles (`def.gen5SlopeTiles`); the same 20-unit step is a wall unless
+-- one end is a slope -- which is how a flight of stairs joins two floors.
+R.GEN5_MOVING = { [121] = true }
+function R.gen5Blocks(map, mover, tx, ty)
+  local def = map and map.def
+  if not (def and def.gen5 and mover and mover.cellX) then return false end
+  -- (a rail map's grid is its rails rasterised: no floors of its own -- but
+  -- Victory Road's are eleven flat paths at their own heights, which
+  -- src/world/Gen5VictoryRoad.lua marks `gen5RailLayers`)
+  if def.gen5NoGrid and not def.gen5RailLayers then return false end
+  -- Drayden's gym (zone 121): its walkways are raised and lowered by the gym's
+  -- own code (Gen5DragonGym), not by fixed heights -- the zones the importer
+  -- keeps the layers of apart (Gen5Field.LAYERS_APART)
+  if R.GEN5_MOVING[tonumber(def.header) or -1] then return false end
+  local slopes = def.gen5SlopeTiles or {}
+  local fk, tk = mover.cellX .. "," .. mover.cellY, tx .. "," .. ty
+  if slopes[fk] or slopes[tk] then return false end
+  local edits = def.gen4HeightEdits or {}
+  local here, ahead = tonumber(edits[fk]) or 0, tonumber(edits[tk]) or 0
+  return math.abs(ahead - here) >= R.MAX_STEP
+end
+
 function R.blocks(map, mover, tx, ty)
   if not R.applies(map) or not mover then return false end
   local here = R.standingY(map, mover)
   if not here then return false end
   local list = R.surfaces(map, tx, ty)
-  if not list or #list == 0 then return false end
-  local there = R.nearest(list, here)
-  return math.abs(there - here) >= R.MAX_STEP
+  local plate = R.plateAt(map, tx, ty)
+  if not plate and (not list or #list == 0) then return false end
+  local there, source = R.resolve(map, tx, ty, list, here)
+  if math.abs(there - here) >= R.MAX_STEP then return true end
+  if not plate then return false end
+  -- TerrainCollisionManager_WillPlayerCollide, past the height: the gym's own
+  -- rule first (PastoriaGym_DynamicMapFeaturesCheckCollision -- a gate tile
+  -- opens only at ONE height of the object's own, and its answer is final),
+  -- then a DYNAMIC_HEIGHT_COLLISION tile (0x59) whose height came from the
+  -- plate is a wall: the water, not a floor
+  local b = map.cellBehaviour and map:cellBehaviour(tx, ty)
+  local gates = map.def.gen4PastoriaGates
+  if gates and b and gates[b] ~= nil then return math.abs(here - gates[b]) >= 0.5 end
+  return source == "dynamic" and b == 0x59
 end
 
 -- A HEADLESS SOURCE, for checks: the cache's own parsed BDHC

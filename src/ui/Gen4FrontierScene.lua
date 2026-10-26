@@ -33,6 +33,30 @@ Scene.SCENES = {
   [15] = { member = 2, bank = 537, art = "arcade_corridor" },  -- FRONTIER_SCENE_ARCADE_CORRIDOR
   [16] = { member = 2, bank = 537, art = "arcade_battle_room" }, -- FRONTIER_SCENE_ARCADE_BATTLE_ROOM
 }
+-- HEARTGOLD / SOULSILVER's (overlay 80's ov80_0223B724, 0x28 a scene: the
+-- /a/1/8/2 member at +0xC, the message bank at +0xE). Same members as
+-- Platinum's; the tower's corridor and rooms run here too, since HGSS has no
+-- field battle room (src/script/HgssFrontierTower.lua).
+Scene.HGSS_SCENES = {
+  [3] = { member = 1, bank = 195, art = "factory_corridor" },
+  [4] = { member = 1, bank = 195, art = "factory_battle_room" },
+  [5] = { member = 6, bank = 96, art = "tower_corridor" },
+  [6] = { member = 7, bank = 96, art = "tower_multi_corridor" },
+  [7] = { member = 8, bank = 97, art = "tower_battle_room" },
+  [8] = { member = 9, bank = 98, art = "tower_multi_battle_room" },
+  [9] = { member = 3, bank = 441, art = "hall_corridor" },
+  [10] = { member = 3, bank = 441, art = "hall_battle_room" },
+  [11] = { member = 0, bank = 32, art = "castle_corridor" },
+  [12] = { member = 0, bank = 32, art = "castle_battle_room" },
+  [13] = { member = 0, bank = 32, art = "castle_passage" },
+  [15] = { member = 2, bank = 426, art = "arcade_corridor" },
+  [16] = { member = 2, bank = 426, art = "arcade_battle_room" },
+}
+function Scene.specFor(id)
+  local okB, Bands = pcall(require, "src.import.Gen4ScriptBands")
+  if okB and Bands.family == "hgss" then return Scene.HGSS_SCENES[id] end
+  return Scene.SCENES[id]
+end
 Scene.PLAYER_LOCAL = 31   -- `32 - 1`: the object id FrontierScrCmd_24 gives the player
 Scene.STEP = 16           -- a walk step, in pixels
 Scene.FRAMES = { walk = 8, slow = 16, fast = 4 }
@@ -48,11 +72,12 @@ function Scene.new(game, opts)
   require("src.script.Gen4BattleFactory")
   require("src.script.Gen4BattleCastle")
   require("src.script.Gen4BattleArcade")
+  require("src.script.HgssFrontierTower")
   local self = setmetatable({ game = game, data = game.data, objects = {}, order = {},
     images = {}, monPics = {}, onExit = opts.onExit }, Scene)
   self.runner = ScriptRunner.new(game, nil)
   self:setScene(opts.scene)
-  local spec = Scene.SCENES[opts.scene]
+  local spec = Scene.specFor(opts.scene)
   local entry = opts.entry or (spec and VM.entryLabel(game.data, spec.member, 0))
   local rows = spec and entry and VM.compile(game.data, spec.member, entry, spec.bank)
   if rows then
@@ -67,7 +92,7 @@ end
 
 function Scene:setScene(id)
   self.sceneId = id
-  self.spec = Scene.SCENES[id] or {}
+  self.spec = Scene.specFor(id) or {}
   self.backdrop = nil
   local index = self.data and self.data.gen4_frontier_art
   local rec = index and self.spec.art and index[self.spec.art]

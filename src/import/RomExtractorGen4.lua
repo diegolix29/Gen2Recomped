@@ -3407,6 +3407,10 @@ function RomExtractorGen4:extractConstants()
       martAt, martHits = Gen4Mart.find(arm9)
       martCommon = martAt and Gen4Mart.parse(arm9, martAt) or nil
       martSpecialties = Gen4Mart.specialties(arm9, self.rom:header().arm9.ram)
+      -- HGSS's thirty SpecialMartBuy lists are another table (Gen4HgssSpecialMarts)
+      if not martSpecialties and require("src.import.Gen4Versions").isHgss(self.version) then
+        martSpecialties = require("src.import.Gen4HgssSpecialMarts").find(arm9, self.rom:header().arm9.ram)
+      end
       martDecor = Gen4Mart.decor(arm9, self.rom:header().arm9.ram)
     end
     -- A miss is reported through `constantsReport` rather than thrown: the
@@ -3620,17 +3624,22 @@ function RomExtractorGen4:extractConstants()
   -- TM05 Roar, TM86 Grass Knot (Gardenia's), TM92 Trick Room.
   local tmhmMoves, tmhmReport = nil, nil
   do
-    local HM_TAIL = { 15, 19, 57, 70, 432, 249, 127, 431 }
+    -- HM05 is Defog in Diamond / Pearl / Platinum and Whirlpool (250) in
+    -- HeartGold / SoulSilver: the Sinnoh tail never matched an HGSS arm9, so
+    -- the species' machine lists were never written there
+    local HM_TAILS = { { 15, 19, 57, 70, 432, 249, 127, 431 }, { 15, 19, 57, 70, 250, 249, 127, 431 } }
     local NUM_TMS, NUM_HMS = 92, 8
-    local needle = {}
-    for _, v in ipairs(HM_TAIL) do
-      needle[#needle + 1] = string.char(v % 256, math.floor(v / 256) % 256)
-    end
-    needle = table.concat(needle)
     local ok, arm9 = pcall(function() return self.rom:arm9() end)
     if ok and type(arm9) == "string" then
-      local at, candidates = 1, 0
-      while true do
+      local candidates = 0
+      for _, tail in ipairs(HM_TAILS) do
+      local needle = {}
+      for _, v in ipairs(tail) do
+        needle[#needle + 1] = string.char(v % 256, math.floor(v / 256) % 256)
+      end
+      needle = table.concat(needle)
+      local at = 1
+      while not tmhmMoves do
         local p = arm9:find(needle, at, true)
         if not p then break end
         at = p + 1
@@ -3650,6 +3659,7 @@ function RomExtractorGen4:extractConstants()
             tmhmReport = { at = start - 1, entries = #list }
           end
         end
+      end
       end
       tmhmReport = tmhmReport or { candidates = candidates }
       tmhmReport.candidates = candidates
@@ -4124,6 +4134,7 @@ function RomExtractorGen4:extractOverworld()
   -- HGSS keeps its sequence tables mid-archive (Gen4HgssFacings)
   local hgssSeq = require("src.import.Gen4Versions").family(self.version) == "hgss"
   local sequences, seqReport = (hgssSeq and require("src.import.Gen4HgssFacings") or Gen4Facings).read(arc)
+  local Gen4HgssPartnerFacings = require("src.world.HgssPartnerFacings")
   local facingsReport = { byName = 0, byCount = 0, none = 0,
                           sequences = seqReport }
 
@@ -4160,6 +4171,16 @@ function RomExtractorGen4:extractOverworld()
         facingsReport.refused = facingsReport.refused or {}
         facingsReport.refused[label] = why
       end
+    elseif hgssSeq and Gen4HgssPartnerFacings.covers(entry.member, entry.frames) then
+      -- HGSS'S WALKING-PARTNER SHEETS (members 297.. of /a/0/8/1), which the
+      -- map's own Pokemon objects draw from too -- Ilex Forest's Farfetch'd is
+      -- member 381. Eight frames, two per side in the order up, down, left,
+      -- right; no sequence table names them, so with nothing here the
+      -- renderer read them with the Game Boy's slots and the bird ran south
+      -- showing its back. See src/world/HgssPartnerFacings.lua.
+      facings = Gen4HgssPartnerFacings.FACINGS
+      facingSource = Gen4HgssPartnerFacings.SOURCE
+      facingsReport.byCount = facingsReport.byCount + 1
     else
       -- NOT A FAILURE.  A berry tree, an item ball, a boulder: two pictures or
       -- one, no sides, and nothing to face.  The renderer keeps its classic
@@ -4443,6 +4464,18 @@ function RomExtractorGen4:extractTrainerSprites()
       local image = sheet and pal and Gen4Trgra.frame(sheet, pal, 1)
       if image then
         index.backs[class] = self:saveImage(("battle/trainer_back/%03d"):format(class), image)
+        -- ...and the throw it makes at the send-out (src/import/Gen4BackThrow.lua),
+        -- keyed by the still's path
+        local okT, throw = pcall(require("src.import.Gen4BackThrow").build, backs, class, Gen4Graphics)
+        local still = index.backs[class]
+        local strip = okT and throw and still and self:saveImage(("battle/trainer_back_throw/%03d"):format(class), throw.image)
+        if strip then
+          local release, total = require("src.import.Gen5TrainerPics").releaseTick(throw.play)
+          index.backThrows = index.backThrows or {}
+          index.backThrows[still.path] = { path = strip.path, width = throw.width, height = throw.height,
+            count = throw.count, play = throw.play, dx = throw.dx, dy = throw.dy,
+            release = release, total = total }
+        end
       end
     end
   end
@@ -5562,6 +5595,12 @@ function RomExtractorGen4:extractIntro()
   end
 
   self:write("gen4_intro", out)
+  -- the Canalave library's television (StartLibraryTV) wears the intro
+  -- set's bezel and scan lines over its own picture: src/import/Gen4LibraryTv.lua
+  do
+    local okT, tv = pcall(function() return require("src.import.Gen4LibraryTv").build(self) end)
+    if okT and tv then self:write("gen4_library_tv", tv) end
+  end
 
   local backdrops, figures = 0, 0
   for _ in pairs(out.backdrops) do backdrops = backdrops + 1 end
@@ -5848,6 +5887,9 @@ function RomExtractorGen4:extractTerrain(names)
                                       tostring(texAnim))
     end
     self:write("gen4_terrain", out)
+    pcall(self.encounterEffects, self)
+    -- the egg moves (/a/2/2/9 here, see Gen4EggMoves.extract)
+    pcall(self.eggMoves, self)
     self.terrainReport = { chunks = packed, refused = refused, sets = setsBuilt,
       pairedShapes = pairedShapes, undecoded = undecoded, maps = attributed,
       noArea = noArea, geometry = #geometry, heights = #heights }
@@ -5865,6 +5907,15 @@ function RomExtractorGen4:extractTerrain(names)
     if okFx and fx then self:write("gen4_pt_field_fx", fx)
     else print("gen4_pt_field_fx failed: " .. tostring(fx)) end
   end
+  -- the Spear Pillar cinematic ScrCmd_2FB starts (Gen4SpearPillarArt)
+  do
+    local okSp, sp = pcall(require("src.import.Gen4SpearPillarArt").build, self)
+    if okSp and sp then self:write("gen4_spear_pillar", sp)
+    else print("gen4_spear_pillar failed: " .. tostring(sp)) end
+  end
+  -- the gyms' field-effect flipbooks: Eterna's fountains, Veilstone's
+  -- toppled tires (Gen4GymFxArt)
+  self:gymFxArt()
   self:specialEncounters()
   self:townMap()
   self:areaPopup()
@@ -6186,6 +6237,31 @@ function RomExtractorGen4:poketchEvolutionArt()
     self:write("gen4_evolution_art", save("evolution_art", evolution))
     self:write("gen4_evolution_ink", E.data(self.rom,config))
   end
+  -- THE EGG HATCH CUTSCENE (src/import/Gen4EggHatchArt.lua)
+  do
+    local H = require("src.import.Gen4EggHatchArt")
+    local okH, hatch = pcall(H.images, self.rom, hgss)
+    if okH and hatch then
+      self:write("gen4_egg_hatch_art", save("egg_hatch_art", hatch))
+      self:write("gen4_egg_hatch_ink", H.data(self.rom, hgss))
+    elseif not okH then print("Gen4EggHatchArt failed: " .. tostring(hatch)) end
+  end
+  -- THE SCRATCH-OFF CARDS (src/import/Gen4ScratchOffArt.lua), Platinum's
+  -- and HGSS's (the same narc at /a/2/0/5)
+  do
+    local SO = require("src.import.Gen4ScratchOffArt")
+    local okS, scratch = pcall(SO.images, self.rom)
+    if okS and scratch then
+      self:write("gen4_scratch_off_art", save("scratch_off_art", scratch))
+      self:write("gen4_scratch_off", SO.data(self.rom))
+    elseif not okS then print("Gen4ScratchOffArt failed: " .. tostring(scratch)) end
+  end
+  -- THE POKEMON MOTION PROGRAMS (src/import/Gen4PokeMotion.lua)
+  do
+    local okM, motion = pcall(require("src.import.Gen4PokeMotion").extract, self.rom)
+    if okM and motion then self:write("gen4_poke_motion", motion)
+    elseif not okM then print("Gen4PokeMotion failed: " .. tostring(motion)) end
+  end
   -- THE IN-GAME TRADE CUTSCENE (src/import/Gen4TradeArt.lua): demo_trade.narc
   -- in Platinum, the byte-identical /a/0/8/9 in HeartGold / SoulSilver
   do
@@ -6432,6 +6508,8 @@ end
 
 function RomExtractorGen4:encounterEffects()
   local out = self.rom and require("src.import.Gen4EncounterEffects").extract(self.rom)
+  -- HeartGold / SoulSilver keep theirs in /a/1/0/9 (src/import/HgssEncounterEffects.lua)
+  if not out and self.rom then out = require("src.import.HgssEncounterEffects").extract(self.rom) end
   if out then self:write("gen4_encounter_effects", out) end
 end
 
@@ -7095,6 +7173,14 @@ function RomExtractorGen4:extractModels()
   return out
 end
 
+-- Platinum's gym field-effect flipbooks (src/import/Gen4GymFxArt.lua); also a
+-- STAGE_ONLY name of its own (`gymFxArt`) for an import into a scratch root
+function RomExtractorGen4:gymFxArt()
+  local ok, fx = pcall(require("src.import.Gen4GymFxArt").build, self)
+  if ok and fx then self:write("gen4_gym_fx", fx)
+  else print("gen4_gym_fx failed: " .. tostring(fx)) end
+end
+
 -- The stages a version runs, by name (Gen4Versions.STAGES). Platinum runs
 -- every one below; HeartGold and SoulSilver run those whose formats have been
 -- checked against their cartridge, and the rest are written to the report as
@@ -7231,7 +7317,25 @@ RomExtractorGen4.STAGE_CHAIN = {
                              { "src.import.Gen4HgssCertificates", "gen4_hgss_certificates" },
                              -- the Pokegear's scripted calls: phonebook, script
                              -- defs, Elm's map scripts, call-window ink
-                             { "src.import.Gen4HgssPhoneCall", "gen4_hgss_phone_call" } }) do
+                             { "src.import.Gen4HgssPhoneCall", "gen4_hgss_phone_call" },
+                             -- the Pokeathlon's performance rows (performance.narc)
+                             { "src.import.Gen4HgssPokeathlon", "gen4_hgss_performance" },
+                             { "src.import.Gen4HgssPokeathlonCourses", "gen4_hgss_pokeathlon" },
+                             { "src.import.Gen4HgssHurdleDashArt", "gen4_hgss_hurdle_dash" },
+                             { "src.import.Gen4HgssPokeathlonBlockSmashArt", "gen4_hgss_block_smash" },
+                             { "src.import.Gen4HgssPokeathlonRelayRunArt", "gen4_hgss_relay_run" },
+                             { "src.import.Gen4HgssPokeathlonPennantArt", "gen4_hgss_pennant" },
+                             { "src.import.Gen4HgssPokeathlonCirclePushArt", "gen4_hgss_circle_push" },
+                             { "src.import.Gen4HgssPokeathlonGoalRollArt", "gen4_hgss_goal_roll" },
+                             { "src.import.Gen4HgssPokeathlonSnowThrowArt", "gen4_hgss_snow_throw" },
+                             { "src.import.Gen4HgssPokeathlonRingDropArt", "gen4_hgss_ring_drop" },
+                             { "src.import.Gen4HgssPokeathlonLampJumpArt", "gen4_hgss_lamp_jump" },
+                             { "src.import.Gen4HgssPokeathlonDiscCatchArt", "gen4_hgss_disc_catch" },
+                             { "src.import.Gen4HgssPokeathlonCommonArt", "gen4_hgss_athlon_common" },
+                             -- the team-choosing screen's panel (overlay 97)
+                             { "src.import.Gen4HgssPokeathlonTeamArt", "gen4_hgss_athlon_team" },
+                             -- the dome's side-room screens (overlay 99)
+                             { "src.import.Gen4HgssPokeathlonRoomArt", "gen4_hgss_athlon_rooms" } }) do
       local okM, M = pcall(require, entry[1])
       if okM and type(M) == "table" and M.build then
         local okB, built = pcall(M.build, self)
@@ -7250,6 +7354,11 @@ RomExtractorGen4.STAGE_CHAIN = {
     if chart then self:write("type_chart", chart) end
     self:write("constants", constants)
     self.constantsReport = report
+    -- the Battle Frontier's trainers and sets (Gen4BattleTowerData, HGSS paths)
+    pcall(self.battleTowerData, self)
+    -- the Battle Frontier's scene scripts, /a/1/8/2 (the tower's battle room)
+    pcall(self.frontierScripts, self)
+    pcall(self.frontierArt, self)
   end,
   fonts = function(self) self:extractFonts() end,
 }
@@ -7330,7 +7439,18 @@ function RomExtractorGen4:run()
   self:extractWeatherSys()
   self:extractMailGra()
   self:extractVoltorbFlip()
+  self:extractPalPark()
   return self.wrote
+end
+
+-- Pal Park's species table, both families (Gen4PalParkData)
+function RomExtractorGen4:extractPalPark()
+  local ok, rec, why = pcall(require("src.import.Gen4PalParkData").extract, self)
+  if ok and rec then
+    self:write("gen4_pal_park", rec)
+  else
+    self:write("gen4_pal_park", { refused = tostring(ok and why or rec) })
+  end
 end
 
 -- Platinum's mail stationery (Gen4MailGra), for the bag's Mail USE

@@ -97,10 +97,14 @@ function Gen4MoneyWindow.panelFor(game, left, top)
   local digits = tostring(money)
   local amount = (" "):rep(math.max(0, Gen4MoneyWindow.DIGITS - #digits)) .. digits
 
+  -- the window must not eat the script's own buffer 0 either ("Turned over
+  -- the {VAR1}" after `updatemoneydisplay` read the new total, in Black)
+  local saved = game.stringBuffers and game.stringBuffers[1]
   Gen4Text.buffer(game, amount)
   local bank, labelEntry, amountEntry = moneyBank(data)
   local label = Gen4Text.resolve(data, bank, labelEntry, game)
   local value = Gen4Text.resolve(data, bank, amountEntry, game)
+  if game.stringBuffers then game.stringBuffers[1] = saved end
   -- NO ENGLISH FALLBACK FOR THE LABEL, for the reason
   -- `Gen4UndergroundMenu:labelFor` gives: a missing bank entry is a broken
   -- import, and a hardcoded word hides it behind something that looks right.

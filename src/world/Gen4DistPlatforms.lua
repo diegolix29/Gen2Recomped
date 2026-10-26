@@ -304,7 +304,36 @@ local function runnable(e)
   return e.commands ~= nil
 end
 
--- HandleEventAt: the first event on the tile whose condition holds.
+-- THE OVERLAY'S EVENTS ARE FIELD TASKS, AND A FIELD TASK OWNS THE FIELD.
+--
+-- Reported from the Platinum playthrough: in the Giratina room the player
+-- walked 23 -> 20 -> 17 -> 14 while the platforms event (z 23) was still
+-- running, so z 17's shadow and z 14's arrival never fired and progress
+-- stuck at 11 -- a room with no way on.  `player.inputLocked` was set, but
+-- only Player:tryMove reads it: the room's stepping stones are LEDGE HOPS,
+-- and checkLedgeHop (like the edge exits, warps and boulder pushes beside
+-- it in handleInput) starts its own scripted move without asking.
+--
+-- On the cartridge nothing in handleInput can run then.  HandleEventAt,
+-- the waterfall (RunEventCommands) and the lifts (CallElevatorPlatform-
+-- Handler) all start with FieldSystem_CreateTask, and HandleFieldInput
+-- (field_system.c) reads the pad at all only while
+-- FieldSystem_IsRunningTask is FALSE -- no step, no hop, no A, no START,
+-- and no Field_ProcessStep (so no HandleEventAt) until the task returns.
+-- A startScript inside the event runs as the task's own sub-task
+-- (ScriptManager_Start(task, ...)), so a script's ReleaseAll does not end
+-- it either.  This names the running task; OverworldController adds it to
+-- its `scripted` gate, which is that same skip.
+function P.fieldTask(ow)
+  if ow.dwEvent then return "a Distortion World event (HandleEventAt)" end
+  if ow.dwRide or ow.dwArrive then return "a Distortion World lift ride" end
+  if ow.dwCascade then return "a Distortion World waterfall ride" end
+  return nil
+end
+
+-- HandleEventAt: the first event on the tile whose condition holds.  Asked
+-- only when no task runs (Gen4DistSurface.stepEnded passes over a move that
+-- ended under one without recording it), so this refusal is a guard only.
 function P.onPosition(ow, m, dw, x, y, z)
   if ow.dwEvent or ow.dwRide then return false end
   local def = ow.map and ow.map.def
@@ -996,8 +1025,20 @@ local function castLabel(def, script)
     local entry = ms and ((ms.maps and ms.maps[def.id]) or ms[def.id])
     return entry and entry.entries and entry.entries[script]
   end
-  -- a shared band (10002 is Strength's boulder script)
+  -- a shared band (10002 is Strength's boulder script).  WHICH band is the
+  -- dispatcher's arithmetic (Gen4ScriptBands.classify, the same the script
+  -- VM uses): the bands carry no `threshold`, so the loop this replaced
+  -- matched nothing and every B5F/B6F boulder had no script -- A on one
+  -- said nothing, Strength was never offered, and the puzzle could not be
+  -- started.
   local bands = ms and (ms.bands or ms.shared)
+  local okB, Bands = pcall(require, "src.import.Gen4ScriptBands")
+  if okB and bands then
+    local kind, name, index = Bands.classify(script)
+    local band = kind == "band" and bands[name]
+    local label = band and band.entries and band.entries[(index or 0) + 1]
+    if label then return label end
+  end
   for _, band in pairs(bands or {}) do
     if type(band) == "table" and band.threshold and band.entries
        and script >= band.threshold and script < band.threshold + 1000 then
@@ -1056,6 +1097,24 @@ function P.spawnCast(ow, def, m)
       placeCast(ow, def, m, c)
     end
   end
+end
+
+-- THE FIELD COMING BACK FROM A BATTLE REBUILDS THE OVERLAY'S OBJECTS.  The
+-- overlay adds its map objects from their conditions whenever the field is
+-- built (AddMapObjectsForCurrentAndNextMap, from the Distortion World
+-- system's init), and a battle's end builds it again -- after ON_LOAD, which
+-- in the Giratina room is what sets VAR_DISTORTION_WORLD_PROGRESS to
+-- BATTLED_GIRATINA (14).  Kept from the visit's start instead, the room went
+-- on showing what progress 13 had (nothing at 15,13), and the portal
+-- (local id 131, progress == 14) and Cynthia beside it were never there:
+-- no way out of the room.  OverworldState:gen4FieldResumed calls this after
+-- the map's resume scripts, before the battle's own script carries on.
+function P.fieldResumed(ow)
+  local def = ow and ow.map and ow.map.def
+  local m = floorInfo(def)
+  if not m then return end
+  P.spawnCast(ow, def, m)
+  P.refreshedFor = def
 end
 
 -- AddMapObjectWithLocalID / DeleteMapObject...: the scripts' two commands

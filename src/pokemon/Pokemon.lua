@@ -224,7 +224,8 @@ function Pokemon.new(data, species, level, rng, form)
     -- byte), which had none: every Sinnoh Pokemon's friendship was nil, so
     -- the friendship evolutions (Golbat, Chansey, Riolu, Budew, Chingling,
     -- Munchlax, Azurill ...) could never fire and Return hit for nothing.
-    happiness = (require("src.core.GameVersion").isGen4()
+    -- (Black / White too: the same personal byte, the same rules)
+    happiness = ((require("src.core.GameVersion").isGen4() or require("src.core.GameVersion").isGen5())
                  and (def.baseFriendship or def.friendship or 70))
       or require("src.core.GameVersion").get()=="emerald" and (def.friendship or 70)
       or (require("src.core.GameVersion").isGen2()

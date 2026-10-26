@@ -117,9 +117,14 @@ function Gen4StartMenu.new(game, opts)
   -- ...AND DURING HEARTGOLD / SOULSILVER'S BUG-CATCHING CONTEST (flag 0x996):
   -- BAG and SAVE are off and RETIRE runs std 10404 (start_menu.c 220-315)
   self.bugContest = require("src.world.HgssBugContest").running(game.save)
+  -- ...AND IN PAL PARK'S CATCHING SHOW (`StartMenu_GetPalParkHiddenOptions`):
+  -- SAVE, CHAT and BAG off; RETIRE runs the park's own script 4
+  self.palPark = not self.safari and require("src.world.Gen4PalPark").inPark(game.save)
   for _, row in ipairs(source) do
     local hidden = row.hidden
-    if self.safari then
+    if self.palPark then
+      hidden = (row.id == "save" or row.id == "chat" or row.id == "bag")
+    elseif self.safari then
       hidden = (row.id == "save" or row.id == "chat")
     elseif self.bugContest then
       hidden = (row.id == "save" or row.id == "chat" or row.id == "bag")
@@ -315,6 +320,14 @@ function Gen4StartMenu:select()
   self.game.stack:pop()
   if id == "retire" and self.bugContest then
     require("src.world.HgssBugContest").runStd(self.game.overworld, 10404)
+    if self.onCancel then self.onCancel() end
+    return
+  end
+  if id == "retire" and self.palPark then
+    -- `StartMenu_SelectRetire` outside a Safari Game: the map's script 4
+    -- (Pal Park's "Would you like to retire?")
+    local ow = self.game.overworld
+    if ow then require("src.world.Gen4PalPark").runMapScript(ow, 4) end
     if self.onCancel then self.onCancel() end
     return
   end
@@ -568,8 +581,16 @@ end
 -- (1, 1) while a Safari Game runs -- "SAFARI BALLS" over "Stock: NN".
 function Gen4StartMenu:drawBallCount()
   local st = (self.game.save or {}).safari
-  if not st then return end
   local text = (self.game.data or {}).text or {}
+  -- Pal Park's: "PARK BALLS", the balls not yet thrown (FieldSystem_GetParkBallCount)
+  local PalPark = require("src.world.Gen4PalPark")
+  if not st and PalPark.inPark(self.game.save) then
+    Font.drawBox(1, 1, 12, 4)
+    Font.draw(text.TEXT_B0367_00010 or "PARK BALLS", 16, 16)
+    Font.draw((text.TEXT_B0367_00011 or "Stock: {N}"):gsub("{[^}]*}", ("%d"):format(PalPark.parkBalls(self.game.save)), 1), 16, 32)
+    return
+  end
+  if not st then return end
   Font.drawBox(1, 1, 12, 4)
   local title = text.TEXT_B0367_00009 or "SAFARI BALLS"
   local stock = (text.TEXT_B0367_00011 or "Stock: {N}")

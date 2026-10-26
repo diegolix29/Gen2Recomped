@@ -411,6 +411,19 @@ local function returnToLauncher()
   -- again in this same process (src/mods/Loader.lua Loader.teardown).
   pcall(function() require("src.mods.Loader").teardown() end)
   openLauncher(false)
+  -- ...AND WHERE IT ASKED TO LAND (HostShell.requestLauncher): HGSS's CONNECT
+  -- TO POKeWALKER opens the Monster Walker, at that game's save picker unless
+  -- one of its Pokemon is already out walking
+  local req = require("src.core.HostShell").takeLauncherRequest()
+  if req and req.section and Importer and Importer._sbGo then
+    pcall(function()
+      Importer:_sbGo(req.section)
+      local wk = Importer.walker
+      if req.section == "walker" and wk and req.version and not (wk.st and wk.st.walking) then
+        wk.pickVersion, wk.panel = req.version, "pickSlot"
+      end
+    end)
+  end
 end
 
 -- The game reaches this through HostShell, the way it already reaches the

@@ -44,6 +44,8 @@ local reported = {}
 local animated = {}     -- key -> one map's private, mutable animated atlas
                         -- false = given up on; nil = not built (or retrying)
 local attempts = {}     -- key -> consecutive failures, for the retry budget
+-- Clock metadata only: observing a shadow dependency must never prepare art.
+local animationClocks=setmetatable({}, {__mode='k'})
 
 -- A failure that might not repeat -- a driver refusing one readback, an
 -- asset briefly unreadable, a patch that threw once mid-reload -- must not
@@ -675,6 +677,7 @@ function TerrainAtlas.animate(map, colors, base, baked)
     end
   end
   if not entry then return nil end
+  animationClocks[map.tileset]=entry.specs
 
   local frame = animFrame()
   -- one number for the whole entry: every spec's own step, folded together,
@@ -758,14 +761,17 @@ local function gen3Animate(map, base)
       -- base is what `Gen3.atlasForTileset` hands to the shape passes and to
       -- anything else sampling the static art, and patching it in place would
       -- animate those too
-      local data = love.image.newImageData(w, h)
-      data:paste(src, 0, 0, 0, 0, w, h)
-      local image = love.graphics.newImage(data)
+      local image = love.graphics.newImage(src)
       if image.setFilter then pcall(image.setFilter, image, "nearest", "nearest") end
       local info = Gen3.atlasInfoFor(tileset)
-      return { data = data, image = image, patches = patches,
-               perRow = (info and info.perRow) or 16, w = w, h = h,
-               step = nil }
+      local perRow=(info and info.perRow) or 16
+      local updates
+      if V.partialAtlasUpdates~=false then
+        local ok,plan=pcall(V.require('AtlasUpdates').new,src,patches,perRow)
+        if ok then updates=plan end
+      end
+      return { source = src, image = image, patches = patches,
+               perRow = perRow, w = w, h = h, updates=updates, step = nil }
     end)
     if not (okNew and built) then
       gen3Anim[key] = false
@@ -775,6 +781,7 @@ local function gen3Animate(map, base)
     gen3Anim[key] = entry
   end
 
+  animationClocks[tileset]=entry.patches
   local frame = animFrame()
   local step = math.floor(frame / math.max(1, entry.patches.period))
                  % entry.patches.steps
@@ -782,6 +789,17 @@ local function gen3Animate(map, base)
     entry.step = step
     local ok = pcall(function()
       local strip = entry.patches.strips[step + 1]
+      if entry.updates then
+        local partialOK=pcall(entry.updates.apply,entry.updates,entry.image,strip)
+        if partialOK then return end
+        -- Older/custom backends may reject sub-image uploads. Overwrite the
+        -- entire image this same step, including any already patched bands.
+        entry.updates:release();entry.updates=nil
+      end
+      if not entry.data then
+        entry.data=love.image.newImageData(entry.w,entry.h)
+        entry.data:paste(entry.source,0,0,0,0,entry.w,entry.h)
+      end
       local perRow = entry.perRow
       for i, t in ipairs(entry.patches.slots) do
         local dx, dy = (t % perRow) * 8, math.floor(t / perRow) * 8
@@ -809,6 +827,21 @@ function TerrainAtlas.forMap(map, colors)
   -- which is exactly the picture this mod drew before g3-anim-261.
   if Gen3.mapIsGen3(map) then return gen3Animate(map, base) or base end
   return TerrainAtlas.animate(map, colors, base, baked) or base
+end
+
+-- Animated cutouts can change their shadow silhouette while every actor and
+-- camera is still. Include their discrete frame, not the running 60 Hz clock.
+function TerrainAtlas.shadowStep(map)
+  local clock=map and animationClocks[map.tileset]
+  if not clock then return 0 end
+  local frame=animFrame()
+  if clock.period then return math.floor(frame/math.max(1,clock.period))%clock.steps end
+  local step=0
+  for i,spec in ipairs(clock)do
+    local n=spec.kind=='hshift' and #spec.offsets or #spec.sequence
+    step=step+(math.floor(frame/(spec.period or 20))%n)*(16^i)
+  end
+  return step
 end
 
 -- The image a character model should texture from under an SGB palette.
@@ -867,10 +900,13 @@ function TerrainAtlas.setLive(live)
 end
 
 function TerrainAtlas.invalidate()
+  animationClocks=setmetatable({}, {__mode='k'})
   cache = {}
   cacheData = {}
   attempts = {}
   for _, entry in pairs(gen3Anim) do
+    if entry and entry.updates then entry.updates:release() end
+    if entry and entry.data then entry.data:release() end
     if entry and entry.image and entry.image.release then
       pcall(entry.image.release, entry.image)
     end

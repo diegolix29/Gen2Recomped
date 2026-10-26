@@ -295,7 +295,17 @@ function Gen4Follower.onMapEntered(game, ow)
     save.gen4Follower = nil
     return
   end
-  spawnFollower(game, ow, record)
+  local npc = spawnFollower(game, ow, record)
+  -- ...and on a CONTINUE where the save stood it: the partner is one of the
+  -- objects FieldSystem_RestoreMapObjectsFromSave / FieldSystem_LoadObjects
+  -- puts back (captureSave files it under INDEX)
+  local kept = npc and ow.gen4Continuing and save.gen4Objects and save.gen4Objects[ow.map.id]
+  local at = kept and kept[INDEX]
+  if at and at.x and at.y then
+    npc.cellX, npc.cellY = at.x, at.y
+    npc.px, npc.py = at.x * 16, at.y * 16
+    npc.facing = at.facing or npc.facing
+  end
 end
 
 -- A connection crossing translates every cell rather than rebuilding the map,

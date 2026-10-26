@@ -15259,6 +15259,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
   -- shade class of every canvas pixel, indexed py * NX + px
   local cls = {}
   for py = 0, NY - 1 do
+    Budget.tick()
     for px = 0, NX - 1 do
       local ax, ay = texel(px, py)
       local r, g, b, a = data:getPixel(ax, ay)
@@ -15302,6 +15303,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
       seed(y0 * NX + px); seed(y1 * NX + px)
     end
     for py = y0, y1 do
+      Budget.tick()
       seed(py * NX); seed(py * NX + NX - 1)
     end
     while #stack > 0 do
@@ -15356,6 +15358,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
     -- outline. A shade flood eats the flowers and leaves a black hull.
     -- Give this authored crown a rounded top and a narrow trunk instead.
     for iy = 0, 29 do
+      Budget.tick()
       local radius = iy < 24 and (15 * math.sqrt(math.max(0,
           1 - ((iy - 13) / 14) ^ 2))) or 3
       for ix = 0, NX - 1 do
@@ -15411,10 +15414,12 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
       end
       local top = nil
       for iy = 0, NY - 1 do
+        Budget.tick()
         if (select(1, rowSpan(iy))) then top = iy break end
       end
       local widest = 0
       for iy = 0, NY - 1 do
+        Budget.tick()
         local lo, hi = rowSpan(iy)
         if lo and hi - lo + 1 > widest then widest = hi - lo + 1 end
       end
@@ -15526,6 +15531,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
   if capRows and capRows > 0 then
     local top = nil
     for iy = 0, NY - 1 do
+      Budget.tick()
       for ix = 0, NX - 1 do
         if mask[iy * NX + ix] then top = iy break end
       end
@@ -15535,6 +15541,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
       capY0 = top
       capY1 = math.min(top + capRows - 1, NY - 2)
       for iy = capY0, capY1 do
+        Budget.tick()
         for ix = 0, NX - 1 do mask[iy * NX + ix] = nil end
       end
       any = nil
@@ -15557,6 +15564,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
   if baseRows and baseRows > 0 then
     local bot = nil
     for iy = NY - 1, 0, -1 do
+      Budget.tick()
       for ix = 0, NX - 1 do
         if mask[iy * NX + ix] then bot = iy break end
       end
@@ -15565,6 +15573,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
     if bot then
       baseArt = {}
       for iy = math.max(bot - baseRows + 1, (capY1 or -1) + 2), bot do
+        Budget.tick()
         for ix = 0, NX - 1 do
           local i = iy * NX + ix
           if mask[i] then baseArt[i] = true end
@@ -15592,6 +15601,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
   if bodyRows and bodyRows > 0 then
     local body = {}
     for iy = 0, NY - 1 do
+      Budget.tick()
       for ix = 0, NX - 1 do
         if mask[iy * NX + ix] then body[#body + 1] = iy break end
       end
@@ -15600,6 +15610,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
     if nb > 0 then
       local top = body[1]
       for iy = top - 1, math.max(NY - bodyRows, 0), -1 do
+        Budget.tick()
         -- the LOWEST surviving body row, repeated: it is the widest and
         -- plainest reading of the material (outline, shaded flank, lit
         -- face) and stacks into a clean metal cylinder. Cycling the whole
@@ -15630,6 +15641,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
       local oy = math.floor(t / perRow) * 8
       local score, n = 0, 0
       for py = 0, NY - 1 do
+        Budget.tick()
         for px = 0, NX - 1 do
           local i = py * NX + px
           local c = cls[i]
@@ -15662,6 +15674,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
   local loRow, hiRow = {}, {}
   local yBot = nil
   for iy = 0, NY - 1 do
+    Budget.tick()
     local lo, hi = nil, nil
     for ix = 0, NX - 1 do
       if mask[iy * NX + ix] then
@@ -15709,6 +15722,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
   -- open to the sky stay open and the silhouette keeps its notches.
   if spray then
     for iy = 1, math.min(spray.rows, NY) - 1 do
+      Budget.tick()
       if loRow[iy] then
         for ix = loRow[iy], hiRow[iy] do
           local i = iy * NX + ix
@@ -15732,6 +15746,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
   -- drawn base rim lands on the model's base instead of being painted over
   -- by the body band above it
   for iy = yBot + 1, NY - 1 do
+    Budget.tick()
     loRow[iy], hiRow[iy] = loRow[yBot], hiRow[yBot]
     for ix = loRow[yBot], hiRow[yBot] do
       local b = yBot * NX + ix
@@ -15754,11 +15769,13 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
   if taperVox and taperVox > 0 then
     local yTopRow = nil
     for iy = 0, NY - 1 do
+      Budget.tick()
       if loRow[iy] then yTopRow = iy break end
     end
     local span = NY - 1 - (yTopRow or 0)
     if yTopRow and span > 0 then
       for iy = yTopRow, NY - 1 do
+        Budget.tick()
         local inset = math.floor(taperVox / 2 * (iy - yTopRow) / span + 0.5)
         if inset > 0 and loRow[iy] then
           local lo = loRow[iy] + inset
@@ -15813,10 +15830,12 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
   local wellTop = nil
   if wellRows and wellRows > 0 then
     for iy = 0, NY - 1 do
+      Budget.tick()
       if loRow[iy] then wellTop = iy break end
     end
     local wall = 2
     for iy = wellTop or 0, math.min((wellTop or 0) + wellRows - 1, NY - 1) do
+      Budget.tick()
       if loRow[iy] then
         for ix = loRow[iy], hiRow[iy] do
           local i = iy * NX + ix
@@ -15834,6 +15853,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
   local capTopRow, capZ0, capZ1 = nil, nil, nil
   if capY0 then
     for iy = 0, NY - 1 do
+      Budget.tick()
       if loRow[iy] then capTopRow = iy break end
     end
     if capTopRow then
@@ -15915,6 +15935,8 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
   end
 
   local quads = {}
+  local point=V.require("HullPoints").new()
+  local uvPoint=V.require("HullPoints").newUV()
 
   for iy = 0, NY - 1 do
     -- A WHOLE TREE IS BUILT BETWEEN TWO TICKS.
@@ -15928,10 +15950,9 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
     --
     -- This is the emission loop and it runs once per canvas row (16 rows
     -- for a one-cell hull, 48 for Mossdeep's 3x3 trees), so a tick here
-    -- breaks the hull into slices of a few milliseconds. It is the only
-    -- tick added inside the template: the mask, flood and disc passes above
-    -- are all O(NX*NY) over at most 2,304 pixels and none of them showed in
-    -- the profile.
+    -- breaks the hull into slices of a few milliseconds. Mask, background
+    -- scoring and disc preparation now check their rows too: a large rock
+    -- template can spend several milliseconds there before emitting a face.
     Budget.check()
     if loRow[iy] then
       local yB, yT = NY - 1 - iy, NY - iy
@@ -15975,14 +15996,14 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
               local v0, v1 = (ay + 0.05) / atlasH, (ay + 0.95) / atlasH
               if back then
                 quads[#quads + 1] = {
-                  { x1, yB, z }, { x0, yB, z }, { x0, yT, z }, { x1, yT, z },
-                  uv = { { u1, v1 }, { u0, v1 }, { u0, v0 }, { u1, v0 } },
+                  point(x1, yB, z), point(x0, yB, z), point(x0, yT, z), point(x1, yT, z),
+                  uv = { uvPoint(u1,v1), uvPoint(u0,v1), uvPoint(u0,v0), uvPoint(u1,v0) },
                   shade = shade,
                 }
               else
                 quads[#quads + 1] = {
-                  { x0, yB, z }, { x1, yB, z }, { x1, yT, z }, { x0, yT, z },
-                  uv = { { u0, v1 }, { u1, v1 }, { u1, v0 }, { u0, v0 } },
+                  point(x0, yB, z), point(x1, yB, z), point(x1, yT, z), point(x0, yT, z),
+                  uv = { uvPoint(u0,v1), uvPoint(u1,v1), uvPoint(u1,v0), uvPoint(u0,v0) },
                   shade = shade,
                 }
               end
@@ -16041,20 +16062,20 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
           local su, sv = (sax + 0.5) / atlasW, (say + 0.5) / atlasH
           pieces(ix - 1, iy, function(zA, zB)
             quads[#quads + 1] = {
-              { x0, yB, zA }, { x0, yB, zB }, { x0, yT, zB }, { x0, yT, zA },
+              point(x0, yB, zA), point(x0, yB, zB), point(x0, yT, zB), point(x0, yT, zA),
               u = su, v = sv, shade = ROUND_SHADE.side,
             }
           end)
           pieces(ix + 1, iy, function(zA, zB)
             quads[#quads + 1] = {
-              { x1, yB, zB }, { x1, yB, zA }, { x1, yT, zA }, { x1, yT, zB },
+              point(x1, yB, zB), point(x1, yB, zA), point(x1, yT, zA), point(x1, yT, zB),
               u = su, v = sv, shade = ROUND_SHADE.side,
             }
           end)
           pieces(ix, iy - 1, function(zA, zB, izA, izB)
             local function top(za, zb, tu, tv)
               quads[#quads + 1] = {
-                { x0, yT, za }, { x1, yT, za }, { x1, yT, zb }, { x0, yT, zb },
+                point(x0, yT, za), point(x1, yT, za), point(x1, yT, zb), point(x0, yT, zb),
                 u = tu, v = tv, shade = ROUND_SHADE.top,
               }
             end
@@ -16099,7 +16120,7 @@ local function roundTemplate(S, map, data, cx, cy, groundTiles, N, capRows,
           if iy < NY - 1 then
             pieces(ix, iy + 1, function(zA, zB)
               quads[#quads + 1] = {
-                { x0, yB, zB }, { x1, yB, zB }, { x1, yB, zA }, { x0, yB, zA },
+                point(x0, yB, zB), point(x1, yB, zB), point(x1, yB, zA), point(x0, yB, zA),
                 u = u, v = v, shade = ROUND_SHADE.bottom,
               }
             end)
@@ -16119,7 +16140,7 @@ end
 -- than materialized per-cell quad tables, which retained ~500 quads x
 -- hundreds of tree cells x six Lua tables each PER MAP (the multi-GB
 -- heap growth on a cross-region trek).
-local roundCache = {}
+local roundCache = V.require("HullCache").new()
 local waterRockTemplates = setmetatable({}, { __mode = "k" })
 
 -- ---- rooftop props ------------------------------------------------------
@@ -29338,6 +29359,7 @@ function Structures.gen3IsPlanPool(S, map, region)
 end
 
 function Structures.extractObjects(S, map, region, data, perRow, force)
+  local readPixel = V.require("AtlasPixels").reader(data)
   local bw = (region.maxX - region.minX + 1) * 8
   local bh = (region.maxY - region.minY + 1) * 8
 
@@ -29384,7 +29406,7 @@ function Structures.extractObjects(S, map, region, data, perRow, force)
         local ax = (tile % perRow) * 8 + px % 8
         local ay = math.floor(tile / perRow) * 8 + py % 8
         srcU[i], srcV[i] = ax, ay
-        local r, g, b, a = data:getPixel(ax, ay)
+        local r, g, b, a = readPixel(ax, ay)
         if a == 0 then
           state[i] = "cand"
         elseif S.isGen3 and force and force ~= "opaque" then
@@ -31153,6 +31175,8 @@ function Structures.buildGen3Grass(S,map,x0,x1,y0,y1,data)
   local perRow,w,h=geomOf(map.tileset)
   local templates={}
   local cards=V.require("GrassSprites")
+  local stamps=V.sharedHulls and V.compactGrass~=false and {}
+  S.grassStamps=stamps or nil
   for ty=y0,y1 do for tx=x0,x1 do
     Budget.tick()
     local k=keyOf(tx,ty)
@@ -31161,12 +31185,23 @@ function Structures.buildGen3Grass(S,map,x0,x1,y0,y1,data)
       and gen3GrassKind(ctx,kinds,math.floor(tx/2),math.floor(ty/2)) then
       local tile=S.tileAt[k]
       local tpl=templates[tile]
-      if not tpl then tpl=cards.template(data,tile,perRow,w,h);templates[tile]=tpl end
+      if not tpl then
+        tpl=cards.template(data,tile,perRow,w,h);templates[tile]=tpl
+        if stamps then
+          -- Grass has no contact darkening. An explicit per-corner shade
+          -- preserves its original lighting in the translated stamp uploader.
+          for _,q in ipairs(tpl)do q.shade={q.shade,q.shade,q.shade,q.shade} end
+        end
+      end
       local base=(S.runs[k] and S.runs[k].h) or shape.h or 0
-      for _,q in ipairs(tpl)do
-        local copy={uv=q.uv,shade=q.shade}
-        for i=1,4 do copy[i]={q[i][1]+tx*8,q[i][2]+base,q[i][3]+ty*8}end
-        S.grassQuads[#S.grassQuads+1]=copy
+      if stamps and #tpl>0 then
+        stamps[#stamps+1]={quads=tpl,x=tx*8,y=base,z=ty*8}
+      else
+        for _,q in ipairs(tpl)do
+          local copy={uv=q.uv,shade=q.shade}
+          for i=1,4 do copy[i]={q[i][1]+tx*8,q[i][2]+base,q[i][3]+ty*8}end
+          S.grassQuads[#S.grassQuads+1]=copy
+        end
       end
     end
   end end
@@ -33506,7 +33541,7 @@ function Structures.invalidate(mapId)
   else
     clearAnalysis()
     atlasData = {}
-    roundCache = {}
+    roundCache = V.require("HullCache").new()
     waterRockTemplates = setmetatable({}, { __mode = "k" })
     -- the border ring's neighbour rectangles are map data too (a dev-console
     -- map reload is what `VoxelScene.forgetMasks` exists for)

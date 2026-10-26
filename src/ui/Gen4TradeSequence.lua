@@ -177,6 +177,14 @@ local function cry(self, mon)
   if not mon or mon.isEgg then return end
   local ok, Sound = pcall(require, "src.core.Sound")
   if ok and Sound.playCry then pcall(Sound.playCry, self.data, mon.species) end
+  -- PokemonSprite_InitAnim beside the cry (send_phase.c 337, receive_phase.c
+  -- 345): the species' two-frame script (src/pokemon/PicAnim.lua)
+  local okA, anim = pcall(require("src.pokemon.PicAnim").forMon, self.data, mon, "front")
+  if okA and anim then
+    pcall(anim.start, anim)
+    self.monAnims = self.monAnims or {}
+    self.monAnims[mon] = anim
+  end
 end
 
 -- ---------------------------------------------------------------- pictures --
@@ -695,6 +703,11 @@ end
 function Screen:drawMonAt(mon, x, y, mirror)
   local img = self:monImage(mon)
   if not img then return end
+  local anim = self.monAnims and self.monAnims[mon]
+  if anim then
+    local okF, frame = pcall(anim.image, anim, mon)
+    if okF and frame then img = frame end
+  end
   local g = love.graphics
   local w, h = img:getDimensions()
   self.monQuads = self.monQuads or {}
@@ -1872,6 +1885,7 @@ end
 function Screen:update()
   if self.unavailable then return self:finish() end
   self.frame = self.frame + 1
+  for _, anim in pairs(self.monAnims or {}) do pcall(anim.update, anim, 1 / 60) end
   -- TradeSequence_Main
   if self.phaseIndex <= #Phases then
     if not self.phase then

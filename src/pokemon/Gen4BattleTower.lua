@@ -26,7 +26,17 @@ local BT = {}
 BT.SINGLE, BT.DOUBLE, BT.MULTI, BT.LINK_MULTI, BT.WIFI, BT.MODE_5, BT.MODE_6 = 0, 1, 2, 3, 4, 5, 6
 BT.OPPONENTS = 7
 BT.PALMER_SILVER, BT.PALMER_GOLD = 305, 306
-BT.TRAINER_NAMES, BT.TRAINER_MESSAGES, BT.BATTLE_ROOM_TEXT = 21, 614, 305
+BT.BATTLE_ROOM_TEXT = 305
+-- the frontier trainers' names and lines (BattleTower_GetTrainerMessagesBankID):
+-- Platinum's banks 21 / 614, HeartGold / SoulSilver's 27 / 724 -- read by
+-- family, since one process can boot both
+BT.BANKS = { platinum = { TRAINER_NAMES = 21, TRAINER_MESSAGES = 614 },
+             hgss = { TRAINER_NAMES = 27, TRAINER_MESSAGES = 724 } }
+setmetatable(BT, { __index = function(_, k)
+  local okB, Bands = pcall(require, "src.import.Gen4ScriptBands")
+  local banks = BT.BANKS[(okB and Bands.family == "hgss") and "hgss" or "platinum"]
+  return banks[k]
+end })
 
 -- enum BattleTowerFunction
 BT.FN = {

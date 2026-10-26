@@ -1130,44 +1130,59 @@ function Game:_draw()
   Renderer.uiCentered = not Game.dynamicUI(self.save)
   Renderer.uiAnchorHold = Game.uiAnchorsHeldInStack(self.stack)
   Renderer:beginFrame(worldBelow)
-  for i = drawFrom, #self.stack.states do
-    local state = self.stack.states[i]
-    local wideState = state and state.isWideBattleLayout
-      and state:isWideBattleLayout()
-    -- A STATE THAT ASKED FOR THIS SURFACE DRAWS IN IT DIRECTLY; everything
-    -- else is Game Boy sized and gets centred.
-    --
-    -- "Asked for it" used to mean "is the one nativeSurfaceInStack picked",
-    -- which is the TOPMOST state with a uiSize.  That was fine while exactly
-    -- one state ever wanted the bigger surface.  It stopped being fine when
-    -- the field started asking for the same one as the dialogue box over it:
-    -- the box was the topmost, so the FIELD -- drawing in the very
-    -- coordinates it had just asked for -- was treated as a Game Boy layout
-    -- and shoved forty pixels sideways the moment anybody spoke.
-    --
-    -- So ask each state instead of trusting the pick: a state owns the
-    -- surface when the size it wants IS the size in use.
-    local ownsSurface = wideState
-      or (native ~= nil and state == native)
-      or Game.wantsThisSurface(state)
-    if state and state.draw then
-      -- ...and it is centred by ITS OWN size, not by the Game Boy's (see
-      -- Game.homeOffset).  classicOffset still gates it: a surface that is
-      -- the Game Boy's centres nothing, which is every frame outside a wide
-      -- battle and every Gen 1 / Gen 2 / Prism frame inside one.
-      local ox, oy = 0, 0
-      if (classicOffset ~= 0 or classicOffsetY ~= 0) and not ownsSurface then
-        ox, oy = homeOffset(state, surfW, surfH)
-      end
-      if ox ~= 0 or oy ~= 0 then
-        love.graphics.push()
-        love.graphics.translate(ox, oy)
-        state:draw()
-        love.graphics.pop()
-      else
-        state:draw()
+  -- SINGLE-SCREEN DS PLAY: an opaque DS screen at the bottom of what is
+  -- drawn (a menu, the bag, the box -- no world pass under it) is drawn with
+  -- everything over it at the window's scale, letters smoothed, rather than
+  -- blown up afterwards (src/render/SuperSample.lua). The battle does the
+  -- same for itself when it is drawn over the world.
+  local function drawStates()
+    for i = drawFrom, #self.stack.states do
+      local state = self.stack.states[i]
+      local wideState = state and state.isWideBattleLayout
+        and state:isWideBattleLayout()
+      -- A STATE THAT ASKED FOR THIS SURFACE DRAWS IN IT DIRECTLY; everything
+      -- else is Game Boy sized and gets centred.
+      --
+      -- "Asked for it" used to mean "is the one nativeSurfaceInStack picked",
+      -- which is the TOPMOST state with a uiSize.  That was fine while exactly
+      -- one state ever wanted the bigger surface.  It stopped being fine when
+      -- the field started asking for the same one as the dialogue box over it:
+      -- the box was the topmost, so the FIELD -- drawing in the very
+      -- coordinates it had just asked for -- was treated as a Game Boy layout
+      -- and shoved forty pixels sideways the moment anybody spoke.
+      --
+      -- So ask each state instead of trusting the pick: a state owns the
+      -- surface when the size it wants IS the size in use.
+      local ownsSurface = wideState
+        or (native ~= nil and state == native)
+        or Game.wantsThisSurface(state)
+      if state and state.draw then
+        -- ...and it is centred by ITS OWN size, not by the Game Boy's (see
+        -- Game.homeOffset).  classicOffset still gates it: a surface that is
+        -- the Game Boy's centres nothing, which is every frame outside a wide
+        -- battle and every Gen 1 / Gen 2 / Prism frame inside one.
+        local ox, oy = 0, 0
+        if (classicOffset ~= 0 or classicOffsetY ~= 0) and not ownsSurface then
+          ox, oy = homeOffset(state, surfW, surfH)
+        end
+        if ox ~= 0 or oy ~= 0 then
+          love.graphics.push()
+          love.graphics.translate(ox, oy)
+          state:draw()
+          love.graphics.pop()
+        else
+          state:draw()
+        end
       end
     end
+  end
+  local baseState = self.stack.states[drawFrom]
+  local SuperSample = require("src.render.SuperSample")
+  if not worldDrawn and baseState and require("src.core.GameVersion").isNds()
+     and SuperSample.singleScreen(self) and not SuperSample.active then
+    SuperSample.draw(self, self.stack:top(), drawStates)
+  else
+    drawStates()
   end
   -- SGB colorization: the topmost state that knows its palette owns the
   -- screen (overlays like text boxes inherit from what's beneath them);
@@ -1980,7 +1995,7 @@ function Game:adoptSave(save, seedBuckets)
   -- species-name nicknames show in the player's language (see the function)
   pcall(require("src.translation.Service").normalizeNicknames, self.data, save)
   -- Platinum Pokemon made before they carried friendship get their base value
-  if require("src.core.GameVersion").isGen4() then
+  if require("src.core.GameVersion").isGen4() or require("src.core.GameVersion").isGen5() then
     pcall(function() require("src.pokemon.Gen4Friendship").migrate(self.data, save) end)
   end
   self.pointerOwners={}
@@ -2158,14 +2173,24 @@ function Game:restoreSave(loaded, recovered)
   local stamp = require("src.battle.BattleState").stampOT
   for _, mon in ipairs(loaded.party or {}) do stamp(loaded, mon) end
   for _, box in ipairs(loaded.boxes or {}) do
-    for _, mon in ipairs(box) do stamp(loaded, mon) end
+    -- pairs: a Gen 3/4/5 box keeps emptied slots as holes (and its name)
+    for k, mon in pairs(box) do
+      if type(k) == "number" and type(mon) == "table" then stamp(loaded, mon) end
+    end
   end
   -- A SAVE MADE INSIDE A BATTLE TOWER CHALLENGE ("Rest") continues from the
   -- lobby spot BT_FUNC_SET_COMMUNICATION_CLUB_ACCESSIBLE marked
   -- (FieldTask_LoadSavedGameMap's special location)
+  -- ...which is a WALK IN there, not a continue: SystemFlag_CheckCommunicationClubAccessible
+  -- takes FieldMapChange_UpdateGameData + CreateObjects (ON_TRANSITION and all)
+  local specialLocation = false
   if require("src.core.GameVersion").get() == "platinum" then
-    require("src.script.Gen4BattleTowerCommands").applySpecialLocation(loaded)
+    specialLocation = require("src.script.Gen4BattleTowerCommands").applySpecialLocation(loaded) and true or false
   end
+  -- ...and HeartGold / SoulSilver's: FLAG_UNK_966 (the communication club's
+  -- desk, the Battle Tower, the Hall of Fame) walks in at the dynamic warp
+  -- (pokeheartgold FieldTask_ContinueGame_Normal; src/world/Gen4HgssContinue.lua)
+  if require("src.world.Gen4HgssContinue").apply(loaded) then specialLocation = true end
   -- ...and Emerald's: a SaveGameFrontier save continues in the lobby
   if require("src.core.GameVersion").get() == "emerald" then
     -- Pokemon a Frontier challenge stranded before LoadPlayerParty kept its
@@ -2178,6 +2203,10 @@ function Game:restoreSave(loaded, recovered)
   -- still names from before -- see returnToTitle)
   while self.stack:top() do self.stack:pop() end
   if self.overworld then self.overworld.fadeOverlay = nil end
+  -- this boot is a CONTINUE, not a walk in: a DS field restores its objects
+  -- and temp vars from the save and skips ON_TRANSITION (OverworldController
+  -- setMap's gen4Continuing)
+  if self.overworld then self.overworld.continuingSave = not specialLocation end
   self.stack:push(self.overworld, loaded.player.map,
                   loaded.player.x, loaded.player.y, loaded.player.facing)
   -- Platinum's Journal (FieldTask_LoadSavedGameMap): opened first when two

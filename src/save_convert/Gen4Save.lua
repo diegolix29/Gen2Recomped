@@ -511,18 +511,16 @@ function Gen4Save.encode(save, data, template, version)
   for b = 1, BOXES do
     local box = boxes[b] or {}
     if box.name and box.name ~= "" then writeText(buf, S + L.boxNames + (b - 1) * 40, 20, box.name, ctx) end
-    local slot = 0
-    for _, mon in ipairs(box) do
-      if slot < BOX_SLOTS then
-        buf:put(S + L.boxBase + (b - 1) * L.boxStride + slot * NdsSave.STORED,
-          NdsSave.encryptPkm(NdsSave.encodeMon(mon, ctx, NdsSave.STORED)))
-        slot = slot + 1
-      else
-        unwritable[#unwritable + 1] = mon
-      end
+    -- BY SLOT, each at its own place: a box keeps emptied slots as holes
+    -- (Boxes.used), and walking it with ipairs stopped at the first one --
+    -- every Pokemon after a gap was left out of the written save
+    for s = 0, BOX_SLOTS - 1 do
+      local mon = box[s + 1]
+      buf:put(S + L.boxBase + (b - 1) * L.boxStride + s * NdsSave.STORED,
+        mon and NdsSave.encryptPkm(NdsSave.encodeMon(mon, ctx, NdsSave.STORED)) or NdsSave.emptyPkm(NdsSave.STORED))
     end
-    for s = slot, BOX_SLOTS - 1 do
-      buf:put(S + L.boxBase + (b - 1) * L.boxStride + s * NdsSave.STORED, NdsSave.emptyPkm(NdsSave.STORED))
+    for k, mon in pairs(box) do
+      if type(k) == "number" and k > BOX_SLOTS and type(mon) == "table" then unwritable[#unwritable + 1] = mon end
     end
   end
 

@@ -151,6 +151,9 @@ function HoF:script()
     end)
     wait(20)
     pcall(require("src.core.Sound").playCry, self.data, mon.species)
+    -- HallOfFame_PlayPokemonAnimation: the species' frame script with the cry
+    local okA, anim = pcall(require("src.pokemon.PicAnim").forMon, self.data, mon, "front")
+    if okA and anim then pcall(anim.start, anim); s.anim, s.mon = anim, mon end
     local welcome = self:line(0)
     local w1, w2 = welcome:match("([^\n]*)\n?(.*)")
     self:setColumn(even, { { text = w1, y = 16 }, { text = w2, y = 32 } })
@@ -248,6 +251,7 @@ function HoF:update(dt)
       c.phase = c.phase + 0.1
       if c.y > 196 then c.y = -4 end
     end
+    for _, s in ipairs(self.sprites) do if s.anim then pcall(s.anim.update, s.anim, 1 / 60) end end
     if coroutine.status(self.co) ~= "dead" then
       local ok, err = coroutine.resume(self.co)
       if not ok then
@@ -286,8 +290,13 @@ function HoF:draw()
   g.setColor(1, 1, 1, 1)
   for _, s in ipairs(self.sprites) do
     if s.img then
-      local w, h = s.img:getDimensions()
-      g.draw(s.img, math.floor(s.x), math.floor(s.y), 0, 1, 1, math.floor(w / 2), math.floor(h / 2))
+      local img = s.img
+      if s.anim then
+        local okF, frame = pcall(s.anim.image, s.anim, s.mon)
+        if okF and frame then img = frame end
+      end
+      local w, h = img:getDimensions()
+      g.draw(img, math.floor(s.x), math.floor(s.y), 0, 1, 1, math.floor(w / 2), math.floor(h / 2))
     end
   end
   -- BG2 over everything outside the window

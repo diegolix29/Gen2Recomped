@@ -28,45 +28,29 @@ C.SOURCES = { "black", "white", "heartgold", "soulsilver", "platinum", "emerald"
 
 local index
 
-local function dataRoot()
-  local ok, SaveData = pcall(require, "src.core.SaveData")
-  local dir = ok and SaveData.dataDir and SaveData.dataDir()
-  return dir
-end
+local refresh=false
+function C.forget() index=nil;refresh=true end
 
 -- { [dex] = { name, types = {...}, bst, catchRate } }
 function C.species()
   if index then return index end
   local Ser = require("src.core.SaveSerializer")
-  if love and love.filesystem and love.filesystem.getInfo(C.INDEX_FILE) then
+  if not refresh and love and love.filesystem and love.filesystem.getInfo(C.INDEX_FILE) then
     local ok, t = pcall(Ser.decode, love.filesystem.read(C.INDEX_FILE) or "")
     if ok and type(t) == "table" and next(t) then index = t return index end
   end
   index = {}
-  local root = dataRoot()
-  if not root then return index end
+  local Art=require("src.pokewalker.WalkerArt")
   for _, v in ipairs(C.SOURCES) do
-    local path = root .. "/" .. v .. "/data/generated/pokemon.lua"
-    local f = io.open(path, "rb")
-    if f then
-      local src = f:read("*a"); f:close()
-      local chunk = loadstring and loadstring(src) or load(src)
-      local ok, mons = pcall(chunk)
-      if ok and type(mons) == "table" then
-        for _, def in pairs(mons) do
-          local dex = type(def) == "table" and tonumber(def.dex)
-          if dex and dex > 0 and not index[dex] then
-            local b = def.baseStats or {}
-            local bst = (b.hp or 0) + (b.attack or 0) + (b.defense or 0) + (b.speed or 0)
-              + (b.spatk or b.spAttack or 0) + (b.spdef or b.spDefense or 0)
-            index[dex] = { name = def.name, types = def.types, bst = bst, catchRate = def.catchRate,
-                           growthRate = def.growthRate }
-          end
-        end
-        if index[649] or (v ~= "black" and v ~= "white") then break end
+    local roster=Art.roster(v)
+    for _,rec in ipairs(roster)do
+      if not index[rec.dex] then
+        index[rec.dex]={name=rec.name,types=rec.types,bst=rec.bst,catchRate=rec.catchRate,growthRate=rec.growthRate}
       end
     end
+    if #roster>0 and (index[649] or (v~="black" and v~="white")) then break end
   end
+  refresh=false
   if next(index) and love and love.filesystem then love.filesystem.write(C.INDEX_FILE, Ser.encode(index)) end
   return index
 end

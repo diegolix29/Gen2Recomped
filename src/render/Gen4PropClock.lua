@@ -157,6 +157,9 @@ function Gen4PropClock.pose(ground, object, building)
       -- FX32_ONE once per field frame, and the field is half this engine's
       -- tick (Gen4PropClock.fieldFrame)
       local frame = Gen4PropClock.fieldFrame(ground.clock) % frames
+      -- a script's hand on it (Gen4PropControl: paused, or played once)
+      local fixed = ground.propControl and require("src.render.Gen4PropControl").frameFor(ground, object.model, record)
+      if fixed then frame = fixed end
       for _, track in ipairs(record.tracks) do
         byJoint = byJoint or {}
         if byJoint[track.index] == nil then

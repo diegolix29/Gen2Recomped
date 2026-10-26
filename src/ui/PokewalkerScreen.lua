@@ -37,6 +37,7 @@ P.TILES = {
   { id = "walk", label = "Walk" }, { id = "radar", label = "Poke Radar", cost = W.RADAR_COST },
   { id = "dowse", label = "Dowsing", cost = W.DOWSE_COST }, { id = "bag", label = "Bag" },
   { id = "shop", label = "Watt Shop" }, { id = "awards", label = "Awards" },
+  { id = "transfer", label = "Transfer" },
   { id = "card", label = "Trainer Card" }, { id = "settings", label = "Settings" },
 }
 
@@ -96,8 +97,10 @@ P._card = card
 -- ------------------------------------------------------------- the app
 
 function P.new(host)
+  if Art.refreshRoots() then Courses.forget() end
   local self = setmetatable({ host = host, st = W.load(), t = 0, tab = "walk", panel = nil,
                               rects = {}, toast = nil, monPage = 0 }, P)
+  if Link.repairWalking(self.st) then W.save(self.st) end
   self.courses = Courses.routes()
   Steps.pump(self.st, self.courses, true)
   self.seenNotices = #self.st.notices
@@ -1217,7 +1220,7 @@ function P:draw(x, y, w, h, fonts)
     local ph = math.max(220, y + h - py)
     local page = ({ walk = P.pageWalk, radar = P.pageRadar, dowse = P.pageDowse, bag = P.pageBag,
                     card = P.pageCard, settings = P.pageSettings, shop = P.pageShop, awards = P.pageAwards,
-                    leaderboard = P.pageLeaderboard })[self.tab]
+                    leaderboard = P.pageLeaderboard, transfer = P.pageTransfer })[self.tab]
     local used = page and page(self, x, py, w, ph, f)
     -- THE HEIGHT ACTUALLY DRAWN, not the height asked for: the launcher
     -- scrolls the page and places its footer on this number, so reporting
@@ -1241,5 +1244,7 @@ function P:draw(x, y, w, h, fonts)
 end
 
 require("src.ui.WalkerEconomyPages").install(P)
+-- Pal Park and Poke Transfer, from the launcher (the "Transfer" tile)
+require("src.ui.WalkerTransferPage").install(P)
 
 return P

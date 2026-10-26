@@ -394,15 +394,25 @@ B[#B + 1] = { name = "castelia: the plasma hideout",
   expect = function(r) return r:var(0x40AF) >= 3 and r:var(0x40D9) >= 2 and r:var(0x40D7) >= 1 end,
   why = "0x40AF >= 3, 0x40D9 >= 2, 0x40D7 >= 1 (the Sages, Munna back)" }
 
--- BURGH'S GYM (Z029, M0058): the honey walls are walked through (overlay
--- 38's sprite-0 objects) and the floor switches only animate; Burgh (person
--- 9, S01D2): the Insect Badge, TM76 (item 403), 0x40AF -> 4; then the street
+-- BURGH'S GYM (Z029, M0058; src/world/Gen5CasteliaGym.lua): a honey wall's
+-- centre lets the player through only once its floor switches are down
+-- (both of a pair; the entrance wall always). The switches on the way, in
+-- the order they open the hive: (32,29) and (44,29) -- walls (26,29) and
+-- (38,29); (26,25) -- (20,25); (20,21), (32,21) and (44,21) -- (26,21) and
+-- (38,21); (26,17) and (38,17) -- (32,17), Burgh's. Burgh (person 9,
+-- S01D2): the Insect Badge, TM76 (item 403), 0x40AF -> 4; then the street
 -- (Z031, frame 0x40AF == 4, S007B) -> 5
+local hive = {}
+for _, c in ipairs({ { 32, 29 }, { 44, 29 }, { 26, 25 }, { 20, 21 }, { 32, 21 }, { 44, 21 }, { 26, 17 }, { 38, 17 } }) do
+  hive[#hive + 1] = { "walkto", c[1], c[2] }
+  hive[#hive + 1] = settle
+end
 B[#B + 1] = { name = "burgh: the insect badge",
   steps = { { "do", trainUp }, { "warpto", "Z031" }, { "warpto", "Z029" }, { "talk", 9 },
             { "until", function(r) return r:var(0x40AF) >= 4 end, 60000 }, settle,
             { "warpto", "Z031" }, { "until", function(r) return r:var(0x40AF) >= 5 end, 30000 }, settle },
   expect = function(r) return r:var(0x40AF) >= 5 and r:var(0x409C) >= 1 end, why = "0x40AF >= 5, 0x409C >= 1 (Insect Badge)" }
+for i, st in ipairs(hive) do table.insert(B[#B].steps, 3 + i, st) end
 
 -- CASTELIA GATE (Z051, M0102): Bianca on the way out (coord 1 at (1,9),
 -- 0x40AC == 1, S0084) -> 2
@@ -528,7 +538,11 @@ B[#B + 1] = { name = "cold storage",
   steps = { { "do", trainUp }, { "teleport", "Z191", 10, 27, "left" }, { "coord", 1 },
             { "until", function(r) return r:var(0x4090) >= 1 end, 30000 }, settle,
             { "warpto", "Z192" }, { "until", function(r) return r:var(0x408B) >= 1 end, 30000 }, settle,
-            { "coord", 1 }, { "until", function(r) return r:var(0x408B) >= 2 end, 30000 }, settle,
+            -- (the warehouse's floor is ice in patches -- behaviours 0x18 / 0x10,
+            -- src/world/Gen5Ice.lua -- so the way to the hatch is pressed on a
+            -- plan that knows the slides: bw_icirrus_planner's `icewalk`)
+            { "do", function(r) require("tools.gen4_playthrough.bw_icirrus_planner").install(r) end },
+            { "icewalk", 6, 8 }, { "until", function(r) return r:var(0x408B) >= 2 end, 30000 }, settle,
             { "warpto", "Z193" }, { "until", function(r) return r:var(0x408B) >= 3 end, 30000 }, settle,
             -- (the scene can leave the player on Bianca's cell (3,11), from
             -- which the planner finds no way out: one step aside first)
@@ -577,16 +591,20 @@ B[#B + 1] = { name = "driftveil: leaving for route 6",
 -- CHARGESTONE CAVE. The mouth (Z194, M0388): the person at the way in
 -- (person 0 at (11,19), S0074) -> 0x409A 2; inside (Z195, M0390) the five
 -- triggers on 0x409B: (6,54) 0 -> 1, (15,41) -> 2, (33,24) -> 3, (38,41) -> 4,
--- (66,12) -> 5 (coords 4, 1, 2, 5, 3)
+-- (66,12) -> 5 (coords 4, 1, 2, 5, 3). The floating stones block the way
+-- past (15,41) (src/world/Gen5ChargestoneStones.lua): `stonewalk`
+-- (tools/gen4_playthrough/bw_stone_planner.lua) pushes its way to each
+-- trigger on a plan re-made after every press -- five pushes in all
+local function stonewalk(r) require("tools.gen4_playthrough.bw_stone_planner").install(r) end
 B[#B + 1] = { name = "chargestone cave",
   steps = { { "do", trainUp }, { "teleport", "Z194", 11, 23, "up" }, { "talk", 0 },
             { "until", function(r) return r:var(0x409A) >= 2 end, 30000 }, settle,
-            { "warpto", "Z195" },
-            { "coord", 4 }, { "until", function(r) return r:var(0x409B) >= 1 end, 40000 }, settle,
-            { "coord", 1 }, { "until", function(r) return r:var(0x409B) >= 2 end, 40000 }, settle,
-            { "coord", 2 }, { "until", function(r) return r:var(0x409B) >= 3 end, 40000 }, settle,
-            { "coord", 5 }, { "until", function(r) return r:var(0x409B) >= 4 end, 40000 }, settle,
-            { "coord", 3 }, { "until", function(r) return r:var(0x409B) >= 5 end, 40000 }, settle },
+            { "warpto", "Z195" }, settle, { "do", stonewalk },
+            { "stonewalk", 7, 54 }, { "until", function(r) return r:var(0x409B) >= 1 end, 40000 }, settle,
+            { "stonewalk", 15, 41 }, { "until", function(r) return r:var(0x409B) >= 2 end, 40000 }, settle,
+            { "stonewalk", 33, 25 }, { "until", function(r) return r:var(0x409B) >= 3 end, 40000 }, settle,
+            { "stonewalk", 38, 41 }, { "until", function(r) return r:var(0x409B) >= 4 end, 40000 }, settle,
+            { "stonewalk", 66, 13 }, { "until", function(r) return r:var(0x409B) >= 5 end, 40000 }, settle },
   expect = function(r) return r:var(0x409A) >= 2 and r:var(0x409B) >= 5 end, why = "0x409A >= 2, 0x409B >= 5",
   budget = 200000 }
 
@@ -659,18 +677,26 @@ B[#B + 1] = { name = "twist mountain", steps = twist,
   why = "0x40B4 >= 2, 0x4096 >= 1, 0x40BB >= 1, 0x4097 >= 1", budget = 200000 }
 
 -- ICIRRUS (Z113, M0226): Cedric Juniper reads the party (frame 0x4097 == 1,
--- S003F) -> 2. BRYCEN'S GYM (Z114, M0228; overlay 45's gated rail rides):
--- the entrance ride (coord 4 at (17,60), 0x195 0); the switch at (15,29)
--- (coord 3, S03A9: the block arms turn); the ride at (18,29) (coord 11,
--- 0x195 6) up to Brycen (person 11, S003B): the Freeze Badge, 0x4097 -> 3,
--- 0x40A7 -> 1; outside the frame table (0x4097 == 3, M0226 S0175) -> 4
+-- S003F) -> 2. BRYCEN'S GYM (Z114, M0228), WALKED: the rink is ice and its
+-- chutes and bridges rails (src/world/Gen5IcirrusGym.lua), and the way up
+-- takes all three switches ((23,53) (59,41) (15,29), coords 2 / 1 / 3) and
+-- all eight chutes (0x195 0..7, each while its switch group stands right).
+-- `icewalk` (tools/gen4_playthrough/bw_icirrus_planner.lua) presses its way
+-- there on a plan re-made after every move (a trainer's battle can stop a
+-- slide). Then Brycen (person 11, S003B): the Freeze Badge, 0x4097 -> 3,
+-- 0x40A7 -> 1; out by the rim (the rail from Brycen's floor at (9,22) down to
+-- the door: a press west there slides it, a press east steps off) and the
+-- frame table outside (0x4097 == 3, M0226 S0175) -> 4
+local function icewalk(r) require("tools.gen4_playthrough.bw_icirrus_planner").install(r) end
 B[#B + 1] = { name = "icirrus: brycen",
   -- Flamethrower (53): the gym's Ice types resist Ice Beam, and a run of them
   -- wore a level-60 lead out
   steps = { { "do", trainUpWith(53, 75) }, { "warpto", "Z113" }, { "until", function(r) return r:var(0x4097) >= 2 end, 30000 }, settle,
-            { "warpto", "Z114" }, { "walkto", 17, 61 }, { "step", "up", 1 }, settle,
-            { "coord", 3 }, settle, { "do", heal }, { "walkto", 17, 29 }, { "step", "right", 1 }, settle, { "do", heal },
+            { "warpto", "Z114" }, settle, { "do", icewalk }, { "icewalk", 17, 16, each = heal }, settle, { "do", heal },
             { "talk", 11 }, { "until", function(r) return r:var(0x4097) >= 3 end, 60000 }, settle,
+            { "icewalk", 9, 22 }, { "step", "left", 1 },
+            { "until", function(r) local x, y = r:pos() return x == 15 and y == 61 and not r:busy() end, 6000 },
+            { "step", "right", 1 }, settle,
             { "warpto", "Z113" }, { "until", function(r) return r:var(0x4097) >= 4 end, 30000 }, settle },
   expect = function(r) return r:var(0x4097) >= 4 and r:var(0x40A7) >= 1 end, why = "0x4097 >= 4, 0x40A7 >= 1 (Freeze Badge)",
   budget = 160000 }
@@ -815,23 +841,45 @@ B[#B + 1] = { name = "opelucid to route 10",
   expect = function(r) return r:var(0x40B8) >= 4 and r:map() ~= "Z390" end, why = "0x40B8 >= 4, not blacked out" }
 
 -- THE BADGE CHECK GATES (Z356 .. Z363, one trigger each that lets a holder of
--- the badges through): Route 10's door (82,11) and through all eight; then
--- VICTORY ROAD (Z214, M0428): the scene at its foot (coord 2 at (34,44),
--- 0x40CF == 0, S0069) -> 1
+-- the badges through): Route 10's door (82,11) and through all eight -- the
+-- Freeze Badge's (Z363) floor is ice (behaviour 0x10, src/world/Gen5Ice.lua),
+-- crossed by `icewalk` (bw_icirrus_planner) to its trigger row; then VICTORY
+-- ROAD (Z214, M0428), WALKED: its eleven paths are kept apart by height
+-- (src/world/Gen5VictoryRoad.lua) and the caves join them. The gate lands on
+-- the lowest path (32,58); Z215 (32,53) -> Z216 -> back out at (32,43), the
+-- path of the scene at the foot (coord 2 at (34,44), 0x40CF == 0, S0069) -> 1
+local function icewalk(r) require("tools.gen4_playthrough.bw_icirrus_planner").install(r) end
 local gates = { { "do", heal }, { "warpto", "Z356" } }
-for z = 357, 364 do gates[#gates + 1] = { "warpto", ("Z%03d"):format(z) } end
-for _, st in ipairs({ { "teleport", "Z214", 37, 44, "left" }, { "coord", 2 },
-                      { "until", function(r) return r:var(0x40CF) >= 1 end, 30000 }, settle }) do
+for z = 357, 363 do gates[#gates + 1] = { "warpto", ("Z%03d"):format(z) } end
+for _, st in ipairs({ { "do", icewalk }, { "icewalk", 14, 9 }, settle, { "warpto", "Z364" },
+                      { "warpto", "Z214" }, { "do", heal },
+                      { "warpto", "Z215", 32, 53 }, { "warpto", "Z216", 16, 24 }, { "warpto", "Z214", 5, 18 },
+                      { "coord", 2 }, { "until", function(r) return r:var(0x40CF) >= 1 end, 30000 }, settle }) do
   gates[#gates + 1] = st
 end
 B[#B + 1] = { name = "the badge gates and victory road", steps = gates,
-  expect = function(r) return r:var(0x40CF) >= 1 end, why = "0x40CF >= 1", budget = 120000 }
+  expect = function(r) return r:var(0x40CF) >= 1 end, why = "0x40CF >= 1", budget = 160000 }
 
--- THE POKEMON LEAGUE (Z136, M0272): the arrival (coord 1 at (31,48),
--- 0x40A1 == 0, S0188) -> 1, reached by teleport past Victory Road's caves
-B[#B + 1] = { name = "the pokemon league",
-  steps = { { "teleport", "Z136", 32, 51, "up" }, { "coord", 1 },
-            { "until", function(r) return r:var(0x40A1) >= 1 end, 30000 }, settle },
+-- THE POKEMON LEAGUE (Z136, M0272), up Victory Road on foot: from the foot's
+-- path into Z219 (42,42) -> Z221 -> out at (40,32) -> Z223 (22,32) -> Z224 ->
+-- Z225 -> Z226 -> out on the top path at (27,8); the League's gate trigger
+-- (coord 1, M0428 S0017, moved into the grid at row 0 by Gen5VictoryRoad)
+-- walks the player up into the League; its arrival (coord 1 at (31,48),
+-- 0x40A1 == 0, S0188) -> 1
+local league = { { "do", heal } }
+for _, w in ipairs({ { "Z219", 42, 42 }, { "Z221", 7, 4 }, { "Z214", 8, 10 }, { "Z223", 22, 32 },
+                     { "Z224", 11, 13 }, { "Z225", 13, 6 }, { "Z226", 7, 4 }, { "Z214", 13, 22 } }) do
+  league[#league + 1] = { "warpto", w[1], w[2], w[3] }
+  league[#league + 1] = { "do", heal }
+end
+-- (one step east first: the shortest way to the trigger is back over the
+-- cave mouth just come out of)
+for _, st in ipairs({ { "step", "right", 3 }, { "coord", 1 },
+                      { "until", function(r) return r:map() == "Z136" end, 20000 }, settle,
+                      { "coord", 1 }, { "until", function(r) return r:var(0x40A1) >= 1 end, 30000 }, settle }) do
+  league[#league + 1] = st
+end
+B[#B + 1] = { name = "the pokemon league", steps = league, budget = 120000,
   expect = function(r) return r:var(0x40A1) >= 1 end, why = "0x40A1 >= 1" }
 
 -- THE ELITE FOUR (Z140..Z143 round Z137): in each room the platform at

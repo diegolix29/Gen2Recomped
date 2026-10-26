@@ -37,6 +37,7 @@ M.WINDOWS = { { "Perfect", 0.05, 100 }, { "Great", 0.10, 70 }, { "Good", 0.15, 4
 M.STREAK_STEP, M.MULT_MAX = 10, 4
 M.APPROACH = 1.4               -- seconds a note is on screen before its time
 M.WATTS_PER_POINTS = 1200
+M.CROWD = 4                     -- wild Pokemon dancing along
 M.AUDIO_OFFSET = 0             -- seconds; added to every sound's time
 
 function M.new(ctx, purse)
@@ -49,6 +50,10 @@ function M.new(ctx, purse)
   g.pops = {}
   g:compose()
   g.nextBeat, g.nextNote = 1, 1
+  -- the crowd: the game's own wild Pokemon dancing along (Context's natives
+  -- first), picked after the chart so a seed still plays the same song
+  local Context = require("src.pokewalker.minigames.Context")
+  g.crowd = Context.pickSeveral(ctx, M.CROWD, { [ctx.walker and ctx.walker.dex or -1] = true })
   return g
 end
 
@@ -262,6 +267,23 @@ function M:draw(x, y, w, h, Gfx, f, s)
       g.setColor(1, 1, 1, 0.8)
       g.circle("line", nx, ny, lane * 0.36)
     end
+  end
+  -- the crowd, hopping on alternate beats: along the foot across, either side
+  -- of the lane down
+  for i, mon in ipairs(self.crowd or {}) do
+    local cs = size * 0.55
+    local beat = math.floor(math.max(0, self.clock) * 2) % 2
+    local up = ((i + beat) % 2 == 0) and pulse * cs * 0.18 or 0
+    local cx, cy
+    if across then
+      cx = x + w * (0.38 + 0.56 * (i - 0.5) / #self.crowd)
+      cy = y + h * 0.97
+    else
+      local left = i % 2 == 1
+      cx = left and x + w * 0.16 or x + w * 0.84
+      cy = y + h * (0.40 + 0.18 * math.floor((i - 1) / 2))
+    end
+    Gfx.walker(mon.dex, cx, cy - up, cs, "down", self.time + i * 0.37, mon.name)
   end
   -- the walker, dancing: a hop on every beat
   local wk = self.ctx.walker

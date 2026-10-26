@@ -26,12 +26,22 @@ local Gen4BattleTowerData = {}
 Gen4BattleTowerData.TRAINERS = "/battle/b_pl_tower/pl_btdtr.narc"
 Gen4BattleTowerData.SETS = "/battle/b_pl_tower/pl_btdpm.narc"
 Gen4BattleTowerData.HALL_SETS = "/battle/b_pl_stage/pl_bsdpm.narc"
+Gen4BattleTowerData.HGSS_TRAINERS = "/a/2/0/2"
+Gen4BattleTowerData.HGSS_SETS = "/a/2/0/3"
+-- the Hall's sets: /a/2/0/4, pl_bsdpm's 478 16-byte members
+Gen4BattleTowerData.HGSS_HALL_SETS = "/a/2/0/4"
 
 local function u16(s, at) return s:byte(at) + s:byte(at + 1) * 256 end
 
 function Gen4BattleTowerData.read(rom)
   local N = require("src.import.NarcArchive")
-  local tb, sb = rom:read(Gen4BattleTowerData.TRAINERS), rom:read(Gen4BattleTowerData.SETS)
+  local function read(path) local ok, b = pcall(rom.read, rom, path) return ok and b or nil end
+  local tb, sb = read(Gen4BattleTowerData.TRAINERS), read(Gen4BattleTowerData.SETS)
+  -- HEARTGOLD / SOULSILVER keep the same two tables at /a/2/0/2 (trainers) and
+  -- /a/2/0/3 (sets) -- pokeheartgold GetFrontierTrainerData / GetFrontierMonNarcData
+  if not (tb and sb) then
+    tb, sb = read(Gen4BattleTowerData.HGSS_TRAINERS), read(Gen4BattleTowerData.HGSS_SETS)
+  end
   if not (tb and sb) then return nil, "pl_btdtr / pl_btdpm missing" end
   local tn, sn = N.parse(tb), N.parse(sb)
   -- NOT LZ77, though a member can start with 0x10 like one: trainer 126's
@@ -62,7 +72,7 @@ function Gen4BattleTowerData.read(rom)
     end
   end
   sets(sn, out.sets)
-  local hb = rom:read(Gen4BattleTowerData.HALL_SETS)
+  local hb = read(Gen4BattleTowerData.HALL_SETS) or read(Gen4BattleTowerData.HGSS_HALL_SETS)
   if hb then
     out.hallSets = {}
     sets(N.parse(hb), out.hallSets)

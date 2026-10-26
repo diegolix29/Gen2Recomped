@@ -158,6 +158,17 @@ function Gen4Daily.onDays(save, daysPassed)
     local r = love and love.math and love.math.random(0, 97) or math.random(0, 97)
     C.setVar(save, Cmd.VAR_DAILY_RANDOM_LEVEL or 0x4041, r + 2)
   end
+  -- HGSS's Lucky Number (Save_LCRNGAdvanceLotoID, from sub_02055508): the
+  -- same product, written through Save_VarsFlags_SetLotoId -- which, without
+  -- BUGFIX_LOTO_NUMBER_HI, puts the HIGH half into VAR_LOTO_NUMBER_LO. The
+  -- radio show reads that var, so the high half is the number drawn.
+  if C and family == "hgss" and (tonumber(daysPassed) or 0) > 0 then
+    local rand = tonumber(save.gen4Swarm and save.gen4Swarm.rand) or 0
+    local lo = (rand * 0x4E6D) % 4294967296
+    local hi = ((rand * 0x41C6) % 65536) * 65536
+    local full = (lo + hi + 12345) % 4294967296
+    C.setVar(save, 0x403C, math.floor(full / 65536))
+  end
   return left
 end
 

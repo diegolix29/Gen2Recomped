@@ -6824,6 +6824,7 @@ local function analysisTiles(tileset)
     return count
   end
   if copy.setAnimFrame then copy:setAnimFrame(0) end
+  V.require("TilePlotCache").wrap(copy,key)
   prep.tiles[key]=copy
   return copy
 end
@@ -7138,6 +7139,7 @@ local function bakeLinear(tileset)
   -- yields a texture that is entirely black while reporting total success.
   local okBake, res = pcall(function()
     local surface = love.image.newImageData(W, H)
+    local writePixel = V.require("AtlasPixels").writer(surface)
     local function plot(x, y, r, g, b)
       preparationTick(x,y)
       -- metatile-sheet coordinates in; tile-sheet coordinates out
@@ -7147,7 +7149,7 @@ local function bakeLinear(tileset)
       local dx = (t % LINEAR_COLS) * TILE + (x % TILE)
       local dy = math.floor(t / LINEAR_COLS) * TILE + (y % TILE)
       if dx >= 0 and dy >= 0 and dx < W and dy < H then
-        surface:setPixel(dx, dy, r / 255, g / 255, b / 255, 1)
+        writePixel(dx, dy, r, g, b, 255)
       end
     end
     tiles:bakeLayer(1, plot)
@@ -7217,6 +7219,7 @@ local function bakeShape(tileset)
 
   local okBake, res = pcall(function()
     local surface = love.image.newImageData(W, H)
+    local writePixel = V.require("AtlasPixels").writer(surface)
     -- the metatile-sheet -> tile-sheet relabelling, shared with the atlas
     local function place(x, y)
       local m = math.floor(y / CELL) * SHEET_COLS + math.floor(x / CELL)
@@ -7232,9 +7235,9 @@ local function bakeShape(tileset)
       local dx, dy = place(x, y)
       if dx < 0 or dy < 0 or dx >= W or dy >= H then return end
       if background[colourKey(r, g, b)] then
-        surface:setPixel(dx, dy, 0, 0, 0, 0)
+        writePixel(dx, dy, 0, 0, 0, 0)
       else
-        surface:setPixel(dx, dy, r / 255, g / 255, b / 255, 1)
+        writePixel(dx, dy, r, g, b, 255)
       end
     end)
 
@@ -7243,7 +7246,7 @@ local function bakeShape(tileset)
     preparationTick(x,y)
       local dx, dy = place(x, y)
       if dx < 0 or dy < 0 or dx >= W or dy >= H then return end
-      surface:setPixel(dx, dy, r / 255, g / 255, b / 255, 1)
+      writePixel(dx, dy, r, g, b, 255)
     end)
 
     return surface
@@ -7484,6 +7487,7 @@ function Gen3.shapeDataForMap(map)
   local solid = {}
   local okBake, res = pcall(function()
     local surface = love.image.newImageData(W, H)
+    local writePixel = V.require("AtlasPixels").writer(surface)
     local function place(x, y)
       local m = math.floor(y / CELL) * SHEET_COLS + math.floor(x / CELL)
       local q = math.floor((y % CELL) / TILE) * 2 + math.floor((x % CELL) / TILE)
@@ -7496,9 +7500,9 @@ function Gen3.shapeDataForMap(map)
       local dx, dy = place(x, y)
       if dx < 0 or dy < 0 or dx >= W or dy >= H then return end
       if background[colourKey(r, g, b)] then
-        surface:setPixel(dx, dy, 0, 0, 0, 0)
+        writePixel(dx, dy, 0, 0, 0, 0)
       else
-        surface:setPixel(dx, dy, r / 255, g / 255, b / 255, 1)
+        writePixel(dx, dy, r, g, b, 255)
         local m = math.floor(y / CELL) * SHEET_COLS + math.floor(x / CELL)
         solid[m] = (solid[m] or 0) + 1
       end
@@ -7507,7 +7511,7 @@ function Gen3.shapeDataForMap(map)
     preparationTick(x,y)
       local dx, dy = place(x, y)
       if dx < 0 or dy < 0 or dx >= W or dy >= H then return end
-      surface:setPixel(dx, dy, r / 255, g / 255, b / 255, 1)
+      writePixel(dx, dy, r, g, b, 255)
       local m = math.floor(y / CELL) * SHEET_COLS + math.floor(x / CELL)
       solid[m] = (solid[m] or 0) + 1
     end)
@@ -8134,6 +8138,7 @@ function Gen3.atlasData(map)
 end
 
 function Gen3.releaseAtlases()
+  V.require("TilePlotCache").clear()
   atlasCache = {}
   atlasDataCache = {}
   animPatchCache = {}
@@ -8176,6 +8181,7 @@ function Gen3.forgetMap(map)
 end
 
 function Gen3.invalidate()
+  V.require("TilePlotCache").clear()
   ctxCache = setmetatable({}, { __mode = "k" })
   ctxMisses = setmetatable({}, { __mode = "k" })
   atlasCache = {}

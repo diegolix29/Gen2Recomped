@@ -63,6 +63,8 @@ end
 
 -- a tile out of the 256 x 16 gauge sheet
 local quads = {}
+H.picture = function(battle, name) return picture(battle, name) end
+
 local function partTile(battle, t, x, y)
   local sheet, e = picture(battle, "gauge_parts")
   if not sheet then return end

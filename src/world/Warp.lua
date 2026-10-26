@@ -349,6 +349,11 @@ local function resolve(data, warpDef, lastMap, backupWarp, save)
     -- out-of-range data: fall back to where the player entered
     return destMap, lastMap.x, lastMap.y
   end
+  -- BLACK / WHITE: A RECORD WITH NO DESTINATION (zone 0xFFFF) IS ONLY A
+  -- LANDING SPOT (Gen5Warps.stepWarpAt says why) -- Victory Road's top,
+  -- where the League's south edge sets the player down, is three of them
+  -- (Z214 warps 11, 28, 29). A press or a step on one is no warp at all.
+  if tonumber(warpDef.destHeader) == 0xFFFF and tostring(destMap):match("^Z%d+$") then return nil end
   local destDef = data.maps[destMap]
   if not destDef then
     -- Gen2 alias not yet resolved: warn and stay at current position

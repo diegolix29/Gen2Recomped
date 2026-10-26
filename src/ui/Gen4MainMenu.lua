@@ -118,6 +118,19 @@ function Gen4MainMenu.new(game, opts)
   end
   -- The launcher's own row, as on every other title: without it Platinum would
   -- be the one game with no way back to the game list.
+  -- MIGRATE FROM <GAME> (src/ui/Gen4Migrate.lua): Pal Park's Game Pak rows,
+  -- one per Generation III game with a save, once the National Pokedex is had
+  do
+    local okM, rows = pcall(function() return require("src.ui.Gen4Migrate").menuItems(game) end)
+    if okM and type(rows) == "table" then
+      for _, row in ipairs(rows) do items[#items + 1] = row end
+    end
+    -- HGSS's CONNECT TO POKeWALKER: the launcher's Monster Walker (src/ui/Gen4WalkerConnect.lua)
+    local okW, walker = pcall(function() return require("src.ui.Gen4WalkerConnect").menuItems(game) end)
+    if okW and type(walker) == "table" then
+      for _, row in ipairs(walker) do items[#items + 1] = row end
+    end
+  end
   items[#items + 1] = { key = "exit", label = Strings("EXIT GAME"), lines = self.hgss and 2 or 1 }
 
   local hooked = Runtime.call("ui.title_menu.items", sameItems, game, items)

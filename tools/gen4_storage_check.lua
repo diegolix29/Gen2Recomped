@@ -1,5 +1,5 @@
 package.path='./?.lua;'..package.path
-package.loaded['src.core.GameVersion']={isGen4=function() return true end,isGen3=function() return false end,isGen2=function() return false end}
+package.loaded['src.core.GameVersion']={isGen4=function() return true end,isGen3=function() return false end,isGen2=function() return false end,isGen5=function() return false end,generation=function() return 4 end}
 package.loaded['src.core.Strings']=function(s) return s end
 package.loaded['src.core.Sound']={play=function() end}
 package.loaded['src.core.Logger']={warn=function() end}

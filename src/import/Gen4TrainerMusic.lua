@@ -47,6 +47,10 @@ function Gen4TrainerMusic.forClass(data, class)
   if rec and rec.default then return rec.default end
   local songs = data and data.audio and data.audio.songs
   local kid = songs and songs.SEQ_EYE_KID
+  -- Black / White: ARM9 0x2029E20 answers its literal 0x45A, SEQ_BGM_EYE_01,
+  -- for a class its rows do not name (a cache imported before
+  -- Gen4BattleMusic.eyes wrote that `default` has none)
+  if not kid and rec and songs and songs.SEQ_BGM_EYE_01 then kid = songs.SEQ_BGM_EYE_01 end
   return kid and kid.nds or nil
 end
 

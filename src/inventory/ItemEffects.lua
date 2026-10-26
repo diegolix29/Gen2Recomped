@@ -1284,6 +1284,10 @@ function ItemEffects.use(data, save, itemId, target, battle, moveIndex, ow)
         return "consumed", nil, { evolveTo = evo.species }
       end
     end
+    -- GEN 4 / 5 rows name the method useItem (by gender too) and carry the
+    -- item as `param`; Black / White's are numbers (src/pokemon/Gen45Evolution.lua)
+    local g45 = require("src.pokemon.Gen45Evolution").itemTarget(data, target, itemId, rawItemId)
+    if g45 then return "consumed", nil, { evolveTo = g45 } end
     return "failed", { Strings("It won't have\nany effect.") }
   end
 

@@ -685,6 +685,27 @@ if os.getenv("SET_VARS") or os.getenv("SET_FLAGS") or os.getenv("CLEAR_FLAGS") o
   end
 end
 
+-- SECOND_SCREEN=off: single-screen play (the battle's own panel, the
+-- supersampled picture -- src/render/SuperSample.lua), as with the option off
+-- DEPTH_FORMAT=depth16 (etc.): the driver offers only that depth format, as
+-- a phone with no 24-bit depth does (src/render/Gen4Model.lua chooseDepthFormat)
+if os.getenv("DEPTH_FORMAT") then
+  local only = os.getenv("DEPTH_FORMAT")
+  local formats = love.graphics.getCanvasFormats
+  love.graphics.getCanvasFormats = function(...)
+    local t = formats(...)
+    local out = {}
+    for k, v in pairs(t) do out[k] = v end
+    for _, f in ipairs({ "depth24", "depth24stencil8", "depth32f", "depth16" }) do out[f] = (f == only) end
+    return out
+  end
+end
+
+if os.getenv("SECOND_SCREEN") == "off" then
+  local SS = require("src.ui.SecondScreen")
+  SS.mode = function() return "off" end
+end
+
 -- ENC_FORCE=1: every step's rate check passes, so a short walk tests the
 -- rest of the encounter path (table, slot, battle) instead of luck
 if os.getenv("ENC_FORCE") then

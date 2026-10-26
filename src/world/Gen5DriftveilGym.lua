@@ -17,6 +17,16 @@
 --     NPC record's +34, signs' their +16 height -- Gen5Events);
 --   * the floor is drawn at the level's height (`gen4HeightEdits`).
 -- 0x190 <n> (a panel) moves lift n; a player standing on it rides along.
+--
+-- A CONTINUE IS NOT AN ARRIVAL. The flags are local ones (0..0x63), which the
+-- zone change wipes (ov10 0x21589F4) and the gym block with them (ov20
+-- 0x2185B9C), so a walk in finds the lifts as the arrival run leaves them. A
+-- continue does neither, and the overlay's init (0x21F36C0) stands each lift
+-- at the height its saved state says; the player's own height is part of the
+-- saved position. Re-applying the arrival run on a continue put every lift
+-- back and the player on the lobby level, wherever they had saved -- so the
+-- level is kept in the save (`save.bwClayLevel`, this port's) and a continue
+-- leaves the flags alone.
 
 local G = {}
 
@@ -96,19 +106,21 @@ local function publish(ow, run, save)
   end
 end
 
-function G.attach(ow, save)
+function G.attach(ow, save, continuing)
   local def = ow and ow.map and ow.map.def
   local gl = def and def.gen5Lifts
   if not (gl and save) then return nil end
   local set, bottom = levels(gl)
-  local run = { gl = gl, level = gl.start or 50, levelSet = set, bottom = bottom or -59 }
+  local level = continuing and tonumber(save.bwClayLevel) or gl.start or 50
+  local run = { gl = gl, level = level, levelSet = set, bottom = bottom or -59 }
   -- the lifts' places on arrival (the entry script the overlay runs:
-  -- Gen5Field reads its set / clear run into `initial`)
+  -- Gen5Field reads its set / clear run into `initial`) -- not on a continue
   local Flags = require("src.script.Flags")
-  for flag, on in pairs(gl.initial or {}) do
+  for flag, on in pairs((not continuing) and gl.initial or {}) do
     local name = ("FLAG_G4_%04X"):format(tonumber(flag) or 0)
     if on then Flags.set(save, name) elseif Flags.clear then Flags.clear(save, name) end
   end
+  save.bwClayLevel = run.level
   ow.gen5LiftRun = run
   def.gen4CollisionHook = function(_, x, z) return G.collides(run, save, x, z) end
   def.gen4PropFollow = function(o) publish(o, run, save) end
@@ -125,7 +137,10 @@ function G.move(ow, save, n)
   local from = G.liftHeight(save, lift)
   local to = (from == lift.a) and lift.b or lift.a
   local p = ow.player
-  if p and run.level == from and inside(lift, p.cellX, p.cellY) then run.level = to end
+  if p and run.level == from and inside(lift, p.cellX, p.cellY) then
+    run.level = to
+    save.bwClayLevel = to
+  end
 end
 
 return G

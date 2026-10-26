@@ -564,9 +564,14 @@ if okM and type(M) == "table" then
   -- Whirlpool's bind, and the four dynamic-power effects (217, 219, 221,
   -- 237) whose handlers were written in pass 161. `gen4_moveeffect_check`
   -- owns the argument for each; this is the count agreeing with it.
-  ok(count(rows) == 204, "there are %d effect handler rows, not 204",
+  -- 257 SINCE Gen4MoveEffects: the last fifty-three Sinnoh ids (214..276
+  -- less the four above and 264, which no move carries) got handlers and
+  -- their rows.  src/battle/Gen4MoveEffects.lua cites each one's script.
+  ok(count(rows) == 257, "there are %d effect handler rows, not 257",
      count(rows))
-  ok(count(names) >= 50, "only %d fallback effect names", count(names))
+  -- ...and the backlog is EMPTY: an id that loses its handler comes back
+  -- to EFFECT_NAMES, and this is what notices
+  ok(count(names) == 0, "%d fallback effect name(s) -- an effect lost its handler", count(names))
 
   -- an id cannot have both a handler and a fallback name: the fallback exists
   -- precisely because there is no handler, so an overlap means one of the two
@@ -646,10 +651,26 @@ if okM and type(M) == "table" then
   -- still carrying a number means this cache was written before that row.
   -- Reported as what it is, with the remedy, because the alternative is a
   -- reader concluding the engine is broken.
-  ok(numericWithRow == 0,
-     "%d move(s) kept a number although a handler row exists -- this cache "
-     .. "predates those rows and needs a re-extract; the engine is right and "
-     .. "the data is behind it", numericWithRow)
+  --
+  -- NOT A FAILURE ANY MORE, because the engine now reads it:
+  -- BattleState:effectRecord maps a bare Gen 4 number to its row's name at
+  -- lookup, so a move written before its handler existed still dispatches to
+  -- it.  What IS asserted is that each such number reaches a real record.
+  local unreachable = 0
+  local okE, MoveEffects = pcall(require, "src.battle.MoveEffects")
+  for _, m in pairs(D.moves) do
+    if type(m) == "table" and type(m.effect) == "number" and rows[m.gen4Effect] then
+      if not (okE and MoveEffects.RECORDS[rows[m.gen4Effect][1]]) then
+        unreachable = unreachable + 1
+      end
+    end
+  end
+  ok(unreachable == 0, "%d stale-numbered move(s) map to no record", unreachable)
+  if numericWithRow > 0 then
+    io.write(("  note: %d move(s) still carry a number from before their handler "
+                .. "rows; they dispatch through effectRecord's mapping, and a "
+                .. "re-extract writes the names\n"):format(numericWithRow))
+  end
 
   -- THE GAP ITSELF, pinned as a number so that it can only move deliberately.
   -- These are the Gen 4 effects (ids 214 and up) with no handler: the move
@@ -673,12 +694,17 @@ if okM and type(M) == "table" then
   -- something was wrong.  All four are in `MoveEffects.full`; the same import
   -- also cleared this check's `numericWithRow` arm from 5 to 0, which is the
   -- same fact arriving by the other door.
-  ok(fellThrough == 54,
-     "%d move(s) have no effect handler, and the recorded figure is 54 -- "
-       .. "if a handler was added, lower the pin AND name the moves that left; "
-       .. "if this grew, something regressed", fellThrough)
-  io.write(("  %d handler rows, all reached; %d move(s) still have no "
-              .. "effect handler\n"):format(count(rows), fellThrough))
+  --
+  -- 54 -> 0 WITH Gen4MoveEffects: every one of the fifty-four moves (Pluck
+  -- and Bug Bite share 224) now has a handler row, so a move with no
+  -- handler at all is a regression.  `fellThrough` still counts the moves a
+  -- stale cache writes as numbers; the ones WITHOUT a row are the gap.
+  local noHandler = fellThrough - numericWithRow
+  ok(noHandler == 0,
+     "%d move(s) have no effect handler, and the recorded figure is 0 -- "
+       .. "if this grew, something regressed", noHandler)
+  io.write(("  %d handler rows, all reached; %d move(s) have no "
+              .. "effect handler\n"):format(count(rows), noHandler))
 end
 
 -- ---------------------------------------------------------------------------

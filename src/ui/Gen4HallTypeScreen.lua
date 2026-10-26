@@ -24,7 +24,13 @@ local Gen4Text = require("src.import.Gen4Text")
 local S = {}
 S.__index = S
 S.isOpaque = true
-S.BANK, S.TYPE_NAMES = 549, 624
+-- the scene's words and the type names: Platinum's banks 549 / 624,
+-- HeartGold / SoulSilver's 441 / 735 -- read by family
+S.BANKS = { platinum = { BANK = 549, TYPE_NAMES = 624 }, hgss = { BANK = 441, TYPE_NAMES = 735 } }
+setmetatable(S, { __index = function(_, k)
+  local okB, Bands = pcall(require, "src.import.Gen4ScriptBands")
+  return S.BANKS[(okB and Bands.family == "hgss") and "hgss" or "platinum"][k]
+end })
 S.W, S.H, S.COL, S.ROW = 4, 5, 64, 36
 S.MSG_CONFIRM, S.MSG_MATRON, S.MSG_APPROACHING = 24, 31, 32
 S.MYSTERY_CELL = 19

@@ -5,11 +5,31 @@ local CM,map,V,ready,mesh,buildStart
 local bodyOnly=os.getenv("PERF_FULL")~="1"
 local masks
 local slices,draws={},{}
+local gcMax,pumpOnlyMax=0,0
 local tag=os.getenv("PERF_TAG") or "after"
 local abandoned,preloadedNeighbor
 local rootCompleted
 local originalDraw,originalInstanced
+local function sceneAtlas()
+ local gen3=V.require("Gen3")
+ if gen3.mapIsGen3(map) then return gen3.atlasForTileset(map.tileset) end
+ return V.require("TerrainAtlas").forMap(map)
+end
 function love.load()
+ if os.getenv('PERF_GEN3_LAYER_SOURCE') then
+  require('src.render.Gen3Tiles').drawLayer=assert(loadfile(os.getenv('PERF_GEN3_LAYER_SOURCE')))().drawLayer
+ end
+ if os.getenv("PERF_JIT_TRACE")=="1" and jit then
+  local started={}
+  jit.attach(function(event,id,fn)
+   if event=="start" then started[id]={love.timer.getTime(),fn}
+   elseif started[id] then
+    local t=started[id];local dt=love.timer.getTime()-t[1]
+    if dt>.01 then local info=debug.getinfo(t[2],"Sl");print("JIT_GAP",event,id,dt,info.short_src,info.linedefined) end
+    started[id]=nil
+   end
+  end,"trace")
+ end
  if os.getenv("PERF_GPU_INFO")=="1" then
   print("GPU_RUNTIME",love.getVersion())
   print("GPU_RENDERER",love.graphics.getRendererInfo())
@@ -22,7 +42,7 @@ function love.load()
   local file=assert(io.open(root.."tmp/emerald_perf/baseline/ChunkMesher.lua","rb"),"prepare baseline source snapshots first")
   file:close()
  end
- require("src.core.GameVersion").set("emerald")
+ require("src.core.GameVersion").set(os.getenv("PERF_VERSION") or "emerald")
  local data=require("src.core.Data");data:load();require("src.core.Game").data=data
  local Assets=require("src.render.Assets")
  local assetRoot=assert(os.getenv("EMERALD_CACHE")):gsub("\\","/").."/"
@@ -32,13 +52,16 @@ function love.load()
  end
  Assets.imageData=imageData;Assets.image=function(path)return love.graphics.newImage(imageData(path))end
  local libs={};V={sharedHulls=os.getenv("PERF_SHARED_HULLS")=="1"}
+ if os.getenv("PERF_HULL_POINTS")=="0" then V.internHullPoints=false end
  if os.getenv("PERF_CPU")=="1" then V.gpuMeshing=false end
+ V.hullChunkSize=tonumber(os.getenv("PERF_HULL_CHUNK"))
  V.require=function(n)
   if not libs[n] then
-   local path=root.."mods/DRAMATIC_SHAPE/lib/"..n..".lua"
+   local base=os.getenv("PERF_MOD_LIB") or root.."mods/DRAMATIC_SHAPE/lib"
+   local path=base.."/"..n..".lua"
    if tag:match("^before") then local baseline=root.."tmp/emerald_perf/baseline/"..n..".lua";local f=io.open(baseline,"rb");if f then f:close();path=baseline end end
    local saved=require
-   if n=="MeshBatch" and os.getenv("PERF_NO_FFI")=="1" then
+   if (n=="MeshBatch" or n=="HullPoints") and os.getenv("PERF_NO_FFI")=="1" then
     _G.require=function(name)if name=="ffi" then error("test byte-data fallback") end;return saved(name)end
    end
    libs[n]=assert(loadfile(path))(V)
@@ -46,7 +69,37 @@ function love.load()
   end
   return libs[n]
  end
- V.data=function(n)return assert(loadfile(root.."mods/DRAMATIC_SHAPE/data/"..n..".lua"))()end
+ -- Match the real mod loader: companion data is parsed once, not on every
+ -- map/context lookup. Repeated parsing exaggerated build gaps in this probe.
+ local dataFiles={}
+ V.data=function(n)
+  if dataFiles[n]==nil then dataFiles[n]=assert(loadfile(root.."mods/DRAMATIC_SHAPE/data/"..n..".lua"))() end
+  return dataFiles[n]
+ end
+ -- The real mod parses these immutable classifications at startup. Keep
+ -- that loading work outside the measured walking/build slices here too.
+ V.data("gen3_metatiles")
+ if os.getenv("PERF_ATLAS_PIXELS")=="1" then
+  local image=love.image.newImageData(256,2,"rgba8")
+  local write=V.require("AtlasPixels").writer(image)
+  for x=0,255 do
+   image:setPixel(x,0,x/255,(255-x)/255,(x%17)/255,(x%7)/255)
+   write(x,1,x,255-x,x%17,x%7)
+  end
+  local read=V.require("AtlasPixels").reader(image)
+  for y=0,1 do for x=0,255 do
+   local r,g,b,a=image:getPixel(x,y)
+   local rr,gg,bb,aa=read(x,y)
+   assert(r==rr and g==gg and b==bb and a==aa,"atlas byte read differs at "..x)
+  end end
+  for x=0,255 do
+   local r,g,b,a=image:getPixel(x,0)
+   local rr,gg,bb,aa=image:getPixel(x,1)
+   assert(r==rr and g==gg and b==bb and a==aa,"atlas byte write differs at "..x)
+  end
+  image:release()
+  print("PASS exact ROM atlas byte colors")
+ end
  V.mod={options={get=function(_,key)return os.getenv("PERF_DISK")=="1" and key=="voxelDiskCache" end}}
  map=require("src.world.MapLoader").load(data,os.getenv("PERF_MAP") or "MAP_G00_N10")
  if os.getenv("PERF_ENGINE")=="1" then
@@ -55,14 +108,17 @@ function love.load()
   assert(game.overworld:gen3WorldFor(map.def,map,map.tileset),"engine world bridge unavailable")
  end
  if os.getenv("TRACE_BUDGET") then
-  local b=V.require("BuildBudget");local last=love.timer.getTime();local ticks=0
+  local b=V.require("BuildBudget");local last=love.timer.getTime();local ticks=0;local previous
+  local gap=tonumber(os.getenv("TRACE_BUDGET_GAP")) or .03
   for _,name in ipairs({"tick","check"})do
    local original=b[name]
    b[name]=function(...)
+    if not b.active() then last=love.timer.getTime();return original(...) end
     ticks=ticks+1
     if name=="check" or ticks%32==0 then
      local now=love.timer.getTime()
-     if now-last>.03 then print("GAP",now-last,debug.traceback("",2)) end
+     if now-last>gap then print("GAP",now-last,"FROM",previous or "start",debug.traceback("",2)) end
+     local info=debug.getinfo(2,"Sl");previous=info.short_src..":"..info.currentline
      last=now
     end
     local result=original(...)
@@ -87,8 +143,13 @@ function love.load()
   _G.require=function(name)if name=="ffi" then error("test table-only runtime") end;return savedRequire(name)end
  end
  CM=V.require("ChunkMesher")
+ if os.getenv("PERF_ENGINE_SLICES")=="1" then V.require("EngineSheets") end
+ -- Match the real entry point: compile and dispatch compute preflight during
+ -- loading rather than attributing driver warm-up to a visible walking slice.
+ if love.graphics.newComputeShader then V.require("GpuMesher").probe() end
+ if os.getenv("PERF_GC_STOP")=="1" then collectgarbage("stop") end
  _G.require=savedRequire
- if os.getenv("PERF_CANCEL")=="1" then
+ if os.getenv("PERF_CANCEL")=="1" or os.getenv("PERF_SEAM_CANCEL")=="1" or os.getenv('PERF_REFRESH_CANCEL')=='1' then
   local Batch=V.require("MeshBatch");local new=Batch.new
   _G.cancelBatches={}
   Batch.new=function()local b=new();cancelBatches[#cancelBatches+1]=b;return b end
@@ -133,6 +194,9 @@ function love.load()
    player={px=0,py=0},game={data=data},computeNeighbors=require("src.world.OverworldController").computeNeighbors}
   assert(pcall(Scene.prefetch,previewState),"live scene prefetch failed")
   assert(CM.pending()==2,"live scene did not queue adjacent map before crossing")
+  local ok,_,queuedMeshes,_,queuedWater=pcall(Scene.prefetch,previewState,true)
+  assert(ok and queuedMeshes==nil and queuedWater==nil and CM.pending()==2,
+   "update-only prefetch allocated render lists or lost queued maps")
   CM.invalidate()
   print("PASS live scene queues foreground and adjacent maps before entering them")
   CM.request(preloadedNeighbor,true,nil,false,1)
@@ -181,6 +245,7 @@ function love.load()
  end
 end
 local elapsed,frameTimes={},{}
+local planeTimes,oldPlaneTimes={},{}
 local previousPacedFrame
 function love.update()
  if os.getenv("PERF_PACED")=="1" then
@@ -195,7 +260,56 @@ function love.update()
  end
  if CM.buildFailure(map.id) then error(CM.buildFailure(map.id)) end
  if not ready then
-  local start=love.timer.getTime();collectgarbage("step",1);CM.pump(false);slices[#slices+1]=love.timer.getTime()-start
+  local start=love.timer.getTime();collectgarbage("step",1)
+  local gcEnd=love.timer.getTime();CM.pump(false);local pumpEnd=love.timer.getTime()
+  gcMax=math.max(gcMax,gcEnd-start);pumpOnlyMax=math.max(pumpOnlyMax,pumpEnd-gcEnd)
+  slices[#slices+1]=pumpEnd-start
+  if os.getenv("PERF_TRACE_SLICES")=="1" and pumpEnd-start>.02 then
+   print("SLICE","gc",gcEnd-start,"build",pumpEnd-gcEnd)
+  end
+  if os.getenv('PERF_REFRESH_CANCEL')=='1' and _G.refreshCancelStarted and not _G.refreshCancelDone then
+   local partial
+   for _,b in ipairs(cancelBatches)do
+    if CM.pending()>0 and #b.parts>=12 and b~=CM.peek(map,bodyOnly) then partial=b;break end
+   end
+   if partial then
+    local count,part=#partial.parts,partial.parts[1]
+    local held=CM.peek(map,bodyOnly)
+    local t=love.timer.getTime();CM.refresh(map.id,'seam')
+    print('REFRESH_CANCEL',count,love.timer.getTime()-t)
+    assert(CM.pending()==0 and CM.peek(map,bodyOnly)==held,'refresh cancellation changed published terrain')
+    assert(#partial.parts==count and pcall(part.getVertexCount,part),'refresh released partial GPU buffers inline')
+    local pumps=0
+    repeat CM.pump(false,true);pumps=pumps+1;assert(pumps<2000,'refresh buffers never retired') until #partial.parts==0
+    assert(not pcall(part.getVertexCount,part),'retired refresh mesh is still allocated')
+    print('PASS superseded refresh preserves published mesh and retires partial GPU buffers',pumps)
+    _G.refreshCancelDone=true
+    CM.request(map,bodyOnly,masks,true)
+    return
+   end
+  end
+  if os.getenv('PERF_SEAM_CANCEL')=='1' and not _G.seamCancelDone then
+   local partial
+   for _,b in ipairs(cancelBatches)do if #b.parts>=12 then partial=b;break end end
+   if partial then
+    local count,part=#partial.parts,partial.parts[1]
+    local t=love.timer.getTime();CM.setLive({},'seam-cancel-fixture')
+    print('SEAM_CANCEL',count,love.timer.getTime()-t)
+    assert(CM.pending()==0,'unseen build remained scheduled at the seam')
+    if os.getenv('PERF_EXPECT_SYNC_CANCEL')=='1' then
+     assert(#partial.parts==0,'baseline did not release synchronously')
+    else
+     assert(#partial.parts==count and pcall(part.getVertexCount,part),'seam released GPU buffers inline')
+     local slices=0
+     repeat CM.pump(false,true);slices=slices+1;assert(slices<2000,'cancelled buffers never retired') until #partial.parts==0
+     assert(not pcall(part.getVertexCount,part),'retired native mesh is still allocated')
+     print('PASS seam cancellation detaches jobs immediately and retires partial GPU buffers in pump',slices)
+    end
+    _G.seamCancelDone=true
+    CM.setLive({[map.id]=true},map.id);CM.request(map,bodyOnly,masks,true)
+    return
+   end
+  end
   if os.getenv("PERF_CANCEL")=="1" and not _G.cancelTestDone then
    local partial
    for _,b in ipairs(cancelBatches)do if b:getVertexCount()>0 then partial=b;break end end
@@ -220,6 +334,14 @@ function love.update()
    preloadedNeighbor=nil
   end
   if mesh then
+   if os.getenv('PERF_REFRESH_CANCEL')=='1' and not _G.refreshCancelStarted then
+    _G.refreshCancelStarted=true
+    for i=#cancelBatches,1,-1 do cancelBatches[i]=nil end
+    CM.refresh(map.id,'seam');CM.request(map,bodyOnly,masks,true)
+    return
+   end
+   if os.getenv('PERF_REFRESH_CANCEL')=='1' and not _G.refreshCancelDone then return end
+   if os.getenv('PERF_REFRESH_CANCEL')=='1' and CM.pending()>0 then return end
    if _G.voxelProfile then
     require("jit.profile").stop()
     local rows={};for stack,n in pairs(voxelProfile)do rows[#rows+1]={stack=stack,n=n} end
@@ -392,29 +514,150 @@ function love.update()
 end
 function love.draw()
  if not ready then return end
+ if os.getenv("PERF_COMPARE_TERRAIN_CULLING")=="1" then
+  V.terrainPlanes=math.floor(#elapsed/10)%2==0
+ end
  local g=V.require("Voxel3D");V.require("VoxelState").angle=math.rad(35)
  local cx,cz=map.def.width*8,map.def.height*8
+ if os.getenv("PERF_GRASS_VIEW")=="1" then
+  local shapes=V.require("Structures").forMap(map)
+  local best,bx,bz
+  for y=0,map.def.height*2-1 do for x=0,map.def.width*2-1 do
+   local k=(y+64)*4096+x+64
+   local shape=shapes.shapeAt[k]
+   if shape and shape.art=="grass" and not shapes.skip[k] then
+    local dx,dz=x*8-cx,y*8-cz
+    if not best or dx*dx+dz*dz<best then best,bx,bz=dx*dx+dz*dz,x*8+4,y*8+4 end
+   end
+  end end
+  cx,cz=bx or cx,bz or cz
+ end
  g.camera={eye={cx+70,90,cz+130},focus={cx,8,cz},fov=math.rad(45),curve=tonumber(os.getenv("PERF_CURVE")) or 0}
+ local fullRender=os.getenv("PERF_FULL_RENDER")=="1"
+ draws={};local frameStart=love.timer.getTime()
+ if fullRender then
+  local shadow=V.require("ShadowMap")
+  love.graphics.push("all")
+  assert(shadow.begin(cx,cz,180,146))
+  shadow.draw(mesh,sceneAtlas())
+  shadow.draw(CM.flowers(map),sceneAtlas())
+  shadow.finish("perf-render")
+  love.graphics.pop()
+ end
  assert(g.beginScene(800,650,cx,cz,180,146))
- draws={};local start=love.timer.getTime()
- g.draw(mesh,V.require("Gen3").atlasForTileset(map.tileset));g.endScene()
+ local start=fullRender and frameStart or love.timer.getTime()
+ g.draw(mesh,sceneAtlas())
+ if os.getenv("PERF_GRASS")=="1" then g.draw(CM.grass(map),sceneAtlas()) end
+ g.endScene()
  local img=g.canvas():newImageData() -- GPU fence: measure completion, not submission.
  local dt=love.timer.getTime()-start
+ if os.getenv("PERF_COMPARE_TERRAIN_CULLING")=="1" and #elapsed%10>=2 then
+  local times=V.terrainPlanes and planeTimes or oldPlaneTimes
+  times[#times+1]=dt
+ end
  if #elapsed>1 then frameTimes[#frameTimes+1]=dt end
  elapsed[#elapsed+1]=dt
- if #elapsed==10 then
+ if #elapsed==(tonumber(os.getenv("PERF_SAMPLES")) or 10) then
   local total=0;for _,n in ipairs(draws)do total=total+n end
   table.sort(slices);table.sort(frameTimes)
   local hash=love.data.encode("string","hex",love.data.hash("sha256",img:getString()))
   local report={tag=tag,map=map.id,vertices=mesh:getVertexCount(),submitted=total,draws=#draws,
+   renderIncludesShadow=fullRender,
    hullCopies=mesh.stamps and #mesh.stamps or 0,
    storedVertices=mesh:getVertexCount()+(mesh.hullOwner and mesh.hullOwner.bytes/48 or 0),
    parts=mesh.parts and #mesh.parts or 1,pumpMax=slices[#slices],pumpP95=slices[math.max(1,math.ceil(#slices*.95))],
-   renderMedian=frameTimes[math.ceil(#frameTimes/2)],renderMax=frameTimes[#frameTimes],imageHash=hash}
+   renderMedian=frameTimes[math.ceil(#frameTimes/2)],renderMax=frameTimes[#frameTimes],imageHash=hash,
+   gcMax=gcMax,pumpOnlyMax=pumpOnlyMax}
+  if os.getenv('PERF_STAMP_CHECK')=='1' then
+   local function up(fn,name)
+    for i=1,100 do local n,v=debug.getupvalue(fn,i);if n==name then return v end end
+    error('missing stamp fixture upvalue '..name)
+   end
+   local scene=V.require('VoxelScene')
+   local cast=up(scene.render,'castShadows')
+   local signature=up(cast,'shadowSignature')
+   local frame=up(signature,'shadowFrame')
+   local posed={}
+   for i=1,64 do posed[i]={sprite={def={image='actor-'..i}},px=i+.125,py=i*3+.25,gh=0,facing='down',phase=0}end
+   for _,numeric in ipairs({false,true})do
+    V.numericShadowStamps=numeric
+    for i=1,100 do signature(mesh,{mesh},posed,100,100,180,146);if numeric then frame.commit()end end
+    local neighbours={mesh}
+    collectgarbage('collect');collectgarbage('stop')
+    local heap=collectgarbage('count');local start=love.timer.getTime()
+    for i=1,2000 do
+     posed[1].px=i*.12345;posed[1].phase=i%4
+     signature(mesh,neighbours,posed,100,100,180,146)
+     if numeric then frame.commit()end
+    end
+    local seconds,allocated=love.timer.getTime()-start,collectgarbage('count')-heap
+    collectgarbage('restart')
+    print('STAMP_COST',numeric and 'numeric' or 'string',seconds,allocated)
+    if numeric then report.stampNumericSeconds=seconds;report.stampNumericKiB=allocated
+    else report.stampStringSeconds=seconds;report.stampStringKiB=allocated end
+   end
+   V.numericShadowStamps=nil
+   local performance=require('src.core.Performance');local oldTier=performance.tier
+   local shadow=V.require('ShadowMap');local begin=shadow.begin
+   local sprite=require('src.render.SpriteRenderer').new(assert(require('src.core.Data').sprites.SPRITE_G3_000))
+   local actor={sprite=sprite,px=64,py=64,gh=0,facing='down',phase=0}
+   local function reset(name,value)
+    for i=1,100 do local n=debug.getupvalue(cast,i);if n==name then debug.setupvalue(cast,i,value);return end end
+    error('missing cast fixture state '..name)
+   end
+   for _,tier in ipairs({'high','balanced'})do
+    performance.tier=tier
+    local reference
+    for _,numeric in ipairs({false,true})do
+     V.numericShadowStamps=numeric;shadow.invalidate()
+     reset('shadowStale',0);reset('shadowLastCast',-1000);reset('shadowLastStatic',nil)
+     local rendered,hashes=0,{}
+     shadow.begin=function(...)rendered=rendered+1;return begin(...)end
+     for i=1,16 do
+      actor.phase=(i%4==2) and 1 or 0
+      actor.px=64+(i>8 and 1 or 0)
+      cast({map=map,neighbors={}},mesh,{}, {actor},100+(i>12 and 1 or 0),100,180,146,
+       function()return sceneAtlas()end,nil,nil,nil,nil)
+      local pixels=shadow.texture():newImageData()
+      hashes[i]=love.data.encode('string','hex',love.data.hash('sha256',pixels:getString()))
+      pixels:release()
+     end
+     if reference then
+      assert(rendered==reference.rendered,'snapshot changed shadow throttle schedule')
+      for i,h in ipairs(hashes)do assert(h==reference.hashes[i],'snapshot changed shadow pixels at frame '..i)end
+     else reference={rendered=rendered,hashes=hashes}end
+    end
+    print('PASS numeric shadow snapshots preserve native pixels and redraw schedule',tier,reference.rendered)
+   end
+   shadow.begin=begin;performance.tier=oldTier;V.numericShadowStamps=nil
+  end
   if love.graphics.newComputeShader then
    local gpu=V.require("GpuMesher")
    report.gpuBuilds=gpu.builds;report.cpuFallbacks=gpu.fallbacks;report.mesher=gpu.status()
+   report.gpuOutputBytes=gpu.outputBytes;report.gpuOutputSavedBytes=gpu.savedBytes
+   report.gpuInputBytes=gpu.inputBytes;report.gpuInputSavedBytes=gpu.inputSavedBytes
   else report.mesher="CPU (compute API unavailable)" end
+  local okPlots,plots=pcall(V.require,"TilePlotCache")
+  if okPlots then report.plotHits=plots.hits;report.plotMisses=plots.misses;report.plotBytes=plots.bytes end
+  report.luaHeapMiB=collectgarbage("count")/1024
+  if os.getenv("PERF_HEAP_RETAINED")=="1" then
+   collectgarbage("collect") -- diagnostic outside measured build/render frames
+   report.retainedHeapMiB=collectgarbage("count")/1024
+  end
+  local okIndices,indices=pcall(V.require,"QuadIndices")
+  if okIndices then report.indexedParts=indices.applied end
+  local pointsOK,points=pcall(V.require,"HullPoints")
+  if pointsOK then report.hullPointsCreated=points.created;report.hullPointsReused=points.reused end
+  if pointsOK then report.hullUVCreated=points.uvCreated;report.hullUVReused=points.uvReused end
+  if pointsOK then report.packedHullPoints=points.packedCreated end
+  if #planeTimes>0 and #oldPlaneTimes>0 then
+   table.sort(planeTimes);table.sort(oldPlaneTimes)
+   report.planeMedian=planeTimes[math.ceil(#planeTimes/2)]
+   report.oldPlaneMedian=oldPlaneTimes[math.ceil(#oldPlaneTimes/2)]
+  end
+  local grass=CM.grass(map)
+  report.grassVertices=grass and grass:getVertexCount() or 0
+  report.grassParts=grass and #grass.parts or 0
   local output=root.."tmp/emerald_perf/"..tag.."-"..map.id
   local f=assert(io.open(output..".json","wb"));f:write(require("src.link.Json").encode(report));f:close()
   f=assert(io.open(output..".png","wb"));f:write(img:encode("png"):getString());f:close()
@@ -422,13 +665,36 @@ function love.draw()
    local cache=V.require("VoxelDiskCache")
    local hit,loaded=cache.load(map,"body",nil)
    assert(hit and loaded and loaded:getVertexCount()==mesh:getVertexCount(),"disk-cache batch roundtrip failed")
+   assert(#loaded.parts==#mesh.parts,"disk cache lost spatial chunk boundaries")
    assert(g.beginScene(800,650,cx,cz,180,146))
-   g.draw(loaded,V.require("Gen3").atlasForTileset(map.tileset));g.endScene()
+   g.draw(loaded,sceneAtlas())
+   if os.getenv("PERF_GRASS")=="1" then g.draw(CM.grass(map),sceneAtlas()) end
+   g.endScene()
    local check=g.canvas():newImageData()
    local diskHash=love.data.encode("string","hex",love.data.hash("sha256",check:getString()))
    check:release();loaded:release()
    assert(diskHash==hash,"disk-cache reload changed rendered pixels")
    print("PASS spatial terrain disk-cache roundtrip")
+   if os.getenv("PERF_LEGACY_CACHE")=="1" then
+    local paths
+    for i=1,30 do local n,v=debug.getupvalue(cache.load,i);if n=="paths" then paths=v end end
+    local metaPath=paths(map,"body")
+    local meta=assert(love.filesystem.read(metaPath))
+    local header=assert(meta:match("^(.-\n.-\n%d+\n%d+\n)"))
+    assert(love.filesystem.write(metaPath,header.."T broken layout\n"))
+    local hitLegacy,legacy=cache.load(map,"body",nil)
+    assert(hitLegacy and legacy:getVertexCount()==mesh:getVertexCount(),"legacy cache did not load")
+    assert(love.filesystem.read(metaPath):match("\nT %d+ "),"legacy cache index was not repaired")
+    local again,twice=cache.load(map,"body",nil)
+    assert(again and #twice.parts==#legacy.parts,"repaired legacy layout changed")
+    assert(g.beginScene(800,650,cx,cz,180,146));g.draw(twice,sceneAtlas())
+    if os.getenv("PERF_GRASS")=="1" then g.draw(CM.grass(map),sceneAtlas()) end
+    g.endScene()
+    local pixels=g.canvas():newImageData()
+    assert(love.data.encode("string","hex",love.data.hash("sha256",pixels:getString()))==hash,"legacy upgrade changed pixels")
+    pixels:release();legacy:release();twice:release()
+    print("PASS malformed/legacy layout repaired in place; both reloads retain ROM pixels")
+   end
    if os.getenv("PERF_REFRESH")=="1" then
     local structures=V.require("Structures")
     local original,depth=structures.forMap,0
@@ -496,7 +762,7 @@ function love.draw()
   local shadow=V.require("ShadowMap")
   love.graphics.push("all")
   assert(shadow.begin(cx,cz,180,146),"shadow pass unavailable")
-  shadow.draw(mesh,V.require("Gen3").atlasForTileset(map.tileset))
+  shadow.draw(mesh,sceneAtlas())
   shadow.finish("terrain-check")
   love.graphics.pop()
   print("PASS terrain batches in shadow pass")
@@ -510,7 +776,7 @@ function love.draw()
    local reference=CM.build(map,bodyOnly,masks,true)
    V.sharedHulls=shared
    love.graphics.push("all")
-   assert(shadow.begin(cx,cz,180,146));shadow.draw(reference,V.require("Gen3").atlasForTileset(map.tileset));shadow.finish("expanded-reference")
+   assert(shadow.begin(cx,cz,180,146));shadow.draw(reference,sceneAtlas());shadow.finish("expanded-reference")
    love.graphics.pop()
    assert(shadowHash()==actual,"shared tree shadows differ from expanded geometry")
    local grid=V.require("VoxelGrid");local savedGrid=grid.override;grid.override=true
@@ -519,9 +785,9 @@ function love.draw()
     assert(g.beginScene(800,650,cx,cz,180,146))
     local capture
     if reflected then
-     capture=assert(g.beginPlanar(16,function()g.draw(target,V.require("Gen3").atlasForTileset(map.tileset),pose)end))
+     capture=assert(g.beginPlanar(16,function()g.draw(target,sceneAtlas(),pose)end))
      g.endPlanar()
-    else g.draw(target,V.require("Gen3").atlasForTileset(map.tileset),pose)end
+    else g.draw(target,sceneAtlas(),pose)end
     g.endScene()
     local pixels=(capture or g.canvas()):newImageData()
     local h=love.data.encode("string","hex",love.data.hash("sha256",pixels:getString()));pixels:release();return h

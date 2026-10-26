@@ -190,11 +190,14 @@ ok(#unimplemented == 0,
    #unimplemented == 0 and "all" or table.concat(unimplemented, ", "), "all")
 -- The count is pinned so a tenth has to be acknowledged here, but it is the
 -- assertion above that makes adding one safe rather than merely noticed.
-ok(#gen4Own == 9,
-   "...and there are nine: five semi-invulnerable/bind rows, four dynamic-power",
-   ("%d (%s)"):format(#gen4Own, table.concat(gen4Own, ",")), 9)
-ok(count(Moves.EFFECTS) == 204, "so the table is Hoenn's 195 plus nine",
-   count(Moves.EFFECTS), 204)
+-- 9 -> 62 when src/battle/Gen4MoveEffects.lua implemented the other
+-- fifty-three (every id 214..276 a move carries; 264 has none).
+ok(#gen4Own == 62,
+   "...and there are 62: five semi-invulnerable/bind rows, four dynamic-power, "
+     .. "and Gen4MoveEffects' fifty-three",
+   ("%d (%s)"):format(#gen4Own, table.concat(gen4Own, ",")), 62)
+ok(count(Moves.EFFECTS) == 257, "so the table is Hoenn's 195 plus 62",
+   count(Moves.EFFECTS), 257)
 
 -- THE TWO PLACES THE SOURCES DIFFER, asserted so a future reader does not have
 -- to take the comment's word for either.
@@ -227,10 +230,12 @@ for _, m in pairs(all) do
   if type(m.effect) == "string" then named = named + 1 else numbered = numbered + 1 end
   if m.highCrit then crit = crit + 1 end
 end
--- 417 and 54, not 412 and 59: Gyro Ball, Wring Out, Crush Grip, Brine and
--- Wake-Up Slap moved across when their handlers were written.
-ok(named == 417, "moves carrying an effect NAME", named, 417)
-ok(numbered == 54, "...and moves whose id has no name, left as numbers", numbered, 54)
+-- 471 and 0, not 417 and 54: the last fifty-four (Pluck and Bug Bite share
+-- an id) moved across when src/battle/Gen4MoveEffects.lua wrote their
+-- handlers -- before that, 417 / 54 after Gyro Ball, Wring Out, Crush Grip,
+-- Brine and Wake-Up Slap.
+ok(named == 471, "moves carrying an effect NAME", named, 471)
+ok(numbered == 0, "...and moves whose id has no name, left as numbers", numbered, 0)
 -- THE SUM, because two pins that move together could both be bumped wrongly
 -- and still agree with each other.
 ok(named + numbered == 471, "...and every move is in exactly one of the two",

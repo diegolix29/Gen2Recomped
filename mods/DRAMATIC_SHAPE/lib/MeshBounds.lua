@@ -66,6 +66,15 @@ function MeshBounds.get(mesh)
   return mesh and boxes[mesh] or nil
 end
 
+-- Streamed bounds are measured before double coordinates become GPU floats.
+-- Enclose float rounding so a corner on the view edge cannot disappear.
+function MeshBounds.encloseFloats(b)
+  local largest=0
+  for i=1,6 do largest=math.max(largest,math.abs(b[i])) end
+  local e=1e-5+largest*1.2e-7
+  return {b[1]-e,b[2]-e,b[3]-e,b[4]+e,b[5]+e,b[6]+e}
+end
+
 -- The box for a map's own mesh, in that map's local coordinates (a
 -- neighbour is drawn through a translate, which is handed in separately).
 function MeshBounds.forMap(map)
@@ -92,33 +101,53 @@ end
 function MeshBounds.hiddenBox(b, vp, model)
   if not (b and vp) then return false end
   local m = model and Mat4.mul(vp, model) or vp
-  local m1, m2, m3, m4 = m[1], m[2], m[3], m[4]
-  local m5, m6, m7, m8 = m[5], m[6], m[7], m[8]
-  local m9, m10, m11, m12 = m[9], m[10], m[11], m[12]
-  local m13, m14, m15, m16 = m[13], m[14], m[15], m[16]
-  local oL, oR, oB, oT, oN, oF = true, true, true, true, true, true
-  for i = 0, 7 do
-    local x = (i % 2 == 0) and b[1] or b[4]
-    local y = (i >= 2 and i <= 3) or i >= 6
-    y = y and b[5] or b[2]
-    local z = (i < 4) and b[3] or b[6]
-    local cx = m1 * x + m2 * y + m3 * z + m4
-    local cy = m5 * x + m6 * y + m7 * z + m8
-    local cz = m9 * x + m10 * y + m11 * z + m12
-    local cw = m13 * x + m14 * y + m15 * z + m16
-    if not (cx < -cw) then oL = false end
-    if not (cx > cw) then oR = false end
-    if not (cy < -cw) then oB = false end
-    if not (cy > cw) then oT = false end
-    if not (cz < -cw) then oN = false end
-    if not (cz > cw) then oF = false end
-    if not (oL or oR or oB or oT or oN or oF) then return false end
+  -- A plane's maximum over an AABB is at its positive support vertex.
+  -- Testing that vertex gives the same conservative six-plane result as
+  -- transforming all eight corners, with no per-corner perspective work.
+  for row=1,9,4 do
+    for sign=-1,1,2 do
+      local a=m[13]+sign*m[row]
+      local c=m[14]+sign*m[row+1]
+      local d=m[15]+sign*m[row+2]
+      local e=m[16]+sign*m[row+3]
+      local x=a>=0 and b[4] or b[1]
+      local y=c>=0 and b[5] or b[2]
+      local z=d>=0 and b[6] or b[3]
+      -- Keep boxes exactly on a plane visible despite round-off.
+      if a*x+c*y+d*z+e < -1e-7 then return true end
+    end
   end
-  return oL or oR or oB or oT or oN or oF
+  return false
 end
 
 function MeshBounds.hidden(mesh, vp, model)
   return MeshBounds.hiddenBox(mesh and boxes[mesh],vp,model)
+end
+
+-- Terrain parts share a camera/model transform. Extract its planes once
+-- per submission rather than rebuilding six planes for every spatial part.
+function MeshBounds.planes(vp, out)
+  if not vp then return nil end
+  out=out or {}
+  local at=1
+  for row=1,9,4 do
+    for sign=-1,1,2 do
+      local a,c,d=vp[13]+sign*vp[row],vp[14]+sign*vp[row+1],vp[15]+sign*vp[row+2]
+      out[at],out[at+1],out[at+2],out[at+3]=a,c,d,vp[16]+sign*vp[row+3]
+      out[at+4],out[at+5],out[at+6]=a>=0 and 4 or 1,c>=0 and 5 or 2,d>=0 and 6 or 3
+      at=at+7
+    end
+  end
+  return out
+end
+function MeshBounds.hiddenPlanes(mesh, planes)
+  local b=mesh and boxes[mesh]
+  if not (b and planes) then return false end
+  for at=1,36,7 do
+    if planes[at]*b[planes[at+4]]+planes[at+1]*b[planes[at+5]]
+       +planes[at+2]*b[planes[at+6]]+planes[at+3] < -1e-7 then return true end
+  end
+  return false
 end
 
 -- Curvature changes only world Y: y -= k * distance(xz, center)^2.

@@ -204,37 +204,79 @@ local function publish(ow, run)
   def.gen4HeightEdits = edits
 end
 
+-- the platforms' two sounds (SEQ_SE_GS_GONDORA_IDOU while one runs, KABEHIT
+-- when it knocks into something)
+local function se(name, stop)
+  pcall(function()
+    local Game = require("src.core.Game")
+    local Sound = require("src.core.Sound")
+    if stop then Sound.stopSe(Game.data, name) else Sound.playSe(Game.data, name) end
+  end)
+end
+local MOVE_SE, BONK_SE = "SEQ_SE_GS_GONDORA_IDOU", "SEQ_SE_GS_GONDORA_KABEHIT"
+
 local function finish(ow, run)
   local p = ow.player
   run.anim = nil
   if p then p.inputLocked = run.wasLocked end
   run.pfs = G.platforms(run.state)
   publish(ow, run)
+  -- STATE_MOVE_FINISH / STATE_ROTATE_FINISH: StopSE(SEQ_SE_GS_GONDORA_IDOU)
+  se(MOVE_SE, true)
 end
 
-local STEP_UNITS = 8   -- a frame; a tile is 2 frames
+-- FIELD FRAMES, not engine ticks. The task and its SysTask run once a field
+-- frame, and the field runs at 30 a second -- two of this engine's ticks
+-- (Gen4MoveExec.TICKS_PER_FRAME). Counted as ticks, a platform moved and
+-- turned at twice the cartridge's speed (and, with no frame of its own for
+-- STATE_MOVE_CHECK, a move at three times).
+local TPF = 2
+local STEP_UNITS = 8 / TPF  -- a tick: 8 units a frame, a tile is 2 frames
+local TURN = 90 / 16 / TPF  -- a tick: FX32_CONST(0.25) of the 4.0 a quarter is
+
+-- one frame (TPF ticks) of `phase` done, then `nextPhase`
+local function hold(a, nextPhase)
+  a.timer = a.timer + 1
+  if a.timer >= TPF then a.phase, a.timer = nextPhase, 0 end
+end
 
 local function tick(ow, run)
   local a = run.anim
   if not a then return end
   local p = ow.player
   local blocked, behaviour = mapQueries(ow)
-  if a.kind == "move" then
+  if a.phase == "init" then
+    -- STATE_MOVE_INIT / STATE_ROTATE_INIT: the task's first frame
+    hold(a, a.first)
+  elseif a.phase == "tail" then
+    -- STATE_MOVE_APPLY / STATE_*_FINISH: frames the task still holds the field
+    a.tail = a.tail - 1
+    if a.tail <= 0 then finish(ow, run) return end
+  elseif a.kind == "move" then
     local pf = run.pfs[a.index]
     local d = G.DIR[a.dir]
     if a.phase == "check" then
-      if G.wallHit(a.wall, pf.height, blocked, behaviour) then
-        if a.steps == 0 then finish(ow, run) return end
-        a.phase, a.timer = "back", 0
-      else
-        a.phase, a.timer = "run", 0
+      -- STATE_MOVE_CHECK: a frame of its own before every tile
+      if a.timer == 0 then
+        a.hit = G.wallHit(a.wall, pf.height, blocked, behaviour) ~= nil
       end
-    end
-    if a.phase == "run" then
+      hold(a, a.hit and "bonk" or "run")
+      if a.phase == "bonk" then se(BONK_SE) end
+    elseif a.phase == "bonk" then
+      -- STATE_MOVE_BONK_START (the knock), then STATE_MOVE_BONK_CHECK: a move
+      -- stopped before its first tile ends there, knock and all
+      hold(a, "bonkcheck")
+    elseif a.phase == "bonkcheck" then
+      hold(a, "bonkcheck")
+      if a.timer == 0 then
+        if a.steps == 0 then a.phase, a.tail = "tail", TPF else a.phase = "back" end
+      end
+    elseif a.phase == "run" then
       a.timer = a.timer + 1
       a.ox, a.oz = a.ox + d[1] * STEP_UNITS, a.oz + d[2] * STEP_UNITS
       if p then p.px, p.py = p.px + d[1] * STEP_UNITS, p.py + d[2] * STEP_UNITS end
-      if a.timer >= 2 then
+      if a.timer >= 2 * TPF then
+        a.timer = 0
         for _, w in ipairs(a.wall) do w.x, w.z = w.x + d[1], w.z + d[2] end
         a.steps = a.steps + 1
         if a.steps >= a.distance then
@@ -244,48 +286,57 @@ local function tick(ow, run)
             p.cellX, p.cellY = p.cellX + d[1] * a.distance, p.cellY + d[2] * a.distance
             p.px, p.py = p.cellX * 16, p.cellY * 16
           end
-          finish(ow, run)
-          return
+          a.ox, a.oz = 0, 0
+          run.pfs = G.platforms(run.state)
+          -- STATE_MOVE_APPLY, then STATE_MOVE_FINISH
+          a.phase, a.tail = "tail", 2 * TPF
+        else
+          a.phase = "check"
         end
-        a.phase = "check"
       end
     elseif a.phase == "back" then
       a.timer = a.timer + 1
       a.ox, a.oz = a.ox - d[1] * STEP_UNITS, a.oz - d[2] * STEP_UNITS
       if p then p.px, p.py = p.px - d[1] * STEP_UNITS, p.py - d[2] * STEP_UNITS end
-      if a.timer >= 2 then
+      if a.timer >= 2 * TPF then
         a.timer = 0
         a.steps = a.steps - 1
         if a.steps <= 0 then
           if p then p.px, p.py = p.cellX * 16, p.cellY * 16 end
-          finish(ow, run)
-          return
+          a.ox, a.oz = 0, 0
+          a.phase, a.tail = "tail", TPF
         end
       end
     end
   else -- rotate: 90 degrees over 16 frames, or out to the extent and back
-    local per = 90 / 16
     if a.phase == "run" then
-      a.turn = a.turn + per
+      a.turn = a.turn + TURN
       a.timer = a.timer + 1
-      if a.timer >= 16 then
+      if a.timer >= 16 * TPF then
         local g = run.state
         g.rot[a.index] = (g.rot[a.index] + 1) % 4
-        finish(ow, run)
-        return
+        a.turn = 0
+        run.pfs = G.platforms(run.state)
+        a.phase, a.tail = "tail", TPF
       end
     elseif a.phase == "bonk" then
-      a.turn = math.min(a.turn + per, a.limit)
+      if a.turn == 0 then se(BONK_SE) end
+      a.turn = math.min(a.turn + TURN, a.limit)
       if a.turn >= a.limit then a.phase = "return" end
     elseif a.phase == "return" then
-      a.turn = a.turn - per
-      if a.turn <= 0 then finish(ow, run) return end
+      a.turn = a.turn - TURN
+      if a.turn <= 0 then a.turn, a.phase, a.tail = 0, "tail", TPF end
+    elseif a.phase == "none" then
+      -- ROTATE_BONK_NO_GO: straight to STATE_ROTATE_FINISH
+      a.phase, a.tail = "tail", TPF
     end
   end
   publish(ow, run)
 end
 
--- a button underfoot starts its action (FieldSystem_ProcessStep's first test)
+-- a button underfoot starts its action (FieldSystem_ProcessStep's first
+-- test): BlackthornGymmick_TryStartBlackthornAction answers TRUE for every
+-- button -- a turn the walls forbid included -- so the step is spent on it
 local function step(ow, run, x, z)
   if run.anim then return true end
   local i, action = G.buttonAt(run.pfs, x, z)
@@ -298,25 +349,30 @@ local function step(ow, run, x, z)
     local verdict, extent = G.rotationCheck(pf, mapQueries(ow))
     Logger.debug("gen4 blackthorn gym: platform %d rotate -- %s%s", i, verdict,
                 extent and (" to %d / 16384"):format(extent) or "")
-    if verdict == "no" then return false end
-    run.anim = { kind = "rotate", index = i, timer = 0, turn = 0,
-                 phase = verdict == "ok" and "run" or "bonk",
+    run.anim = { kind = "rotate", index = i, timer = 0, turn = 0, phase = "init",
+                 first = verdict == "ok" and "run" or (verdict == "no" and "none" or "bonk"),
                  limit = extent and (extent / G.QUARTER * 90) or 90 }
   else
     Logger.debug("gen4 blackthorn gym: platform %d moves %s (direction %d)", i, action,
                 G.moveDirection(pf.rotation, action))
     run.anim = { kind = "move", index = i, steps = 0, distance = pf.width, timer = 0,
                  dir = G.moveDirection(pf.rotation, action), wall = G.leadingWall(pf, action),
-                 phase = "check", ox = 0, oz = 0 }
+                 phase = "init", first = "check", ox = 0, oz = 0 }
   end
+  se(MOVE_SE)
   if p then p.inputLocked = true end
   return true
 end
 
-function G.attach(ow, save)
+-- `keep`: a continue (GymmickInit_Blackthorn alone) -- the platforms where
+-- the save's gymmick has them, not InitBlackthornGym's starting places
+function G.attach(ow, save, keep)
   local def = ow and ow.map and ow.map.def
   if not (def and save) then return nil end
-  save.hgssGymmick = G.initialState()
+  local kept = save.hgssGymmick
+  if not (keep and type(kept) == "table" and kept.kind == "blackthorn" and kept.x and kept.z and kept.rot) then
+    save.hgssGymmick = G.initialState()
+  end
   local run = { state = save.hgssGymmick }
   run.pfs = G.platforms(run.state)
   def.gen4PropFollow = function(o) tick(o, run) end

@@ -321,6 +321,63 @@ local GEN4_MOVE_EFFECTS = {
   [261] = { "TRAPPING_EFFECT" },  -- Whirlpool -- the bind is exact; the extra double damage on a diving target is not modelled
   [263] = { "FLY_EFFECT" },  -- Bounce
   [272] = { "FLY_EFFECT" },  -- Shadow Force
+  -- ...AND THE REST OF SINNOH, named with pret's own names once
+  -- src/battle/Gen4MoveEffects.lua gave every one of them a handler -- the
+  -- fifty-three ids EFFECT_NAMES used to list as the backlog.  Each record
+  -- there cites the effect script it transcribes.
+  [214] = { "HEAL_HALF_REMOVE_FLYING_TYPE" },
+  [215] = { "GRAVITY" },
+  [216] = { "IGNORE_EVATION_REMOVE_DARK_IMMUNE" },
+  [218] = { "SPEED_DOWN_HIT" },
+  [220] = { "FAINT_AND_FULL_HEAL_NEXT_MON" },
+  [222] = { "NATURAL_GIFT" },
+  [223] = { "REMOVE_PROTECT" },
+  [224] = { "EAT_BERRY" },
+  [225] = { "DOUBLE_SPEED_3_TURNS" },
+  [226] = { "RANDOM_STAT_UP_2" },
+  [227] = { "METAL_BURST" },
+  [228] = { "SWITCH_HIT" },
+  [229] = { "DEF_SPD_DOWN_HIT" },
+  [230] = { "DOUBLE_POWER_IF_MOVING_SECOND" },
+  [231] = { "DOUBLE_POWER_IF_TARGET_HIT" },
+  [232] = { "PREVENT_ITEM_USE" },
+  [233] = { "FLING" },
+  [234] = { "TRANSFER_STATUS" },
+  [235] = { "HIGHER_POWER_WHEN_LOW_PP" },
+  [236] = { "PREVENT_HEALING" },
+  [238] = { "SWAP_ATK_DEF" },
+  [239] = { "SUPRESS_ABILITY" },
+  [240] = { "PREVENT_CRITS" },
+  [241] = { "USE_MOVE_FIRST" },
+  [242] = { "USE_LAST_USED_MOVE" },
+  [243] = { "SWAP_ATK_SP_ATK_STAT_CHANGES" },
+  [244] = { "SWAP_DEF_SP_DEF_STAT_CHANGES" },
+  [245] = { "INCREASE_POWER_WITH_MORE_STAT_UP" },
+  [246] = { "FAIL_IF_NOT_USED_ALL_OTHER_MOVES" },
+  [247] = { "SET_ABILITY_TO_INSOMNIA" },
+  [248] = { "HIT_FIRST_IF_TARGET_ATTACKING" },
+  [249] = { "TOXIC_SPIKES" },
+  [250] = { "SWAP_STAT_CHANGES" },
+  [251] = { "RESTORE_HP_EVERY_TURN" },
+  [252] = { "GIVE_GROUND_IMMUNITY" },
+  [253] = { "RECOIL_BURN_HIT" },
+  [254] = { "STRUGGLE" },
+  [257] = { "DOUBLE_DAMAGE_DIVE" },
+  [258] = { "REMOVE_HAZARDS_SCREENS_EVA_DOWN" },
+  [259] = { "TRICK_ROOM" },
+  [260] = { "BLIZZARD" },
+  [262] = { "RECOIL_PARALYZE_HIT" },
+  [265] = { "SP_ATK_DOWN_2_OPPOSITE_GENDER" },
+  [266] = { "STEALTH_ROCK" },
+  [267] = { "CHATTER" },
+  [268] = { "JUDGEMENT" },
+  [269] = { "RECOIL_HALF" },
+  [270] = { "FAINT_FULL_RESTORE_NEXT_MON" },
+  [271] = { "LOWER_SP_DEF_2_HIT" },
+  [273] = { "FLINCH_BURN_HIT" },
+  [274] = { "FLINCH_FREEZE_HIT" },
+  [275] = { "FLINCH_PARALYZE_HIT" },
+  [276] = { "RAISE_SP_ATK_HIT" },
 }
 Gen4Moves.EFFECTS = GEN4_MOVE_EFFECTS
 
@@ -338,65 +395,12 @@ Gen4Moves.HIGH_CRIT = GEN4_HIGH_CRIT
 -- The name pokeplatinum gives each effect, for the rows that stay numbers. Not
 -- behaviour: a label, so the gap report names the work.
 Gen4Moves.EFFECT_NAMES = {
-  -- THIS TABLE IS THE BACKLOG, which is why four ids are missing from the run
-  -- below. `gen4_cache_integrity_check` asserts no id appears both here and in
-  -- GEN4_MOVE_EFFECTS: a fallback name exists PRECISELY because there is no
-  -- handler, so an overlap would mean one of the two tables is lying about
-  -- what is implemented. 217, 219, 221 and 237 moved to GEN4_MOVE_EFFECTS when
-  -- their handlers were written, and their pret names went with them.
-  [214] = "HEAL_HALF_REMOVE_FLYING_TYPE",
-  [215] = "GRAVITY",
-  [216] = "IGNORE_EVATION_REMOVE_DARK_IMMUNE",
-  [218] = "SPEED_DOWN_HIT",
-  [220] = "FAINT_AND_FULL_HEAL_NEXT_MON",
-  [222] = "NATURAL_GIFT",
-  [223] = "REMOVE_PROTECT",
-  [224] = "EAT_BERRY",
-  [225] = "DOUBLE_SPEED_3_TURNS",
-  [226] = "RANDOM_STAT_UP_2",
-  [227] = "METAL_BURST",
-  [228] = "SWITCH_HIT",
-  [229] = "DEF_SPD_DOWN_HIT",
-  [230] = "DOUBLE_POWER_IF_MOVING_SECOND",
-  [231] = "DOUBLE_POWER_IF_TARGET_HIT",
-  [232] = "PREVENT_ITEM_USE",
-  [233] = "FLING",
-  [234] = "TRANSFER_STATUS",
-  [235] = "HIGHER_POWER_WHEN_LOW_PP",
-  [236] = "PREVENT_HEALING",
-  [238] = "SWAP_ATK_DEF",
-  [239] = "SUPRESS_ABILITY",
-  [240] = "PREVENT_CRITS",
-  [241] = "USE_MOVE_FIRST",
-  [242] = "USE_LAST_USED_MOVE",
-  [243] = "SWAP_ATK_SP_ATK_STAT_CHANGES",
-  [244] = "SWAP_DEF_SP_DEF_STAT_CHANGES",
-  [245] = "INCREASE_POWER_WITH_MORE_STAT_UP",
-  [246] = "FAIL_IF_NOT_USED_ALL_OTHER_MOVES",
-  [247] = "SET_ABILITY_TO_INSOMNIA",
-  [248] = "HIT_FIRST_IF_TARGET_ATTACKING",
-  [249] = "TOXIC_SPIKES",
-  [250] = "SWAP_STAT_CHANGES",
-  [251] = "RESTORE_HP_EVERY_TURN",
-  [252] = "GIVE_GROUND_IMMUNITY",
-  [253] = "RECOIL_BURN_HIT",
-  [254] = "STRUGGLE",
-  [257] = "DOUBLE_DAMAGE_DIVE",
-  [258] = "REMOVE_HAZARDS_SCREENS_EVA_DOWN",
-  [259] = "TRICK_ROOM",
-  [260] = "BLIZZARD",
-  [262] = "RECOIL_PARALYZE_HIT",
-  [265] = "SP_ATK_DOWN_2_OPPOSITE_GENDER",
-  [266] = "STEALTH_ROCK",
-  [267] = "CHATTER",
-  [268] = "JUDGEMENT",
-  [269] = "RECOIL_HALF",
-  [270] = "FAINT_FULL_RESTORE_NEXT_MON",
-  [271] = "LOWER_SP_DEF_2_HIT",
-  [273] = "FLINCH_BURN_HIT",
-  [274] = "FLINCH_FREEZE_HIT",
-  [275] = "FLINCH_PARALYZE_HIT",
-  [276] = "RAISE_SP_ATK_HIT",
+  -- THIS TABLE IS THE BACKLOG, and it is empty: the last fifty-three ids
+  -- (214..276 less the dynamic-power four and the semi-invulnerable /
+  -- Whirlpool rows) moved to GEN4_MOVE_EFFECTS when
+  -- src/battle/Gen4MoveEffects.lua wrote their handlers, and their pret
+  -- names went with them.  `gen4_cache_integrity_check` still asserts no id
+  -- is in both tables; an effect that loses its handler comes back here.
 }
 
 Gen4Moves.CLASSES = { [0] = "physical", "special", "status" }

@@ -1599,6 +1599,10 @@ end
 -- derived at import time; a tileset with neither answers false and nothing
 -- about the older generations changes.
 function Map:isIceCell(cx, cy)
+  -- BLACK / WHITE: 0x18 and 0x10 (ov21 0x21AB348; src/world/Gen5Ice.lua)
+  if self.def and self.def.gen5 then
+    return require("src.world.Gen5Ice").isIce(self:cellBehaviour(cx, cy))
+  end
   if not self.tileset.behaviourBytes then return false end
   local b = self:cellBehaviour(cx, cy)
   if not b then return false end

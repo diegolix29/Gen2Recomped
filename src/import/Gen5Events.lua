@@ -15,8 +15,8 @@
 --                 meaning is the object's: sprite 185 (no picture -- 54
 --                 objects) is an invisible blocker that wide and tall
 --                 (Striaton's gym curtains are 7 x 1 at (9, 34/24/14)); a
---                 trainer's @14 is its sight range (the gym's two: 6); on
---                 anyone else the pair is the wander range
+--                 trainer's @14 is its sight range (the gym's two: 6); the
+--                 wander range is @20 / @22 (Gen5MovementTypes)
 --   warp          u16 destination zone, u16 destination warp, ...,
 --                 u16 x @8 and u16 y @12 in pixels (tile * 16 + 8)
 --   trigger       u16 script, u16 value, u16 var, u16 (0 in every one
@@ -67,6 +67,10 @@ function E.parse(d)
       trainerType = u16(d, o + 6), flag = u16(d, o + 8), script = u16(d, o + 10), direction = u16(d, o + 12),
       x = u16(d, o + 28), y = u16(d, o + 30), paramA = u16(d, o + 14), paramB = u16(d, o + 16),
       level = s16(d, o + 34),
+      -- the WANDER BOX, +20 / +22 as on Gen 4 (ObjectEvent.movementRangeX /
+      -- Z): every wanderer in Black carries 1/1, 2/2, 3/3 ... here, every
+      -- route walker its rectangle; -1 is "unlimited" (Gen4MovementTypes)
+      rangeX = s16(d, o + 20), rangeY = s16(d, o + 22),
       rail = railAt(d, o, 24, 28) }
   end
   at = at + nn * 36
@@ -99,6 +103,23 @@ function E.parse(d)
     end
   end
   return out
+end
+
+-- WHICH WAYS A TRAINER OF THIS TYPE LOOKS, as a count: 0, 1 or 4.
+--
+-- Read from the cartridge, not carried over from Sinnoh. The per-object test
+-- (ov21 0x21AE288) first passes the type through ov10 0x216E434 -- a jump
+-- table over 0..13 that answers 1 for 4..8 AND 11..13 and leaves the rest
+-- alone -- and then spots only on 1 (its facing, 0x216D5F8) or 2 (all four,
+-- tried up, down, left, right). So 0, 3, 9 and 10 never spot: the Dreamyard's
+-- four type-10 walkers are talked to. Gen 4's rule stopped at 8, which left
+-- the thirteen type-11/12/13 trainers (Celestial Tower, Wellspring Cave,
+-- Routes 9 and 16) blind.
+function E.sightWays(ty)
+  ty = tonumber(ty) or 0
+  if ty == 2 then return 4 end
+  if ty == 1 or (ty >= 4 and ty <= 8) or (ty >= 11 and ty <= 13) then return 1 end
+  return 0
 end
 
 -- attach(def, events, spriteFor) -- fills a Gen 4-shaped map def's lists
@@ -140,10 +161,13 @@ function E.attach(def, ev, spriteFor)
       local double = n.script >= 5000
       obj.trainer = { id = n.script - (double and 5000 or 3000), battler = double and 1 or 0 }
       obj.sightRange = n.paramA
-      local ty = n.trainerType or 0
-      obj.sightWays = ty == 2 and 4 or ((ty == 1 or (ty >= 4 and ty <= 8)) and 1 or 0)
-    else
-      obj.movementRangeX, obj.movementRangeY = n.paramA or 0, n.paramB or 0
+      obj.sightWays = E.sightWays(n.trainerType)
+    end
+    -- the movement type's box (Gen5MovementTypes): +20 / +22 on every
+    -- object, trainers included -- the pair at +14 is data[], not a range
+    if not obj.gen5Blocker then
+      obj.movementRangeX, obj.movementRangeY = n.rangeX or 0, n.rangeY or 0
+      obj.gen5Range = true
     end
   end
   for _, w in ipairs(ev.warps) do

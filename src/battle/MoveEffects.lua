@@ -20,6 +20,17 @@ local HeldItems = require("src.battle.HeldItems")
 local Weather = require("src.battle.Weather")
 local GameVersion = require("src.core.GameVersion")
 
+-- the moves a Gen 4 Metronome never calls, by number (Counter, Mimic,
+-- Metronome, Mirror Move, Transform, Struggle, Sketch, Thief, Protect,
+-- Destiny Bond, Detect, Endure, Sleep Talk, Mirror Coat, Focus Punch,
+-- Follow Me, Nature Power, Helping Hand, Trick, Assist, Snatch, Covet,
+-- Feint, Me First, Copycat, Switcheroo, Chatter)
+local GEN4_NO_METRONOME = {}
+for _, id in ipairs({ 68, 102, 118, 119, 144, 165, 166, 168, 182, 194, 197, 203, 214, 243,
+                      264, 266, 267, 270, 271, 274, 289, 343, 364, 382, 383, 415, 448 }) do
+  GEN4_NO_METRONOME[id] = true
+end
+
 local MoveEffects = {}
 
 -- pokered's <USER>/<TARGET> text macros print "Enemy " before the
@@ -779,6 +790,13 @@ MoveEffects.full = {
     -- Fail paths DelayFrames then print -- no PlayCurrentMoveAnimation.
     perform = function(ctx)
       local battle, user, target, move = ctx.battle, ctx.user, ctx.target, ctx.move
+      -- PLATINUM / HGSS ROAR / WHIRLWIND: subscript_force_switch_or_flee --
+      -- a trainer's Pokemon is dragged out, in a single or a double
+      -- (src/battle/Gen4SwitchOut.lua)
+      if require("src.core.GameVersion").isGen4()
+         and require("src.battle.Gen4SwitchOut").isForceSwitch(move) then
+        return require("src.battle.Gen4SwitchOut").forceOut(ctx)
+      end
       -- SUCTION CUPS is the one thing in Gen 3 that refuses to be blown out.
       -- TELEPORT is the user's own doing and is not covered by it: the
       -- ability holds the TARGET down, not the user.
@@ -824,6 +842,19 @@ MoveEffects.full = {
   METRONOME_EFFECT = {
     callsMove = function(ctx)
       local order = ctx.data.constants.moveOrder
+      -- GEN 4 keys moves by number, and HeartGold / SoulSilver's cache has no
+      -- moveOrder: the pool is every numbered move, less the ones Metronome
+      -- never calls (sMetronomeBannedMoves -- Gen 5's list below 468)
+      if not order or type(order[1]) == "number" then
+        local pool = {}
+        for id, d in pairs(ctx.data.moves) do
+          if type(id) == "number" and id >= 1 and id <= 467 and type(d) == "table" and not GEN4_NO_METRONOME[id] then
+            pool[#pool + 1] = id
+          end
+        end
+        table.sort(pool)
+        return pool[ctx.rng(1, #pool)]
+      end
       local pick
       repeat
         pick = order[ctx.rng(1, #order)]
@@ -1351,6 +1382,19 @@ do
     end
   end
   for id in pairs(Gen3.accuracyChecked or {}) do ACC_CHECKED[id] = true end
+end
+
+-- SINNOH'S OWN EFFECTS (ids 214..276, src/battle/Gen4MoveEffects.lua), merged
+-- the same non-destructive way.  A Gen 4 cache written before these had
+-- names carries the bare effect number; BattleState:effectRecord maps it.
+do
+  local Gen4 = require("src.battle.Gen4MoveEffects")
+  for _, kind in ipairs({ "primary", "secondary", "full" }) do
+    for id, value in pairs(Gen4[kind] or {}) do
+      if MoveEffects[kind][id] == nil then MoveEffects[kind][id] = value end
+    end
+  end
+  for id in pairs(Gen4.accuracyChecked or {}) do ACC_CHECKED[id] = true end
 end
 
 local RECORDS = {}

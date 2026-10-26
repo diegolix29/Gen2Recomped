@@ -509,6 +509,14 @@ function Gen4Camera.mode()
   -- answers nil, which keeps the oblique pass for the one rung that asks for
   -- the cartridge's own framing.
   if tonumber(chosen) then return "field3d" end
+  -- BLACK AND WHITE'S OWN CAMERA IS A REAL ONE: /a/0/6/0 is a perspective
+  -- camera (53 degrees, a 20-degree half field of view on the default), so
+  -- the cartridge rung draws it with the 3D camera at the ROM's own pitch.
+  -- Through the oblique pass the field came out squashed nearly top-down, and
+  -- stepping to any numeric rung -- by hand, or DRAMATIC_SHAPE's camera levels
+  -- -- swapped that for the real camera: the world seemed to stretch
+  -- vertically with every change of angle.
+  if chosen == "cartridge" and Gen4Camera.currentFamily == "bw" then return "field3d" end
   -- THE DISTORTION WORLD IS DRAWN BY A REAL CAMERA even on the cartridge
   -- rung: its walls and ceilings are planes the oblique pass cannot show, and
   -- its camera turns (src/world/Gen4DistSurface.lua) -- from the map's own
@@ -615,6 +623,12 @@ function Gen4Camera.forMap(def)
                  or (def and def.gen4DistWorld and Gen4Camera.DISTORTION_WORLD)
                  or Gen4Camera.forType(def and def.cameraType, def and def.cameraFamily)
   local chosen = Gen4Camera.externalTilt or Gen4Camera.TILTS[Gen4Camera.chosen]
+  -- which kind of camera the map in hand has; `mode` reads it (Black / White)
+  local family = config and config.family or nil
+  if family ~= Gen4Camera.currentFamily then
+    Gen4Camera.currentFamily = family
+    Gen4Camera.generation = (Gen4Camera.generation or 0) + 1
+  end
   if chosen == "cartridge" then return config end
   local copy = {}
   for k, v in pairs(config) do copy[k] = v end

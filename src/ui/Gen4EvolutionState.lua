@@ -36,6 +36,11 @@
 -- The text callback's SEQ_SE_DP_KON (move forgetting's "Poof!") belongs to
 -- the base's move learning, not here.
 --
+-- THE SPRITES' OWN ANIMATION (PokemonSprite_LoadAnim + InitAnim at
+-- PRINT_POKEMON_IS_EVOLVING, PLAY_EVOLVED_POKEMON_ANIMATION_AND_CRY and
+-- CANCEL_EVOLUTION_ANIMATION): the species' frame script (PicAnim) and its
+-- motion program (src/pokemon/Gen4MonMotion.lua), with each of those cries.
+--
 -- NOT HERE: the cry/anim waits, which are fixed frame counts rather than the
 -- cry's real length.
 
@@ -106,6 +111,26 @@ function State.new(game, mon, species, onDone, via, evo)
   self.win = { top = 0, bottom = 160 }
   self.f = 0
   return self
+end
+
+-- start the frame script and motion program of `which` ('old' / 'new')
+function State:playAnim(which)
+  local mon = self.mon
+  local species = which == 'new' and self.newSpecies or mon.species
+  local okA, anim = pcall(require('src.pokemon.PicAnim').new, self.game.data, species, mon, 'front')
+  if okA and anim then pcall(anim.start, anim) end
+  local def = self.game.data.pokemon and self.game.data.pokemon[species]
+  local pa = def and def.picAnim
+  local motion = pa and pa.motion and require('src.pokemon.Gen4MonMotion').new(self.game.data, pa.motion, pa.startDelay or 0)
+  self.anims = self.anims or {}
+  self.anims[which] = { pic = okA and anim or nil, motion = motion }
+end
+
+function State:tickAnims()
+  for _, a in pairs(self.anims or {}) do
+    if a.pic then pcall(a.pic.update, a.pic, 1 / 60) end
+    if a.motion then a.motion:update() end
+  end
 end
 
 function State:uiSize() return W, H end
@@ -183,6 +208,7 @@ function State:begin()
   self:spriteFade(16, 0, 0)
   self.spriteColour = 'black'
   require('src.core.Sound').playCry(self.game.data, self.mon.species)
+  self:playAnim('old')
   self:say('evolving', function() self.phase, self.t = 'delay', 0
     local Music = require('src.core.Music')
     Music.play(self.game.data, Music.special(self.game.data, 'evolution'))
@@ -238,6 +264,7 @@ function State:update()
     end
   end
   self.t = self.t + 1
+  self:tickAnims()
   self:tickFade()
   self:tickSpriteFade()
   if self.growState then self:shrinkGrow() end
@@ -286,6 +313,7 @@ function State:update()
   elseif p == 'reveal' then
     if not self:fadeBusy() and not self:particlesActive() then
       require('src.core.Sound').playCry(self.game.data, self.newSpecies)
+      self:playAnim('new')
       self.phase = 'done'
       self:finish()
     end
@@ -302,6 +330,7 @@ function State:update()
     elseif self.canceledBack and not self:fadeBusy() and not self.stoppedSaid then
       self.stoppedSaid = true
       require('src.core.Sound').playCry(self.game.data, self.mon.species)
+      self:playAnim('old')
       self.phase = 'done'
       self:say('stopped', function()
         self.game.stack:pop()
@@ -329,8 +358,13 @@ local function tint()
   return tintShader or nil
 end
 
-function State:drawMon(img, scale256, level, colour)
+function State:drawMon(img, scale256, level, colour, which)
   if not img or scale256 <= 0 then return end
+  local live = which and self.anims and self.anims[which]
+  if live and live.pic then
+    local okF, frame = pcall(live.pic.image, live.pic, self.mon)
+    if okF and frame then img = frame end
+  end
   local g = love.graphics
   local w, h = img:getDimensions()
   local fw = math.min(w, 80)
@@ -346,7 +380,8 @@ function State:drawMon(img, scale256, level, colour)
     g.setShader(sh)
   end
   g.setColor(1, 1, 1, 1)
-  g.draw(img, q, MON_X, MON_Y, 0, s, s, fw / 2, math.min(h, 80) / 2)
+  if live and live.motion and s == 1 then live.motion:draw(img, q, MON_X, MON_Y, fw, math.min(h, 80))
+  else g.draw(img, q, MON_X, MON_Y, 0, s, s, fw / 2, math.min(h, 80) / 2) end
   g.setShader(prev)
 end
 
@@ -408,10 +443,10 @@ function State:draw()
   local s = self.sprite or { level = 0 }
   local colour = self.spriteColour or 'white'
   if self.canceled or self.phase == 'opening' or self.phase == 'delay' then
-    self:drawMon(self.oldSprite, self.scale[1], s.level, colour)
+    self:drawMon(self.oldSprite, self.scale[1], s.level, colour, 'old')
   else
-    self:drawMon(self.oldSprite, self.scale[1], s.level, colour)
-    self:drawMon(self.newSprite, self.scale[2], s.level, colour)
+    self:drawMon(self.oldSprite, self.scale[1], s.level, colour, 'old')
+    self:drawMon(self.newSprite, self.scale[2], s.level, colour, 'new')
   end
   self:drawParticles()
   if #old > 0 then g.setScissor(unpack(old)) else g.setScissor() end

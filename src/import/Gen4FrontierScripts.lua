@@ -96,7 +96,8 @@ local function readMovement(b, at)
   return out
 end
 
-function M.decodeMember(b, member)
+function M.decodeMember(b, member, ops)
+  ops = ops or C.ops
   local out = { entries = {}, blocks = {}, movements = {}, data = {}, unknown = {} }
   local at = 0
   while at + 3 < #b do
@@ -121,7 +122,7 @@ function M.decodeMember(b, member)
     while pc + 1 < #b and guard < 2000 do
       guard = guard + 1
       local op = u16(b, pc)
-      local def = C.ops[op]
+      local def = ops[op]
       if not def then
         out.unknown[#out.unknown + 1] = { at = pc, op = op }
         break
@@ -164,9 +165,34 @@ function M.decodeMember(b, member)
   return out
 end
 
+-- HEARTGOLD / SOULSILVER: the same eleven members in /a/1/8/2 (overlay 80's
+-- ov80_0222AA40 reads NARC 0xB6), and the same byte code -- Platinum's
+-- opcodes 0-201 decode every live script -- with the menu origins at 206 /
+-- 207 where Platinum has them at 202 / 203 (FrtCmd_206 / 207: one u8 each,
+-- to the menu at +0x60)
+M.HGSS_NARC = "/a/1/8/2"
+function M.hgssOps()
+  local ops = {}
+  for k, v in pairs(C.ops) do if k < 202 then ops[k] = v end end
+  ops[206] = C.ops[202]
+  ops[207] = C.ops[203]
+  return ops
+end
+
 function M.read(rom)
   local raw = rom:read(M.NARC)
-  if not raw then return nil, "fr_script.narc missing" end
+  if not raw then
+    raw = rom:read(M.HGSS_NARC)
+    if not raw then return nil, "fr_script.narc missing" end
+    local narc = require("src.import.NarcArchive").parse(raw)
+    local ops = M.hgssOps()
+    local out = { members = {}, names = M.MEMBERS, family = "hgss" }
+    for i = 0, narc.count - 1 do
+      local b = narc:get(i)
+      if b and #b > 4 then out.members[i] = M.decodeMember(b, i, ops) end
+    end
+    return out
+  end
   local narc = require("src.import.NarcArchive").parse(raw)
   local out = { members = {}, names = M.MEMBERS }
   for i = 0, narc.count - 1 do

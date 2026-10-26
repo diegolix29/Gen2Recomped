@@ -127,6 +127,86 @@ function M.back(arc, n)
   return { width = w, height = h, rgba = table.concat(out) }
 end
 
+-- THE THROW. The back the battle draws is the multi-cell animation of +4 / +5
+-- (RCMN / RAMN, over the +1 parts, +2 cells, +3 cell anims): sequence 0 the
+-- standing pose with both arms, sequence 1 the send-out -- the wind-up, the
+-- throw, the lean after it (29 pictures over 100 frames for Hilbert). Cell 0
+-- alone (M.back) is the figure WITHOUT its throwing arm. Baked here as a strip
+-- through Gen5MonAnim, placed so the multi-cell's origin lands where cell 0's
+-- does in the old still: `dx, dy` from the battle position to the strip's top
+-- left, as for Gen 4's throw (RomExtractorGen4).
+function M.backThrow(arc, n)
+  local A = require("src.import.Gen5MonAnim")
+  local G = require("src.import.Gen4Graphics")
+  local Lz = require("src.import.Gen5Lz")
+  local function member(i)
+    local b = arc:get(i)
+    if not b or #b == 0 then return nil end
+    if Lz.isCompressed(b) then b = Lz.decompress(b) end
+    return b
+  end
+  local base = n * M.STRIDE
+  local set = {}
+  set.cells = A.parseCells(member(base + 2)); set.anim = A.parseAnim(member(base + 3))
+  set.multiCells = A.parseMultiCells(member(base + 4)); set.mcAnim = A.parseAnim(member(base + 5))
+  set.sheet = A.parseSheet(member(base + 1))
+  set.normalPalette = G.palette(member(base + 7)); set.palette = set.normalPalette
+  if not (set.cells and set.anim and set.multiCells and set.mcAnim and set.sheet and set.palette) then return nil end
+  if (set.mcAnim.sequenceCount or 0) < 2 then return nil end
+  local anim = A.bake(nil, n, "back", false, { set = set, sequence = 1, crop = "bounds", origin = { 80, 120 } })
+  if not (anim and anim.count and anim.count > 0) then return nil end
+  -- REGISTERED ON THE PICTURE, not on the origins: the multi-cell's origin is
+  -- not cell 0's, so the strip's first frame is matched against the old still
+  -- (the body in it is the same pixels) and placed where that still drew --
+  -- centred on the battle position
+  local still = M.back(arc, n)
+  local f1 = anim.frames[1]
+  if not (still and f1) then return nil end
+  local function opaque(img, x, y)
+    if x < 0 or y < 0 or x >= img.width or y >= img.height then return nil end
+    local o = (y * img.width + x) * 4
+    if img.rgba:byte(o + 4) == 0 then return nil end
+    return img.rgba:sub(o + 1, o + 3)
+  end
+  local function top(img)
+    for y = 0, img.height - 1 do
+      for x = 0, img.width - 1 do if opaque(img, x, y) then return x, y end end
+    end
+  end
+  local sx, sy = top(still)
+  local fx, fy = top(f1)
+  if not (sx and fx) then return nil end
+  local best, bx, by = -1, fx - sx, fy - sy
+  for oy = fy - sy - 6, fy - sy + 6 do
+    for ox = fx - sx - 6, fx - sx + 6 do
+      local hit = 0
+      for y = 0, still.height - 1, 2 do
+        for x = 0, still.width - 1, 2 do
+          local a = opaque(still, x, y)
+          if a and a == opaque(f1, x + ox, y + oy) then hit = hit + 1 end
+        end
+      end
+      if hit > best then best, bx, by = hit, ox, oy end
+    end
+  end
+  -- the still's top left is the position less half its size; frame pixel
+  -- (bx, by) is the still's (0, 0)
+  local dx = -still.width / 2 - bx
+  local dy = -still.height / 2 - by
+  return anim, dx, dy
+end
+
+-- the release: the ball leaves the hand before the long hold that ends the
+-- throw (Gen 4's 8 / 16 / 6 / 2 / 4 / 2 / 2 / 52 lets go 32 frames in)
+function M.releaseTick(play)
+  local longest, at, t = 0, 0, 0
+  for _, p in ipairs(play or {}) do
+    if p.dur > longest then longest, at = p.dur, t end
+    t = t + p.dur
+  end
+  return math.max(1, math.floor(at * 0.8 + 0.5)), t
+end
+
 -- build(x, trainers) -> index; saves battle/trainer/NNN.png and stamps
 -- `pic` on every trainer row whose class has a picture
 function M.build(x, trainers, classPics)
@@ -153,6 +233,19 @@ function M.build(x, trainers, classPics)
     local image = M.back(backs, i)
     local entry = image and x:saveImage(("battle/trainer_back/%03d"):format(i), image)
     if entry then index.backs[i] = entry end
+    -- ...and the throw, keyed by that still's path (M.backThrow)
+    local okT, anim, dx, dy = pcall(M.backThrow, backs, i)
+    if entry and okT and anim then
+      local A = require("src.import.Gen5MonAnim")
+      local strip = x:saveImage(("battle/trainer_back_throw/%03d"):format(i), A.strip(anim))
+      if strip then
+        local release, total = M.releaseTick(anim.play)
+        index.backThrows = index.backThrows or {}
+        index.backThrows[entry.path] = { path = strip.path, width = anim.width, height = anim.height,
+          count = anim.count, play = anim.play, dx = dx, dy = dy, release = release, total = total,
+          source = ("ROM:%s[%d] RAMN sequence 1"):format(M.BACK_PATH, i * M.STRIDE + 5) }
+      end
+    end
   end
   local function picFor(class)
     local p = classPics and classPics[class]

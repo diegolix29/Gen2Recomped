@@ -439,6 +439,13 @@ end
 -- change.  Only the battle surface is affected; the overworld is unchanged.
 function BattleState:wantsFillScale()
   local options = self.game and self.game.save and self.game.save.options
+  -- SINGLE-SCREEN DS BATTLES FILL unless the player chose a size: they are
+  -- drawn supersampled (src/render/SuperSample.lua), so a fractional fit no
+  -- longer costs even pixels, and the panel under them (Gen4Battle.PANEL_H)
+  -- would otherwise knock the whole-number letterbox down a step
+  if (options == nil or options.battleFit == nil) and Gen4Battle.singlePanel(self) then
+    return true
+  end
   return options and options.battleFit == "fill" or false
 end
 
@@ -663,7 +670,9 @@ function BattleState:uiSize()
   -- 512x256 with the visible half 256x192, and the platform and battler
   -- positions are absolute pixels on that.
   if self:gen4Layout() then
-    return self:gen4SurfaceWidth(), Gen4Battle.HEIGHT
+    -- ...plus the single-screen panel under it (Gen4Battle.PANEL_H)
+    local panel = Gen4Battle.singlePanel(self) and Gen4Battle.PANEL_H or 0
+    return self:gen4SurfaceWidth(), Gen4Battle.HEIGHT + panel
   end
   return 160, 144
 end
@@ -1937,6 +1946,17 @@ function BattleState:sendOutSecondPair()
     if second then
       self:placeBattler(BattleState.POS.PLAYER_RIGHT,
                         makeBattler(game.data, second, true, game.save))
+    elseif GameVersion.isGen4() then
+      -- ...EXCEPT ON PLATINUM, where an escort makes it reachable: the
+      -- partner flag forces hasTwoAliveMons, so a same-id double spots a
+      -- player with one Pokemon and fights BATTLE_TYPE_TRAINER_DOUBLES
+      -- without the partner (Encounter_NewVsTrainer).  BattleSystem's doubles
+      -- setup (battle_main.c) looks past slot 0 for battler 2's Pokemon,
+      -- finds none, and that battler is an empty, fainted place -- the foe
+      -- still sends two.  So the double stands with the right-hand slot
+      -- empty, the state a double is in after that slot faints with nobody
+      -- to replace it.
+      self:syncSides()
     else
       -- one usable mon and a double battle is a state the cartridge refuses
       -- to enter (special 64 answers non-zero and the approach is called
@@ -3780,6 +3800,13 @@ function BattleState:enter()
   end
   self.playerBackPic = getImage(backPath,backPalette,backTrueColor)
   self.showPlayerBack = self.playerBackPic ~= nil
+  -- THE DS THROW (Gen4BackThrow / Gen5TrainerPics.backThrow): the strip the
+  -- back plays at the send-out, found by the still's own path
+  do
+    local throws = ((self.data or {}).gen4_trainer_sprites or {}).backThrows
+    self.dsBackThrowRec = type(throws) == "table" and backPath and throws[backPath] or nil
+    self.dsThrow = nil
+  end
   -- ...AND THE OTHER THREE FRAMES OF THAT SHEET (#407).  The single pic is
   -- still what the placement and the scale are measured from; the strip is
   -- only ever the texture the throw draws out of.
@@ -4129,7 +4156,13 @@ function BattleState:playerHasPP(who)
   who = who or self:menuBattler()
   if not (who and who.curMoves) then return false end
   for i, mv in ipairs(who.curMoves) do
-    if mv.pp > 0 and who.disabledSlot ~= i then return true end
+    -- (PLATINUM / HGSS: a move Gravity or Heal Block refuses is no more a
+    -- choice than a disabled one -- CHECK_INVALID_ALL)
+    if mv.pp > 0 and who.disabledSlot ~= i
+       and not (self.g4fx and require("src.battle.Gen4MoveEffects")
+                  .menuRefusal(self, who, self.data.moves[mv.id])) then
+      return true
+    end
   end
   return false
 end
@@ -4502,6 +4535,7 @@ function BattleState:update(dt)
     if dir then
       self.menuIndex, self.gen4MenuColumn =
         Gen4Battle.actionMove(self.menuIndex, dir, self.gen4MenuColumn)
+      if self.palPark then require("src.battle.Gen4PalParkBattle").skipRow(self, dir) end
     end
     if input:wasPressed("a") then
       self:safariAction(({ "ball", "bait", "rock", "run" })[self.menuIndex])
@@ -4719,6 +4753,11 @@ function BattleState:update(dt)
       elseif self:tormentBlocks(chooser, mvDef) then
         self:say(Strings("%s can't use the\nsame move twice in\na row due to the\nTORMENT!",
                          chooser.name))
+        self.phase = "messages"
+        self.afterQueue = "menu"
+      elseif self.g4fx and require("src.battle.Gen4MoveEffects").menuRefusal(self, chooser, mvDef) then
+        -- PLATINUM / HGSS: Gravity and Heal Block (BattleSystem_CanUseMove)
+        self:say(require("src.battle.Gen4MoveEffects").menuRefusal(self, chooser, mvDef))
         self.phase = "messages"
         self.afterQueue = "menu"
       elseif mv.pp <= 0 then
@@ -6955,6 +6994,10 @@ function BattleState:moveDef(moveInst)
   -- a BW battle's Struggle is the cartridge's own move 165
   return self.data.moves[moveInst.id]
          or (moveInst.struggle and self.bw and self.bw.struggle) or nil
+         -- PLATINUM / HGSS: Struggle is the cartridge's move 165 (effect 254)
+         or (moveInst.struggle and self.data.moves[165]
+             and self.data.moves[165].gen4Effect == 254 and self.data.moves[165])
+         or nil
 end
 
 -- the merged move_effects record for an effect id; the module records
@@ -6965,6 +7008,11 @@ function BattleState:effectRecord(effect)
   -- (src/battle/Gen5MoveEffects.lua; Transform is BW_TRANSFORM)
   if self.bw and type(effect) == "string" and effect:sub(1, 3) == "BW_" then
     return require("src.battle.Gen5MoveEffects").record(self, effect)
+  end
+  -- PLATINUM / HGSS: a cache written before Sinnoh's effects had handlers
+  -- keeps the bare effect number (214..276); Gen4MoveEffects names it
+  if type(effect) == "number" and effect >= 214 and GameVersion.isGen4() then
+    effect = require("src.battle.Gen4MoveEffects").nameOf(effect)
   end
   local effects = self.data.move_effects
   if effects then return effects[effect] end
@@ -7024,6 +7072,13 @@ function BattleState:accuracyRoll(move, user, target, accuracyRaw)
   if user.lockedOn == target then
     user.lockedOn = nil
     return true
+  end
+  -- PLATINUM / HGSS: Gravity, Miracle Eye, a Micle Berry eaten by Pluck
+  -- (src/battle/Gen4MoveEffects.lua)
+  if self.g4fx then
+    local hit
+    hit, accuracyRaw = require("src.battle.Gen4MoveEffects").accuracy(self, move, user, target, accuracyRaw)
+    if hit ~= nil then return hit end
   end
   -- BLACK AND WHITE: Telekinesis, Gravity, the Micle Berry (Gen5MoveRules)
   if self.bw then
@@ -7170,6 +7225,11 @@ function BattleState:computeDamage(user, target, move, opts)
         opts.spread = (aliveOn(true) + aliveOn(false) - 1) >= 2
       end
     end
+  end
+  -- PLATINUM / HGSS: Lucky Chant, Me First, and the immunities Gravity,
+  -- Magnet Rise and Miracle Eye move (src/battle/Gen4MoveEffects.lua)
+  if self.g4fx then
+    opts = require("src.battle.Gen4MoveEffects").damageOpts(self, user, target, move, opts or {})
   end
   -- BLACK AND WHITE: the battle rides along for the immunities its field
   -- and items lift (Gravity, Ring Target -- Damage.compute)
@@ -7480,12 +7540,27 @@ function BattleState:resolveTurn(playerAction)
   -- BLACK AND WHITE: who chose what, Quick Claw / Custap, Pursuit before a
   -- switch (src/battle/Gen5MoveRules.lua)
   if self.bw then order = require("src.battle.Gen5MoveRules").arrange(self, order) end
+  -- WHAT EACH BATTLER CHOSE, for the moves that read it before it acts
+  -- (Sucker Punch, Me First -- src/battle/Gen4MoveEffects.lua)
+  self.turnActions = { turn = self.turnCount }
+  for _, entry in ipairs(order) do
+    if entry[1] then self.turnActions[entry[1]] = entry[3] end
+  end
 
   self.phase = "messages"
   self.afterQueue = "menu"
 
-  for _, entry in ipairs(order) do
+  -- PLATINUM / HGSS: a TRICK ROOM used this turn resorts everyone still
+  -- waiting (BattleControllerPlayer_MoveEnd -> SortMonActionOrder), so each
+  -- slot reads its entry from `order` when it runs, after that resort
+  -- (src/battle/Gen4MoveEffects.lua G4.reorderRest)
+  if pClaw or eClaw then order.claw = pClaw and self.player or self.enemy end
+  for slot, entry in ipairs(order) do
     self:act(function()
+      if self.g4fx then
+        require("src.battle.Gen4MoveEffects").reorderRest(self, order, slot)
+        entry = order[slot]
+      end
       -- WHO IT HITS IS DECIDED HERE, not when the turn was sorted.
       --
       -- Between the sort and this entry running, the target can faint --
@@ -7608,6 +7683,12 @@ function BattleState:switchPlayerInto(pos, newMon)
     incoming.perishTurns = pass.perishTurns
     previous.batonPass, previous.wantsSwitch = nil, nil
   end
+  -- PLATINUM / HGSS: the rest of what Sinnoh's Baton Pass keeps -- Aqua Ring,
+  -- Magnet Rise, Embargo, Heal Block, Ingrain ... (Gen4MoveEffects.batonPass)
+  if previous and previous.g4Baton then
+    require("src.battle.Gen4MoveEffects").applyBaton(self, incoming, previous.g4Baton)
+    previous.g4Baton = nil
+  end
   -- SendOutMon (core.asm:1761-1762): player's send-out clears the
   -- foe's USING_TRAPPING_MOVE -- Wrap/Bind/etc. ends on any switch.  With
   -- four on the field that is every foe, not "the" foe.
@@ -7692,6 +7773,11 @@ end
 -- and a GROUDON's sun is up from the first turn.
 function BattleState:abilitySwitchIn(battler)
   if not (battler and battler.mon and battler.mon.hp > 0) then return end
+  -- PLATINUM / HGSS: Toxic Spikes come before Spikes (subscript_hazards_check)
+  if self.g4fx then
+    require("src.battle.Gen4MoveEffects").onSwitchIn(self, battler, "pre")
+    if not (battler.mon and battler.mon.hp > 0) then return end
+  end
   -- SPIKES first: the hazard is paid on arrival, before the ability speaks.
   -- An eighth of maximum HP, and a FLYING or LEVITATing Pokemon never lands
   -- on them at all.
@@ -7701,10 +7787,19 @@ function BattleState:abilitySwitchIn(battler)
     for _, t in ipairs(battler.curTypes or {}) do
       if t == "FLYING" then grounded = false end
     end
+    -- PLATINUM / HGSS: subscript_hazards_check decides -- Magic Guard spares
+    -- it, Gravity and an Iron Ball bring a Flying / Levitate Pokemon down onto
+    -- them, Magnet Rise lifts one off (Gen4MoveEffects.spikesLand)
+    if GameVersion.isGen4() then
+      grounded = require("src.battle.Gen4MoveEffects").spikesLand(self, battler)
+    end
     if grounded then
       local max = (battler.mon.stats and battler.mon.stats.hp) or battler.mon.hp
       self:sayNext(Strings("%s is hurt\nby SPIKES!", displayName(battler)))
-      self:applyDamage(battler, math.max(1, math.floor(max / 8)))
+      -- Hoenn / Sinnoh layers (Gen3MoveEffects SPIKES_EFFECT): maxHP /
+      -- ((5 - layers) * 2) -- 8, 6, 4; Gen 2's single layer is `true`
+      local layers = tonumber(side.spikes) or 1
+      self:applyDamage(battler, math.max(1, math.floor(max / ((5 - math.min(3, layers)) * 2))))
       self:drainNext()
       if battler.mon.hp <= 0 then
         self:onFaint(battler)
@@ -7717,6 +7812,11 @@ function BattleState:abilitySwitchIn(battler)
     require("src.battle.Gen5MoveEffects").onSwitchIn(self, battler)
     if not (battler.mon and battler.mon.hp > 0) then return end
     require("src.battle.Gen5HoldItems").onSwitchIn(self, battler)
+  end
+  -- PLATINUM / HGSS: Stealth Rock, then the Healing Wish / Lunar Dance heal
+  if self.g4fx then
+    require("src.battle.Gen4MoveEffects").onSwitchIn(self, battler, "post")
+    if not (battler.mon and battler.mon.hp > 0) then return end
   end
   -- FORECAST first: a CASTFORM arriving into rain is a WATER type before
   -- anything else on the field gets to speak.
@@ -8241,6 +8341,9 @@ function BattleState:endOfTurn()
     self:holdItemTrigger(self.enemy, "turn")
   end
   self:gen3CountersTick()
+  -- PLATINUM / HGSS: Tailwind, Lucky Chant, Gravity, Aqua Ring, Magnet Rise,
+  -- Heal Block, Embargo (src/battle/Gen4MoveEffects.lua)
+  if self.g4fx then require("src.battle.Gen4MoveEffects").endOfTurn(self) end
   self:tickTokens()
   self:roamerFlees()
   -- BATTLE ARENA: the third turn is over and both are standing -- judgment
@@ -8907,12 +9010,30 @@ function BattleState:gen4SendOut(battler)
   local mon = battler.mon
   local name = Gen4Battle.ballThrowFor(mon and (mon.ball or mon.pokeball))
 
-  self.gen4Ball = Gen4BallAnim.new({
-    ball = name,
-    mode = "release",
-    side = "player",
-    to = { x = pos.x, y = pos.y },
-  })
+  local function release()
+    self.gen4Ball = Gen4BallAnim.new({
+      ball = name,
+      mode = "release",
+      side = "player",
+      to = { x = pos.x, y = pos.y },
+    })
+  end
+  -- THE DS TRAINER THROWS IT FIRST: the back plays its send-out (wind-up,
+  -- throw, follow-through) and the ball leaves at the throw's release; the back
+  -- slides off when the throw is done (BattleState:update, `dsThrow`)
+  local rec = self.dsBackThrowRec
+  if rec and self.showPlayerBack and not self:isDouble() then
+    self.dsThrow = { rec = rec, tick = 0 }
+    self.nextInsert = (self.nextInsert or 0) + 1
+    table.insert(self.queue, self.nextInsert, { wait = rec.release })
+    self.nextInsert = self.nextInsert + 1
+    table.insert(self.queue, self.nextInsert, { fn = function()
+      release()
+      table.insert(self.queue, 1, { wait = self.gen4Ball:estimate() })
+    end })
+    return true
+  end
+  release()
   -- The trainer has thrown it, so the back pic goes now rather than staying up
   -- behind the Pokemon it just released.
   if self.showPlayerBack then
@@ -9145,6 +9266,17 @@ function BattleState:updateFx()
   if self.backThrow and self.backThrow.playing then
     self.backThrow.tick = self.backThrow.tick + 1
   end
+  -- the DS send-out throw (gen4SendOut): when it is done, the back slides off
+  if self.dsThrow then
+    self.dsThrow.tick = self.dsThrow.tick + 1
+    if self.dsThrow.tick >= (self.dsThrow.rec.total or 0) then
+      self.dsThrow = nil
+      if self.showPlayerBack then
+        self.showPlayerBack = false
+        self:slidePic("back")
+      end
+    end
+  end
   if self.backWalkOff and self.backWalkOff > 0 then
     self.backWalkOff = self.backWalkOff - 1
     if self.backWalkOff == 0 then
@@ -9343,6 +9475,12 @@ function BattleState:executeAction(user, target, action)
   if not (user and user.mon) then return end
   if user.mon.hp <= 0 then return end
   if not action then return end
+  -- PLATINUM / HGSS: dragged out or switched out earlier this turn (Roar,
+  -- U-turn, Baton Pass -- src/battle/Gen4SwitchOut.lua): its chosen action
+  -- left the field with it
+  if user.g4Gone then return end
+  -- this battler's action is under way (Payback, Sucker Punch, Me First)
+  user.actedTurn = self.turnCount
   -- A SWITCH NEEDS NO TARGET.  Everything else does, and with four on the
   -- field the one it was aimed at can already be off it -- the entry's
   -- target is resolved as the entry runs, and there may be nobody left to
@@ -9478,6 +9616,10 @@ function BattleState:executeAction(user, target, action)
     end
 
     if self:statusInterrupt(user, target) then return end
+    -- PLATINUM / HGSS: Gravity and Heal Block refuse a move outright
+    if self.g4fx and require("src.battle.Gen4MoveEffects").beforeMove(self, user, target, action) then
+      return
+    end
     -- ONE MOVE, POSSIBLY SEVERAL TARGETS.
     --
     -- The cartridge prints "X used SURF!" once and then resolves the move
@@ -9892,7 +10034,7 @@ function BattleState:performMove(user, target, moveInst, isCalled, suppressAnima
 
   -- PROTECT stops a status move too, and it is the only check that has to
   -- happen before the effect record is consulted at all.
-  if target.protecting and move.power == 0 and move.protectAffected ~= false
+  if target.protecting and move.power == 0 and EffectRegistry.protectAffected(move)
      and record and record.kind == "primary" then
     self:cancelMoveAnim()
     self:sayNext(Strings("%s\nprotected itself!", displayName(target)))
@@ -9927,6 +10069,10 @@ function BattleState:performMove(user, target, moveInst, isCalled, suppressAnima
     user.rampRun, user.rampMove = nil, nil
   end
   user.lastMove = move.id
+  -- PLATINUM / HGSS: Copycat's movePrev, Last Resort's tally
+  if move.gen4Effect ~= nil then
+    require("src.battle.Gen4MoveEffects").onMoveUsed(self, user, move)
+  end
 
   -- charge moves: first turn just charges; the text comes from the move
   -- record (chargeText) and the invulnerability from semiInvulnerable,
@@ -10116,6 +10262,14 @@ function BattleState:applyDamage(target, dmg, fromMove)
   if endured or band then dmg = math.max(0, target.mon.hp - 1) end
   local dealt = math.min(dmg, target.mon.hp)
   if fromMove and dealt > 0 then target.hurtThisTurn = true end
+  -- PLATINUM / HGSS: Assurance reads any HP lost this turn, Metal Burst the
+  -- last hit and who dealt it
+  if dealt > 0 then
+    target.g4DamagedTurn = self.turnCount
+    if fromMove then
+      target.g4HitTurn, target.g4HitDamage, target.g4HitBy = self.turnCount, dealt, self.lastAttacker
+    end
+  end
   target.mon.hp = target.mon.hp - dealt
   if dealt > 0 then self:drainNext(target, target.mon.hp) end -- animate the bar down
   if endured then
@@ -11264,6 +11418,8 @@ end
 -- where each one is in the cartridge. The player's command, then the wild
 -- Pokemon's own: flee, or watch carefully.
 function BattleState:gen4SafariAction(choice)
+  -- PAL PARK'S CATCHING SHOW (src/battle/Gen4PalParkBattle.lua)
+  if self.palPark then return require("src.battle.Gen4PalParkBattle").action(self, choice) end
   local G = require("src.battle.Gen4Safari")
   local st, sf = self.safari, self.gen4Safari
   local function line(id, fallback, ...)
@@ -12446,7 +12602,11 @@ function BattleState:finish()
   -- here it did not, so say so rather than silently papering over it.
   -- The old-man / PROF.OAK demo also skips it: the party never fought
   -- (Yellow's Pallet intro runs before the player owns a mon at all).
+  -- A tag battle's partner can win it alone after the player's side has
+  -- fainted: the cartridge calls that a win (the Battle Tower's multi rooms
+  -- go on, the partner heals in the field), so it stands.
   if self.result ~= "lose" and not self.demo and not self.pokedudeDemo
+     and not (self.ally and self.result == "win")
      and not Party.firstHealthy(self.game.save.party) then
     Logger.warn("battle finished %s with no healthy party; forcing blackout",
                 tostring(self.result))
@@ -14427,7 +14587,15 @@ end
 function BattleState:draw()
   if self:wideLayout() then return WideBattle.draw(self) end
   if self:gen3Layout() then return Gen3Battle.draw(self) end
-  if self:gen4Layout() then return Gen4Battle.draw(self) end
+  if self:gen4Layout() then
+    -- SINGLE-SCREEN PLAY (the second screen off or stowed): the one picture is
+    -- the whole window, so it is drawn at the window's scale with smoothed
+    -- letters (src/render/SuperSample.lua) instead of blown up afterwards
+    if not Gen4Battle.bottomScreenUp(self.game) then
+      return require("src.render.SuperSample").draw(self.game, self, function() Gen4Battle.draw(self) end)
+    end
+    return Gen4Battle.draw(self)
+  end
   return self:drawClassic()
 end
 

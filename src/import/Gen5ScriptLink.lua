@@ -275,10 +275,11 @@ L.ALIASES = {
   -- the message by the player's gender (Burgh's "your name is..." 3 / 4)
   [0x069] = { "bwspawnobject", "wwwwww" },
   [0x048] = { "gendermsgbox", "bbwwwww", { 3, 4 } },
-  -- Castelia Gym (overlay 38): 0x18C <gate var> animates one wall or
-  -- trainer pop-out, 0x18F <eight vars> lays the walls out from the switch
-  -- vars on entry. Both are presentation only -- the switch scripts set
-  -- their own vars and the walls are walked through (Gen5Field).
+  -- Castelia Gym (overlay 38): 0x18C <n> is switch n's press (and its saved
+  -- word), 0x18D <n> a press that may open a wall, 0x18F <eight vars> lays
+  -- the walls out on entry (overlay 37). Lowered as nothing: the switch
+  -- scripts set their own vars, and src/world/Gen5CasteliaGym.lua opens the
+  -- walls from them and keeps the saved words.
   [0x18C] = { "noop", "w" }, [0x18F] = { "noop", "wwwwwwww" },
   -- (0x18D / 0x18E <gate var>: the same overlay's other two animations)
   [0x18D] = { "noop", "w" }, [0x18E] = { "noop", "w" },
@@ -407,6 +408,12 @@ L.ALIASES = {
   [0x1A2] = { "bwe4lift", "w" },
   [0x196] = { "bwdragoninit", "" }, [0x19A] = { "bwdragonflip", "ww" },
   [0x199] = { "bwdragonsettle", "w" }, [0x197] = { "noop", "ww" }, [0x198] = { "noop", "w" },
+  -- THE GYMS' ANIMATIONS (src/script/Gen5GymFxCommands.lua, drawn by
+  -- src/world/Gen5GymFx.lua): 0x185 <n> Nacrene's bookcase, 0x187 / 0x189
+  -- <switch> Striaton's floor switch down / up, 0x188 <row> its curtain --
+  -- each parks the script until its animation ends
+  [0x185] = { "bwgymop", "w" }, [0x187] = { "bwgymop", "w" }, [0x188] = { "bwgymop", "w" },
+  [0x189] = { "bwgymop", "w" },
   [0x0D8] = { "bwcondition", "ww" },
   -- 0x121 <var, 5>: how many of the party can battle (not an egg, not
   -- fainted) -- the legendary's "able to battle" test in N's Castle (Z278,
@@ -494,7 +501,18 @@ L.ALIASES = {
   [0x095] = { "settrainerflag", "w" }, [0x096] = { "cleartrainerflag", "w" },
   [0x097] = { "bwtrainerbeaten", "ww" }, [0x092] = { "bwtrainerafter", "ww" },
   [0x08A] = { "checkistrainerdoublebattle", "ww", { 2 } },
-  [0x08B] = { "noop", "w" },
+  -- 0x08B <trainer>: Platinum's playtrainerencounterbgm (READ FROM CODE,
+  -- Black ov10 command table at file 0x1B4CC -> ov21 0x21AEC40): one
+  -- var-or-value (0x2159B10), the trainer record's byte 1, its class
+  -- (ARM9 0x202A230 field 1), looked up in ARM9 0x2029E20's { u16 class,
+  -- u16 seq } rows at 0x020A75A8 (Gen4BattleMusic.eyes; a class it does not
+  -- name gets 0x45A, SEQ_BGM_EYE_01), and handed to the field as a BGM-change
+  -- event the script waits on (0x2029AF4 -> ov10 0x215897C). Twelve sites:
+  -- member 863's talk path (`08B 8020`), eye paths (`8027` single, `8029`
+  -- double, `802C` then `802D` -- the SECOND trainer's theme, after the first
+  -- has spoken -- for two separate trainers), and scripted fights in members
+  -- 126 (67, 69), 242 (274 x2), 642 (18 x2) and 658 (46).
+  [0x08B] = { "playtrainerencounterbgm", "w" },
   [0x088] = { "gettrainermessagetypes", "www" },
   [0x087] = { "printtrainerdialogue", "www", { 1, 2 } },
   [0x066] = { "bwobjectmovement", "ww" }, [0x073] = { "noop", "ww" },
@@ -537,6 +555,131 @@ L.ALIASES = {
   [0x16B] = { "bwmusicalevent", "wwww" }, [0x16C] = { "bwmusicaladdprop", "w" },
   [0x16D] = { "bwmusicalfandone", "w" }, [0x16E] = { "bwmusicalpick", "ww" },
   [0x05D] = { "bwmusicalword", "bbw" },
+  -- MONEY (BeaterScript's BW.yml names them ShowMoneyBox / CloseMoneyBox /
+  -- UpdateMoneyBox / TakeMoney / CheckMoney; the call sites fix the shapes).
+  -- Driftveil's item seller (member 210): `28 8027 01F4` the price, then
+  -- `FB 8028 8027` -- 0 in 8028 and he says you can't afford it and the box
+  -- closes (41) -- else `FA 8027` takes it and `42` redraws the box. The
+  -- Magikarp salesman (member 526): `FA 01F4`, `42`, then the Magikarp.
+  --   0x040 <left, top>    Platinum's showmoney
+  --   0x041 / 0x042        hidemoney / updatemoneydisplay
+  --   0x0FA <amount>       removemoney2 (var-or-value)
+  --   0x0FB <dest, amount> checkmoney2: 1 when the money covers it
+  [0x040] = { "showmoney", "ww" }, [0x041] = { "hidemoney", "" },
+  [0x042] = { "updatemoneydisplay", "" },
+  [0x0FA] = { "removemoney2", "w" }, [0x0FB] = { "checkmoney2", "ww" },
+  --   0x0F9 <amount>       AddMoney, a var-or-value (src/script/Gen5FieldCommands)
+  [0x0F9] = { "bwaddmoney", "w" },
+  -- 0x094 <trainer, second, u16, u16>: BeaterScript's EventTrainerBattle --
+  -- 0x085's battle with two more operands (member 46: `094 0205 0 0 0` in
+  -- Black, `094 0204 ...` in White, then the 0x8D won-check)
+  [0x094] = { "starttrainerbattle", "wwww", { 1, 2 } },
+  -- 0x031 WaitKeypressAB, 0x000 Nop; 0x151 <u16, u16> ShowDiploma, a screen
+  -- this port does not draw (Platinum's diplomas are noops too)
+  [0x031] = { "waitabpress", "" }, [0x000] = { "noop", "" },
+  [0x151] = { "noop", "ww" },
+  -- 0x243 <message, style>: 0x43's box again (member 490's 39 lines, each
+  -- `A6 0547; 243 n 0; 44`-shaped: a sound, the line, the close) -- printed
+  -- and held until dismissed, so it takes 0x43's waitabpress (rewriteCompound)
+  [0x243] = { "message", "ww", { 1 } },
+  -- 0x051 <slot, move>: the move's name into a buffer, between 0x050 (a
+  -- machine's move) and 0x052 (a pocket). Opelucid's Draco Meteor tutor
+  -- (member 860): `051 0 01B2` then "It looks like this Pokemon already
+  -- knows {VAR1}." -- 0x1B2 is 434, Draco Meteor; `051 1 8021` fills the
+  -- {VAR2} of "Want me to teach {VAR2} to {VAR1}?"
+  [0x051] = { "buffermovename", "bw" },
+  -- 0x0CD <dest>: the Trainer Card level (ov10 0x0215AB18: var pointer, then
+  -- a getter over the game data); the nurse checks it for her card line
+  [0x0CD] = { "bwcardlevel", "w" },
+  -- THE EYE-CONTACT PATH of the shared trainer script (member 863): 0x07F
+  -- <which, dest> the spotting trainer's id (0 the first, 1 the second;
+  -- ov21 0x021AE9F0 reads the record's +0x10) -- Platinum's
+  -- getapproachingtrainerid -- and 0x082 <which, dest> its object
+  [0x07F] = { "getapproachingtrainerid", "ww" },
+  [0x082] = { "bwapproachobject", "ww" },
+  -- ...and the rest of that path (member 863 S0D51, the script 0xE20 that
+  -- ov21 0x21AE930 starts; used nowhere else in the cartridge):
+  --   0x083 <dest>   the approach type, slot 0's eye record +0x14 (ov21
+  --        0x21AE9CC): 0 single, 1 a same-id double, 2 two separate
+  --        trainers (VS2) -- Platinum's getapproachingtrainertype
+  --   0x080 <which>  start that slot's approach task (ov21 0x21AE948 ->
+  --        0x21AE454) -- Platinum's startapproachingtrainertask
+  --   0x081          wait for both slots' tasks (ov21 0x21AE994); the port's
+  --        0x080 already blocks until its walk is done (Gen4TwoTrainers)
+  [0x083] = { "getapproachingtrainertype", "w" },
+  [0x080] = { "startapproachingtrainertask", "w" },
+  [0x081] = { "noop", "" },
+  -- THE MOVE DELETER (member 859; src/script/Gen5FieldCommands.lua):
+  -- `109 8025 8022 8020 0`, `10A 8023 8020 8022`, `10B 8020 8022`
+  [0x109] = { "bwforgetmenu", "wwww" },
+  [0x10A] = { "getpartymonmove", "www" },
+  -- 0x10B <partySlot, moveSlot, move>: that slot set to the move, full PP --
+  -- or, for move 0, forgotten with the rest moving up (the deleter's
+  -- `10B 8020 8022 0`; the tutors' `10B 8020 8024 8021` after "Ta-da!" and
+  -- `10B 8020 8010 8021` into a free slot)
+  [0x10B] = { "bwsetmove", "www" },
+  -- 0x108 <dest, partySlot>: how many moves (`108 8027 8020`, then fewer
+  -- than two is "That Pokemon knows only one move")
+  [0x108] = { "getpartymonmovecount", "ww" },
+  -- 0x070 <idDest, foundDest, x, height, z>: the object standing on a tile
+  -- (src/script/Gen5FieldCommands.lua)
+  [0x070] = { "bwobjectat", "wwwww" },
+  -- 0x0FF <dest, partySlot>: the Pokemon's form (ov10 0x0215B824 reads data
+  -- field 0x6F) -- the Deoxys meteor (member 876: `0FF 8024 8020`, then +1
+  -- round the four forms) and the Rotom boxes (member 880). Platinum's
+  -- getpartymonform takes <slot, dest>
+  [0x0FF] = { "getpartymonform", "ww", { 2, 1 } },
+  -- 0x117 <partySlot, form>: set it (src/script/Gen5FieldCommands.lua)
+  [0x117] = { "bwsetform", "ww" },
+  -- 0x114 <species, dest>: how many of the party are that species, eggs not
+  -- counted (ov10 0x0215B904) -- the meteor's `114 0182 8022` (Deoxys) and
+  -- the Rotom boxes' `114 01DF 8028`; Platinum's countrepeatedspeciesinparty
+  -- <dest, species>
+  [0x114] = { "countrepeatedspeciesinparty", "ww", { 2, 1 } },
+  -- 0x118 <species, found, slot>: where in the party it is (Gen5FieldCommands)
+  [0x118] = { "bwfindspecies", "www" },
+  -- THE POKEDEX RATING (member 884; src/script/Gen5FieldCommands.lua):
+  -- 0x1CF <mode, msgDest, countDest>, 0x1CE <dest, mode>, 0x1D1 <dest>
+  [0x1CF] = { "bwdexrating", "www" }, [0x1CE] = { "bwdexcomplete", "ww" },
+  [0x1D1] = { "bwhasnationaldex", "w" },
+  -- THE JUDGE (member 879): 0x237 <slot, mode, dest> -- the IVs by mode
+  [0x237] = { "bwjudge", "www" },
+  -- 0x113 <dest, slot>: the player's own Pokemon (OT id and name match)
+  [0x113] = { "bwmonisown", "ww" },
+  -- 0x115 <dest, move, slot>: does it know the move (ov10 0x0215BAB0) --
+  -- the Rotom boxes ask after the form move; Platinum's checkpartymonhasmove
+  [0x115] = { "checkpartymonhasmove", "www" },
+  -- 0x06A <object, dest>: the object's event flag (the item-ball Foongus)
+  [0x06A] = { "bwobjectflag", "ww" },
+  -- 0x20E <kind, dest>: does the Bag hold anything the special buyer takes
+  -- (src/script/Gen5MartCommands.lua; 0x14E mode 1 is that buyer's counter)
+  [0x20E] = { "bwbuyerhasitems", "ww" },
+  -- ...and one item to that buyer (src/script/Gen5MartCommands.lua): 0x20F
+  -- <item, kind, dest> its price, 0x249 <item, kind, slot, digits> the price
+  -- buffered, 0x24A <item, kind> the price paid
+  [0x20F] = { "bwbuyerprice", "www" }, [0x249] = { "bwbuyerpricebuffer", "wwww" },
+  [0x24A] = { "bwbuyerpay", "ww" },
+  -- 0x035 <message, style>: 0x034's line (the same operands, the same
+  -- message routine) in the gray event window -- the Battle Subway's and
+  -- the Battle Test's announcements (`035 000F 2; waittime 15; close`)
+  [0x035] = { "message", "ww", { 1 } },
+  -- 0x1A0 <party slot>: the field move's cut-in (band 10000, member 867:
+  -- Cut, Strength ... "{VAR1} used Cut!"), a task the script waits on (ov21
+  -- 0x021C8170) -- Platinum's playhmcutin
+  [0x1A0] = { "playhmcutin", "w" },
+  -- THE DAY CARE (member 856; src/script/Gen5FieldCommands.lua)
+  [0x0EB] = { "bwdaycarehasegg", "w" }, [0x0EE] = { "bwdaycarecount", "w" },
+  [0x0EF] = { "bwdaycarecompat", "w" }, [0x0EC] = { "bwdaycaregiveegg", "" },
+  [0x0ED] = { "bwdaycareresetegg", "" }, [0x0F7] = { "bwdaycarepick", "w" },
+  [0x0F0] = { "bwdaycareleave", "w" }, [0x0F1] = { "bwdaycaretake", "w" },
+  [0x0F2] = { "bwdaycarespecies", "ww" }, [0x0F3] = { "bwdaycareform", "ww" },
+  [0x0F8] = { "bwdaycaregender", "ww" }, [0x0F4] = { "bwdaycarelevel", "ww" },
+  [0x0F5] = { "bwdaycaregained", "ww" }, [0x0F6] = { "bwdaycareprice", "ww" },
+  [0x251] = { "bwdaycaresign", "www" }, [0x05B] = { "bwdaycarename", "bw" },
+  [0x24D] = { "bwcry", "ww" },
+  -- THE MOVE TUTORS (member 860; src/script/Gen5FieldCommands.lua)
+  [0x1E4] = { "bwtutorparty", "ww" }, [0x1E5] = { "bwtutormon", "www" },
+  [0x1E6] = { "bwtutormove", "www" }, [0x1E7] = { "bwtutorpick", "www" },
 }
 
 -- THE STACK FORM. Most of BW's conditional jumps are an expression on the
@@ -735,7 +878,7 @@ function L.rewriteCompound(list)
       add(ins, "comparevartovalue", { L.SCRATCH, 0 })
       add(ins, "gotoif", { 1 }, nextAt)
       add(ins, "setvarfromvalue", { dest, 0 })
-    elseif ins.op == 0x43 and (ins.name == "message" or ins.name == "messagevar") then
+    elseif (ins.op == 0x43 or ins.op == 0x243) and (ins.name == "message" or ins.name == "messagevar") then
       out[#out + 1] = ins
       add(ins, "waitabpress", {})
     elseif ins.name == "bw_08D" and ins.operands then

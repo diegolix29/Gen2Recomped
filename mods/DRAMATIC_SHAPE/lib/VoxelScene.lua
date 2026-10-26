@@ -188,15 +188,20 @@ local YAW = {
 -- jerks: without them a stair cell can only answer one height for the whole
 -- cell, and the walker pops.  Optional, because plenty of callers ask about a
 -- cell with nobody standing in it.
-local function groundAt(map, cellX, cellY, elev, px, py)
-  -- Off the map, cellTile border-extends into the map's borderBlock --
-  -- which on maps ringed with trees is a RAISED tile. The only entity
-  -- ever standing off-map is the player mid seam-step (placed one cell
-  -- before the connection entry), and the ground actually rendered
-  -- there is the departed neighbour's flat walkway: height 0. Without
-  -- this, crossing into such a map hoisted the walker tree-high for
-  -- exactly one step -- the "hops like a ledge" seam bug.
-  if not map:inBounds(cellX, cellY) then return 0 end
+local function groundAt(map, cellX, cellY, elev, px, py, neighbors)
+  -- crossConnection rebases the player one cell outside the incoming map
+  -- for the seam step. Sample the departed map's real floor there: assuming
+  -- zero put a walker under raised streets and snapped the camera downward.
+  -- Do not sample the incoming border block (often a raised tree wall).
+  if not map:inBounds(cellX, cellY) then
+    for _,nb in ipairs(neighbors or {})do
+      local nx,ny=cellX-nb.ox/16,cellY-nb.oy/16
+      if nb.map:inBounds(nx,ny) then
+        return groundAt(nb.map,nx,ny,elev,px and px-nb.ox,py and py-nb.oy)
+      end
+    end
+    return 0
+  end
   -- Cold neighbours are queued, not analysed by a render-time height query.
   if Gen3.mapIsGen3(map) and not Gen3.peekMap(map)
      and not (ChunkMesher.pair(map, false) or ChunkMesher.pair(map, true)) then
@@ -847,6 +852,7 @@ end
 -- The last live-set key, so eviction only runs when the neighbourhood
 -- actually changes (a map crossing), not every frame.
 local lastLiveKey = nil
+local lastLiveNeighbors={}
 
 -- THE RECTANGLES A MAP'S BORDER RING IS CUT AGAINST, IN ITS OWN WORLD PIXELS.
 --
@@ -1011,7 +1017,7 @@ ChunkMesher.masksFor = VoxelScene.masksFor
 -- the destination's build: the map swaps behind the fade, and waiting
 -- for the first visible frame to request meshes would show the flat
 -- fallback while the first slices run.
-function VoxelScene.prefetch(state)
+function VoxelScene.prefetch(state, requestOnly)
   if state and state.map and state.map.def and state.map.def.generation==4 then return nil end
   local Voxel = V.require("VoxelState")
 
@@ -1021,14 +1027,18 @@ function VoxelScene.prefetch(state)
   -- is evicted -- meshes released, analysis dropped -- so memory stays
   -- bounded by the neighbourhood instead of growing with every area
   -- ever visited.
-  local liveKey = state.map.id
-  local live = { [state.map.id] = true }
-  for _, nb in ipairs(state.neighbors or {}) do
-    live[nb.map.id] = true
-    liveKey = liveKey .. "|" .. nb.map.id
+  local neighbors=state.neighbors or {}
+  local changed=lastLiveKey~=state.map.id or #neighbors~=#lastLiveNeighbors
+  if not changed then
+    for i,nb in ipairs(neighbors)do
+      if lastLiveNeighbors[i]~=nb.map.id then changed=true;break end
+    end
   end
-  if liveKey ~= lastLiveKey then
-    lastLiveKey = liveKey
+  if changed then
+    lastLiveKey = state.map.id
+    local live = { [state.map.id] = true }
+    for i,nb in ipairs(neighbors)do live[nb.map.id]=true;lastLiveNeighbors[i]=nb.map.id end
+    for i=#neighbors+1,#lastLiveNeighbors do lastLiveNeighbors[i]=nil end
     ChunkMesher.setLive(live, state.map.id)
     -- RED++ bakes one atlas per map, so its animated copy is per map too
     -- and is bounded by the same neighbourhood
@@ -1118,7 +1128,10 @@ function VoxelScene.prefetch(state)
   -- no ring.  It loses its horizon, which is the defect this pass fixes; it
   -- does not grow a tree wall through the map the player is standing on,
   -- which would be a worse one.
-  local nbMesh, nbWater = {}, {}
+  -- The update hook only queues work. Allocate result lists and inspect
+  -- neighbour cache slots only for the render/VR caller that consumes them.
+  local nbMesh, nbWater
+  if not requestOnly then nbMesh,nbWater={},{} end
   local p=state.player
   local px,py=(p and p.px or 0)+8,(p and p.py or 0)+8
   for i, nb in ipairs(state.neighbors or {}) do
@@ -1129,13 +1142,13 @@ function VoxelScene.prefetch(state)
     local distance=dx*dx+dy*dy
     if nbMasks then
       ChunkMesher.request(nb.map, false, nbMasks, false, distance)
-      nbMesh[i], nbWater[i] = ChunkMesher.pair(nb.map, false)
-      if not nbMesh[i] then
-        nbMesh[i], nbWater[i] = ChunkMesher.pair(nb.map, true)
+      if not requestOnly then
+        nbMesh[i], nbWater[i] = ChunkMesher.pair(nb.map, false)
+        if not nbMesh[i] then nbMesh[i], nbWater[i] = ChunkMesher.pair(nb.map, true) end
       end
     else
       ChunkMesher.request(nb.map, true, nil, false, distance)
-      nbMesh[i], nbWater[i] = ChunkMesher.pair(nb.map, true)
+      if not requestOnly then nbMesh[i], nbWater[i] = ChunkMesher.pair(nb.map, true) end
     end
   end
   Voxel.ready = terrain ~= nil
@@ -1516,9 +1529,23 @@ end
 -- below). Only that one entry gets the see-through treatment: NPCs and the
 -- ghosts standing on a neighbour map are left to honest occlusion, because
 -- it is only your own character you cannot afford to lose behind a roof.
+-- These records are consumed synchronously by the sun, camera and reflection
+-- passes. Reuse them next render instead of allocating one table per actor.
+local poseRecords,poseList={},{}
+V.require('Rewrap').onUnwind(function()poseRecords,poseList={},{}end)
+local function putPose(n,sprite,px,py,facing,phase,flip,gh,frame,lift,colors,isPlayer)
+  local p=poseRecords[n]
+  if not p then p={};poseRecords[n]=p end
+  p.sprite,p.px,p.py=sprite,px,py
+  p.facing,p.phase,p.flip=facing,phase,flip
+  p.gh,p.frame,p.lift,p.colors=gh,frame,lift,colors
+  p.isPlayer=isPlayer
+  poseList[n]=p
+  return p
+end
 local function posesOf(state, spriteColors)
   local colors = spriteColors(state.map)
-  local posed = {}
+  local posed,n,previous=poseList,0,#poseList
   local me = nil
   for _, g in ipairs(state.ghosts or {}) do
     -- pose() ADVANCES the hop / surf-bob / spinner timers, and the contract
@@ -1531,20 +1558,17 @@ local function posesOf(state, spriteColors)
     local ready = not Gen3.mapIsGen3(gmap)
       or ChunkMesher.pair(gmap, false) or ChunkMesher.pair(gmap, true)
     if ready and not castHides(g.npc) then
-      posed[#posed + 1] = {
-        sprite = sprite, px = vx + g.ox, py = g.npc.py + g.oy,
-        facing = facing, phase = phase, flip = flip,
+      n=n+1
+      putPose(n,sprite,vx+g.ox,g.npc.py+g.oy,facing,phase,flip,
         -- ...on the drawing its cell became, where that is a berry plot (see
         -- plantedOn).  A ghost stands on ITS OWN map, so the question goes to
         -- that map exactly as the ground lookup beside it does.
-        gh = plantedOn(gmap, g.npc,
+        plantedOn(gmap, g.npc,
                        groundAt(gmap, g.npc.cellX, g.npc.cellY,
                                 g.npc.elevation, vx + g.ox, g.npc.py + g.oy)),
         -- the frame this entity's drawing states, when it states one; nil
         -- leaves frameFor answering exactly the facing table it always did
-        frame = statedFrame(gmap, g.npc),
-        lift = g.npc.py - vy, colors = spriteColors(gmap),
-      }
+        statedFrame(gmap, g.npc),g.npc.py-vy,spriteColors(gmap),nil)
     end
   end
   for _, e in ipairs(state.entities or {}) do
@@ -1552,17 +1576,14 @@ local function posesOf(state, spriteColors)
       local sprite, vx, vy, facing, phase, flip = e:pose()
       sprite=V.require('PolishedFruitSprite').sprite(state.map,e,sprite)
       if not castHides(e, e == state.player) then
-        posed[#posed + 1] = {
-          sprite = sprite, px = vx, py = e.py,
-          facing = facing, phase = phase, flip = flip,
-          gh = plantedOn(state.map, e,
+        n=n+1
+        local p=putPose(n,sprite,vx,e.py,facing,phase,flip,
+          plantedOn(state.map, e,
                          groundAt(state.map, e.cellX, e.cellY, e.elevation,
-                                  vx, e.py)),
-          frame = statedFrame(state.map, e),
-          lift = e.py - vy, colors = colors,
-        }
+                                  vx, e.py,state.neighbors)),
+          statedFrame(state.map,e),e.py-vy,colors,e==state.player or nil)
         if e == state.player then
-          me = posed[#posed]
+          me = p
           -- marked so the camera draw can leave the card out in first
           -- person, where it would fill the lens from inside; the SUN pass
           -- reads the same list and deliberately does not check the mark
@@ -1570,6 +1591,11 @@ local function posesOf(state, spriteColors)
         end
       end
     end
+  end
+  for i=n+1,previous do
+    posed[i]=nil
+    -- Retain the empty record, not an old map's sprites, palette or image.
+    for key in pairs(poseRecords[i])do poseRecords[i][key]=nil end
   end
   return posed, me
 end
@@ -2315,6 +2341,7 @@ local shadowLastStatic = nil
 -- most of a dialog, a menu, or any moment standing still.
 local sigBuf = {}
 local sigN = 0
+local shadowFrame=V.require('RenderStamp').new()
 local function sigPut(v)
   sigN = sigN + 1
   sigBuf[sigN] = v
@@ -2333,8 +2360,8 @@ end
 -- still exactly right; the only thing out of date is where a walking person
 -- put their own shadow, and that is an error of a pixel or two that a tier
 -- is allowed to trade for half the frame (see castShadows).
-local function shadowStaticTerms(terrain, nbMesh, cx, cy, vw, vh)
-  local put = sigPut
+local function shadowStaticTerms(terrain, nbMesh, cx, cy, vw, vh, writer, animation)
+  local put = writer or sigPut
   -- quarter-pixel camera granularity: the light frustum is snapped to
   -- whole texels anyway, each a third of a world pixel
   put(math.floor(cx * 4))
@@ -2355,23 +2382,35 @@ local function shadowStaticTerms(terrain, nbMesh, cx, cy, vw, vh)
   -- and the sprite cards swap frames as it circles them, so a turn on the
   -- spot re-fits and redraws exactly like a camera move ("" outside 1ST)
   put(FirstPerson.signature())
-  put(tostring(terrain))
-  for i = 1, #nbMesh do put(tostring(nbMesh[i])) end
+  put(writer and terrain or tostring(terrain))
+  for i = 1, #nbMesh do put(writer and nbMesh[i] or tostring(nbMesh[i])) end
+  if animation then for i=1,#animation do put(animation[i])end end
 end
 
--- The static half alone, for the rate limiter in castShadows. Shares the
--- one buffer with the full stamp and is only ever called after it, so the
--- string the full stamp already produced has been copied out by concat.
-local function shadowStaticSignature(terrain, nbMesh, cx, cy, vw, vh)
+-- The static half alone, for the rate limiter in castShadows. Keep its
+-- compact string key independent of the reusable full-frame snapshot.
+-- The legacy diagnostic path also uses sigBuf, after copying its full key.
+local function shadowStaticSignature(terrain, nbMesh, cx, cy, vw, vh, animation)
   sigN = 0
-  shadowStaticTerms(terrain, nbMesh, cx, cy, vw, vh)
+  shadowStaticTerms(terrain, nbMesh, cx, cy, vw, vh,nil,animation)
   for i = sigN + 1, #sigBuf do sigBuf[i] = nil end
   return table.concat(sigBuf, ",")
 end
 
-local function shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh)
+local function shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh, battleToken, animation)
+  if V.numericShadowStamps~=false then
+    shadowFrame.begin()
+    shadowStaticTerms(terrain,nbMesh,cx,cy,vw,vh,shadowFrame.put,animation)
+    local put=shadowFrame.put
+    for _,p in ipairs(posed)do
+      put(p.sprite.def.image);put(p.px);put(p.py);put(p.gh);put(p.lift or 0)
+      put(p.facing);put(p.phase);put(p.flip and 1 or 0)
+    end
+    put(battleToken)
+    return shadowFrame.token()
+  end
   sigN = 0
-  shadowStaticTerms(terrain, nbMesh, cx, cy, vw, vh)
+  shadowStaticTerms(terrain, nbMesh, cx, cy, vw, vh,nil,animation)
   local put = sigPut
   for _, p in ipairs(posed) do
     put(p.sprite.def.image)
@@ -2379,7 +2418,9 @@ local function shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh)
     put(p.facing); put(p.phase); put(p.flip and 1 or 0)
   end
   for i = sigN + 1, #sigBuf do sigBuf[i] = nil end
-  return table.concat(sigBuf, ",")
+  local sig=table.concat(sigBuf, ",")
+  if battleToken then sig=sig..'|btl'..tostring(battleToken) end
+  return sig
 end
 
 -- The sun pass: render the scene once from the light, so the main pass can
@@ -2393,13 +2434,19 @@ end
 -- Runs BEFORE Voxel3D.beginScene, because canvases do not nest. Grass is
 -- left out on purpose: thousands of tufts would cast a speckle no bigger
 -- than the pixels it lands on, at the cost of the mesh being drawn twice.
+local shadowAnimations={}
 local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
                            atlasFor, water, nbWater, battleCards, battleToken)
   if not ShadowMap.available() then return end
-  local sig = shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh)
+  shadowAnimations[1]=TerrainAtlas.shadowStep(state.map)
+  local count=1
+  for i,nb in ipairs(state.neighbors or {})do
+    count=count+1;shadowAnimations[count]=nbMesh[i] and TerrainAtlas.shadowStep(nb.map) or 0
+  end
+  for i=count+1,#shadowAnimations do shadowAnimations[i]=nil end
+  local sig = shadowSignature(terrain, nbMesh, posed, cx, cy, vw, vh, battleToken,shadowAnimations)
   -- a staged fight's pics move every frame the animation does, and the sun
   -- has to follow them (VR frames only; see render)
-  if battleToken then sig = sig .. "|btl" .. tostring(battleToken) end
   if not ShadowMap.stale(sig) then return end
 
   -- THE SUN DOES NOT HAVE TO FOLLOW EVERY FOOTSTEP.
@@ -2424,9 +2471,9 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
   -- exactly as it did, redraw for redraw.
   local hz = Tier.caps().shadowHz
   if hz and hz > 1 then
-    local st = shadowStaticSignature(terrain, nbMesh, cx, cy, vw, vh)
+    local st = shadowStaticSignature(terrain, nbMesh, cx, cy, vw, vh,shadowAnimations)
     shadowStale = shadowStale + 1
-    if st == shadowLastStatic and (shadowStale - shadowLastCast) < hz then
+    if ShadowMap.hasFrame() and st == shadowLastStatic and (shadowStale - shadowLastCast) < hz then
       Perf.count("shadow.throttled")
       return
     end
@@ -2511,6 +2558,7 @@ local function castShadows(state, terrain, nbMesh, posed, cx, cy, vw, vh,
   ShadowMap.sprites(false)
 
   ShadowMap.finish(sig)
+  if V.numericShadowStamps~=false then shadowFrame.commit() end
   Perf.add("VoxelScene.castShadows", tSun)
 end
 
@@ -2582,6 +2630,14 @@ function VoxelScene.render(state, w, h, vw, vh, paletteFor, eyes)
   Voxel3D.glassPhase, Voxel3D.glassGlint = g.phase, g.amp
 
   local function atlasFor(map)
+    -- Lua evaluates texture arguments even when draw(nil, texture) returns
+    -- immediately. Newly exposed neighbours have no published terrain yet;
+    -- preparing their atlas here bypasses the queued build's time slicing.
+    -- Gen3 publishes auxiliary meshes with terrain, so none need this texture
+    -- until either terrain variant is ready. The build job prepares it first.
+    if Gen3.mapIsGen3(map) and not (ChunkMesher.peek(map,false) or ChunkMesher.peek(map,true)) then
+      return nil
+    end
     return TerrainAtlas.forMap(map, modeColors(paletteFor, map))
   end
 

@@ -668,6 +668,10 @@ function X:extractBattleSprites()
   local okShop, shop = pcall(require("src.import.Gen5ShopArt").build, self)
   if okShop and shop then self:write("gen4_shop_art", shop)
   elseif not okShop then print("Gen5ShopArt failed: " .. tostring(shop)) end
+  -- the into-battle effects' models (src/import/Gen5EncounterEffects.lua)
+  local okFx, encFx = pcall(require("src.import.Gen5EncounterEffects").build, self)
+  if okFx and encFx then self:write("gen5_encounter_effects", encFx)
+  elseif not okFx then print("Gen5EncounterEffects failed: " .. tostring(encFx)) end
   local okBag, battleBag = pcall(require("src.import.Gen5BattleBagArt").build, self)
   if okBag and battleBag then self:write("gen5_battle_bag", battleBag)
   elseif not okBag then print("Gen5BattleBagArt failed: " .. tostring(battleBag)) end
@@ -677,6 +681,14 @@ function X:extractBattleSprites()
   -- ...and the evolution scene's (src/import/Gen5EvolutionArt.lua)
   local evo = require("src.import.Gen5EvolutionArt").build(self)
   if evo then self:write("gen5_evolution", evo) end
+  -- ...and the egg hatch's (src/import/Gen5EggHatchArt.lua)
+  local okHatch, hatch = pcall(require("src.import.Gen5EggHatchArt").build, self)
+  if okHatch and hatch then self:write("gen5_egg_hatch", hatch)
+  elseif not okHatch then print("Gen5EggHatchArt failed: " .. tostring(hatch)) end
+  -- the egg moves, in Platinum's record (src/import/Gen5EggMoves.lua)
+  local okEgg, eggMoves = pcall(require("src.import.Gen5EggMoves").build, self)
+  if okEgg and eggMoves then self:write("gen4_egg_moves", eggMoves)
+  elseif not okEgg then print("Gen5EggMoves failed: " .. tostring(eggMoves)) end
   -- ...and the party screen's plates and backdrop, in Platinum's shape
   -- (src/import/Gen5PartyArt.lua): the backdrop goes where Gen4PartyMenu
   -- looks for it, `gen4_graphics.screens["party/menu"]`
@@ -749,6 +761,15 @@ function X:extractMoveAnims()
   elseif not okM then print("Gen5MoveAnimData failed: " .. tostring(anims)) end
 end
 
+-- THE GYM GIMMICK MODELS (src/import/Gen5GymFxArt.lua): curtains, bookcase,
+-- honey walls, coaster, lifts, cannons, dragons (STAGE_ONLY can name this
+-- one: extractGymFx)
+function X:extractGymFx()
+  local okG, gym = pcall(require("src.import.Gen5GymFxArt").build, self)
+  if okG and gym then self:write("gen5_gym_fx", gym)
+  elseif not okG then print("Gen5GymFxArt failed: " .. tostring(gym)) end
+end
+
 function X:run()
   self:extractConstants()
   self:extractScripts()
@@ -765,6 +786,7 @@ function X:run()
   self:extractBattleSprites()
   self:extractBootScreens()
   self:extractMoveAnims()
+  self:extractGymFx()
   local skipped = {}
   for _, name in ipairs(X.ALL_STAGES) do
     local done = false

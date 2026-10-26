@@ -225,6 +225,10 @@ end
 -- here, before anything below installs this load's (lib/Rewrap.lua).
 V.require("Rewrap").unwindAll()
 
+-- Parse this large immutable classification table during mod startup. Its
+-- first lazy read used to land in the first visible map's build slice.
+if require("src.core.GameVersion").isGen3() then V.data("gen3_metatiles") end
+
 -- ------- pipelines
 
 local Perf = V.require("Perf")
@@ -403,7 +407,7 @@ mod.content.render_pipelines:register("voxel", {
     local ow = Game and Game.overworld
     local engineSheets = V.require("EngineSheets")
     if ow and ow.map and ow.camera then
-      pcall(VoxelScene.prefetch, ow)
+      pcall(VoxelScene.prefetch, ow, true)
     end
     -- THE BUILD SLICE, MEASURED SEPARATELY FROM THE FRAME.
     --
@@ -429,7 +433,9 @@ mod.content.render_pipelines:register("voxel", {
     ChunkMesher.pump(covered, top and top ~= ow and not covered)
     Perf.add("ChunkMesher.pump", tPump)
     if require("src.core.GameVersion").isGen3() and top == ow then
+      local tSheets=Perf.now()
       engineSheets.pump(ow, Game.data, .001)
+      Perf.add("EngineSheets.pump",tSheets)
     end
     pumpPrebake()
   end,
@@ -834,6 +840,12 @@ schema[#schema + 1] = {
 
 mod.options:define(schema)
 V.gpuMeshing = mod.options:get("voxelGpuMeshing") ~= false
+-- Compile/validate the first compute dispatch while the mod is loading,
+-- rather than charging the driver's pipeline warm-up to a walking frame.
+if love.graphics.newComputeShader then
+  local ok,why=V.require("GpuMesher").probe()
+  mod.log:info("voxel mesh generation: %s",ok and "GPU compute" or ("CPU ("..tostring(why)..")"))
+end
 
 -- ------- prebake
 --

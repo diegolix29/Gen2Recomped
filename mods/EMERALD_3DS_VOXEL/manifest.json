@@ -1,0 +1,19 @@
+{
+  "id": "EMERALD_3DS_VOXEL",
+  "name": "Zallax's Emerald 3DS Voxels (ported by Ceedrack)",
+  "version": "0.1.0",
+  "api": 2,
+  "entry": "main.lua",
+  "profile": "content",
+  "category": "GRAPHICS",
+  "game_version": "0.0.0-dev || >=0.1.37 <3.0.0",
+  "priority": 100,
+  "dependencies": [],
+  "optional_dependencies": [],
+  "conflicts": [],
+  "permissions": [
+    "engine_internals"
+  ],
+  "affects_link": false,
+  "description": "Emerald only. Zallax's Emerald 3DS voxel overworld (github.com/ZallaxDev/emerald-3ds, used with permission, MIT), ported by Ceedrack: buildings and rooms modelled from their own drawing, terrain relief, pixel-voxel signposts and its tilted-plane trees, under the original's camera and baked sunlight, and its 3D battles over the world. No ROM data ships with it: the models are generated from your own ROM with bake/bake.py. Registers one render pipeline, E3DS 3D (OFF and the five 3D ANGLE rungs), on hotkey 0. Presentational only."
+}

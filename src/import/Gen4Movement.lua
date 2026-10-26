@@ -122,12 +122,21 @@ ACTIONS[63] = { kind = "wait", frames = 8 }
 ACTIONS[64] = { kind = "wait", frames = 15 }
 ACTIONS[65] = { kind = "wait", frames = 16 }
 ACTIONS[66] = { kind = "wait", frames = 32 }
-ACTIONS[67] = { kind = "none" }   -- warp out: the script's own warp does this
-ACTIONS[68] = { kind = "none" }   -- warp in
+-- WarpOut / WarpIn (pokeplatinum src/unk_020655F4.c MovementAction_WarpOut /
+-- _WarpIn; HGSS's are the same two step tables): the sprite's jump offset
+-- rises 16 units a field frame until 320, or starts at 320 and falls 16 a
+-- frame to 0 -- the drop onto Olivine Lighthouse's ledge, the Distortion
+-- World guardians leaving (src/world/Gen4WarpMove.lua)
+ACTIONS[67] = { kind = "warp", dir = "out" }
+ACTIONS[68] = { kind = "warp", dir = "in" }
 ACTIONS[69] = { kind = "hide" }
 ACTIONS[70] = { kind = "show" }
-ACTIONS[71] = { kind = "none" }   -- lock facing
-ACTIONS[72] = { kind = "none" }   -- unlock facing
+-- LockDir / UnlockDir: MAPOBJECTFLAG_UNK7, which MapObject_SetFacingDirection
+-- (map_object.c) checks before every turn -- a walk, a face, a mark-time.
+-- Read as "none", Mahogany's shop grunt backed off from Dragonite's
+-- Hyper Beam (LockDir, WalkFasterEast 2) turned round and walked away.
+ACTIONS[71] = { kind = "lock" }   -- lock facing
+ACTIONS[72] = { kind = "unlock" } -- unlock facing
 ACTIONS[73] = { kind = "none" }   -- pause animation
 ACTIONS[74] = { kind = "none" }   -- resume animation
 ACTIONS[75] = { kind = "emote", emote = "exclamation" }
@@ -147,7 +156,12 @@ ACTIONS[101] = { kind = "none" }  -- a trainer standing up
 ACTIONS[102] = { kind = "none" }  -- the player holding something out
 ACTIONS[103] = { kind = "emote", emote = "double_exclamation" }
 ACTIONS[104] = { kind = "none" }  -- the player taking something
-span(118, 121, "walk", 1)      -- the Distortion World's jumps
+-- the Distortion World's jumps, MOVEMENT_ACTION_JUMP_DISTORTION_WORLD_
+-- NORTH..EAST = 117..120 (generated/movement_actions.txt: 116 is the
+-- unnamed MOVEMENT_ACTION_116 before them).  This read 118..121: north was
+-- skipped as unknown -- Cynthia's jump into the Giratina room went nowhere
+-- -- and south / west / east each played as the direction before it.
+span(117, 120, "walk", 1)
 
 Gen4Movement.ACTIONS = ACTIONS
 

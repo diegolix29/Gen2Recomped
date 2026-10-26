@@ -180,6 +180,11 @@ uniform vec3 depthFogC;
 // the density table's shift as Platinum's weather thins it (ov5_021D7534:
 // entry i > s is (i - s) * 4, the rest keep the 4 they last had); 0 = full
 uniform float depthFogShift;
+// the density table's step per entry (0 = the weathers' 4 * i; a gym's own
+// table: Canalave's 2 * i, Hearthome's flat one -- Gen4DepthFog)
+uniform float depthFogStep;
+// 1: keep a translucent texel's alpha (Gen4Model.softAlpha), 0: the cut
+uniform float softAlpha;
 vec4 effect(vec4 colour, Image tex, vec2 uv, vec2 screen)
 {
     if (vModelY <= yCut) { discard; }
@@ -191,7 +196,10 @@ vec4 effect(vec4 colour, Image tex, vec2 uv, vec2 screen)
     // not write depth -- otherwise the hole punched through a leaf or a strap
     // occludes whatever is behind it.  Discarding is what makes that correct
     // rather than merely usually correct.
-    if (texel.a < 0.5) { discard; }
+    // ...unless the caller draws a TRANSLUCENT texture (Gen4Model.softAlpha:
+    // an A3I5 / A5I3 picture whose alpha is its shape -- Hearthome Gym's
+    // flashlight cones), which keeps its alpha and is blended
+    if (texel.a < (softAlpha > 0.5 ? 0.004 : 0.5)) { discard; }
     vec4 c = texel * colour;
     if (depthFogA.x > 0.5) {
         float zn = gl_FragCoord.z * 2.0 - 1.0;
@@ -213,8 +221,9 @@ vec4 effect(vec4 colour, Image tex, vec2 uv, vec2 screen)
         }
         float depth = (dz * 0.5 + 0.5) * 32767.0;
         float e = clamp((depth - depthFogB.z) / depthFogB.w, 0.0, 31.0);
-        float dens = e > depthFogShift ? (e - depthFogShift) * 4.0 / 127.0
-                   : (depthFogShift > 0.0 && e >= 1.0 ? 4.0 / 127.0 : e * 4.0 / 127.0);
+        float k = depthFogStep > 0.0 ? depthFogStep : 4.0;
+        float dens = e > depthFogShift ? (e - depthFogShift) * k / 127.0
+                   : (depthFogShift > 0.0 && e >= 1.0 ? k / 127.0 : e * k / 127.0);
         c.rgb = mix(c.rgb, depthFogC, dens);
     }
     return c;
@@ -2587,7 +2596,8 @@ function Gen4Model:draw(viewProjection, pose, materials, yCut, spread, depthComp
   local pr, pg, pb, pa = g.getColor()
 
   g.setShader(shader)
-  g.setDepthMode(depthCompare or "less", true)
+  -- (a translucent draw does not write depth: what is behind it stays seen)
+  g.setDepthMode(depthCompare or "less", not Gen4Model.softAlpha)
   -- BACK FACES ARE NOT CULLED, and that is the cartridge's own choice rather
   -- than laziness: a DS polygon carries its own front/back flags in its
   -- material, plenty of Gen 4 geometry is single-sided sheets meant to be seen
@@ -2613,7 +2623,9 @@ function Gen4Model:draw(viewProjection, pose, materials, yCut, spread, depthComp
       shader:send("depthFogB", fog.b)
       shader:send("depthFogC", fog.c)
       shader:send("depthFogShift", fog.shift or 0)
+      shader:send("depthFogStep", fog.step or 0)
     end
+    shader:send("softAlpha", Gen4Model.softAlpha and 1 or 0)
   end
   -- SENT ON EVERY DRAW, for the reason `yCut` and `heightSpread` are: an unset
   -- uniform reads as zero, and relying on that is how the texture matrix once

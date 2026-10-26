@@ -732,12 +732,13 @@ do
   local save = {}
   B.attach(ow, save)
   local started = map.def.gen4StepHook(ow, 13, 75)
-  for _ = 1, 20 do map.def.gen4PropFollow(ow) end
+  -- field frames: a quarter turn is 16 of them, 32 ticks and the task's own
+  for _ = 1, 40 do map.def.gen4PropFollow(ow) end
   local turned = save.hgssGymmick.rot[1]
   -- now rotated once (rot 1): the "right" button is (13, 76) and moves +z
   p.cellX, p.cellY, p.px, p.py = 13, 76, 13 * 16, 76 * 16
   map.def.gen4StepHook(ow, 13, 76)
-  for _ = 1, 30 do map.def.gen4PropFollow(ow) end
+  for _ = 1, 40 do map.def.gen4PropFollow(ow) end
   local movedZ, playerZ = save.hgssGymmick.z[1], p.cellY
   local floorOk = map.def.gen4CollisionHook(map, 13, 80 + 1) == false
   local magmaBlocks = map.def.gen4CollisionHook(map, 30, 10) == true

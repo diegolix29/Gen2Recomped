@@ -75,6 +75,8 @@ local function nextRow(ctx)
   return nil
 end
 
+M.nextRow = nextRow   -- (HgssYesNoMessage looks ahead the same way)
+
 -- a Black / White message: when the script's next row is the bare YES / NO,
 -- the choice rides this box and that row is passed over
 function Commands.g4_bw_message(ctx, row, a, b)

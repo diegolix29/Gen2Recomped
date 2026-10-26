@@ -144,6 +144,17 @@ function HostShell.hasLauncher()
   return launcherHook ~= nil
 end
 
+-- WHERE THE LAUNCHER SHOULD OPEN when a game hands back to it: HeartGold /
+-- SoulSilver's CONNECT TO POKeWALKER asks for the Monster Walker, linked to
+-- that game ({ section = "walker", version = ... }); main.lua takes it once.
+local launcherRequest = nil
+function HostShell.requestLauncher(req) launcherRequest = type(req) == "table" and req or nil end
+function HostShell.takeLauncherRequest()
+  local r = launcherRequest
+  launcherRequest = nil
+  return r
+end
+
 function HostShell.toLauncher()
   if launcherHook then return launcherHook() end
   return HostShell.restart()

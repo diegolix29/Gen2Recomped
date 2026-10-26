@@ -75,10 +75,89 @@ end
 Commands.meta = Commands.meta or {}
 Commands.meta.g4_bw_mart = { foreground = true, blocking = true }
 
+-- THE SPECIAL BUYERS (constants.gen5Marts.buyers, src/import/Gen5Marts.lua):
+--   0x14E <1, kindVar, resultVar>  the Bag in sell mode, but only the
+--        buyer's list at the buyer's price; result 1 when something was sold
+--   0x20E <kind, dest>             1 when the Bag holds anything on the list
+--        (ov21 0x021B716C: the member's items, each checked in the Bag)
+function M.buyList(game, kind)
+  local marts = game and game.data and game.data.constants and game.data.constants.gen5Marts
+  local rows = marts and marts.buyers and marts.buyers[kind]
+  if not rows then return nil end
+  -- the Bag keys items "ITEM_%03d" (Gen4Commands itemKey); the scripts pass
+  -- numbers -- the list answers to both
+  local out = {}
+  for _, r in ipairs(rows) do out[r.item] = r.price; out[("ITEM_%03d"):format(r.item)] = r.price end
+  return out
+end
+function Commands.g4_bw_buyer_has_items(ctx, kind, destVar)
+  local list = M.buyList(ctx.game, valueOf(ctx, kind)) or {}
+  local inv = (ctx.save and ctx.save.inventory) or {}
+  local has = 0
+  for id in pairs(list) do
+    if (tonumber(inv[id]) or 0) > 0 then has = 1 break end
+  end
+  setResult(ctx, destVar, has)
+end
+function Commands.g4_bw_buyer_sell(ctx, kindVar, resultVar)
+  local game = ctx.game
+  if not game then return end
+  local runner = ctx.runner
+  local list = M.buyList(game, valueOf(ctx, kindVar))
+  if not list then
+    require("src.core.Logger").warn("bw buyer: no list for kind %s -- re-import the ROM", tostring(valueOf(ctx, kindVar)))
+    setResult(ctx, resultVar, 0)
+    return
+  end
+  local before = tonumber(game.save and game.save.money) or 0
+  require("src.ui.Screens").push(game, "ShopMenu", {}, function()
+    setResult(ctx, resultVar, ((tonumber(game.save and game.save.money) or 0) > before) and 1 or 0)
+    if runner then runner:resume() end
+  end, nil, { direct = true, sell = true, buyList = list })
+  local top = game.stack and game.stack:top()
+  if top and top.openBag and top.mode == "sell" then top:openBag() end
+  if runner then runner:yield() end
+end
+Commands.meta.g4_bw_buyer_sell = { foreground = true, blocking = true }
+
+-- ONE ITEM TO A SPECIAL BUYER, the gourmet's maid's way (M0894): she asks
+-- for a single item, says the price and pays it. Each reads the same
+-- /a/2/0/8 member as 0x20E (`kind` through the byte table to the member):
+--   0x20F <item, kind, dest>         the price, 0 when unlisted (ov21
+--        0x021B70D8; a u16 store)
+--   0x249 <item, kind, slot, digits> that price into a number buffer
+--        (0x021B721C)
+--   0x24A <item, kind>               that price added to the money
+--        (0x021B72CC); the script removes the item itself
+local function buyerPrice(ctx, item, kind)
+  local list = M.buyList(ctx.game, valueOf(ctx, kind)) or {}
+  return tonumber(list[valueOf(ctx, item)]) or 0
+end
+function Commands.g4_bw_buyer_price(ctx, item, kind, destVar)
+  setResult(ctx, destVar, buyerPrice(ctx, item, kind) % 65536)
+end
+function Commands.g4_bw_buyer_price_buffer(ctx, item, kind, slot)
+  local game = ctx.game
+  if not game then return end
+  game.stringBuffers = game.stringBuffers or {}
+  game.stringBuffers[valueOf(ctx, slot) + 1] = tostring(buyerPrice(ctx, item, kind))
+end
+function Commands.g4_bw_buyer_pay(ctx, item, kind)
+  local price = buyerPrice(ctx, item, kind)
+  if price > 0 and Commands.g4_add_money then Commands.g4_add_money(ctx, price) end
+end
+
 function M.install(L)
   local function emit(s, row) s.out[#s.out + 1] = row end
   L.bwpokemart = function(ins, s) emit(s, { "g4_bw_mart", ins.args[1], ins.args[2] }) end
-  L.bwmartsell = function(ins, s) emit(s, { "g4_bw_mart", nil, ins.args[2], true }) end
+  L.bwmartsell = function(ins, s)
+    if tonumber(ins.args[1]) == 1 then return emit(s, { "g4_bw_buyer_sell", ins.args[2], ins.args[3] }) end
+    emit(s, { "g4_bw_mart", nil, ins.args[2], true })
+  end
+  L.bwbuyerhasitems = function(ins, s) emit(s, { "g4_bw_buyer_has_items", ins.args[1], ins.args[2] }) end
+  L.bwbuyerprice = function(ins, s) emit(s, { "g4_bw_buyer_price", ins.args[1], ins.args[2], ins.args[3] }) end
+  L.bwbuyerpricebuffer = function(ins, s) emit(s, { "g4_bw_buyer_price_buffer", ins.args[1], ins.args[2], ins.args[3] }) end
+  L.bwbuyerpay = function(ins, s) emit(s, { "g4_bw_buyer_pay", ins.args[1], ins.args[2] }) end
   -- the Center's PC, 0x14F <var, mode>: Platinum's box modes 0..3 are the
   -- same; Black / White's 4 is the Battle Box, which this port opens as MOVE
   -- (Platinum's 4 is COMPARE)

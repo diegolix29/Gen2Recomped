@@ -167,25 +167,34 @@ end
 -- two -- flattening is what puts a character on top of a treetop they should
 -- disappear behind.
 function Gen3Tiles:drawLayer(metatile, layer, ox, oy, plot)
-  local entries = self:entries(metatile)
   local first = (layer - 1) * 4
+  if first<0 or first+4>8 or first%1~=0 then return end
+  local record,local_ = self:metatileBank(metatile)
+  local data=record and record.metatiles
+  local base=local_*16
+  if not (data and base+16<=#data) then return end
+  base=base+first*2
   for q = 0, 3 do
-    local e = entries[first + q + 1]
-    if e then
-      local pixels = self:tilePixels(e.tile)
-      local pal = self:palette(e.palette)
-      local tx = ox + (q % 2) * 8
-      local ty = oy + math.floor(q / 2) * 8
-      for y = 0, 7 do
-        local sy = e.flipY and (7 - y) or y
-        for x = 0, 7 do
-          local sx = e.flipX and (7 - x) or x
-          local v = pixels[sy * 8 + sx + 1]
-          -- index 0 is transparent on BOTH layers; the backdrop shows through
-          if v ~= 0 and pal then
-            local c = pal[v + 1]
-            if c then plot(tx + x, ty + y, c[1], c[2], c[3]) end
-          end
+    -- Decode the four ROM words directly. Baking every animation frame
+    -- previously allocated eight entry tables plus a list for each layer,
+    -- even though this path only reads half of them and retains none.
+    local word=byte(data,base+q*2+1)+byte(data,base+q*2+2)*256
+    local tile=word%1024
+    local flipX=math.floor(word/1024)%2==1
+    local flipY=math.floor(word/2048)%2==1
+    local pixels = self:tilePixels(tile)
+    local pal = self:palette(math.floor(word/4096)%16)
+    local tx = ox + (q % 2) * 8
+    local ty = oy + math.floor(q / 2) * 8
+    for y = 0, 7 do
+      local sy = flipY and (7 - y) or y
+      for x = 0, 7 do
+        local sx = flipX and (7 - x) or x
+        local v = pixels[sy * 8 + sx + 1]
+        -- index 0 is transparent on BOTH layers; the backdrop shows through
+        if v ~= 0 and pal then
+          local c = pal[v + 1]
+          if c then plot(tx + x, ty + y, c[1], c[2], c[3]) end
         end
       end
     end

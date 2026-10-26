@@ -224,6 +224,23 @@ function X.images(rom)
       meta.sboxInk = rowColours(pal, 0)
     end
   end
+  -- THE FLY MAP / TOWN MAP (fly_map.c FlyMap_LoadBGGraphics): its own frame
+  -- (MAIN_1 NSCR 67 over char 66, palette 63 -- rows 24-27 the CLOSE button
+  -- pressed), the top screen's back (SUB_0 NSCR 65 / char 64) and panel (NSCR
+  -- 69 / char 68, palette 62), the map (NSCR 11 / char 10) and the landmark
+  -- pictures (NSCR 13 / char 12) on those palettes; the ink of the bottom
+  -- windows (MAIN row 10) and the top ones (SUB row 1)
+  do
+    local p62, p63 = G.palette(map(62), true), G.palette(map(63), true)
+    if p62 and p63 then
+      out.fly_frame = composeWhole(map, 67, 66, p63)
+      out.fly_top = composeWhole(map, 65, 64, p62)
+      out.fly_info = composeWhole(map, 69, 68, p62)
+      out.fly_map = composeWhole(map, 11, 10, p63, 8, 64)
+      out.fly_landmarks = composeWhole(map, 13, 12, p62)
+      meta.flyInk = { sub = rowColours(p62, 1), main = rowColours(p63, 10) }
+    end
+  end
   -- sGenericPhoneCallHeaders (phone_generic_headers.c, overlay 101): 16 per
   -- contact -- 8 for a call the player makes, 8 for one they receive -- of
   -- { u8 type, u8 chance, u16 scriptType, u16 scriptID }. Found by Joey's

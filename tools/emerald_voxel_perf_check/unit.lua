@@ -3,7 +3,7 @@ local n=0
 local function check(v,msg) assert(v,msg);n=n+1 end
 local drawn,freed={},0
 love={graphics={newMesh=function(_,vertices)
- local m={vertices=vertices}
+ local m={vertices=vertices,data=type(vertices)=='table' and vertices or nil}
  function m:setVertices(data) self.data=data end
  function m:setTexture(tex) self.texture=tex end
  function m:release() freed=freed+1 end
@@ -33,6 +33,13 @@ local third=B.new();local data={-2,3,4,0,0,1, -1,4,5,0,0,1, -2,4,5,0,0,1}
 B.add(third,{},data,3)
 box=Bounds.get(third.parts[1]);check(box[1]==-2 and box[2]==3 and box[6]==5,'byte data fallback bounds')
 check(third.parts[1].data==data,'unmodified vertex stream uploaded')
+local trusted=B.new()
+local savedUnpack=love.data.unpack
+love.data.unpack=function()error('known bounds must not rescan the vertex stream')end
+B.add(trusted,{},data,3,{-2,3,4,-1,4,5})
+love.data.unpack=savedUnpack
+check(Bounds.get(trusted.parts[1])[6]>=5,'known streamed bounds bypass redundant vertex scans')
+trusted:release();freed=freed-1
 batch:release();third:release();check(freed==3,'all GPU parts released')
 batch:release();check(freed==3,'release is idempotent')
 -- A translated chunk is tested in world coordinates, not local map space.
@@ -51,6 +58,13 @@ local function up(fn,name)
  error('missing cache-key function '..name)
 end
 local bodyKey=up(up(cache.has,'signature'),'bodySignature')
+local blocks=up(cache.load,'parseBlocks')
+local layout=blocks('VXM2\nx\n6\n0\nT 6 0 0 0 1 2 3\n',6,0)
+check(layout and layout[1][1]==6 and layout[1][2][6]==3,'cache preserves spatial block layout')
+check(not blocks('VXM2\nx\n6\n0\n',6,0),'legacy cache uses bounded scan')
+check(not blocks('T 12 0 0 0 1 2 3',6,0),'corrupt layout counts fall back safely')
+check(not blocks('T 6 2 0 0 1 2 3',6,0),'inverted cache bounds rejected')
+check(not blocks('T 6 nan 0 0 1 2 3',6,0),'non-finite cache bounds rejected')
 local function map(border,elevation,collision,width)
  return {id='same',def={width=1,height=1,tileset='pair',border=border,elevationCells={elevation or 0},collisionCells={collision or 0}},
   tileset={blockTiles=2,imageWidth=width},tileAt=function()return 1 end}

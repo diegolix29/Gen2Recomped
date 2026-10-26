@@ -248,6 +248,7 @@ end
 -- Whether the sun pass can run at all. False headless, without shaders, or
 -- where the canvas cannot be made -- VoxelScene then keeps the flat decal
 -- shadows, which need nothing but a quad.
+local lastResolutionCap
 function ShadowMap.available()
   -- LOW TAKES THE SUN AWAY, and that is 53% of the frame.
   --
@@ -263,7 +264,12 @@ function ShadowMap.available()
   -- shadow path for a driver that cannot make the canvas (the flat decals
   -- under each character), it is the path this mod shipped before the sun
   -- pass existed, and it costs one quad per person.
-  if not caps().shadows then return false end
+  local capability=caps()
+  if not capability.shadows then return false end
+  if lastResolutionCap~=capability.shadowRes then
+    lastResolutionCap=capability.shadowRes
+    ready=false
+  end
   if love.system and love.system.getOS and love.system.getOS() == "iOS" then
     return false
   end
@@ -271,9 +277,10 @@ function ShadowMap.available()
           and love.graphics.setDepthMode) then
     return false
   end
-  -- the smallest rung is enough to answer the question; fit() picks the
-  -- one this frame actually wants
-  return getShader() ~= nil and getCanvas(ShadowMap.SIZES[1]) ~= nil
+  -- Probe once. Resizing an existing canvas to the smallest rung here made
+  -- begin() enlarge it again, releasing/allocating two textures every frame
+  -- and invalidating an otherwise reusable shadow. fit() owns later sizing.
+  return getShader() ~= nil and (canvas or getCanvas(ShadowMap.SIZES[1])) ~= nil
 end
 
 -- The map to sample, or the blank stand-in. Never nil once the main pass
@@ -484,6 +491,10 @@ end
 -- most of a dialog, a menu or any moment standing still.
 function ShadowMap.stale(sig)
   return not ready or sig ~= lastSig
+end
+
+function ShadowMap.hasFrame()
+  return ready and canvas~=nil and canvas~=false
 end
 
 -- Begin the sun pass. Returns false when it could not start, in which case

@@ -64,6 +64,14 @@ function F.current()
   local force = os.getenv and tonumber(os.getenv("G4FOG") or "")
   if force then return F.WEATHERS[force] end
   if not platinum() then return nil end
+  -- A GYM'S OWN FOG (`def.gen4DepthFog`, set by its DynamicMapFeaturesInit:
+  -- Hearthome's black room, Canalave's depth fog -- src/world/Gen4GymFx.lua)
+  do
+    local G = game()
+    local ow = G and G.overworld
+    local def = ow and ow.map and ow.map.def
+    if def and type(def.gen4DepthFog) == "table" then return def.gen4DepthFog end
+  end
   -- FOG (14), steady or thinning after Defog (src/world/Gen4FogWeather.lua)
   local FW = package.loaded["src.world.Gen4FogWeather"]
   local fogRow = FW and FW.depthRow and FW.depthRow()
@@ -83,17 +91,87 @@ function F.begin(ground, mode, a, b)
   local row = F.current()
   local cam = ground and ground.camera
   if not (row and cam) then Gen4Model.depthFog = nil; return end
-  local near, far = tonumber(cam.near) or 150, tonumber(cam.far) or 900
+  -- (a gym's row may carry the clipping its init sets, Camera_SetClipping)
+  local near, far = tonumber(row.near or cam.near) or 150, tonumber(row.far or cam.far) or 900
   Gen4Model.depthFog = {
     a = { mode, a, b, cam.projection == "orthographic" and 1 or 0 },
     b = { near, far, row.offset, 1024 / 2 ^ row.slope },
     c = { row.rgb[1] / 31, row.rgb[2] / 31, row.rgb[3] / 31 },
     shift = row.shift,
+    -- the density table's step per entry (4 for the weathers' 4 * i; a gym's
+    -- own table: Canalave's 2 * i, Hearthome's flat one)
+    step = row.step,
   }
+end
+
+-- density(row, ground, eye) -> 0..1: the fog a point `eye` units from the
+-- camera gets under `row`, by the same arithmetic as the model shader (the
+-- depth the DS would have stored for it through the camera's near / far, the
+-- table entry it falls in). For the characters, which are not drawn by the
+-- model shader (src/world/Gen4GymFx.lua spriteFog).
+function F.density(row, ground, eye)
+  if not row then return 0 end
+  local step = tonumber(row.step) or 4
+  if row.flat then return math.min(1, row.flat / 127) end
+  local cam = ground and ground.camera or {}
+  local n, f = tonumber(row.near or cam.near) or 150, tonumber(row.far or cam.far) or 900
+  local d = tonumber(eye) or tonumber(cam.distance) or 667
+  local dz
+  if cam.projection == "orthographic" then
+    dz = (d - n) / (f - n) * 2 - 1
+  else
+    dz = (f + n) / (f - n) - 2 * f * n / ((f - n) * math.max(d, 1))
+  end
+  local depth = (dz * 0.5 + 0.5) * 32767
+  local e = (depth - row.offset) / (1024 / 2 ^ row.slope)
+  if e < 0 then e = 0 elseif e > 31 then e = 31 end
+  return math.min(1, e * step / 127)
+end
+
+-- spriteAt(zn) -> r, g, b, density, or nil: the fog the model shader would
+-- give a fragment at NDC depth `zn` under the pass's own fog (the
+-- Gen4Model.depthFog a `begin` set), the same arithmetic line for line. For a
+-- character billboard of the FREE pass (Gen4Ground:freeEntity), where the
+-- picture is drawn through the sprite shaders and not the model one -- on the
+-- DS a field object is a polygon the hardware fog covers like the map.
+function F.spriteAt(zn)
+  local Gen4Model = package.loaded["src.render.Gen4Model"]
+  local fog = Gen4Model and Gen4Model.depthFog
+  zn = tonumber(zn)
+  if not (fog and zn) then return nil end
+  local mode, a, b, ortho = fog.a[1], fog.a[2], fog.a[3], fog.a[4]
+  local d
+  if mode < 1.5 then
+    d = a + zn * b
+  elseif mode < 2.5 then
+    d = 2 * a * b / (b + a - zn * (b - a))
+  else
+    d = a + (zn * 0.5 + 0.5) * (b - a)
+  end
+  local rn, rf = fog.b[1], fog.b[2]
+  local dz
+  if ortho > 0.5 then
+    dz = (d - rn) / (rf - rn) * 2 - 1
+  else
+    dz = (rf + rn) / (rf - rn) - 2 * rf * rn / ((rf - rn) * math.max(d, 1))
+  end
+  local depth = (dz * 0.5 + 0.5) * 32767
+  local e = (depth - fog.b[3]) / fog.b[4]
+  if e ~= e then e = 0 end
+  if e < 0 then e = 0 elseif e > 31 then e = 31 end
+  local k = (fog.step and fog.step > 0) and fog.step or 4
+  local shift = fog.shift or 0
+  local dens
+  if e > shift then dens = (e - shift) * k / 127
+  elseif shift > 0 and e >= 1 then dens = k / 127
+  else dens = e * k / 127 end
+  if dens <= 0 then return nil end
+  return fog.c[1], fog.c[2], fog.c[3], math.min(1, dens)
 end
 
 function F.finish()
   local Gen4Model = package.loaded["src.render.Gen4Model"]
+
   if Gen4Model then Gen4Model.depthFog = nil end
 end
 

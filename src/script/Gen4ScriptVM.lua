@@ -1040,6 +1040,7 @@ local function contributionFor(data, mapId, entry)
   -- and the overworld already asks for both every frame; nothing above this
   -- file needs to learn a fourth generation's spelling.
   local onEnter, onResume = {}, {}
+  local transitions = {}
   for _, callback in ipairs(entry.callbacks or {}) do
     -- ...AND ON_LOAD / ON_RESUME AGAIN EVERY TIME THE FIELD COMES BACK
     -- (fieldmap.c runs both from the field's init, which a battle's end
@@ -1056,7 +1057,11 @@ local function contributionFor(data, mapId, entry)
     -- point all three have passed.  Running them in the order they appear is
     -- the cartridge's order too, because the table is read front to back.
     local rows = Gen4ScriptVM.compile(data, callback.script)
-    if rows then onEnter[#onEnter + 1] = rows end
+    if rows then
+      onEnter[#onEnter + 1] = rows
+      -- remembered per entry: a CONTINUE does not run this one (see onEnter)
+      if callback.type == 2 then transitions[#onEnter] = true end
+    end
   end
 
   local onFrame = {}
@@ -1074,7 +1079,9 @@ local function contributionFor(data, mapId, entry)
       local Runner = require("src.script.ScriptRunner")
       for _, rows in ipairs(onResume) do
         local r = Runner.new(game, overworld)
-        local ok, err = pcall(r.run, r, rows, { mapId = mapId })
+        -- a map callback: its SetFlag / ClearFlag may move live objects
+        -- (Commands' syncFlagObjects)
+        local ok, err = pcall(r.run, r, rows, { mapId = mapId, mapCallback = true })
         if not ok then require("src.core.Logger").warn("gen4 map resume script: %s", tostring(err)) end
       end
     end
@@ -1085,8 +1092,33 @@ local function contributionFor(data, mapId, entry)
       -- gives: these closures outlive the map, and a save loaded back into the
       -- same map has to be asked again.
       for _, g in ipairs(onFrame) do g.armed = nil end
-      for _, rows in ipairs(onEnter) do
-        queue(overworld, rows, { mapId = mapId })
+      -- A CONTINUE IS NOT A WALK IN.  FieldTask_ContinueGame_Normal
+      -- (field_warp_tasks.c) restores the objects from the save and never
+      -- reaches sub_02053038, which is where ClearTempFieldEventData and
+      -- ON_TRANSITION live: the save already holds what the last transition
+      -- and everything after it left.  Running it again on a load rewound
+      -- whatever the map had moved on since -- Ilex Forest's resets every
+      -- Farfetch'd stick var and both blind spots, so a game saved mid-chase
+      -- came back with the birds where they had run to but the sticks armed
+      -- for where they started.
+      --
+      -- So it is NOT RUN at all.  What the cartridge stands up instead comes
+      -- from the save: a gym's state is the save's Gymmick (HGSS) or
+      -- PersistedMapFeatures (Platinum), which Save_Gymmick_Clear /
+      -- PersistedMapFeatures_Init -- also only on a walk in -- left alone, and
+      -- the field's own init (Gymmick_Init / DynamicMapFeatures_Init) builds
+      -- the room from it.  setMap does that half (Gen4Commands.restoreOnContinue).
+      -- (Black / White's continue skips its type-2 script the same way: ov20
+      -- 0x2183DE4, see OverworldController's gen5Continuing)
+      local continuing = overworld and (overworld.gen4Continuing or overworld.gen5Continuing)
+      for i, rows in ipairs(onEnter) do
+        if continuing and transitions[i] then
+          -- skipped: FieldTask_ContinueGame_Normal / FieldTask_LoadSavedGameMap
+        else
+          -- a map callback: its SetFlag / ClearFlag may move live objects
+          -- (Commands' syncFlagObjects)
+          queue(overworld, rows, { mapId = mapId, mapCallback = true })
+        end
       end
     end
   end
@@ -1149,6 +1181,10 @@ local function contributionFor(data, mapId, entry)
         width = math.max(tonumber(where.width) or 1, 1),
         height = math.max(tonumber(where.height) or 1, 1),
         var = where.var, value = where.value, rows = rows,
+        -- (the event itself, whose cell is read at the step: Victory Road's
+        -- gate trigger is moved into the grid when its map is entered,
+        -- src/world/Gen5VictoryRoad.lua)
+        where = where,
       }
     end
   end
@@ -1176,8 +1212,9 @@ local function contributionFor(data, mapId, entry)
       local Quicksand = require("src.world.Gen5Quicksand")
       local sand = Quicksand.onSand(overworld, x, y)
       for i, coord in ipairs(coords) do
-        local inside = x >= coord.x and x < coord.x + coord.width
-                       and y >= coord.y and y < coord.y + coord.height
+        local cx, cy = coord.where.x or coord.x, coord.where.y or coord.y
+        local inside = x >= cx and x < cx + coord.width
+                       and y >= cy and y < cy + coord.height
         if inside and sand and not Quicksand.pitFires(overworld, coord, x, y) then inside = false end
         -- ONLY THE VAR SIDE IS RESOLVED.  `sub_0203CC14` is
         -- `TryGetVar(e.var) == e.value` -- the value is compared RAW, unlike
@@ -1200,8 +1237,9 @@ local function contributionFor(data, mapId, entry)
       -- scene that needs both halves of a sequence to land in order is exactly
       -- where that matters.  Silent unless the player is on a trigger.
       for i, coord in ipairs(coords) do
-        local inside = x >= coord.x and x < coord.x + coord.width
-                       and y >= coord.y and y < coord.y + coord.height
+        local cx, cy = coord.where.x or coord.x, coord.where.y or coord.y
+        local inside = x >= cx and x < cx + coord.width
+                       and y >= cy and y < cy + coord.height
         if inside then
           local got = Gen4Commands.valueOf(ctx, coord.var)
           Logger.debug("gen4 coord: %s (%d,%d) row %d declined -- %s",
@@ -1458,9 +1496,19 @@ L.giveribbon = function(ins, s) emit(s, { "g4_set_mon_ribbon", ins.args[1], ins.
 L.monhasribbon = function(ins, s) emit(s, { "g4_get_mon_ribbon", ins.args[1], ins.args[2], ins.args[3] }) end
 L.monaddfriendship = function(ins, s) emit(s, { "g4_increase_friendship", ins.args[1], ins.args[2] }) end
 L.waitbuttonordelay = function(ins, s) emit(s, { "g4_wait_ab_press_time", ins.args[1] }) end
--- ScrCmd_374 hides an object (MapObject_SetVisible FALSE), MakeObjectVisible's
--- other half; ScrCmd_446 is the current map id; ScrCmd_545 the Unown forms seen
-L.scrcmd_374 = function(ins, s) emit(s, { "g4_hide_object", ins.args[1] }) end
+-- ScrCmd_374 is MapObject_SetVisible FALSE, MakeObjectVisible's other half --
+-- and pret's name for that bit reads backwards: MAPOBJECTFLAG_VISIBLE (1 << 9)
+-- is Platinum's MAP_OBJ_STATUS_HIDE. ScrCmd_102 sets it on the camera-focus
+-- object it creates, the follower gets it while you cycle or surf, Vermilion
+-- Gym's and the Goldenrod Tunnel's SPRITE_STOP blockers get it from their
+-- map's resume script (invisible, still solid), and D24R0203 sets it on the
+-- player on arrival and clears it with ScrCmd_374 as they drop in. So 374
+-- SHOWS the object again and MakeObjectVisible (lowered as `showobject`,
+-- below) HIDES it -- the drawing only, never the event flag or the collision
+-- (HgssModelObjects.setInvisible). Lowered the other way round, every
+-- blocker stood on screen and the player who fell into D24R0203 vanished.
+-- ScrCmd_446 is the current map id; ScrCmd_545 the Unown forms seen
+L.scrcmd_374 = function(ins, s) emit(s, { "g4_object_invisible", ins.args[1], false }) end
 L.scrcmd_446 = function(ins, s) emit(s, { "g4_get_map_id", ins.args[1] }) end
 L.scrcmd_545 = function(ins, s) emit(s, { "g4_unown_forms_seen", ins.args[1] }) end
 -- FollowerPokeIsEventTrigger <event, slot, destVar> (scrcmd_c.c 4379): 1 only
@@ -1695,7 +1743,7 @@ L.scrcmd_739 = function(_, s) emit(s, { "g4_apricorn_box_for_kurt" }) end
 -- or a few lines (scrcmd_c.c, scrcmd_party.c, scrcmd_battle.c, scrcmd_8.c)
 L.scrcmd_522 = function(ins, s) emit(s, { "g4_get_hour", ins.args[1] }) end
 L.getstaticencounteroutcome = function(ins, s) emit(s, { "g4_static_outcome", ins.args[1] }) end
-L.staticwildwonorcaughtcheck = function(ins, s) emit(s, { "g4_static_not_won", ins.args[1] }) end
+L.staticwildwonorcaughtcheck = function(ins, s) emit(s, { "g4_static_not_won", ins.args[1], ins.args[2] }) end
 L.countalivemons = function(ins, s) emit(s, { "g4_party_alive_except", ins.args[1], ins.args[2] }) end
 L.partycountnotegg = function(ins, s) emit(s, { "g4_party_non_eggs", ins.args[1] }) end
 L.checkdaycareegg = function(ins, s) emit(s, { "g4_daycare_has_egg", ins.args[1] }) end
@@ -1733,8 +1781,8 @@ L.scrcmd_436 = function(_, s) emit(s, { "g4_noop", "leaving the overworld for an
 -- MultiBattle <partner> <foe 1> <foe 2> <byte> is the tag battle beside Lance
 -- in Platinum's operand order; ScrCmd_530 <n> <on> writes sys_vars.c's
 -- _020FE4A8[n] (or 0) into var 0x4036 + n. ScrCmd_708 (the trap's flash),
--- 709 (the Persian statues' alarm) and 710 (the B2F doors' prop animations)
--- are pictures only.
+-- 709 (the Persian statues' alarm) and 710 (the B3F generators' prop
+-- animations) are src/script/Gen4FieldScenes.lua.
 L.rockettrapbattle = function(ins, s) emit(s, { "g4_start_wild_battle", ins.args[1], ins.args[2] }) end
 L.moveperson = function(ins, s) emit(s, { "g4_set_object_pos", ins.args[1], ins.args[2], ins.args[3] }) end
 L.multibattle = function(ins, s)
@@ -1743,11 +1791,8 @@ end
 L.scrcmd_530 = function(ins, s)
   local magic = { [0] = 0x6208, 0xF229, 0x0382, 0x1228 }
   local n = tonumber(ins.args[1]) or 0
-  emit(s, { "g4_set_var", 0x4036 + n, (tonumber(ins.args[2]) or 0) ~= 0 and (magic[n] or 0) or 0 })
+  emit(s, { "g4_set_var_literal", 0x4036 + n, (tonumber(ins.args[2]) or 0) ~= 0 and (magic[n] or 0) or 0 })
 end
-L.scrcmd_708 = function(_, s) emit(s, { "g4_noop", "the rocket trap's flash" }) end
-L.scrcmd_709 = function(_, s) emit(s, { "g4_noop", "the Persian statues' alarm" }) end
-L.scrcmd_710 = function(_, s) emit(s, { "g4_noop", "the hideout doors' prop animations" }) end
 -- LOAN POKEMON (HGSS): Shuckie in Cianwood, Kenya on Route 35
 L.giveloanmon = function(ins, s) emit(s, { "g4_give_loan_mon", ins.args[1], ins.args[2], ins.args[3] }) end
 L.checkreturnloanmon = function(ins, s)
@@ -1845,8 +1890,8 @@ L.monaddcontestvalue = function(ins, s) emit(s, { "g4_add_contest_value", ins.ar
 --   ScrCmd_724 <which, var> reads one Pokeathlon record (capped at 0xFFFF),
 --   ScrCmd_725 <add|sub, n> moves record 11 (unk70);
 --   ScrCmd_712 <app>: the Pokeathlon record viewers (course / medals /
---   event / ...), which this port does not have -- the script's own fade
---   either side of it still runs
+--   event / trophies) -- a no-op here, replaced by
+--   src/script/HgssPokeathlonCommands.lua's install below
 L.getmontypes = function(ins, s) emit(s, { "g4_mon_types", ins.args[1], ins.args[2], ins.args[3] }) end
 L.partylegalcheck = function(ins, s) emit(s, { "g4_set_var", ins.args[1], 0 }) end
 L.buffertrainerclassnameindef = function(ins, s) emit(s, { "g4_buffer", ins.args[1], "trainerClass", ins.args[2] }) end
@@ -2076,6 +2121,9 @@ L.bwdragonsettle = function(ins, s) emit(s, { "g4_bw_dragon_settle", ins.args[1]
 -- BLACK / WHITE 0x0D8: var = whether condition n of the field's table holds
 L.bwcondition = function(ins, s) emit(s, { "g4_bw_condition", ins.args[1], ins.args[2] }) end
 L.bwpartyable = function(ins, s) emit(s, { "g4_bw_party_able", ins.args[1] }) end
+-- BLACK / WHITE 0x1C0 / 0x1C1: the Poke Transfer Lab's transfer and its outcome
+L.bw_1C0 = function(_, s) require("src.script.Gen5PokeTransferCommands"); emit(s, { "g4_bw_poke_transfer" }) end
+L.bw_1C1 = function(_, s) require("src.script.Gen5PokeTransferCommands"); emit(s, { "g4_bw_poke_transfer_result" }) end
 L.bwbattleok = function(ins, s) emit(s, { "g4_bw_battle_ok", ins.args[1] }) end
 L.bwgameclear = function(ins, s) emit(s, { "g4_bw_game_clear", ins.args[1] }) end
 L.bwlegend = function(ins, s) emit(s, { "g4_bw_legend", ins.args[1], ins.args[2] }) end
@@ -2357,9 +2405,35 @@ L.callbattletowerfunction = function(ins, s)
   if tonumber(ins.args[1]) == 38 then emit(s, { "g4_bt_reward" }) end
 end
 L.printbattletowerintromessage = function(ins, s) emit(s, { "g4_bt_intro", ins.args[1] }) end
+-- HEARTGOLD / SOULSILVER'S SPELLINGS OF THE SAME FIVE (pokeheartgold
+-- scrcmd_9.c): 409 null, 410 <resume, mode> init, 411 free, 412 <fn, arg,
+-- dest> the function call -- whose ids are Diamond and Pearl's
+-- BattleTowerFunction enum in both games (1 party check, 32 duplicates, 43
+-- mode, 45 Palmer, 50 / 51 partner, 100 is-null ...) -- and 413 the partner's
+-- species and move. 101 uses of 412 in the Battle Frontier's scripts did
+-- nothing before this.
+L.scrcmd_409 = L.setbattletowernull
+L.scrcmd_410 = L.initbattletower
+L.scrcmd_411 = L.freebattletower
+L.scrcmd_412 = L.callbattletowerfunction
 L.getbattletowerpartnerspeciesandmove = function(ins, s)
   emit(s, { "g4_bt_partner_species_move", ins.args[1], ins.args[2], ins.args[3], ins.args[4] })
 end
+L.scrcmd_413 = L.getbattletowerpartnerspeciesandmove
+-- HEARTGOLD / SOULSILVER 226 / 227 <commType, a, b, dest> (scrcmd_c.c): the
+-- wireless club's leader / join search, waited on until its retCode is set
+-- (communication_club.c). With nobody to link to, the player backs out of the
+-- list: 1, the B-press code, which every caller treats as "cancelled".
+L.scrcmd_226 = function(ins, s) emit(s, { "g4_set_var", ins.args[4], 1 }) end
+L.scrcmd_227 = L.scrcmd_226
+-- HEARTGOLD / SOULSILVER 627 <scene> (ScrCmd_627 -> gOverlayTemplate_Frontier
+-- with unk20 = scene): Platinum's launchbattlefrontierscene, the same scene
+-- numbers (src/ui/Gen4FrontierScene.lua's HGSS_SCENES)
+L.scrcmd_627 = function(ins, s) emit(s, { "g4_frontier_scene", ins.args[1] }) end
+-- HEARTGOLD / SOULSILVER 520 / 521 (SetFlag975 / ClearFlag975): FLAG_UNK_975,
+-- raised while a frontier challenge is under way
+L.scrcmd_520 = function(_, s) emit(s, { "set_flag", flagName(0x975) }) end
+L.scrcmd_521 = function(_, s) emit(s, { "clear_flag", flagName(0x975) }) end
 -- `bufferspeciesnamewitharticle <slot> <var> ...`: bank 413, "a TURTWIG"
 L.bufferspeciesnamewitharticle = function(ins, s)
   emit(s, { "g4_buffer", ins.args[1], "speciesArticle", ins.args[2] })
@@ -2407,6 +2481,33 @@ L.getbattlearcadeselectedslots = L.getbattlecastleselectedslots
 L.deleteactivebattlearcadestreak = function(ins, s) emit(s, { "g4_arcade_delete_streak", ins.args[1] }) end
 L.checkbattlearcadepartnerusesdifferentspecies = L.checkbattlecastlepartnerusesdifferentspecies
 L.messageseenbanlistspecies = function(ins, s) emit(s, { "g4_bt_banlist_message", ins.args[1], ins.args[2] }) end
+-- HEARTGOLD / SOULSILVER'S FRONTIER LOBBIES: Platinum's commands under
+-- unnamed numbers (pokeheartgold scrcmd_20.c / scrcmd_battle_castle.c /
+-- scrcmd_battle_arcade.c / scrcmd_c.c), the same operands and enums.
+-- 444 <base> <count> <a> <b> is the banlist line from the MAP'S OWN bank
+-- (field_scrcmd_message.c, ov01_021EF5C8), base + legendaries seen.
+L.scrcmd_444 = function(ins, s) emit(s, { "g4_bt_banlist_message", ins.args[1], ins.args[2], "map" }) end
+L.scrcmd_628 = function(ins, s) return L.deleteactivebattlefactorystreak(ins, s) end
+L.scrcmd_633 = function(ins, s) return L.callbattlehalllobbyfunction(ins, s) end
+L.scrcmd_634 = function(ins, s) return L.checkbattlehallpartnerusesdifferentspecies(ins, s) end
+L.scrcmd_635 = function(ins, s) return L.getbattlehallselectedslots(ins, s) end
+L.scrcmd_636 = function(ins, s) return L.deleteactivebattlehallstreak(ins, s) end
+L.scrcmd_637 = function(ins, s) return L.callbattlecastlelobbyfunction(ins, s) end
+L.scrcmd_638 = function(ins, s) return L.checkbattlecastlepartnerusesdifferentspecies(ins, s) end
+L.scrcmd_639 = function(ins, s) return L.getbattlecastleselectedslots(ins, s) end
+L.scrcmd_640 = function(ins, s) return L.deleteactivebattlecastlestreak(ins, s) end
+L.scrcmd_643 = function(ins, s) return L.callbattlearcadelobbyfunction(ins, s) end
+L.scrcmd_644 = function(ins, s) return L.checkbattlearcadepartnerusesdifferentspecies(ins, s) end
+L.scrcmd_645 = function(ins, s) return L.getbattlearcadeselectedslots(ins, s) end
+L.scrcmd_646 = function(ins, s) return L.deleteactivebattlearcadestreak(ins, s) end
+-- 682 <0|1>: a debug check that the field heaps came back the same size
+L.scrcmd_682 = function() end
+-- the record keeper's three, named in pokeheartgold (scrcmd_20.c)
+L.battlehallcountusedspecies = function(ins, s) return L.getnumspecieswithbattlehallrecords(ins, s) end
+L.battlehallgettotalstreak = function(ins, s) return L.getbattlehalltotalsinglesrecord(ins, s) end
+L.bufferbattlehallstreak = function(ins, s) return L.getbattlehallrecordkeeperstats(ins, s) end
+-- AddSpecialGameStat2 <stat>: GameStats_AddScore, Platinum's incrementtrainerscore2
+L.addspecialgamestat2 = function(ins, s) emit(s, { "g4_trainer_score", ins.args[1] }) end
 L["1df"] = function(ins, s) emit(s, { "g4_bt_trophy", ins.args[1] }) end
 L["1e0"] = function(ins, s) emit(s, { "g4_bt_teala", ins.args[1] }) end
 L.launchbattlefrontierscene = function(ins, s) emit(s, { "g4_frontier_scene", ins.args[1] }) end
@@ -2654,7 +2755,11 @@ L.starttagbattle = function(ins, s)
   emit(s, { "g4_start_tag_battle", ins.args[1], ins.args[2], ins.args[3] })
 end
 
-L.removemoney2 = function(ins, s) emit(s, { "g4_remove_money", ins.args[1] }) end
+-- `removemoney2 <amount>`: ScrCmd_RemoveMoney2 reads the amount through
+-- ScriptContext_GetVar -- a var OR a value. Lowered onto the literal
+-- g4_remove_money it took the var's NUMBER: the Day Care's `removemoney2
+-- 0x8037` (the price in a var) charged 32,823 and emptied the wallet
+L.removemoney2 = function(ins, s) emit(s, { "g4_sub_money_var", ins.args[1] }) end
 -- `FieldMenu_PrintMoneyToWindow` again, on the window `showmoney` made: the
 -- script calls this after taking or giving money so the balance on screen is
 -- the one in the save.  Nothing is redrawn here -- the window reads the save
@@ -2864,6 +2969,12 @@ L.dodefogfunc = fieldMoveFlag("defog")
 -- 3 quick.  Called twice: once before the "would you like to save?" prompt to
 -- catch the blocked case, once after to pick the message.
 L.checksavetype = function(ins, s) emit(s, { "g4_check_save_type", ins.args[1] }) end
+-- HEARTGOLD / SOULSILVER's `GetSaveFileState` (ScrCmd 253) is the same four
+-- answers in the same order -- 0 not this player's file, 1 no file, 2 many
+-- boxes changed (a full save), 3 a quick one. Unlowered, its var kept 0 and
+-- every save offered by a script -- the Battle Frontier's before a challenge
+-- -- said "There is already a saved game file. It is impossible to save."
+L.getsavefilestate = L.checksavetype
 
 -- `trysavegame <destVar>` -- the write.  `ScrCmd_TrySaveGame` is
 -- `FieldSystem_Save`, which stamps the player's position and sends the Poketch
@@ -3270,6 +3381,16 @@ end
 L.contestphotohasdata = function(ins, s)
   emit(s, { "g4_no_feature", ins.args[2], "contest photos" })
 end
+-- Jubilife TV's dress-up photo frames (M0015): DressUpPhotoHasData <slot,
+-- dest> is ImageClipsSlotHasData, and nothing in this port saves a dress-up
+-- photo (Gen4ContestDressUp keeps no image clip), so the answer is no and the
+-- frame says it is empty; ShowDressUpPhoto / 0x0A8 <slot, dest> report 1, the
+-- cartridge's "no data" (sub_02041DC8 returned NULL)
+L.dressupphotohasdata = function(ins, s)
+  emit(s, { "g4_no_feature", ins.args[2], "dress-up photos" })
+end
+L.showdressupphoto = function(ins, s) emit(s, { "g4_set_var", ins.args[2], 1 }) end
+L["0a8"] = L["0a8"] or function(ins, s) emit(s, { "g4_set_var", ins.args[2], 1 }) end
 L.checkhasemptypoffincaseslot = function(ins, s)
   emit(s, { "g4_poffin_case_has_room", ins.args[1] })
 end
@@ -3301,6 +3422,14 @@ end
 L.bufferaccessorynamewitharticle = function(ins, s)
   emit(s, { "g4_buffer", ins.args[1], "bank:387", ins.args[2] })
 end
+-- ...and HeartGold / SoulSilver's own three (message_format.c): an
+-- Accessory's name is msg_0216 (BufferFashionName), with its article msg_0217
+-- (BufferFashionNameIndef), a backdrop's msg_0218 (BufferBackgroundName).
+-- std_receive_accessory / std_receive_background print them -- the Goldenrod
+-- Underground's lottery said "You win!" over an empty name before.
+L.bufferfashionname = function(ins, s) emit(s, { "g4_buffer", ins.args[1], "bank:216", ins.args[2] }) end
+L.bufferfashionnameindef = function(ins, s) emit(s, { "g4_buffer", ins.args[1], "bank:217", ins.args[2] }) end
+L.bufferbackgroundname = function(ins, s) emit(s, { "g4_buffer", ins.args[1], "bank:218", ins.args[2] }) end
 
 -- THE MOVE TUTOR at Grandma Wilma's house on Route 210.
 L.openmovetutormenu = function(ins, s)
@@ -3580,6 +3709,16 @@ end
 -- HEARTGOLD / SOULSILVER's spelling of the same count (ScrCmd_CountPCEmptySpace,
 -- the Bug-Catching Contest's registration asks it)
 L.countpcemptyspace = L.getpcboxesfreeslotcount
+-- PAL PARK'S CATCHING SHOW, both families (src/script/Gen4PalParkCommands.lua)
+local function palPark() require("src.script.Gen4PalParkCommands") end
+L.setclearincatchingshowflag = function(ins, s) palPark(); emit(s, { "g4_catching_show", ins.args[1], "platinum" }) end
+L.palparkaction = function(ins, s) palPark(); emit(s, { "g4_catching_show", ins.args[1], "hgss" }) end
+L.checkhasenoughmonforcatchingshow = function(ins, s) palPark(); emit(s, { "g4_catching_show_ready", ins.args[1] }) end
+L.scrcmd_509 = L.checkhasenoughmonforcatchingshow
+L.movecatchingshowmonstopcboxes = function(_, s) palPark(); emit(s, { "g4_catching_show_box" }) end
+L.scrcmd_510 = L.movecatchingshowmonstopcboxes
+L.calccatchingshowpoints = function(ins, s) palPark(); emit(s, { "g4_catching_show_points", ins.args[1], ins.args[2] }) end
+L.palparkscoreget = L.calccatchingshowpoints
 -- HEARTGOLD / SOULSILVER scrcmd 780 `CasinoGame <machine, city>`: a Game
 -- Corner machine is Voltorb Flip (src/ui/HgssVoltorbFlip.lua); the machine
 -- and city only fed a luck value the app ignores
@@ -3758,8 +3897,9 @@ end
 -- THE GREAT MARSH / SAFARI GAME -- see `Commands.g4_safari_game`.
 -- `startendsafarigame <state>` -- one BYTE: 0 starts a game, 1 ends it.
 L.startendsafarigame = function(ins, s) emit(s, { "g4_safari_game", ins.args[1] }) end
+-- the observatory's binoculars (src/world/Gen4MarshLookout.lua)
 L.startgreatmarshlookout = function(_, s)
-  emit(s, { "g4_noop", "the Great Marsh lookout" })
+  emit(s, { "g4_marsh_lookout" })
 end
 L.getcurrentsafarigamecaughtnum = function(ins, s)
   emit(s, { "g4_safari_caught", ins.args[1] })
@@ -3878,7 +4018,7 @@ end
 L.stopse = function(ins, s) emit(s, { "g4_stop_sound", ins.args[1] }) end
 -- Canalave's library television and the boat cutscene are both scripted
 -- set-pieces with their own screens; the scripts around them continue.
-L.startlibrarytv = function(_, s) emit(s, { "g4_noop", "the Canalave library TV" }) end
+-- (startlibrarytv: src/script/Gen4FieldScenes.lua)
 L.playboatcutscene = function(_, s) emit(s, { "g4_noop", "the boat cutscene" }) end
 -- `2b5 <map> <x> <z>` is `FieldOverworldState_SetExitLocation` -- where a
 -- dungeon puts you back out. It writes no var; the port's own `lastOutdoor`
@@ -3909,9 +4049,7 @@ end
 -- animation, likewise a picture
 L.hofcredits = function(ins, s) emit(s, { "g4_clear_game", ins.args[1] }) end
 L.halloffameanim = function(_, s) emit(s, { "g4_noop", "the Hall of Fame machine's balls" }) end
-L.playhalloffamehealinganimation = function(_, s)
-  emit(s, { "g4_noop", "the Hall of Fame healing animation" })
-end
+-- (playhalloffamehealinganimation: src/script/Gen4FieldScenes.lua)
 
 -- !! CORRECTED. These two were briefly lowered to the port's `g4_show_object`
 -- and `g4_hide_object` on the reading that `DistWorld_AddMapObjectWithLocalID`
@@ -3968,7 +4106,11 @@ end
 -- to nothing for the reason that applies here too: this port's text boxes
 -- already wait for the button themselves, so a second wait with no box on
 -- screen is a hang rather than a pause.
-L.waitabpadpress = function(_, s) emit(s, { "g4_noop", "a wait for A or B" }) end
+-- (Platinum's ScrCmd_WaitABPadPress is the same ScriptContext_CheckABPress
+-- wait as WaitABPress, so it shares that row: show_text has already held
+-- the Distortion World's "Message / WaitABPadPress / CloseMessage" lines
+-- for A, and under a framed picture the press is still waited for.)
+L.waitabpadpress = function(_, s) emit(s, { "g4_wait_button" }) end
 
 -- THE PLATFORM LIFTS, and why they are NOT a blocker even though they first
 -- looked like one.
@@ -4056,12 +4198,7 @@ L.pokemartseal = function(ins, s) emit(s, { "g4_pokemart", ins.args[1], "seal" }
 
 -- THE LAKE GUARDIAN CONTAINMENT UNITS in the Galactic HQ control room, the
 -- Spear Pillar set-pieces, and the rest -- each read on its own.
-L.initlakeguardiancontainmentunits = function(_, s)
-  emit(s, { "g4_noop", "the lake guardian containment units" })
-end
-L.deactivatelakeguardiancontainmentunits = function(_, s)
-  emit(s, { "g4_noop", "the lake guardian containment units" })
-end
+-- (init / deactivatelakeguardiancontainmentunits: src/script/Gen4FieldScenes.lua)
 -- `ScrCmd_SetHiddenLocation`: a location (var or literal) and an on/off byte.
 -- Was a no-op, so no hidden location could ever be unlocked -- Spring Path,
 -- Seabreak Path and the two moon islands. See Gen4HiddenPaths.
@@ -4146,7 +4283,15 @@ end
 -- then a visibility flag, where `addobject`/`removeobject` add and delete. The
 -- port's show and hide do exactly this, and the add/delete pair was already
 -- pointed at them; these two were simply never lowered.
-L.showobject = function(ins, s) emit(s, { "g4_show_object", ins.args[1] }) end
+L.showobject = function(ins, s)
+  -- HGSS's MakeObjectVisible arrives under this name (Gen4HgssScriptAliases)
+  -- and HIDES the object's picture -- see ScrCmd_374 above
+  if ins.hgssName == "makeobjectvisible" then
+    emit(s, { "g4_object_invisible", ins.args[1], true })
+    return
+  end
+  emit(s, { "g4_show_object", ins.args[1] })
+end
 L.hideobject = function(ins, s) emit(s, { "g4_hide_object", ins.args[1] }) end
 L.resetdistortionworldpersistedcameraangles = function(_, s)
   emit(s, { "g4_dw_reset_camera" })
@@ -4201,10 +4346,37 @@ require("src.script.HgssMartCommands").install(L)
 -- Black / White's Poke Mart counter (0x149 BUY, 0x14E SELL):
 -- src/script/Gen5MartCommands.lua
 require("src.script.Gen5MartCommands").install(L)
+-- HGSS's questions ({YESNO 0} then GetMenuChoice) keep the question on screen
+-- under the YES / NO: src/script/HgssYesNoMessage.lua
+require("src.script.HgssYesNoMessage").install()
 -- HGSS phone rematches (GetPhoneBookRematch / ScrCmd_462): src/script/HgssPhoneRematch.lua
 require("src.script.HgssPhoneRematch").install(L)
 -- HGSS trainers offering their number (LoadPhoneDat / GetPhoneContactMsgIds /
 -- the gift pair): src/script/HgssPhoneNumbers.lua
 require("src.script.HgssPhoneNumbers").install(L)
+-- HGSS's small var-answering field queries (fossils, gender, Kenya, the
+-- radio's Poke Flute, Shiny Leaves...): src/script/HgssFieldQueries.lua
+require("src.script.HgssFieldQueries").install(L)
+-- Black / White field commands with no Platinum row: src/script/Gen5FieldCommands.lua
+require("src.script.Gen5FieldCommands").install(L)
+-- Platinum's Jubilife TV rankings machines: src/script/Gen4RankingsMachine.lua
+require("src.script.Gen4RankingsMachine").install(L)
+-- scripted field pictures (the hideout trap / alarm / generators, the lake
+-- guardian containment units, the Hall of Fame machine, the library TV):
+-- src/script/Gen4FieldScenes.lua
+require("src.script.Gen4FieldScenes").install(L)
+-- Platinum's ScrCmd_2FB, the Spear Pillar cinematic: src/script/Gen4SpearPillarScene.lua
+require("src.script.Gen4SpearPillarScene").install(L)
+-- Platinum's scratch-off cards (M0499): src/script/Gen4ScratchOffCommands.lua
+require("src.script.Gen4ScratchOffCommands").install(L)
+-- Platinum's flower-shop Accessories, wall maps, list widths: src/script/Gen4PlatinumFieldApps.lua
+require("src.script.Gen4PlatinumFieldApps").install(L)
+-- HGSS's Pokeathlon dome: src/script/HgssPokeathlonCommands.lua
+require("src.script.HgssPokeathlonCommands").install(L)
+-- HGSS's Pokeathlon Dome counters and the Aprijuice stand (0x2E4 0x2E5 0x2E7
+-- 0x303 0x304 0x342 0x343): src/script/HgssPokeathlonShops.lua
+require("src.script.HgssPokeathlonShops").install(L)
+-- Black / White's gym animations (0x185, 0x187-0x189): src/script/Gen5GymFxCommands.lua
+require("src.script.Gen5GymFxCommands").install(L)
 
 return Gen4ScriptVM

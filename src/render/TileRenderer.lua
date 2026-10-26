@@ -995,6 +995,10 @@ end
 -- pair is dropped. Twelve is comfortably more than a town, its interiors and
 -- the routes either side of it, which is the working set walking produces.
 TileRenderer.GEN3_SHEET_CACHE = 12
+local gen3Pins={}
+function TileRenderer.pinGen3Sheets(protected)
+  gen3Pins=protected or {}
+end
 
 local function gen3Evict()
   local count = 0
@@ -1008,7 +1012,7 @@ local function gen3Evict()
       -- alive at once -- the map being left and the map being entered -- and
       -- releasing the images out from under either draws a freed texture,
       -- which is a crash rather than a missing tile.
-      if v and gen3Clock - (gen3Used[k] or 0) >= 2
+      if v and not gen3Pins[k] and gen3Clock - (gen3Used[k] or 0) >= 2
          and (not oldestAt or (gen3Used[k] or 0) < oldestAt) then
         oldest, oldestAt = k, gen3Used[k] or 0
       end
@@ -1336,6 +1340,7 @@ end
 function TileRenderer.releaseGen3Sheets()
   gen3Sheets = {}
   gen3Used, gen3Clock = {}, 0
+  gen3Pins={}
 end
 
 -- The stand-in palette's colour 0 -- `Gen4Tileset.palettes` writes the same
@@ -1343,6 +1348,25 @@ end
 -- naming it here rather than importing the extractor keeps a render file off
 -- an import file.
 local GEN4_BACKDROP = { 24 / 255, 26 / 255, 34 / 255 }
+
+-- Atlas slots are immutable and shared by every map using this baked pair.
+-- Keep their Quads with the sheet rather than recreate thousands at a seam.
+function TileRenderer.gen3QuadsFor(record, checkpoint)
+  if record.quads then return record.quads end
+  local quads={}
+  local cols=require("src.render.Gen3Tiles").SHEET_COLS
+  for id=0,(record.slots or record.metatiles)-1 do
+    quads[id]=love.graphics.newQuad((id%cols)*16,math.floor(id/cols)*16,
+                                  16,16,record.width,record.height)
+    if checkpoint and id%128==127 then checkpoint() end
+  end
+  record.quads=quads
+  return quads
+end
+
+function TileRenderer.hasGen3Sheets(key)
+  return type(gen3Sheets[key])=="table"
+end
 
 function TileRenderer.new(map, data)
   local self = setmetatable({}, TileRenderer)
@@ -1517,15 +1541,7 @@ function TileRenderer.new(map, data)
                                          and data.constants.gen3Layout)
   self.gen3Key = map.tileset and map.tileset.id
   if self.gen3 then
-    local cols = require("src.render.Gen3Tiles").SHEET_COLS
-    self.gen3Quads = {}
-    -- every SLOT, which is the metatiles plus the extra pictures the animated
-    -- ones were baked into
-    for id = 0, (self.gen3.slots or self.gen3.metatiles) - 1 do
-      self.gen3Quads[id] = love.graphics.newQuad(
-        (id % cols) * 16, math.floor(id / cols) * 16, 16, 16,
-        self.gen3.width, self.gen3.height)
-    end
+    self.gen3Quads = TileRenderer.gen3QuadsFor(self.gen3)
   end
   -- Animated tiles overdraw the static window each frame.  Only the per-entry
   -- render spec (textures/sequence/gate) is kept here; the animated cells are
@@ -2328,6 +2344,7 @@ function TileRenderer:releaseBatches()
   self.borderWaterTextures = nil
   self.borderFillMode = nil
   self.win = nil
+  self.gen3Quads = nil -- owned by the shared sheet record, never this map
   if self.quads then
     for _, q in pairs(self.quads) do safeRelease(q) end
     self.quads = nil

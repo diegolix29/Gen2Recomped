@@ -264,6 +264,10 @@ function Evolution.changeHappiness(mon, reason)
   mon.happiness = math.max(0, math.min(255, h + row[band]))
 end
 
+-- GEN 4 AND GEN 5's methods by name, and Black / White's by number
+-- (src/pokemon/Gen45Evolution.lua)
+require("src.pokemon.Gen45Evolution").install(Evolution.METHODS)
+
 function Evolution.registerInto(registry, _, owner)
   for id, record in pairs(Evolution.METHODS) do
     registry:register(id, record, owner)
@@ -280,6 +284,11 @@ function Evolution.pendingFor(game, mon, trigger)
   local methods = data.evolution_methods or Evolution.METHODS
   for _, evo in ipairs(def.evolutions or {}) do
     local method = methods[evo.method]
+    -- Black / White carry the method as a number (Gen45Evolution.nameOf)
+    if method == nil and type(evo.method) == "number" then
+      local name = require("src.pokemon.Gen45Evolution").nameOf(evo.method)
+      method = name and methods[name]
+    end
     if method and method.check then
       local should
       if Runtime.wantsHook("evolution.check") then
@@ -378,6 +387,11 @@ function Evolution.apply(game, mon, newSpecies, via, evo)
   if game.save.pokedex then
     game.save.pokedex.seen[newSpecies] = true
     game.save.pokedex.owned[newSpecies] = true
+  end
+  -- Gen 4 / 5: a held-item method uses the item; Nincada's Shedinja
+  -- (src/pokemon/Gen45Evolution.lua)
+  if evo and game.save then
+    pcall(require("src.pokemon.Gen45Evolution").afterApply, game, mon, fromSpecies, evo)
   end
   Runtime.emit("pokemon.evolved", {
     mon = mon, fromSpecies = fromSpecies, toSpecies = newSpecies, via = via,

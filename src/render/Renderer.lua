@@ -818,6 +818,24 @@ function Renderer:setUIAnchor(x, y, w, h, anchor)
     { x = x, y = y, w = w, h = h, anchor = anchor }
 end
 
+-- THE POISON STEP'S WOBBLE, Gen 4's (Field_DoPoisonEffect, pokeplatinum
+-- src/overlay005/ov5_021EF4BC.c): an HBlank task sets the 3D layer's
+-- horizontal offset per scanline, the lines in bands of ten taking +push and
+-- -push in turn -- lines 0-9 the negative offset, which moves the picture
+-- RIGHT. `Renderer.worldWobble` is that push in DS pixels, set by
+-- OverworldState:drawUI for the frames the effect runs and consumed by the
+-- next endFrame. This walks the bands over the window: fn(dir, y, h) with
+-- dir +1 (right) or -1 (left), `band` window units a band, the bands
+-- counted from `y0` (the top of the DS picture) and covering 0..height.
+local function wobbleBands(y0, band, height, fn)
+  if not (band and band > 0) then return end
+  local k = math.floor(-y0 / band)
+  while y0 + k * band < height do
+    fn(k % 2 == 0 and 1 or -1, y0 + k * band, band)
+    k = k + 1
+  end
+end
+
 -- zones: optional list of SGB palette regions (see PaletteFX) in
 -- 160x144 UI space, applied to the UI pass.  worldZones: optional
 -- regions in world-canvas pixels (overworld survey zoom colors each
@@ -1039,6 +1057,10 @@ function Renderer:endFrame(zones, worldZones)
   -- nobody can measure is simply not an override, and the frame falls back to
   -- the world canvas below -- which is the path every other generation uses
   -- anyway. Cheap: one pcall per frame, and only when an override is set.
+  -- (the poison step's wobble, this frame's only: see wobbleBands)
+  local wobble = tonumber(self.worldWobble)
+  self.worldWobble = nil
+  if wobble == 0 then wobble = nil end
   if self.worldOverride then
     local measurable = pcall(self.worldOverride.getDimensions, self.worldOverride)
     if not measurable then self.worldOverride = nil end
@@ -1084,6 +1106,12 @@ function Renderer:endFrame(zones, worldZones)
        and loveMajor >= 12
        and gen ~= 4 then
       love.graphics.draw(self.worldOverride, 0, wh, 0, osx, -osy)
+    elseif wobble then
+      -- a DS pixel is a UI pixel here (Ux, Uy); the bands from the UI's top
+      wobbleBands(uoy, 10 * Uy, wh, function(dir, y, h)
+        love.graphics.setScissor(0, math.max(0, y), ww, h + math.min(0, y))
+        love.graphics.draw(self.worldOverride, dir * wobble * Ux, 0, 0, osx, osy)
+      end)
     else
       love.graphics.draw(self.worldOverride, 0, 0, 0, osx, osy)
     end
@@ -1113,7 +1141,17 @@ function Renderer:endFrame(zones, worldZones)
     local projected =
       Tilt.active() and self:drawTiltedWorld(worldZones or zones, sx, sy, wox, woy, present)
     if not projected then
-      if worldZones then
+      if wobble then
+        -- Gen 4's world canvas is in DS pixels: a band is ten of its rows,
+        -- each blitted on its own, pushed by `wobble` of its columns
+        local zl, zsx, zsy = zones, Sx, Sy
+        if worldZones then zl, zsx, zsy = worldZones, sx, sy end
+        wobbleBands(woy, 10 * sy, wh, function(dir, y, h)
+          local top = math.max(0, y)
+          blit(self.worldCanvas, sx, sy, zl, zsx, zsy, wox + dir * wobble * sx, woy,
+               0, top, ww, h - (top - y))
+        end)
+      elseif worldZones then
         blit(self.worldCanvas, sx, sy, worldZones, sx, sy, wox, woy, 0, 0, ww, wh)
       else
         blit(self.worldCanvas, sx, sy, zones, Sx, Sy, wox, woy, 0, 0, ww, wh)

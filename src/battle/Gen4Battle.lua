@@ -788,6 +788,34 @@ function Gen4Battle.drawTrainerBack(battle)
   if not (battle and battle.showPlayerBack and battle.playerBackPic) then
     return false
   end
+  -- THE DS THROW: the cartridge's own back, its first picture while standing
+  -- (Black / White's with both arms -- cell 0 alone has no throwing arm) and
+  -- the send-out playing through it (BattleState.dsThrow)
+  local rec = battle.dsBackThrowRec
+  if rec then
+    local okA, sheet = pcall(require("src.render.Assets").image, rec.path)
+    local pos = okA and sheet and Gen4Battle.battlerPos(battle, 0)
+    if pos then
+      local frame = 1
+      local t = battle.dsThrow and battle.dsThrow.tick
+      if t then
+        for _, p in ipairs(rec.play or {}) do
+          frame = p.frame
+          if t < p.dur then break end
+          t = t - p.dur
+        end
+      end
+      battle._dsThrowQuads = battle._dsThrowQuads or {}
+      local q = battle._dsThrowQuads[frame]
+      if not q then
+        q = love.graphics.newQuad((frame - 1) * rec.width, 0, rec.width, rec.height, sheet:getDimensions())
+        battle._dsThrowQuads[frame] = q
+      end
+      love.graphics.setColor(1, 1, 1, 1)
+      love.graphics.draw(sheet, q, math.floor(pos.x + rec.dx + 0.5), math.floor(pos.y + rec.dy + 0.5))
+      return true
+    end
+  end
   local img = battle.picImage and battle:picImage(battle.playerBackPic)
              or battle.playerBackPic
   if not (img and img.getWidth) then return false end
@@ -808,13 +836,54 @@ end
 -- the engine's own "foe" pic offset (the slide off before the send-out and back
 -- on at the end).  A second trainer, when two walked up, stands on the second
 -- foe's slot.
+-- the lowest opaque row of a picture (its feet), read once through a canvas
+local feetRows = setmetatable({}, { __mode = "k" })
+function Gen4Battle.feetRow(img)
+  if feetRows[img] ~= nil then return feetRows[img] end
+  local row = img:getHeight() - 1
+  local ok = pcall(function()
+    local c = love.graphics.newCanvas(img:getWidth(), img:getHeight())
+    love.graphics.push("all")
+    love.graphics.setCanvas(c)
+    love.graphics.clear(0, 0, 0, 0)
+    love.graphics.setColor(1, 1, 1, 1)
+    love.graphics.draw(img, 0, 0)
+    love.graphics.pop()
+    local id = c:newImageData()
+    local w, h = id:getWidth(), id:getHeight()
+    for y = h - 1, 0, -1 do
+      for x = 0, w - 1 do
+        local _, _, _, a = id:getPixel(x, y)
+        if a > 0.1 then row = y; return end
+      end
+    end
+  end)
+  feetRows[img] = ok and row or (img:getHeight() - 1)
+  return feetRows[img]
+end
+
 function Gen4Battle.drawEnemyTrainer(battle)
   if not (battle and battle.showEnemyTrainer and battle.trainerPic) then return false end
   local g = love.graphics
   local off = battle.picOffset and battle:picOffset("foe") or 0
+  -- BLACK AND WHITE'S TRAINERS STAND ON THE PLATFORM: their pictures are
+  -- billboards in the 3D field like the Pokemon's, feet at the platform's
+  -- centre -- centred on the Pokemon's frame instead, the taller trainer art
+  -- floated well above it and read as larger than the scene
+  local okV, V = pcall(require, "src.render.Gen5BattleSceneView")
+  local field = okV and V.available(battle) and V or nil
   local function one(pic, slot)
     local img = battle.picImage and battle:picImage(pic) or pic
     if not (img and img.getWidth) then return false end
+    if field and slot == 1 then
+      local sx, sy = field.standPoint("enemy")
+      if sx then
+        g.setColor(1, 1, 1, 1)
+        g.draw(img, math.floor(sx - img:getWidth() / 2 + 0.5) + off,
+               math.floor(sy - Gen4Battle.feetRow(img) - 1 + 0.5))
+        return true
+      end
+    end
     local pos = Gen4Battle.battlerPos(battle, slot)
     if not pos then return false end
     local x, y = corner(pos.x, pos.y, img)
@@ -1903,8 +1972,14 @@ function Gen4Battle.drawHealthboxes(battle)
         local balls = battle.safari and battle.safari.balls or 0
         local faced = Font.pushFace("system")
         g.setColor(0.2, 0.2, 0.2, 1)
-        Font.draw(G.text(battle.data, G.TEXT.boxTitle) or "SAFARI BALLS", x + 16, y + 16)
-        Font.draw(G.text(battle.data, G.TEXT.boxLeft, ("%2d"):format(balls))
+        -- Pal Park's box counts Park Balls (HEALTHBOX_TYPE_PAL_PARK)
+        local title, left = G.TEXT.boxTitle, G.TEXT.boxLeft
+        if battle.palPark then
+          local PB = require("src.battle.Gen4PalParkBattle")
+          title, left = PB.TEXT.boxTitle, PB.TEXT.boxLeft
+        end
+        Font.draw(G.text(battle.data, title) or (battle.palPark and "PARK BALLS" or "SAFARI BALLS"), x + 16, y + 16)
+        Font.draw(G.text(battle.data, left, ("%2d"):format(balls))
                   or ("Left: %2d"):format(balls), x + 16, y + 32)
         if faced then Font.popFace() end
         g.setColor(1, 1, 1, 1)
@@ -2185,6 +2260,10 @@ function Gen4Battle.actionLabels(battle)
   local Strings = require("src.core.Strings")
   -- THE GREAT MARSH'S FOUR, in the same four places (BattleSubscreen_
   -- DrawActionMenu swaps the strings and nothing else).
+  -- PAL PARK: BALL and RUN alone (src/battle/Gen4PalParkBattle.lua)
+  if battle and battle.palPark and battle.gen4Safari then
+    return require("src.battle.Gen4PalParkBattle").labels(battle)
+  end
   if battle and battle.gen4Safari then
     local G = require("src.battle.Gen4Safari")
     local out, fallback = {}, { "BALL", "BAIT", "MUD", "RUN" }
@@ -2366,7 +2445,8 @@ function Gen4Battle.drawTextArea(battle)
     local M = Gen4Battle.MOVE_BOX
     Font.drawDialogueBox(M.tx, M.ty, M.tw, M.th)
   end
-  if presentation ~= "compact" then
+  local panel = presentation == "compact" and Gen4Battle._panel
+  if presentation ~= "compact" or panel then
     Font.drawDialogueBox(B.tx, B.ty, B.tw, B.th)
   end
   g.setColor(0, 0, 0, 1)
@@ -2420,7 +2500,7 @@ function Gen4Battle.drawTextArea(battle)
 
   -- With the menus on the bottom screen the top box keeps the cartridge's
   -- prompt for the whole choice -- the action menu and the move list alike.
-  if presentation == "bottom" and Gen4Battle.hasSubscreenArt(battle) then
+  if (presentation == "bottom" or panel) and Gen4Battle.hasSubscreenArt(battle) then
     Gen4Battle.drawWhatWill(battle)
   end
 
@@ -2844,6 +2924,27 @@ Gen4Battle.COMPACT_SLOTS = {
   { art = "run",   x = 88,  w = 80,  row = 1 },
 }
 
+-- THE SINGLE-SCREEN PANEL. With the second screen off, the buttons used to sit
+-- in the message box's strip -- over the player's battler, and in place of
+-- the "What will ... do?" the cartridge prints there. Now the surface grows
+-- PANEL_H rows under the top screen and the buttons go there, on the bottom
+-- screen's own backdrop, at the surface's full width: the top screen keeps
+-- everything the cartridge shows on it, the box and its prompt included.
+Gen4Battle.PANEL_H = 56
+
+function Gen4Battle.singlePanel(battle)
+  if not (battle and battle.gen4Layout and battle:gen4Layout()) then return false end
+  if bottomScreenUp(battle.game) then return false end
+  return Gen4Battle.hasSubscreenArt(battle)
+end
+
+-- the strip's rectangle this frame: the panel when there is one
+local function stripRect(base)
+  local P = Gen4Battle._panel
+  if not P then return base end
+  return { x = 0, y = Gen4Battle.HEIGHT, w = P.w, h = Gen4Battle.PANEL_H }
+end
+
 -- MOVING BETWEEN THEM, and the engine's own 2x2 is not the shape on screen.
 --
 -- Reported from play: *"for gen4 im not able to smoothly select the options by
@@ -2882,12 +2983,13 @@ function Gen4Battle.actionMove(index, dir, col)
 end
 
 function Gen4Battle.compactButtonRect(i)
-  local S, pad = Gen4Battle.STRIP, Gen4Battle.STRIP_PAD
+  local S, pad = stripRect(Gen4Battle.STRIP), Gen4Battle.STRIP_PAD
   local slot = Gen4Battle.COMPACT_SLOTS[i]
   if not slot then return S.x, S.y, 0, 0 end
   local h = S.h / 2
-  return S.x + slot.x + pad, S.y + slot.row * h + pad,
-         slot.w - pad * 2, h - pad * 2
+  local k = S.w / 256
+  return S.x + math.floor(slot.x * k) + pad, S.y + slot.row * h + pad,
+         math.floor(slot.w * k) - pad * 2, h - pad * 2
 end
 
 -- THE MOVE LIST GOES TO THE BOTTOM OF THE SCREEN, and carries its own PP.
@@ -2929,7 +3031,7 @@ function Gen4Battle.compactHit(x, y, over)
 end
 
 function Gen4Battle.compactMoveRect(i)
-  local S, pad = Gen4Battle.MOVE_STRIP, Gen4Battle.MOVE_STRIP_PAD
+  local S, pad = stripRect(Gen4Battle.MOVE_STRIP), Gen4Battle.MOVE_STRIP_PAD
   local c, r = (i - 1) % 2, math.floor((i - 1) / 2)
   local w, h = S.w / 2, S.h / 2
   return S.x + c * w + pad, S.y + r * h + pad, w - pad * 2, h - pad * 2
@@ -2948,6 +3050,32 @@ end
 -- Folding them also made the decision untestable, because asking "did it load"
 -- needs a graphics device and the check harness has none. A decision nobody can
 -- test off-device is one that gets tested by playing.
+-- THE PANEL'S BACKDROP: the bottom screen's own base picture, scaled to the
+-- panel's width -- its middle band for Platinum and HGSS (the Poke Ball
+-- watermark), its foot for Black and White (whose middle is the big FIGHT!
+-- plate, which would read as a button while a message types).
+function Gen4Battle.drawPanel(battle)
+  local g = love.graphics
+  local P = Gen4Battle._panel
+  if not P then return end
+  local y0, h = Gen4Battle.HEIGHT, Gen4Battle.PANEL_H
+  local base, foot
+  local okG5, G5 = pcall(require, "src.battle.Gen5BattleHud")
+  if okG5 and G5.active(battle) and G5.picture then base, foot = G5.picture(battle, "sub_base"), true end
+  base = base or subscreenLayer(battle, "base")
+  g.setColor(0.08, 0.08, 0.1, 1)
+  g.rectangle("fill", 0, y0, P.w, h)
+  g.setColor(1, 1, 1, 1)
+  if base then
+    local iw, ih = base:getDimensions()
+    local k = P.w / iw
+    local sx, sy, sw, sh = g.getScissor()
+    g.intersectScissor(0, y0, P.w, h)
+    g.draw(base, 0, y0 - (ih * k - h) / (foot and 1 or 2), 0, k, k)
+    if sx then g.setScissor(sx, sy, sw, sh) else g.setScissor() end
+  end
+end
+
 function Gen4Battle.hasSubscreenArt(battle)
   do local okG5, G5 = pcall(require, "src.battle.Gen5BattleHud") if okG5 and G5.active(battle) then return true end end
   local gfx = graphics(battle)
@@ -3170,6 +3298,8 @@ function Gen4Battle.drawCompactActions(battle)
     local slot = Gen4Battle.COMPACT_SLOTS[i]
     local src = Sub.ACTION_BUTTONS[slot and slot.art]
     local x, y, w, h = Gen4Battle.compactButtonRect(i)
+    -- Pal Park's middle row is not there (Gen4PalParkBattle)
+    if battle.palPark and (i == 2 or i == 3) then goto nextButton end
     if not nineSlice(art, src, x, y, w, h) then return false end
     -- THE SELECTED ONE IS LIT, NOT OUTLINED. The cartridge highlights a
     -- pressed button by swapping in a whole second tilemap (`moves_pressed`);
@@ -3188,6 +3318,7 @@ function Gen4Battle.drawCompactActions(battle)
     Font.draw(text, math.floor(x + (w - tw) / 2),
               math.floor(y + (h - th) / 2))
     love.graphics.setColor(1, 1, 1, 1)
+    ::nextButton::
   end
   return true
 end
@@ -4019,6 +4150,11 @@ function Gen4Battle.whatWillText(battle)
   if battle.gen4Safari then
     local who = (battle.game and battle.game.save and battle.game.save.playerName)
                 or (battle.game and battle.game.save and battle.game.save.name) or "PLAYER"
+    -- Pal Park's is "do" (BattleStrings_Text_WhatWillPlayerDo)
+    if battle.palPark then
+      return require("src.battle.Gen4PalParkBattle").text(battle, "whatWill", who)
+             or Strings("What will %s do?", who)
+    end
     return G.text(battle.data, Gen4Battle.WHAT_WILL.throw, who)
            or Strings("What will %s throw?", who)
   end
@@ -4129,6 +4265,9 @@ function Gen4Battle.draw(battle)
   -- never written" rather than "the text box is crashing". Said ONCE, because
   -- it raises sixty times a second and a log that scrolls is a log nobody
   -- reads.
+  -- the single-screen panel under the top screen (see PANEL_H)
+  Gen4Battle._panel = Gen4Battle.singlePanel(battle) and { w = Gen4Battle.width(battle) } or nil
+  if Gen4Battle._panel then pcall(Gen4Battle.drawPanel, battle) end
   local ok, err = pcall(function() battle:drawTextArea() end)
   if not ok then
     g.setColor(1, 1, 1, 1)

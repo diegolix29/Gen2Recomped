@@ -139,6 +139,7 @@ function Radio:showFor(station)
 end
 
 function Radio:music(song)
+  self.song = song
   local ok, Music = pcall(require, "src.core.Music")
   if not ok then return end
   if song then pcall(Music.play, self.game.data, song)
@@ -202,6 +203,17 @@ end
 function Radio:leave()
   local pg = self.gear:save()
   pg.radioX, pg.radioY = self.x, self.y
+  -- Radio_VideoUnload: a tuned station keeps playing in the field
+  -- (src/world/HgssRadioMusic.lua); the map's music comes back only for an
+  -- untuned dial
+  local Field = require("src.world.HgssRadioMusic")
+  if self.station ~= nil and self.song then
+    Field.keep(self.game, self.song)
+    self.station, self.signal = nil, 0
+    self.title, self.host, self.lines, self.script = nil, nil, {}, nil
+    return
+  end
+  Field.clear(self.game)
   self:close()
   local ok, Music = pcall(require, "src.core.Music")
   if ok and Music.restoreMap then pcall(Music.restoreMap, self.game.data) end

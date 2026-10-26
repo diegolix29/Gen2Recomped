@@ -119,12 +119,64 @@ function Encounter.gen4StepAllowed(state, rate, cycling, veryTallGrass, rng)
   rate = tonumber(rate) or 0
   if rate <= 0 then return false end
   rng = rng or love.math.random
+  if Encounter.isHgss() then return Encounter.hgssStepAllowed(state, cycling, veryTallGrass, rng) end
   local grace = 8 - math.min(8, math.floor(rate / 10))
   if (state.gen4EncounterAttempts or 0) < grace then
     state.gen4EncounterAttempts = (state.gen4EncounterAttempts or 0) + 1
     if rng(0, 99) >= 5 then return false end
   end
   return rng(0, 99) < ((cycling or veryTallGrass) and 70 or 40)
+end
+
+function Encounter.isHgss()
+  local G = package.loaded["src.core.Game"]
+  local v = G and G.data and G.data.gen4_version
+  return type(v) == "table" and v.family == "hgss"
+end
+
+-- HEARTGOLD / SOULSILVER'S STEP (src/field/encounter_check.c,
+-- FieldSystem_PerformLandOrSurfEncounterCheck / FieldSystem_EncounterRateRoll),
+-- which is not Platinum's:
+--
+--   * encounterInhibitSteps: nothing for the first three steps after a warp
+--     or a battle (the attempts counter the overworld already resets there)
+--   * the turn frames: each step facing the opposite way from the last one
+--     counts (FieldSystem_UpdateTurnFrameCounter), cleared by the same resets
+--   * modifiedRate 40 cycling, surfing or running (sub_0205DE98: the Run
+--     movement actions), else 20; +40 in very tall grass, else +30 cycling;
+--     +30 / 40 / 60 for 2 / 3 / 4+ turn frames; the radio's March +25 and
+--     Lullaby -25 (src/world/HgssRadioMusic.lua); at most 100
+--
+-- and then FieldSystem_SecondEncounterRoll against the area's own rate, which
+-- the table roll after this already is.
+local OPPOSITE = { up = "down", down = "up", left = "right", right = "left" }
+function Encounter.hgssStepAllowed(state, cycling, veryTallGrass, rng)
+  -- the overworld counts every step (onStepComplete); a caller that does not
+  -- (a check, a harness) gets this call counted as the step instead
+  local steps = state.gen4EncounterAttempts or 0
+  if not state.hgssStepsCounted then
+    steps = math.min(0xFFFF, steps + 1)
+    state.gen4EncounterAttempts = steps
+  end
+  -- a reset (map load, battle) since the last check: the turn frames go too
+  if steps < (state.hgssLastSteps or 0) or steps <= 1 then state.hgssTurnFrames, state.hgssLastFacing = 0, nil end
+  state.hgssLastSteps = steps
+  if steps <= 3 then return false end
+  local p = state.player or {}
+  local facing = p.facing
+  if facing and state.hgssLastFacing and OPPOSITE[facing] == state.hgssLastFacing then
+    state.hgssTurnFrames = math.min(0xFFFF, (state.hgssTurnFrames or 0) + 1)
+  end
+  state.hgssLastFacing = facing
+  local modified = (cycling or p.surfing or p.running) and 40 or 20
+  if veryTallGrass then modified = modified + 40 elseif cycling then modified = modified + 30 end
+  local turns = state.hgssTurnFrames or 0
+  modified = modified + ((turns >= 4 and 60) or (turns >= 3 and 40) or (turns >= 2 and 30) or 0)
+  local radio = require("src.world.HgssRadioMusic").current(package.loaded["src.core.Game"])
+  if radio == 1 then modified = modified + 25 elseif radio == 2 then modified = modified - 25 end
+  -- modifiedRate is a u8: walking under the Lullaby (20 - 25) wraps to 251,
+  -- which the cap then makes 100 -- the cartridge's own arithmetic, kept
+  return rng(0, 99) < math.min(100, modified % 256)
 end
 
 -- The lead Pokemon's modifier, ready for the two calls above.  Kept here so
@@ -344,6 +396,12 @@ function Encounter.forMap(data, mapDef, mapId, hour, save)
   local HgssOutbreaks = require("src.world.HgssOutbreaks")
   local mapCode = (mapDef and mapDef.id) or mapId
   swarmKey = swarmKey .. HgssOutbreaks.key(def, save, mapCode, hour)
+  -- ...AND THE POKEGEAR RADIO LEFT ON HOENN / SINNOH SOUND (HgssRadioMusic)
+  local radioSeq = 0
+  if def.hoennSounds then
+    radioSeq = require("src.world.HgssRadioMusic").current(package.loaded["src.core.Game"])
+    swarmKey = swarmKey .. "|radio:" .. radioSeq
+  end
   local cached = gen4Views[def]
   if cached and cached.timedBand == band and cached.swarmKey == swarmKey then
     return cached
@@ -391,6 +449,23 @@ function Encounter.forMap(data, mapDef, mapId, hour, save)
   -- HGSS: night fishing, then the day's outbreak (land 1-2, surf 1, rods)
   local outbreak = HgssOutbreaks.apply(def, save, mapCode, hour, grassSlots)
   if outbreak and outbreak.grass then grassSlots = outbreak.grass view.outbreakGrass = outbreak.grass end
+  -- HGSS: EncSlotArray_Update_HoennSinnohSounds, after the outbreak -- the
+  -- radio's Hoenn Sound puts hoennSounds[1] in slots 3-4 and [2] in 5-6,
+  -- Sinnoh Sound the same with sinnohSounds
+  local sounds = (radioSeq == 3 and def.hoennSounds) or (radioSeq == 4 and def.sinnohSounds) or nil
+  if sounds and type(grassSlots) == "table" then
+    local out = {}
+    for i, slot in ipairs(grassSlots) do
+      out[i] = { level = slot.level, species = slot.species, chance = slot.chance,
+                 minLevel = slot.minLevel, maxLevel = slot.maxLevel }
+    end
+    for n = 3, 6 do
+      local sp = tonumber(sounds[n <= 4 and 1 or 2])
+      if out[n] and sp and sp > 0 then out[n].species = sp end
+    end
+    grassSlots = out
+    view.radioGrass = out
+  end
   -- SLOTS 7 AND 8: the Trophy Garden's pair once the National Dex is had, or
   -- the Great Marsh's daily species during a Safari Game -- after the swarm,
   -- the cartridge's order.

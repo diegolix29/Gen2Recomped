@@ -39,22 +39,32 @@ end
 
 -- GPU buffers allocated by a suspended job need explicit cancellation
 -- ownership. Waiting for userdata GC can exhaust handheld memory mid-walk.
-function B.own(object)
-  if resources and coroutine.running() == buildCo then resources[object] = true end
+function B.own(object, gpu)
+  if resources and coroutine.running() == buildCo then resources[object] = gpu and "gpu" or true end
   return object
 end
 function B.disown(object)
   if resources then resources[object] = nil end
 end
-function B.release(owned)
-  for object in pairs(owned or {}) do
-    if object.release then pcall(object.release, object) end
+local function releaseObject(object)
+  if object.release then pcall(object.release, object) end
+end
+function B.release(owned, deferred)
+  for object,kind in pairs(owned or {}) do
+    -- Files, CPU data and analysis rollback must finish now. Only explicitly
+    -- tagged GPU owners can outlive a cancelled job and retire in slices.
+    if kind=="gpu" and deferred then deferred:add(object,releaseObject)
+    else releaseObject(object) end
     owned[object] = nil
   end
 end
 
 function B.expired()
   return clock() > deadline
+end
+
+function B.active()
+  return buildCo~=nil and coroutine.running()==buildCo
 end
 
 -- Cheap enough to sprinkle through inner loops: one modulo most calls,

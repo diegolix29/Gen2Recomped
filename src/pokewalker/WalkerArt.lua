@@ -45,12 +45,13 @@ local WALKS = {
   { "emerald", 3 }, { "firered", 3 },
   { "crystal", 2 }, { "polishedcrystal", 2 }, { "prism", 2 }, { "gold", 2 }, { "silver", 2 },
 }
+local EXP_RATES={ [0]="MEDIUM_FAST",[1]="ERRATIC",[2]="FLUCTUATING",[3]="MEDIUM_SLOW",[4]="FAST",[5]="SLOW" }
 A.FRONT_ORDER, A.WALK_ORDER = FRONTS, WALKS
 
 local cache
 
 function A.forget()
-  cache = { images = {}, boxes = {}, data = {}, dex = {} }
+  cache = { images = {}, boxes = {}, data = {}, dex = {}, ids = {} }
 end
 A.forget()
 
@@ -80,6 +81,17 @@ local function roots()
   return list
 end
 A._rootList = roots
+function A.refreshRoots()
+  local previous=cache.roots
+  cache.roots=nil
+  local current=roots()
+  if previous then
+    local changed=#previous~=#current
+    for i,r in ipairs(current)do if previous[i]~=r then changed=true end end
+    if changed then A.forget();cache.roots=current;return true end
+  end
+  return false
+end
 
 -- the bytes of <prefix><rel> from the first root that has them
 local function readCache(prefix, rel)
@@ -180,6 +192,56 @@ local function speciesByDex(entry)
   return hit or nil
 end
 
+local function entryFor(version)
+  for _,entry in ipairs(FRONTS)do if entry[1]==version then return entry end end
+end
+local function nationalDex(entry,key,rec)
+  local dex=tonumber(rec.dex)
+  if not dex and entry[2]>=4 then
+    local id=tonumber(key);local limit=entry[2]==4 and 493 or 649
+    if id and id>0 and id<=limit then dex=id end
+  end
+  return dex
+end
+local function identifier(value)
+  local s=tostring(value or ""):upper():gsub("^SPECIES_",""):gsub("[^%w]","")
+  if s:match("^%d+$") then s=tostring(tonumber(s)) end
+  return s
+end
+-- Resolve save IDs using THAT ROM's own records. Emerald's internal numeric
+-- index and named keys are not necessarily national-dex numbers.
+function A.dexOf(version,species)
+  local entry=entryFor(version)
+  if not entry or species==nil then return nil end
+  local ids=cache.ids[version]
+  if ids==nil then
+    local mons=loadData(entry,"pokemon")
+    ids=false
+    if mons then
+      ids={}
+      local function add(value,dex)
+        if value==nil then return end
+        local key=identifier(value)
+        if key~="" and ids[key]==nil then ids[key]=dex end
+      end
+      for key,rec in pairs(mons)do
+        if type(rec)=="table" then
+          local dex=nationalDex(entry,key,rec)
+          if dex and dex>0 then add(key,dex);add(rec.id,dex);add(rec.index,dex) end
+        end
+      end
+      for key,rec in pairs(mons)do
+        if type(rec)=="table" then
+          local dex=nationalDex(entry,key,rec)
+          if dex and dex>0 then add(rec.name,dex) end
+        end
+      end
+    end
+    cache.ids[version]=ids
+  end
+  return ids and ids[identifier(species)] or nil
+end
+
 -- Exact imported-ROM roster, never a generation-wide guessed dex range.
 -- Also shared by the launcher games so ROM hacks retain their own species.
 function A.roster(version)
@@ -188,19 +250,14 @@ function A.roster(version)
       local mons = loadData(entry, "pokemon")
       local out, seen = {}, {}
       for key, rec in pairs(type(mons) == "table" and mons or {}) do
-        local dex = type(rec) == "table" and tonumber(rec.dex)
-        -- DS personal records use national-dex keys instead of a dex field.
-        -- Extra personal records after the national roster are alternate forms.
-        if not dex and type(rec)=="table" and entry[2]>=4 then
-          local id=tonumber(key);local limit=entry[2]==4 and 493 or 649
-          if id and id>0 and id<=limit then dex=id end
-        end
+        local dex = type(rec) == "table" and nationalDex(entry,key,rec)
         if dex and dex > 0 and not seen[dex] then
           seen[dex] = true
           local b=rec.baseStats or {}
           local bst=(b.hp or 0)+(b.attack or 0)+(b.defense or 0)+(b.speed or 0)
             +(b.spatk or b.spAttack or 0)+(b.spdef or b.spDefense or 0)
-          out[#out+1]={dex=dex,name=rec.name or ("#"..dex),level=5,
+          out[#out+1]={dex=dex,name=rec.name or ("#"..dex),level=5,bst=bst,types=rec.types,catchRate=rec.catchRate,
+            growthRate=rec.growthRate or EXP_RATES[tonumber(rec.expRate)],
             group=bst>=500 and "A" or bst>=350 and "B" or "C"}
         end
       end
@@ -209,6 +266,37 @@ function A.roster(version)
     end
   end
   return {}
+end
+
+-- THE GAME'S OWN WILD POKEMON: every `species` in its imported encounter
+-- tables (grass, water, rods, swarms, the dual slots -- whatever shape that
+-- generation's cache keeps), as national dex -> how many slots name it. What
+-- makes a Unova run feel like Unova; a ROM hack's own species come with it.
+-- {} when the game's encounters are not imported.
+function A.wildSpecies(version)
+  local key = tostring(version) .. ":wild"
+  if cache.data[key] ~= nil then return cache.data[key] or {} end
+  local out = {}
+  for _, entry in ipairs(FRONTS) do
+    if entry[1] == version then
+      local enc = loadData(entry, "encounters")
+      local seen = {}
+      local function walk(t, depth)
+        if type(t) ~= "table" or seen[t] or depth > 8 then return end
+        seen[t] = true
+        local s = t.species
+        if s ~= nil and s ~= 0 and s ~= "" then
+          local dex = tonumber(s) and A.dexOf(version, tonumber(s)) or A.dexOf(version, s) or tonumber(s)
+          if dex and dex > 0 then out[dex] = (out[dex] or 0) + 1 end
+        end
+        for _, v in pairs(t) do walk(v, depth + 1) end
+      end
+      walk(enc, 0)
+      break
+    end
+  end
+  cache.data[key] = out
+  return out
 end
 
 local function entriesFor(list, version)

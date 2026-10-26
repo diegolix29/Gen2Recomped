@@ -182,9 +182,9 @@ function HgssSummaryMenu:views()
       out[#out + 1] = { 2, true }; out[#out + 1] = { 2, false }
     else
       out[#out + 1] = { p, false }
-      -- the third page's top is the bare panel until the Pokeathlon
-      -- performance is drawn there: nothing to walk to
-      if p ~= 3 then out[#out + 1] = { p, true } end
+      -- the third page's top is the bare panel until the Pokeathlon (flag
+      -- 0x982) puts PERFORMANCE there: nothing to walk to before that
+      if p ~= 3 or self:performanceShown() then out[#out + 1] = { p, true } end
     end
   end
   return out
@@ -689,13 +689,59 @@ function HgssSummaryMenu:drawTop()
   local page = PAGES[self.hgPage] or PAGES[1]
   local g = love.graphics
   g.setColor(1, 1, 1, 1)
-  local back = self:hgImg(page.top) or (page.topFallback and self:hgImg(page.topFallback))
+  local perf = page.key == "ribbons" and self:performanceShown()
+  local back = (perf and self:hgImg("top_ribbons")) or self:hgImg(page.top) or (page.topFallback and self:hgImg(page.topFallback))
   if back then g.draw(back, 0, 0) else g.setColor(0.9, 0.9, 0.95, 1); g.rectangle("fill", 0, 0, W, H) end
   if not self.mon then return end
-  self:put("white", self:w(page.title, ""), HEADER_AT[1], HEADER_AT[2])
+  self:put("white", self:w(perf and B.performance or page.title, ""), HEADER_AT[1], HEADER_AT[2])
+  if perf and not Party.isEgg(self.mon) then self:drawPerformancePage() end
   if page.key == "info" then self:drawMemoPage()
   elseif page.key == "skills" and not Party.isEgg(self.mon) then self:drawSkillsPage() end
   self:drawMonColumn()
+end
+
+-- PERFORMANCE (sub_0208B89C / sub_0208B780 / sub_0208B85C): flag 0x982 set
+function HgssSummaryMenu:performanceShown()
+  local flags = (self.game.save or {}).flags
+  return type(flags) == "table" and flags.FLAG_G4_0982 == true
+end
+
+-- the rows top to bottom are stats 4, 0, 2, 1, 3 (SPEED, POWER, SKILL,
+-- STAMINA, JUMP), labelled from bank 22 (#9 #5 #7 #6 #8); a row's slot k
+-- (sprite 0x4F + 5 row + k at 64 + 16 k, 48 + 32 row, about its centre) is
+-- hidden past the stat's maximum, an empty star past its value, else the star
+-- of its colour (at / above / below the base); the Aprijuice arrow (0x68 +
+-- row at 80, 32 + 32 row) shows which way the party's juice moves it
+local PERF_ROWS = { { 4, 9 }, { 0, 5 }, { 2, 7 }, { 1, 6 }, { 3, 8 } }
+local PERF_CELL = { [0] = 0, 1, 2 }   -- STARS_AT / ABOVE / BELOW_BASE
+function HgssSummaryMenu:drawPerformancePage()
+  local P = require("src.pokemon.HgssPokeathlonPerformance")
+  local juice = self.mon.aprijuice
+  local stars, colour, row = P.stars(self.game.data, self.mon, juice)
+  local g = love.graphics
+  for r, spec in ipairs(PERF_ROWS) do
+    local stat, label = spec[1], spec[2]
+    local y = 24 + 32 * (r - 1)
+    local name = ((self.game.data or {}).text or {})[("TEXT_B%04d_%05d"):format(22, label)]
+    if type(name) == "string" then self:put("black", (name:gsub("{[^}]*}", "")), 12, y + 1) end
+    if stars then
+      for k = 0, 4 do
+        if k <= row.hi[stat] then
+          local cell = (k > stars[stat]) and 3 or PERF_CELL[colour[stat]]
+          local img, rec = self:hgImg("perf_" .. cell)
+          if img then
+            g.setColor(1, 1, 1, 1)
+            g.draw(img, 64 + 16 * k + (tonumber(rec.originX) or -8), y + 24 + (tonumber(rec.originY) or -8))
+          end
+        end
+      end
+      local j = juice and tonumber(juice[stat]) or 0
+      if j ~= 0 then
+        local img, rec = self:hgImg(j > 0 and "perf_4" or "perf_5")
+        if img then g.draw(img, 80 + (tonumber(rec.originX) or -8), y + 8 + (tonumber(rec.originY) or -8)) end
+      end
+    end
+  end
 end
 
 function HgssSummaryMenu:drawMoveRow(y, entry)

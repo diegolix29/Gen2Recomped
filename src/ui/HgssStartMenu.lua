@@ -87,6 +87,10 @@ function HgssStartMenu.new(game, opts)
   for _, row in ipairs(self.rows) do keep[row.id] = true end
   -- the rows Platinum's menu decided are allowed, plus POKeGEAR, in HGSS order
   keep.pokegear = true
+  -- PAL PARK HAS NO RETIRE HERE (FieldSystem_GetStartMenuButtonInhibitFlags_
+  -- PalPark: BAG and SAVE off; RETIRE is the Safari's and the contest's) --
+  -- the worker by the gate is how the Catching Show is left
+  if self.palPark then keep.retire = nil end
   local flags = (game.save or {}).flags or {}
   local anyFlag = false
   for _, def in pairs(ENTRY) do

@@ -213,7 +213,9 @@ function M.eyes(arm9, family, symbols)
       if out.byClass[c] == nil then out.byClass[c] = s end
       n = n + 1
     end
-    out.rows = n
+    -- a class the rows do not name: ARM9 0x2029E20 returns its literal 0x45A
+    -- (Black), SEQ_BGM_EYE_01
+    out.rows, out.default = n, e1
   else
     return nil
   end

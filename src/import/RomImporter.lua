@@ -1245,7 +1245,15 @@ local function markerFor(version)
   -- platinum-effect-pal-v1: move-effect palettes loaded sequentially (Gen4Graphics.palette
   -- `sequential`), as NNS_G2dLoadPalette does; hgss-pc-anim-v1: HGSS scriptProps PC
   -- monitor frames (members 102/103) for g4_pc_animation
-  local revision = version == "platinum" and "platinum-geometry-v17:platinum-field-fx-v1:platinum-effect-pal-v1:" or ""
+  -- ds-back-throw-v1 (Platinum, HGSS, Black / White): gen4_trainer_sprites.backThrows,
+  -- the player's send-out throw (Gen4BackThrow / Gen5TrainerPics.backThrow); BW's
+  -- back also gains the throwing arm cell 0 never had
+  -- 2026-10-26 re-import tags: platinum-gym-fx-v1 (gen4_gym_fx, Gen4GymFxArt),
+  -- hgss-special-marts-v1 (Gen4HgssSpecialMarts lists), hgss-tmhm-v1 (the
+  -- HGSS sTMHMMoves search -> per-species tmhm), gen5-npc-ranges-v1 (NPC
+  -- wander box at +20/+22), gen5-script-link-v2 (0x08B/0x080/0x081/0x083
+  -- and the gym ops 0x185/0x187-0x189 keep their operands)
+  local revision = version == "platinum" and "platinum-gym-fx-v1:platinum-scratch-off-v1:platinum-poke-motion-v1:platinum-egg-hatch-v1:platinum-geometry-v17:platinum-field-fx-v1:platinum-library-tv-v1:platinum-spear-pillar-v1:platinum-effect-pal-v1:ds-back-throw-v1:pal-park-v1:" or ""
   -- gen5-trades-v5: constants.gen5Trades, gen5_trade_art and the trade
   -- commands' operands in map_scripts (Gen5Trades / Gen5TradeArt)
   -- gen5-starter-v6: gen5_starter_art, the gift box app (Gen5StarterArt)
@@ -1272,9 +1280,11 @@ local function markerFor(version)
   -- gen5-xtransceiver-v1: gen5_xtransceiver (Gen5XtransceiverArt, /a/1/3/1) and script
   -- 0x155 lowered to the call (it was a no-op: every story call was skipped)
   -- gen5-shop-art-v1: gen4_shop_art from /a/0/5/4 (Gen5ShopArt), BW's own counter art
+  -- gen5-encounter-fx-v4: gen5_encounter_effects (Gen5EncounterEffects): the ee_* wipes of /a/1/2/9, v2 the cave_ci / sand_ci scenes of /a/1/1/5, v3 the cut-ins (Gen5EncounterCutIns) and /a/1/8/0 faces, v4 their SPA particles (Gen5Particles)
   -- gen5-windows-v1: the font record's `frames` (the menu window, /a/0/0/5 tileset 9
   -- palette 3) and the menu cursor glyph (`symbols`, src/import/Gen5Cursor.lua)
-  if version == "black" or version == "white" then revision = "gen5-starter-v6:gen5-moveanim-v2:gen5-facilities-v1:gen5-field-fx-v1:gen5-title-v1:gen5-naming-v1:gen5-maps-v1:gen5-battle-bag-v1:gen5-town-map-v2:gen5-xtransceiver-v1:gen5-shop-art-v1:gen5-windows-v1:" end
+  -- gen5-gym-fx-v1: gen5_gym_fx (Gen5GymFxArt), the gym gimmicks' models
+  if version == "black" or version == "white" then revision = "gen5-npc-ranges-v1:gen5-script-link-v2:gen5-gym-fx-v1:gen5-starter-v6:gen5-moveanim-v2:gen5-facilities-v1:gen5-field-fx-v1:gen5-title-v1:gen5-naming-v1:gen5-maps-v1:gen5-battle-bag-v1:gen5-town-map-v2:gen5-xtransceiver-v1:gen5-shop-art-v1:gen5-windows-v1:ds-back-throw-v1:gen5-encounter-fx-v4:gen5-floor-layers-v2:gen5-money-v12:gen5-egg-moves-v1:gen5-buyer-v1:gen5-egg-hatch-v1:" end
   -- emerald-trade-scene-v3 / firered-trade-scene-v1: the in-game trade
   -- sequence's art (extractTradeScene, gen3_trade_art) -- without it special
   -- 257 falls back to the bare swap, so both Gen 3 caches re-import once
@@ -1301,7 +1311,7 @@ local function markerFor(version)
   -- table (Gen4HgssBattle.EFFECT_BG_MEMBERS) -- 84 pictures, not 22
   -- hgss-field-fx-v1: gen4_hgss_field_fx (Cut / Rock Smash / Headbutt, /a/1/3/4)
   -- and gen4_hgss_mart_art again (installs updated stage by stage never got it)
-  if version == "heartgold" or version == "soulsilver" then revision = "hgss-gear-dex-v1:hgss-summary-v2:hgss-effect-bg-v1:hgss-field-fx-v1:hgss-pc-anim-v1:" end
+  if version == "heartgold" or version == "soulsilver" then revision = "hgss-special-marts-v1:hgss-tmhm-v1:hgss-athlon-rooms-v1:hgss-athlon-team-v1:hgss-athlon-common-v1:hgss-disc-catch-v1:hgss-lamp-jump-v1:hgss-ring-drop-v1:hgss-snow-throw-v1:hgss-goal-roll-v1:hgss-circle-push-v1:hgss-pennant-v1:hgss-relay-run-v1:hgss-block-smash-v1:hgss-athlon-rivals-v1:hgss-hurdle-dash-v1:hgss-athlon-courses-v1:hgss-athlon-perf-v1:hgss-fly-map-v1:hgss-scratch-off-v1:hgss-legend-wing-v1:hgss-hideout-fx-v1:hgss-alph-panel-v1:hgss-poke-motion-v1:hgss-egg-hatch-v1:hgss-egg-moves-v1:hgss-gear-dex-v1:hgss-summary-v2:hgss-effect-bg-v1:hgss-field-fx-v1:hgss-pc-anim-v1:ds-back-throw-v1:pal-park-v1:hgss-enc-effects-v1:hgss-frontier-v2:" end
   -- Include version-specific field encounters, sleep, swarm and rate tables.
   -- Only these three caches need rebuilding; other markers remain stable.
   -- v8: field.gen2TradeAnim, GSC's own trade movie art (Gen2TradeArt).
@@ -3574,6 +3584,11 @@ function RomImporter:startData(data, displayName, sourcePath, verified)
     if not ok then error("could not finish the private cache: " .. tostring(writeError)) end
     require('src.import.ImportRecovery').finish()
     self.ready[version] = true
+    -- Imported art and previously missing species records may now exist.
+    for _,name in ipairs({"src.pokewalker.WalkerArt","src.pokewalker.WalkerCourses"})do
+      local module=package.loaded[name]
+      if type(module)=="table" and module.forget then module.forget() end
+    end
     self.returning[version] = false
     self.romName[version] = (displayName
       and (displayName:match("[^/\\]+$") or displayName)) or self.romName[version]

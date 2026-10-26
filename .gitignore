@@ -176,6 +176,13 @@ mobile/ios/bundle_id.local
 /mods/DRAMATIC_SHAPE/tools/
 /mods/DRAMATIC_SHAPE/CHANGELOG.md
 /mods/DRAMATIC_SHAPE/VOXEL_HOENN_PLAN.md
+# Zallax's Emerald 3DS Voxels (ported by Ceedrack) ships the same way.
+# generated/ is what bake/bake.py makes from the player's own ROM -- the
+# cartridge's art, never committed or shipped (pack_love.sh prunes it too);
+# tools/ is its screenshot and audit drivers, development material.
+!/mods/EMERALD_3DS_VOXEL/
+/mods/EMERALD_3DS_VOXEL/generated/
+/mods/EMERALD_3DS_VOXEL/tools/
 
 # The offline translator helper (rom-translate / rom-translate.exe, ~65 MB),
 # built by tools/translation/build_desktop.py. The release workflow builds it

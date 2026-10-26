@@ -472,6 +472,22 @@ local function syncFlagObjects(ctx, name)
   if not ctx.mapCallback and require("src.core.GameVersion").isGen2() then
     return
   end
+  -- ...AND ON A SINNOH / JOHTO CARTRIDGE THE SAME, for the same reason.
+  -- ScrCmd_SetFlag / ClearFlag write the save's flag array and nothing else;
+  -- the live object only goes with HidePerson, comes with ShowPerson, or is
+  -- re-derived by the next map load (Field_InitMapObjectsFromZoneEventData).
+  -- The map's own ON_TRANSITION / ON_LOAD / ON_RESUME are the exception, as
+  -- above: the cartridge runs them before the objects are built, and here
+  -- they run after, so Gen4ScriptVM marks them `mapCallback`.
+  --
+  -- Ilex Forest is the report: the Cut master's HM01 scene ends with eight
+  -- SetFlags (FLAG_HIDE_ILEX_CUT_MASTER, _APPRENTICE, both Farfetch'd ...)
+  -- and NO HidePerson, so on the cartridge he, the apprentice and both birds
+  -- stay on screen for his last line and the player walks away from them.
+  -- Synced here, all four vanished mid-scene and he spoke from an empty tile.
+  if not ctx.mapCallback and require("src.core.GameVersion").isGen4() then
+    return
+  end
   local objects = ow.map.def.objects
   if type(objects) ~= "table" then return end
   for _, obj in ipairs(objects) do
@@ -768,6 +784,14 @@ function Commands.start_battle(ctx, kind, a, b, opts)
     -- `reloadmapafterbattle` can tell that case from a real whiteout.
     ctx.lastBattleCanLose = battle.canLose and true or false
     ctx.lastCheck = result == "win"
+    -- ...AND THE OUTCOME IS IN VAR_BATTLE_RESULT (0x4013) before they do:
+    -- Encounter_GetResult (encounter.c) writes BATTLE_OUTCOME_* there, and a
+    -- map's ON_LOAD reads it -- `StaticWildWonOrCaughtCheck <var>, 1`, which
+    -- is how Mahogany hideout B2F's generator Electrodes disappear once beaten
+    if ctx.save and require("src.core.GameVersion").isGen4() then
+      local OUTCOME = { win = 1, lose = 2, draw = 3, caught = 4, run = 5 }
+      require("src.script.Gen4Commands").setVar(ctx.save, 0x4013, OUTCOME[result] or 6)
+    end
     -- THE FIELD COMES BACK BEFORE THE SCRIPT CARRIES ON (Gen 4): the map's
     -- ON_LOAD / ON_RESUME scripts run now, as the cartridge's field init does
     if ctx.overworld and ctx.overworld.gen4FieldResumed and not battle.g4FieldResumed then

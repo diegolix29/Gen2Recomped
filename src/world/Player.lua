@@ -356,6 +356,22 @@ function Player:refreshForm(data)
       sprites[runId]=run
     end
   end
+  -- BLACK / WHITE'S PLAYER SHEETS (/a/0/4/9) carry the run cycle after the
+  -- walk in the walk's own layout -- frames 12..23: up, down, left, right, a
+  -- stand and two strides each -- and their records name no `run`. Reported
+  -- from play: "the player's run animation doesn't work in Black and White".
+  if not runId and walkDef and walkDef.walker and tonumber(walkDef.frames) == 32
+     and tostring(walkDef.source or ""):find("/a/0/4/9", 1, true) then
+    runId = walkId .. "_RUN"
+    if not sprites[runId] then
+      local run = {}
+      for k, v in pairs(walkDef) do run[k] = v end
+      run.id = runId
+      run.facings = { up = { 12, 13, 14 }, down = { 15, 16, 17 },
+                      left = { 18, 19, 20 }, right = { 21, 22, 23 } }
+      sprites[runId] = run
+    end
+  end
   if runId ~= self.runId then
     self.runId = runId
     self.runSprite = (runId and sprites[runId])

@@ -148,6 +148,9 @@ function Shop.new(game, stock, onQuit, goods, opts)
     -- straight into the Bag in sell mode (src/script/HgssMartCommands.lua
     -- opens it once this counter is on the stack)
     if opts and opts.sell then self.mode,self.transaction='sell','sell' end
+    -- a special buyer's own list (Black / White's 0x14E mode 1): only these,
+    -- each at the buyer's price, paid in full (src/import/Gen5Marts.lua)
+    self.buyList = opts and opts.buyList or nil
   end
   -- Shop_GetCameraPosDest: ten steps, eight when the player faces west
   local ow = game.overworld
@@ -284,13 +287,18 @@ function Shop:sellItem(id)
   local def = self:def(id)
   local price = def and tonumber(def.price) or 0
   self.mode, self.transaction = 'sell', 'sell'
-  if not def or def.keyItem or def.fieldPocket == 7 or price <= 0
+  local listed = self.buyList and self.buyList[tonumber(id) or id]
+  if self.buyList and not listed then
+    self.message = self:bagLine(74, "I can't buy that.", def and def.name or '')
+    return
+  end
+  if not def or def.keyItem or def.fieldPocket == 7 or (price <= 0 and not listed)
       or (tonumber(id) and tonumber(id) >= 420 and tonumber(id) <= 427) then
     self.message = self:bagLine(74, "I can't buy that.", def and def.name or '')
     return
   end
   self.item, self.qty, self.mode, self.yesNo = id, 1, 'quantity', 1
-  self.unit = math.floor(price / 2)
+  self.unit = listed or math.floor(price / 2)
   self.max = math.max(1, self.game.save.inventory[id] or 0)
   self.message = self:bagLine(75, (def.name or '') .. '?\nHow many would you like to sell?', def.name or '')
 end
@@ -770,5 +778,7 @@ end
 
 -- HeartGold / SoulSilver choose on the touch screen (overlay 31's grid)
 require('src.ui.HgssMartBuy').install(Shop)
+-- ...and the Pokeathlon Dome's Athlete Point counters (src/ui/HgssAthleteShop.lua)
+require('src.ui.HgssAthleteShop').install(Shop)
 
 return Shop

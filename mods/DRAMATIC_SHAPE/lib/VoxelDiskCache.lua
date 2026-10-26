@@ -368,7 +368,62 @@ local function fileSize(path)
   return 0
 end
 
-local function loadRawMesh(path, count)
+local function writeText(path, text)
+  local ok, result = pcall(love.filesystem.write, path, text)
+  return ok and result ~= false
+end
+
+-- Optional spatial layout appended to VXM2 metadata. Older entries still
+-- load through the original bounded scan; new ones preserve the build's
+-- exact chunk boundaries instead of joining distant regions into one box.
+local function parseBlocks(text,terrainCount,waterCount)
+  local groups={T={},W={}};local sums={T=0,W=0};local found=false
+  for line in text:gmatch("[^\n]+")do
+    local tag,values=line:match("^([TW]) (.+)$")
+    if tag then
+      found=true;local a={}
+      for word in values:gmatch("%S+")do
+        local n=tonumber(word)
+        if not n or n~=n or math.abs(n)==math.huge then return nil end
+        a[#a+1]=n
+      end
+      if #a~=7 or a[1]<6 or a[1]>CHUNK_VERTS or a[1]%6~=0
+        or a[2]>a[5] or a[3]>a[6] or a[4]>a[7] then return nil end
+      groups[tag][#groups[tag]+1]={a[1],{a[2],a[3],a[4],a[5],a[6],a[7]}}
+      sums[tag]=sums[tag]+a[1]
+    end
+  end
+  if not found or sums.T~=terrainCount or sums.W~=waterCount then return nil end
+  return groups.T,groups.W
+end
+
+local function blockLines(sink,tag)
+  if not sink or not sink.cacheBlocks then return nil end
+  local blocks=sink.cacheBlocks()
+  if not blocks then return nil end
+  local lines={}
+  for _,block in ipairs(blocks)do
+    local b=block[2]
+    lines[#lines+1]=string.format("%s %d %.17g %.17g %.17g %.17g %.17g %.17g",
+      tag,block[1],b[1],b[2],b[3],b[4],b[5],b[6])
+  end
+  return table.concat(lines,"\n")
+end
+
+local function meshBlockLines(mesh,tag)
+  return blockLines({cacheBlocks=function()
+    local out={}
+    for _,part in ipairs(mesh and mesh.parts or {})do
+      local b=V.require("MeshBounds").get(part)
+      if not b then return nil end
+      out[#out+1]={part:getVertexCount(),b}
+      if Budget then Budget.check() end
+    end
+    return out
+  end},tag)
+end
+
+local function loadRawMesh(path, count, layout)
   count = math.floor(tonumber(count) or 0)
   if count <= 0 then return nil, true end
   if fileSize(path) ~= count * BYTES_PER_VERTEX then
@@ -389,20 +444,21 @@ local function loadRawMesh(path, count)
     return nil, false, "could not read cached mesh"
   end
 
-  local at = 0
+  local at,index = 0,1
   local okay, err = pcall(function()
     while at < count do
-      local verts = math.min(CHUNK_VERTS, count - at)
+      local verts = layout and layout[index][1] or math.min(CHUNK_VERTS, count - at)
       local bytes = verts * BYTES_PER_VERTEX
       local chunk = file:read(bytes)
       if type(chunk) ~= "string" or #chunk ~= bytes then
         error("short cached mesh read")
       end
       local data = love.data.newByteData(chunk)
-      local added, addErr = pcall(Batch.add, mesh, Voxel3D.FORMAT, data, verts)
+      local added, addErr = pcall(Batch.add, mesh, Voxel3D.FORMAT, data, verts,layout and layout[index][2])
       if data.release then pcall(data.release, data) end
       if not added then error(addErr) end
       at = at + verts
+      index=index+1
       if Budget and type(Budget.check) == "function" then Budget.check() end
     end
   end)
@@ -449,18 +505,30 @@ function Cache.load(map, slot, masks)
     return false
   end
 
-  local terrain, okT, errT = loadRawMesh(terrainPath, terrainCount)
+  local terrainBlocks,waterBlocks=parseBlocks(meta,terrainCount,waterCount)
+  local terrain, okT, errT = loadRawMesh(terrainPath, terrainCount,terrainBlocks)
   if not okT then
     Cache.errors = Cache.errors + 1
     Cache.lastError = errT
     return false
   end
-  local water, okW, errW = loadRawMesh(waterPath, waterCount)
+  local water, okW, errW = loadRawMesh(waterPath, waterCount,waterBlocks)
   if not okW then
     if terrain and terrain.release then pcall(terrain.release, terrain) end
     Cache.errors = Cache.errors + 1
     Cache.lastError = errW
     return false
+  end
+
+  -- Older entries have no block index. Their first read already measured
+  -- safe bounds; retain that work for the next visit without deleting or
+  -- rebuilding the cache, or changing its binary vertex streams.
+  if not terrainBlocks then
+    local t,w=meshBlockLines(terrain,"T"),meshBlockLines(water,"W")
+    if t and w then
+      local header=table.concat({"VXM2",sig,tostring(terrainCount),tostring(waterCount),""},"\n")
+      writeText(metaPath,header..t.."\n"..w.."\n")
+    end
   end
 
   if V.sharedHulls then
@@ -477,11 +545,6 @@ function Cache.load(map, slot, masks)
     + (terrainCount + waterCount) * BYTES_PER_VERTEX
   Cache.lastError = nil
   return true, terrain, water
-end
-
-local function writeText(path, text)
-  local ok, result = pcall(love.filesystem.write, path, text)
-  return ok and result ~= false
 end
 
 local function cacheCapBytes()
@@ -571,6 +634,9 @@ function Cache.store(map, slot, masks, terrainSink, waterSink)
 
   local meta = table.concat({ "VXM2", signature(map, slot, masks),
     tostring(terrainCount), tostring(waterCount), "" }, "\n")
+  local terrainLayout=blockLines(terrainSink,"T")
+  local waterLayout=waterCount==0 and "" or blockLines(waterSink,"W")
+  if terrainLayout and waterLayout then meta=meta..terrainLayout.."\n"..waterLayout.."\n" end
   if not writeText(metaPath, meta) then
     Cache.errors = Cache.errors + 1
     Cache.lastError = "could not write voxel cache metadata"

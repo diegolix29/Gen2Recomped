@@ -1092,6 +1092,13 @@ function BattleTransition.new(game, onDone, opts)
      and not (opts and opts.forceClassic) then
     return require("src.render.Gen4BattleTransition").new(game, onDone, opts)
   end
+  -- ...AND BLACK / WHITE THEIRS: the field picture on overlay 76's models
+  -- (src/render/Gen5BattleTransition.lua), once the cache has them
+  if require("src.core.GameVersion").isGen5()
+     and not (opts and opts.forceClassic)
+     and game and game.data and game.data.gen5_encounter_effects then
+    return require("src.render.Gen5BattleTransition").new(game, onDone, opts)
+  end
   local self = setmetatable({}, BattleTransition)
   self.game = game
   self.onDone = onDone

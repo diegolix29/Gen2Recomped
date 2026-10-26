@@ -777,6 +777,16 @@ function Gen4PartyMenu:useFieldMove(mon,move)
     if not ok or #dests==0 then return self:fieldRefused('location') end
     local game=self.game
     self:close()
+    -- HGSS'S FLY MAP (src/ui/HgssFlyMap.lua, fly_map.c)
+    if hgss and require('src.ui.HgssFlyMap').available(game) then
+      local FM=require('src.ui.HgssFlyMap')
+      game.stack:push(FM.new(game,{kind='fly',
+        onFly=function(warp)
+          local dest=FM.destinationFor(game.data,warp)
+          if dest then ow:gen4FlyTo(dest,mon) end
+        end}))
+      return
+    end
     -- PLATINUM'S TOWN MAP IN FLY MODE (src/ui/Gen4TownMap.lua); the list is
     -- the fallback for a cache without the town map's data
     if game.data.gen4_town_map then

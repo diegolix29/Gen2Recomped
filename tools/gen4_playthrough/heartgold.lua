@@ -469,14 +469,21 @@ end
 B[#B + 1] = { name = "champion lance",
   -- one Pokemon, one move, six of Lance's: the cheat's lead is a Mewtwo here
   steps = { { "do", trainUpWith(58, 100, 150) }, { "teleport", "T10R0601", 6, 26, "up" },
-            { "until", function(r) return r:var(0x40C8) >= 1 end, 20000 }, { "talk", 0 },
+            { "until", function(r) return r:var(0x40C8) >= 1 end, 20000 },
+            -- the scene can run to the Hall of Fame (and the bedroom) inside the
+            -- wait above; then there is nobody left to talk to
+            { "talk", 0, unless = famed },
             { "until", famed, 120000 } },
   expect = famed, why = "a Hall of Fame record", expectBudget = 12000, budget = 160000, passBusy = true }
 
 -- KANTO. After the Hall of Fame (FLAG_GAME_CLEAR) Elm hands over the S.S.
 -- Ticket (scr_seq_0843_T20R0101 _0526: FLAG_GOT_SS_TICKET_FROM_ELM 0xF2).
 B[#B + 1] = { name = "the s.s. ticket",
-  steps = { { "teleport", "T20", 12, 10, "up" }, { "warpto", "T20R0101" }, { "talk", 0 },
+  steps = { { "teleport", "T20", 12, 10, "up" }, { "warpto", "T20R0101" },
+            -- Elm (person 0) at (4,5), from the tile below him: the walking
+            -- Pokemon, back beside the player after the Hall of Fame walk-in,
+            -- left the generic talk on the aide's side of the lab
+            { "walkto", 4, 6 }, { "face", "up" }, { "press", "a" },
             { "until", function(r) return r:flag(0xF2) end, 20000 } },
   expect = function(r) return r:flag(0xF2) end, why = "flag 0xF2 (S.S. Ticket)" }
 
@@ -580,7 +587,10 @@ local function kantoGym(name, map, id, flag, move, level, species)
   B[#B + 1] = { name = name,
     steps = { { "do", trainUpWith(move, level or 100, species) }, { "do", besideLeader(map, id) }, { "talk", id },
               { "until", function(r) return r:flag(flag) end, 60000 } },
-    expect = function(r) return r:flag(flag) end, why = ("flag 0x%X (the TM)"):format(flag), expectBudget = 12000 }
+    expect = function(r) return r:flag(flag) end, why = ("flag 0x%X (the TM)"):format(flag), expectBudget = 12000,
+    -- the talk-started battle is inside the beat's own budget; a long one
+    -- (two fainted, forced switches) ran past the 30000 default on resumes
+    budget = 70000 }
 end
 -- Ground for Surge, Dark (Crunch 242) for Sabrina, Fire (Flamethrower 53) for
 -- Erika, Psychic (94) for Janine
@@ -609,7 +619,7 @@ B[#B + 1] = { name = "misty's date",
   steps = { { "do", onMap("R25") }, { "do", coords }, { "activecoord" },
             { "until", function(r) return r:var(0x4088) >= 2 end, 30000 } },
   expect = function(r) return r:var(0x4088) >= 2 end, why = "0x4088 >= 2 (Misty back at the gym)" }
-kantoGym("misty", "T04GYM0101", 6, 0x180, 94, 100, 150) -- Psychic: Quagsire is immune to Thunderbolt
+kantoGym("misty", "T04GYM0101", 6, 0x180, 412, 100, 150) -- Energy Ball: Quagsire is immune to Thunderbolt and 4x weak to Grass; Psychic dragged the battle out
 kantoGym("brock", "T03GYM0101", 1, 0x17F, 57, 100, 150)
 kantoGym("blaine", "D11R0106", 0, 0x17D, 57, 100, 150)
 kantoGym("blue", "T02GYM0101", 5, 0x17E, 58, 100, 150)

@@ -652,6 +652,8 @@ function NPC.new(data, mapId, objDef)
     self.roamDirs = ROAM_DIRS[objDef.range] or ROAM_DIRS.ANY_DIR
   end
   self.timer = love.math.random(30, 120)
+  -- Platinum / HGSS / BW: the object's own movement type (Gen4MovementTypes)
+  self.g4Move = (not g3) and require("src.world.Gen4MovementTypes").attach(self, objDef) or nil
   return self
 end
 
@@ -839,6 +841,7 @@ function NPC:update(map, entities)
   if self.gen3ScriptFrozen then return end
   -- PLATINUM'S VS. SEEKER: an armed trainer spins in place (Gen4VsSeeker.spin)
   if self.vsSeekerReady and require("src.world.Gen4VsSeeker").spin(self) then return end
+  if self.g4Move and require("src.world.Gen4MovementTypes").update(self, map, entities) then return end
   if self.spins then
     -- Spinners never leave their cell, so this is the whole behaviour: turn
     -- on a timer.  A script that freezes the object (talking to it, a

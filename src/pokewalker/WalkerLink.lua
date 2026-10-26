@@ -52,6 +52,8 @@ local function norm(s) return (tostring(s or ""):upper():gsub("[^%w]", "")) end
 
 -- the national dex number of a save's species field ("SPECIES_155", "ABSOL", 6)
 function L.dexOf(version, species)
+  local okDex,dex=pcall(function()return require("src.pokewalker.WalkerArt").dexOf(version,species)end)
+  if okDex and dex then return dex end
   local GameVersion = require("src.core.GameVersion")
   local info = GameVersion.info(version)
   local gen = info and tonumber(info.generation) or 2
@@ -66,6 +68,19 @@ function L.dexOf(version, species)
     if norm(sp.name) == want then return dex end
   end
   return nil
+end
+
+-- Older mobile walks may have saved no dex because their species index was
+-- empty. Recover presentation metadata from the preserved original Pokemon.
+function L.repairWalking(st)
+  local w=st and st.walking
+  if not (w and w.raw and w.source) or (tonumber(w.species) and tonumber(w.species)>0) then return false end
+  local dex=L.dexOf(w.source.version,w.raw.species)
+  if not dex then return false end
+  w.species=dex
+  local rec=Courses.species()[dex]
+  if rec and (type(w.types)~="table" or #w.types==0) then w.types=rec.types or {} end
+  return true
 end
 
 -- a box Pokemon as the walker shows it

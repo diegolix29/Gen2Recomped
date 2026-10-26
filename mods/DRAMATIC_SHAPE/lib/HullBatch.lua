@@ -29,23 +29,31 @@ function H.new()
  function batch:finish()
   if not love.graphics.drawInstanced then return end
   local groups,order={},{}
+  local span=V.hullChunkSize or 128
   for _,stamp in ipairs(self.stamps)do
    Budget.tick()
    local per=groups[stamp.mesh]
    if not per then per={};groups[stamp.mesh]=per end
-   local key=math.floor(stamp.z/128)*65536+math.floor(stamp.x/128)
+   local key=math.floor(stamp.z/span)*65536+math.floor(stamp.x/span)
    local group=per[key]
-   if not group then group={mesh=stamp.mesh,offsets={},bounds={math.huge,math.huge,math.huge,-math.huge,-math.huge,-math.huge}};per[key]=group;order[#order+1]=group end
+   if not group then group={mesh=stamp.mesh,offsets={},bounds={math.huge,math.huge,math.huge,-math.huge,-math.huge,-math.huge},range={math.huge,math.huge,-math.huge,-math.huge}};per[key]=group;order[#order+1]=group end
    group.offsets[#group.offsets+1]={stamp.x,0,stamp.z}
-   for _,part in ipairs(stamp.mesh.parts)do
-    local box=Bounds.get(part);local b=group.bounds
-    b[1]=math.min(b[1],box[1]+stamp.x);b[2]=math.min(b[2],box[2]);b[3]=math.min(b[3],box[3]+stamp.z)
-    b[4]=math.max(b[4],box[4]+stamp.x);b[5]=math.max(b[5],box[5]);b[6]=math.max(b[6],box[6]+stamp.z)
-   end
+   local r=group.range
+   r[1]=math.min(r[1],stamp.x);r[2]=math.min(r[2],stamp.z)
+   r[3]=math.max(r[3],stamp.x);r[4]=math.max(r[4],stamp.z)
   end
   self.groups=order
   for _,group in ipairs(order)do
    Budget.check()
+   group.parts={}
+   for _,part in ipairs(group.mesh.parts)do
+    local b,r=Bounds.get(part),group.range
+    local span={b[1]+r[1],b[2],b[3]+r[2],b[4]+r[3],b[5],b[6]+r[4]}
+    local item={mesh=part};Bounds.set(item,span);group.parts[#group.parts+1]=item
+    local all=group.bounds
+    for axis=1,3 do all[axis]=math.min(all[axis],span[axis]);all[axis+3]=math.max(all[axis+3],span[axis+3]) end
+   end
+   group.range=nil
    group.count=#group.offsets
    group.buffer=love.graphics.newMesh({{"StampOffset","float",3}},group.offsets,"points","static")
    group.offsets=nil;Bounds.set(group,group.bounds)
@@ -63,7 +71,7 @@ function H.new()
   end
   self.owned={};self.stamps={};self.bytes=0
  end
- return Budget.own(batch)
+ return Budget.own(batch,true)
 end
 function H.draw(mesh,model,sunModel,draw)
  for _,stamp in ipairs(mesh.stamps or {})do
@@ -77,15 +85,21 @@ function H.instanced(mesh,texture,vp,model,curve,cx,cz,source,shader)
  if not groups or mesh.hullOwner.instanceFailed or not shader or not love.graphics.drawInstanced then return false end
  State.copy(source,shader)
  love.graphics.setShader(shader)
+ local clip=vp and model and Mat4.mul(vp,model) or vp
  local ok,err=pcall(function()
   for _,group in ipairs(groups)do
    local hidden=curve and curve>0 and Bounds.hiddenCurved(group,vp,model,curve,cx or 0,cz or 0)
-    or (not (curve and curve>0) and Bounds.hidden(group,vp and model and Mat4.mul(vp,model) or vp))
+    or (not (curve and curve>0) and Bounds.hidden(group,clip))
    if not hidden then
-    for _,part in ipairs(group.mesh.parts)do
-     part:attachAttribute("StampOffset",group.buffer,"perinstance")
-     if texture then part:setTexture(texture) end
-     love.graphics.drawInstanced(part,group.count)
+    for _,item in ipairs(group.parts)do
+     local hidden=#group.parts>1 and (curve and curve>0 and Bounds.hiddenCurved(item,vp,model,curve,cx or 0,cz or 0)
+      or (not (curve and curve>0) and Bounds.hidden(item,clip)))
+     if not hidden then
+      local part=item.mesh
+      part:attachAttribute("StampOffset",group.buffer,"perinstance")
+      if texture then part:setTexture(texture) end
+      love.graphics.drawInstanced(part,group.count)
+     end
     end
    end
   end

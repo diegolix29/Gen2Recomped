@@ -33,6 +33,7 @@ M.ITEM_POINTS = 150
 M.LEFTOVER_DIG = 40
 M.WATTS_PER_POINTS = 30
 M.HINTS = { "Hot!", "Warm", "Cool", "Cold" }
+M.GUARDS = 2                     -- small caches a wild Pokemon sits on
 
 function M.new(ctx, purse)
   local g = setmetatable({}, { __index = M })
@@ -55,6 +56,17 @@ function M.new(ctx, purse)
   local nItems = math.min(M.ITEMS, math.max(0, math.min(Rewards.LIMITS.ITEMS_PER_RUN, Rewards.left(purse.st).items)))
   for _ = 1, nItems do local c = nextCell(); c.hide = { kind = "item", name = Context.pickItem(ctx) } end
   g.total = M.CACHES + 1 + nItems
+  -- the game's own Pokemon guard a few of the small caches (Context's natives
+  -- first): the same watts, a face to find them with
+  local guards = Context.pickSeveral(ctx, M.GUARDS, { [ctx.walker and ctx.walker.dex or -1] = true })
+  local gi = 0
+  for _, cell in ipairs(g.cells) do
+    local h = cell.hide
+    if h and h.kind == "watts" and not h.big and guards[gi + 1] then
+      gi = gi + 1
+      h.mon = { dex = guards[gi].dex, name = guards[gi].name }
+    end
+  end
   return g
 end
 
@@ -201,8 +213,13 @@ function M:draw(x, y, w, h, Gfx, f, s)
     local hd = c.hide
     if hd and (c.dug or c.reveal) then
       local a = c.dug and 1 or 0.45
-      if hd.kind == "watts" then
+      if hd.kind == "watts" and hd.mon then
+        local ps = cell * 0.56
+        Gfx.portrait(hd.mon.dex, cx + (cell - ps) / 2, cy + cell * 0.1, ps, hd.mon.name)
+      elseif hd.kind == "watts" then
         Gfx.orb(cx + cell / 2, cy + cell * 0.42, cell * (hd.big and 0.24 or 0.17), self.time)
+      end
+      if hd.kind == "watts" then
         g.setFont(f.small); Gfx.setc(Gfx.GOLD, a)
         g.printf(("%d W"):format(hd.w), cx, cy + cell * 0.68, cell, "center")
       else
