@@ -54,6 +54,29 @@ local Grass = {
   VERY_TALL_GRASS = 3,
 }
 
+-- DETAIL (lib/Gen4Detail, the G4 DETAIL row; FAST by default on every
+-- platform). Measured on Android (PerfOverlay): grass building reached 1.1 s
+-- of every 5 s in a meadow, single chunks 148 ms, and every grass chunk of the
+-- engine's whole 5x5-land window (~1600 of them) was built and drawn out to
+-- the horizon. FAST grows grass only within REACH world units of the player,
+-- and TILES_PER_CELL of a cell's four 8 px tiles get a tuft (2 = a diagonal
+-- pair: half the blades to build, upload and draw). FULL = nil / 4, the old
+-- behaviour.
+Grass.REACH = nil
+Grass.TILES_PER_CELL = 4
+local detailLevel = nil
+local function applyDetail()
+  local ok, Detail = pcall(V.require, "Gen4Detail")
+  if not (ok and type(Detail) == "table" and Detail.get) then return end
+  local d = Detail.get("grass")
+  Grass.REACH = d.reach
+  Grass.TILES_PER_CELL = d.tilesPerCell or 4
+  local level = Detail.level()
+  -- the row changed: rebuild every chunk at the new density and reach
+  if detailLevel and detailLevel ~= level then Grass.invalidate() end
+  detailLevel = level
+end
+
 local warned = {}
 local function once(key, fmt, ...)
   if warned[key] then return end
@@ -144,9 +167,13 @@ local function buildChunk(Grass3D, scene, map, kx, ky, ox, oz)
         if not bucket then bucket = {}; buckets[y] = bucket; order[#order + 1] = y end
         -- the four 8 px tiles of this cell, each planted the way the voxel
         -- scene plants it (instanceForTile puts the origin at tile * 8)
+        local sparse = (Grass.TILES_PER_CELL or 4) < 4
         for ty = cy * 2, cy * 2 + 1 do
           for tx = cx * 2, cx * 2 + 1 do
-            bucket[#bucket + 1] = Grass3D.instanceForTile(tx + ox8, ty + oz8, y)
+            -- sparse: the two tiles on one diagonal of the cell
+            if not sparse or (tx + ty) % 2 == 0 then
+              bucket[#bucket + 1] = Grass3D.instanceForTile(tx + ox8, ty + oz8, y)
+            end
           end
         end
       end
@@ -218,6 +245,7 @@ end
 function Grass.draw(scene)
   local map = scene.map
   if not map then return end
+  applyDetail()
   local Grass3D = getGrass3D()
   if not (Grass3D and Grass3D.available and Grass3D.available()) then
     once("bake", "the 3D grass bake is unavailable (assets/ground/grass, or GRASS "
@@ -248,10 +276,15 @@ function Grass.draw(scene)
       local W = Grass.WINDOW
       local x0, x1 = (camCx - W) * px - ox, (camCx + W + 1) * px - ox
       local z0, z1 = (camCy - W) * px - oz, (camCy + W + 1) * px - oz
+      -- REACH (phones): only chunks near the player, in grass-chunk units
+      local r = Grass.REACH and (Grass.REACH / span) or nil
+      local r2 = r and (r + 0.75) * (r + 0.75) or nil
       for ky = math.floor(z0 / span), math.ceil(z1 / span) - 1 do
         for kx = math.floor(x0 / span), math.ceil(x1 / span) - 1 do
           local dx, dy = kx - kx0, ky - ky0
-          want[#want + 1] = { dx * dx + dy * dy, kx, ky, worldChunkKey(kx, ky, ox, oz, span) }
+          if not r2 or dx * dx + dy * dy <= r2 then
+            want[#want + 1] = { dx * dx + dy * dy, kx, ky, worldChunkKey(kx, ky, ox, oz, span) }
+          end
         end
       end
     else

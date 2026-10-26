@@ -97,6 +97,27 @@ local Npc = {
   stats = { builds = 0, failed = 0, drawn = 0, sheets = 0 },
 }
 
+-- DETAIL (lib/Gen4Detail, the G4 DETAIL row; FAST by default on every
+-- platform). Gen 4/5 cells only: `solid` applies to cells wider than
+-- SMALL_CELL, so Gen 1-3 sprites keep classicSolid. Measured on Android, single
+-- NPC builds reached 103 ms. FAST bakes a 2x atlas instead of 4x (a quarter of
+-- the texels to bake, blur and upload) with one smoothing pass instead of two.
+-- Bodies read slightly softer up close.
+local npcDetailLevel = nil
+local function applyNpcDetail()
+  local ok, Detail = pcall(function() return V.require("Gen4Detail") end)
+  if not (ok and type(Detail) == "table" and Detail.get) then return end
+  local level = Detail.level()
+  if level == npcDetailLevel then return end
+  local d = Detail.get("npc")
+  local solid = {}
+  for k, v in pairs(d) do solid[k] = v end
+  Npc.solid = solid
+  -- the row changed mid-session: rebuild the bodies at the new detail
+  if npcDetailLevel and type(Npc.invalidate) == "function" then pcall(Npc.invalidate) end
+  npcDetailLevel = level
+end
+
 Npc.KEY = "gen4Npc3d"
 Npc.LABEL = "NPC 3D"
 
@@ -566,6 +587,7 @@ local function isGen4()
 end
 
 function Npc.pump()
+  applyNpcDetail()
   frameNo = frameNo + 1
   if #queue == 0 then return end
   -- Gen 4 shares Gen4Budget with its other effects (the bridge closes each

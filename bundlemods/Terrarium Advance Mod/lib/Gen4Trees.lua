@@ -200,16 +200,23 @@ local function checkpoint()
   if co and not main and inflight and inflight.co == co then coroutine.yield() end
 end
 
--- PHONE DETAIL. Measured on Android (PerfOverlay): tree building was 30-45% of
+-- DETAIL (lib/Gen4Detail, the G4 DETAIL row; FAST by default on every
+-- platform). Measured on Android (PerfOverlay): tree building was 30-45% of
 -- every second while a map filled in, single slices hit 610-634 ms, and the Lua
--- heap climbed past 550 MB of vertex tables. A block of 4x4 texels instead of
--- 2x2 is a quarter of the quads -- a quarter of the build time, the memory, the
--- upload and the draw -- for trees that read a little blockier up close.
+-- heap climbed past 550 MB of vertex tables. FAST builds 4x4-texel blocks
+-- instead of 2x2 -- a quarter of the quads: a quarter of the build time, the
+-- memory, the upload and the draw -- for trees a little blockier up close.
 GT.MOBILE = detectMobile()
-if GT.MOBILE then
-  GT.TEX_STEP = 4
-  GT.MAX_QUADS = 150000
+local Detail = nil
+local function applyDetail()
+  Detail = Detail or optional("Gen4Detail")
+  if not (Detail and Detail.get) then return "full" end
+  local d = Detail.get("trees")
+  GT.TEX_STEP = d.texStep or GT.TEX_STEP
+  GT.MAX_QUADS = d.maxQuads or GT.MAX_QUADS
+  return Detail.level()
 end
+applyDetail()
 
 -- UPLOAD IN PIECES. love.graphics.newMesh(format, verts) converts every vertex
 -- table in one call -- a land of trees is up to MAX_QUADS * 4 of them, the one
@@ -1404,6 +1411,11 @@ function GT.prepare(ground)
     GT.active, GT.list, GT.coveredNames, GT.coveredLands = {}, {}, {}, {}
     return
   end
+
+  -- the G4 DETAIL row changed: drop every baked land so they rebuild at it
+  local level = applyDetail()
+  if GT._detailLevel and GT._detailLevel ~= level then GT.invalidate() end
+  GT._detailLevel = level
 
   local grid, px, half = ground.grid, ground.chunkPx, ground.half
   local W = GT.WINDOW

@@ -97,11 +97,27 @@ function M.tierName()
   return isMobile() and "mobile" or "desktop"
 end
 
--- A knob's live value: the module override when set, else the tier's.
+-- A knob's live value: the module override when set, else the tier's. On
+-- desktop the camera-motion scale follows the G4 DETAIL row (FAST: a 0.6-size
+-- world while the camera moves, full size once it stops).
 local function knob(name)
   local v = M[name]
   if v ~= nil then return v end
-  local t = M.TIERS[M.tierName()] or M.TIERS.desktop
+  local tier = M.tierName()
+  if name == "MOTION_SCALE" and tier == "desktop" then
+    -- (inline lookup: the voxel() helper is defined further down this file)
+    local Detail = nil
+    if type(V.voxelRequire) == "function" then
+      local okR, m = pcall(V.voxelRequire, "Gen4Detail")
+      if okR then Detail = m end
+    end
+    Detail = Detail or V.Gen4Detail
+    if type(Detail) == "table" and Detail.get then
+      local okD, d = pcall(Detail.get, "arena")
+      if okD and type(d) == "table" and d.motionScale then return d.motionScale end
+    end
+  end
+  local t = M.TIERS[tier] or M.TIERS.desktop
   return t[name]
 end
 M.knob = knob

@@ -196,6 +196,7 @@ local ViewBox = V.require("ViewBox")
 local DrawDistance = V.require("DrawDistance")
 -- Gen 4 only: how far the voxel trees reach (DrawDistance above never runs on Platinum)
 local Gen4Distance = V.require("Gen4Distance")
+local Gen4Detail = V.require("Gen4Detail")
 -- Gen 4 only: Platinum's NPCs as smooth 3D bodies built from their own sprites
 local Gen4NpcModels = V.require("Gen4NpcModels")
 local OverworldBattle = V.require("OverworldBattle")
@@ -990,6 +991,14 @@ local SETTINGS = {
     .. "(every land, the old behaviour). Past the range Platinum's flat tree "
     .. "cards keep drawing, so the far field is cheap trees rather than bare "
     .. "ground. Lower is faster.",
+    when = function() return Gen4Bridge.isNativeWorld() end,
+    full = true, cat = "perf" },
+  { Gen4Detail.setting,
+    "How detailed the Gen 4/5 world's 3D effects are, on every device. FAST "
+    .. "(default): blockier 3D trees, grass only near you and half as dense, "
+    .. "softer 3D people, and a lighter battle backdrop while the camera "
+    .. "moves -- maps load much faster and run smoother. FULL: the original "
+    .. "detail. Changing it rebuilds those effects.",
     when = function() return Gen4Bridge.isNativeWorld() end,
     full = true, cat = "perf" },
   { Gen4NpcModels.setting,
