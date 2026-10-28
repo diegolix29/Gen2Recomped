@@ -120,6 +120,16 @@ end
 local Budget = optional("Gen4Budget") or { allow = function() return true end, charge = function() end }
 local clock = (love and love.timer and love.timer.getTime) or os.clock
 
+-- cooperative land builds (lib/Gen4Slice): a land is built over several
+-- frames instead of in one call. Without it, everything builds as before.
+local Slice = optional("Gen4Slice")
+local sliceState = {}
+local function check() if Slice then Slice.check() end end
+local function newMesh(v, m)
+  if Slice then return Slice.newMesh(v, m) end
+  return V.require("Voxel3D").newMesh(v, m)
+end
+
 -- ---------------------------------------------------------------- texture --
 
 -- An 8x8 picture generated here (no file to ship). Rows 0-5 are the stone
@@ -277,6 +287,7 @@ local function s16(data, at)
 end
 
 local function readShape(ground, s, posScale)
+  check()
   local vdata, idata = s.vertices, s.indices
   if type(vdata) ~= "string" or type(idata) ~= "string" then
     vdata = ground:slice(s.vertexAt, s.vertexBytes)
@@ -409,6 +420,7 @@ end
 
 -- One boulder centred at (cx, cz), standing on baseY. `w` is its width.
 local function boulder(b, cx, baseY, cz, w, seed, sink)
+  check()
   local tpl = icosphere()
   local r1, r2, r3, r4 = hash(seed, 1.7), hash(2.3, seed), hash(seed + 4.1, seed - 9.2), hash(seed * 0.37, 5.5)
   local ax, az = 0.5 * w * (0.85 + 0.35 * r1), 0.5 * w * (0.85 + 0.35 * r2)   -- half widths
@@ -691,7 +703,7 @@ local function buildLand(ground, land)
       end
     end
   end
-  if #b.verts > 0 then out.mesh = Voxel3D.newMesh(b.verts, b.map) end
+  if #b.verts > 0 then out.mesh = newMesh(b.verts, b.map) end
   if Rocks.LOG and shapesSeen > 0 then
     once("land" .. tostring(land),
          "land %s: %d imped shape(s) -> %d rocks, %d fence banner(s) left native (%d shape(s) had no usable cards)",
@@ -746,11 +758,19 @@ local function prepare(ground)
     local land = w[4]
     local entry = landEntries[land]
     if not entry then
-      if builds < Rocks.BUILDS_PER_FRAME and Budget.allow(false) then
+      local ok, built
+      if builds < Rocks.BUILDS_PER_FRAME then
+        if Slice then
+          local res, why = Slice.landStep(sliceState, Budget, false, "rocks", ground, land, buildLand)
+          if res ~= nil then ok, built = res ~= false, (res == false and why or res) end
+        elseif Budget.allow(false) then
+          local t0 = clock()
+          ok, built = pcall(buildLand, ground, land)
+          Budget.charge(t0, "rocks")
+        end
+      end
+      if ok ~= nil then
         builds = builds + 1
-        local t0 = clock()
-        local ok, built = pcall(buildLand, ground, land)
-        Budget.charge(t0, "rocks")
         if not ok then
           once("build", "a land failed to build and was skipped: %s", tostring(built))
           built = { rocks = 0 }

@@ -156,6 +156,16 @@ end
 local Budget = optional("Gen4Budget") or { allow = function() return true end, charge = function() end }
 local clock = (love and love.timer and love.timer.getTime) or os.clock
 
+-- cooperative land builds (lib/Gen4Slice): a land is built over several
+-- frames instead of in one call. Without it, everything builds as before.
+local Slice = optional("Gen4Slice")
+local sliceState = {}
+local function check() if Slice then Slice.check() end end
+local function newMesh(v, m)
+  if Slice then return Slice.newMesh(v, m) end
+  return V.require("Voxel3D").newMesh(v, m)
+end
+
 -- ---------------------------------------------------------------- texture --
 
 local texture                 -- Image | false
@@ -207,6 +217,7 @@ local function s16(data, at)
 end
 
 local function readShape(ground, s, posScale)
+  check()
   local vdata, idata = s.vertices, s.indices
   if type(vdata) ~= "string" or type(idata) ~= "string" then
     vdata = ground:slice(s.vertexAt, s.vertexBytes)
@@ -383,7 +394,7 @@ local function newBucket() return { verts = {}, map = {}, meshes = {} } end
 
 local function sealBucket(bk)
   if #bk.verts == 0 then return end
-  local mesh = Voxel3D.newMesh(bk.verts, bk.map)
+  local mesh = newMesh(bk.verts, bk.map)
   if mesh then bk.meshes[#bk.meshes + 1] = mesh end
   bk.verts, bk.map = {}, {}
 end
@@ -452,6 +463,7 @@ end
 
 -- One bay's rails (and pickets) between two posts, s0..s1 along the run.
 local function buildBay(bk, run, s0, s1, H, seed)
+  check()
   local ox, oz, ux, uz = run.ax, run.az, run.ux, run.uz
   local function yAt(s) return heightAt(run, s) end
   local n = 0
@@ -510,6 +522,7 @@ local function buildBay(bk, run, s0, s1, H, seed)
 end
 
 local function buildPost(bk, run, s, H, seed)
+  check()
   local function yAt(x) return heightAt(run, x) end
   local half = postWidth() * 0.5
   local col = math.floor(hash(seed, s, 3) * GRID) % GRID
@@ -860,11 +873,19 @@ local function prepare(ground)
     local land = w[4]
     local entry = landEntries[land]
     if not entry then
-      if builds < Fence.BUILDS_PER_FRAME and Budget.allow(false) then
+      local ok, built
+      if builds < Fence.BUILDS_PER_FRAME then
+        if Slice then
+          local res, why = Slice.landStep(sliceState, Budget, false, "fence", ground, land, buildLand)
+          if res ~= nil then ok, built = res ~= false, (res == false and why or res) end
+        elseif Budget.allow(false) then
+          local t0 = clock()
+          ok, built = pcall(buildLand, ground, land)
+          Budget.charge(t0, "fence")
+        end
+      end
+      if ok ~= nil then
         builds = builds + 1
-        local t0 = clock()
-        local ok, built = pcall(buildLand, ground, land)
-        Budget.charge(t0, "fence")
         if not ok then
           once("build", "a land failed to build and was skipped: %s", tostring(built))
           built = { runs = 0, quads = 0, shapes = {}, meshes = {} }

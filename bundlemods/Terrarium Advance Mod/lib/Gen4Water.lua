@@ -115,6 +115,16 @@ end
 local Budget = optional("Gen4Budget") or { allow = function() return true end, charge = function() end }
 local clock = (love and love.timer and love.timer.getTime) or os.clock
 
+-- cooperative land builds (lib/Gen4Slice): a land is built over several
+-- frames instead of in one call. Without it, everything builds as before.
+local Slice = optional("Gen4Slice")
+local sliceState = {}
+local function check() if Slice then Slice.check() end end
+local function newMesh(v, m)
+  if Slice then return Slice.newMesh(v, m) end
+  return V.require("Voxel3D").newMesh(v, m)
+end
+
 -- land id/record -> water sheet. Not keyed by Ground: a route swap used to
 -- drop the sheet (and GW.ready) while the native water flashed back.
 local landSheets = setmetatable({}, { __mode = "k" })
@@ -136,6 +146,7 @@ local FX16 = 4096          -- Gen4Model's fixed-point scale
 -- space, read the way Gen4Model.new reads them (stride measured off the
 -- buffer, positions are the first three s16 of each vertex).
 local function shapeTriangles(ground, s, posScale)
+  check()
   local vdata, idata = s.vertices, s.indices
   if type(vdata) ~= "string" or type(idata) ~= "string" then
     vdata = ground:slice(s.vertexAt, s.vertexBytes)
@@ -180,6 +191,7 @@ end
 -- A triangle cut into n*n smaller ones so the swell has vertices to lift.
 -- Vertex layout is Voxel3D.FORMAT: x, y, z, u, v, shade, water.
 local function emit(verts, map, a, b, c)
+  check()
   local function d(p, q)
     local dx, dz = p[1] - q[1], p[3] - q[3]
     return math.sqrt(dx * dx + dz * dz)
@@ -399,7 +411,7 @@ local function buildLand(ground, land)
          "land %s: %d terrain + %d prop water triangles (%d not horizontal, skipped), %d shore edges grown",
          tostring(land), nTerrain, nProp, nSkipped, shore)
   end
-  entry.mesh = Voxel3D.newMesh(verts, map)
+  entry.mesh = newMesh(verts, map)
   entry.y = ysum / ycount
   return entry
 end
@@ -467,11 +479,19 @@ function GW.prepare(ground)
       local t = todo[i]
       local land = t[2]
       if landSheets[land] == nil then
-        if builds < GW.BUILDS_PER_FRAME and Budget.allow(true) then
+        local ok, built
+        if builds < GW.BUILDS_PER_FRAME then
+          if Slice then
+            local res, why = Slice.landStep(sliceState, Budget, true, "water", ground, land, buildLand)
+            if res ~= nil then ok, built = res ~= false, (res == false and why or res) end
+          elseif Budget.allow(true) then
+            local t0 = clock()
+            ok, built = pcall(buildLand, ground, land)
+            Budget.charge(t0, "water")
+          end
+        end
+        if ok ~= nil then
           builds = builds + 1
-          local t0 = clock()
-          local ok, built = pcall(buildLand, ground, land)
-          Budget.charge(t0, "water")
           local entry
           if ok then
             entry = built

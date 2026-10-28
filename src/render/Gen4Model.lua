@@ -433,6 +433,23 @@ end
 -- every call site is how two of them end up disagreeing.
 Gen4Model.multiply = multiply
 
+-- multiply() into a table the caller owns, for the per-frame draw paths: a new
+-- 16-entry table per shape per frame was thousands of tables a frame on a Gen 4
+-- field, and the collector sweeping them landed as 50-150 ms hitches inside
+-- the world draw. `out` must not be `a` or `b`.
+local function multiplyInto(out, a, b)
+  for row = 0, 3 do
+    local r = row * 4
+    local a1, a2, a3, a4 = a[r + 1], a[r + 2], a[r + 3], a[r + 4]
+    out[r + 1] = a1 * b[1] + a2 * b[5] + a3 * b[9] + a4 * b[13]
+    out[r + 2] = a1 * b[2] + a2 * b[6] + a3 * b[10] + a4 * b[14]
+    out[r + 3] = a1 * b[3] + a2 * b[7] + a3 * b[11] + a4 * b[15]
+    out[r + 4] = a1 * b[4] + a2 * b[8] + a3 * b[12] + a4 * b[16]
+  end
+  return out
+end
+Gen4Model.multiplyInto = multiplyInto
+
 -- A camera placed where the cartridge puts it, looking where it looks.
 --
 -- `orbit` above is the right shape for a turntable and the wrong one for a
@@ -2500,6 +2517,8 @@ end
 -- on it -- which is nearly all of them, nearly all of the time.
 local UV_IDENTITY = { 1, 0, 0, 1 }
 local UV_NO_SHIFT = { 0, 0 }
+-- scratch for the per-shape sends below (sent at once, never kept)
+local MVP_SCRATCH, UV_ROT_SCRATCH, UV_SHIFT_SCRATCH = {}, {}, {}
 
 -- draw(viewProjection, pose, materials)
 --
@@ -2657,7 +2676,7 @@ function Gen4Model:draw(viewProjection, pose, materials, yCut, spread, depthComp
       end
       place=nil
     end
-    shader:send("mvp", place and multiply(viewProjection, place) or viewProjection)
+    shader:send("mvp", place and multiplyInto(MVP_SCRATCH, viewProjection, place) or viewProjection)
 
     local state = materials and shape.material and materials[shape.material]
     -- a material-colour animation's alpha (Gen4TexAnim, BMA0)
@@ -2667,8 +2686,11 @@ function Gen4Model:draw(viewProjection, pose, materials, yCut, spread, depthComp
     end
     local uv = state and state.uv
     if uv then
-      shader:send("uvRotScale", { uv[1], uv[2], uv[3], uv[4] })
-      shader:send("uvTranslate", { uv[5] or 0, uv[6] or 0 })
+      local r, t = UV_ROT_SCRATCH, UV_SHIFT_SCRATCH
+      r[1], r[2], r[3], r[4] = uv[1], uv[2], uv[3], uv[4]
+      t[1], t[2] = uv[5] or 0, uv[6] or 0
+      shader:send("uvRotScale", r)
+      shader:send("uvTranslate", t)
     else
       shader:send("uvRotScale", UV_IDENTITY)
       shader:send("uvTranslate", UV_NO_SHIFT)

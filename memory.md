@@ -44,3 +44,9 @@
 - src/render/Gen4Ground.lua: Gen4Ground:sharedStore() shares the live models, buildings and field models between grounds keyed by terrain, set, buildingSet, fldeffSet, arealight, lightMember, lightBand and outdoors. A fogged map or the Distortion World keeps per-ground caches. Up to SHARED_STORES (3) stores are kept, evicting the least recently used. dropLitModels lets go of a shared store without freeing it. The LRU for shared stores is LIVE_CACHE_SHARED (48).
 - Engine change, so it is live through Play-Windows.bat; the packaged exe needs a rebuild.
 - Terrarium effects (trees, water, fence, rocks, flowers, bump, lamps) were already keyed by the shared land record, so they survive map changes. Gen4Glass was per ground; it now shares one cache per terrain unless the map has def.gen4ModelEdits.
+
+## 2026-10-28 — drawFree hitch pass 2 (uncommitted, untested)
+- User screenshots: hitches of 50-156 ms, mostly "g4 drawFree" (20-149 ms) with heap drops of 19-59 MB (GC). Smaller causes: prepare rocks 30, prepare trees 27, fx bump 15. Route-change reuse confirmed working from the log.
+- src/render/Gen4Model.lua: added Gen4Model.multiplyInto(out, a, b). Gen4Model:draw now sends mvp and the uvRotScale/uvTranslate values from scratch tables (it allocated per shape per frame). Gen4Ground.drawFree uses scratch FREE_LAND_MVP / FREE_BUILDING_MVP for the per-land and per-building matrices.
+- New lib/Gen4Slice.lua: coroutine land builds. Slice.landStep(state, Budget, warm, kind, ground, land, buildLand) keeps one job in flight per module and drops it if unstepped for 0.5 s on another land. Slice.check() yields at checkpoints. Slice.newMesh converts table verts into a ByteData in chunks (FFI) inside a job.
+- Gen4Rocks, Gen4Fence, Gen4Bump and Gen4Water now build through it, with check() in boulder / readShape, buildBay / buildPost / readShape, pile / readShape and emit / shapeTriangles, and newMesh() for their final mesh.

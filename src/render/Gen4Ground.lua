@@ -2601,6 +2601,8 @@ function Gen4Ground:drawSky(view, vw, vh)
   return true
 end
 
+local FREE_LAND_MVP, FREE_BUILDING_MVP = {}, {}
+
 function Gen4Ground:drawFree(vw, vh)
   local view = self.view3d
   local grid = self.grid
@@ -2718,7 +2720,9 @@ function Gen4Ground:drawFree(vw, vh)
         if model then
           -- A chunk's own vertices are centred on it, so its centre -- not its
           -- corner -- is where it goes in the absolute grid.
-          local mvp = Gen4Model.multiply(vp,
+          -- into scratch tables: these are sent and dropped within this
+          -- iteration, and a fresh pair per land per frame was garbage
+          local mvp = Gen4Model.multiplyInto(FREE_LAND_MVP, vp,
             translation(cx * px + self.half, self:chunkLift(cx, cy),
                         cy * px + self.half))
           model:draw(mvp, nil, self.terrainAnim and self.terrainAnim:materials(land, self.clock),
@@ -2741,7 +2745,7 @@ function Gen4Ground:drawFree(vw, vh)
                 print("[bounds] placement " .. table.concat(pl, ","), "chunk", cx, cy)
               end
               Gen4Model.drawTint = object.live and object.live.tint or nil
-              building:draw(Gen4Model.multiply(mvp, placement(object)),
+              building:draw(Gen4Model.multiplyInto(FREE_BUILDING_MVP, mvp, placement(object)),
                             self:oneShotPose(object, building),
                             mats, nil, nil)
               Gen4Model.drawTint = nil

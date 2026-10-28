@@ -58,6 +58,16 @@ end
 local Budget = optional("Gen4Budget") or { allow = function() return true end, charge = function() end }
 local clock = (love and love.timer and love.timer.getTime) or os.clock
 
+-- cooperative land builds (lib/Gen4Slice): a land is built over several
+-- frames instead of in one call. Without it, everything builds as before.
+local Slice = optional("Gen4Slice")
+local sliceState = {}
+local function check() if Slice then Slice.check() end end
+local function newMesh(v, m)
+  if Slice then return Slice.newMesh(v, m) end
+  return V.require("Voxel3D").newMesh(v, m)
+end
+
 -- ---------------------------------------------------------------- texture --
 
 local texture
@@ -92,6 +102,7 @@ local function s16(data, at)
 end
 
 local function readShape(ground, s, posScale)
+  check()
   local vdata, idata = s.vertices, s.indices
   if type(vdata) ~= "string" or type(idata) ~= "string" then
     vdata = ground:slice(s.vertexAt, s.vertexBytes)
@@ -158,6 +169,7 @@ end
 
 -- Round dirt mound: circular footprint, cosine silhouette, sitting on ymax.
 local function pile(b, cx, cz, ymax, spanX, spanZ)
+  check()
   local rx, rz = clampW(spanX) * 0.5, clampW(spanZ) * 0.5
   local h = Bump.HEIGHT
   local y0 = ymax - Bump.SINK
@@ -256,7 +268,7 @@ local function buildLand(ground, land)
     end
   end
 
-  if #b.verts > 0 then out.mesh = Voxel3D.newMesh(b.verts, b.map) end
+  if #b.verts > 0 then out.mesh = newMesh(b.verts, b.map) end
   if Bump.LOG and shapesSeen > 0 then
     once("land" .. tostring(land),
          "land %s: %d allpeak shape(s) -> %d dirt pile(s); %d native shape(s) hidden",
@@ -316,11 +328,19 @@ local function prepare(ground)
     local land = w[4]
     local entry = landEntries[land]
     if not entry then
-      if builds < Bump.BUILDS_PER_FRAME and Budget.allow(false) then
+      local ok, built
+      if builds < Bump.BUILDS_PER_FRAME then
+        if Slice then
+          local res, why = Slice.landStep(sliceState, Budget, false, "bump", ground, land, buildLand)
+          if res ~= nil then ok, built = res ~= false, (res == false and why or res) end
+        elseif Budget.allow(false) then
+          local t0 = clock()
+          ok, built = pcall(buildLand, ground, land)
+          Budget.charge(t0, "bump")
+        end
+      end
+      if ok ~= nil then
         builds = builds + 1
-        local t0 = clock()
-        local ok, built = pcall(buildLand, ground, land)
-        Budget.charge(t0, "bump")
         if not ok then
           once("build", "a land failed to build and was skipped: %s", tostring(built))
           built = { bumps = 0, shapes = {} }
