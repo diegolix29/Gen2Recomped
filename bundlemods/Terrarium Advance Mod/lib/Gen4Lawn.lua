@@ -264,6 +264,7 @@ function Lawn.install()
   end
 
   local originalDraw = Model.draw
+  local mergeScratch = {}
   Model.draw = function(self, viewProjection, pose, materials, ...)
     if not (drawing and Lawn.enabled) or type(self.shapes) ~= "table" then
       return originalDraw(self, viewProjection, pose, materials, ...)
@@ -271,9 +272,14 @@ function Lawn.install()
     local lawn = lawnMaterials(self)
     if not lawn then return originalDraw(self, viewProjection, pose, materials, ...) end
     -- merge with whatever the caller passed; the lawn entry wins only for the
-    -- lawn's own material name
-    local merged = {}
-    if materials then for k, v in pairs(materials) do merged[k] = v end end
+    -- lawn's own material name. No caller: the lawn table itself. Otherwise
+    -- ONE scratch table, cleared and refilled -- this runs for every engine
+    -- draw call of the frame, and a new table each time was a steady stream
+    -- of garbage. Gen4Model:draw only looks materials up, never keeps them.
+    if not materials then return originalDraw(self, viewProjection, pose, lawn, ...) end
+    local merged = mergeScratch
+    for k in pairs(merged) do merged[k] = nil end
+    for k, v in pairs(materials) do merged[k] = v end
     for k, v in pairs(lawn) do merged[k] = v end
     return originalDraw(self, viewProjection, pose, merged, ...)
   end

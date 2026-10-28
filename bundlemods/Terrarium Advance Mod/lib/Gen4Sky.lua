@@ -520,6 +520,18 @@ local function onFirstShape(ground)
   return true
 end
 
+
+-- PerfOverlay hitch attribution (only while the overlay shows)
+local perfMod = nil
+local function deposit(name, dt)
+  if perfMod == nil then
+    local okP, P = pcall(V.require, "PerfOverlay")
+    perfMod = okP and type(P) == "table" and P or false
+  end
+  if perfMod and perfMod.visible and perfMod.deposit then perfMod.deposit(name, dt) end
+end
+local perfClock = (love and love.timer and love.timer.getTime) or os.clock
+
 function S.install()
   if S.installed then return true end
   local okG, Ground = pcall(require, "src.render.Gen4Ground")
@@ -579,10 +591,15 @@ function S.install()
   end
 
   local originalDraw = Model.draw
+  -- shape list -> the same list without horizon shapes (false = none dropped).
+  -- Built once per list instead of a new table on every engine draw call.
+  local keepCache = setmetatable({}, { __mode = "k" })
   Model.draw = function(self, ...)
     if armed then
       local ground = armed
+      local t0 = perfClock()
       local okH, done = pcall(onFirstShape, ground)
+      deposit("sky+pre passes", perfClock() - t0)
       if not okH then
         warnOnce("first", "sky pass failed: %s", tostring(done))
         done = true
@@ -591,16 +608,22 @@ function S.install()
     end
     if hiding and #S.SHAPE_WORDS > 0 and type(self.shapes) == "table" then
       local real = self.shapes
-      local keep, dropped = {}, 0
-      for _, shape in ipairs(real) do
-        if shapeIsHorizon(shape) then
-          dropped = dropped + 1
-          note("shape:" .. tostring(shape.name), "skipping engine horizon shape '%s'", tostring(shape.name))
-        else
-          keep[#keep + 1] = shape
+      local rec = keepCache[real]
+      if rec == nil or rec.n ~= #real then
+        local list, dropped = {}, 0
+        for _, shape in ipairs(real) do
+          if shapeIsHorizon(shape) then
+            dropped = dropped + 1
+            note("shape:" .. tostring(shape.name), "skipping engine horizon shape '%s'", tostring(shape.name))
+          else
+            list[#list + 1] = shape
+          end
         end
+        rec = { n = #real, list = dropped > 0 and list or false }
+        keepCache[real] = rec
       end
-      if dropped > 0 then
+      local keep = rec.list
+      if keep then
         self.shapes = keep
         local ok, r = pcall(originalDraw, self, ...)
         self.shapes = real

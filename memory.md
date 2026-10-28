@@ -28,3 +28,13 @@
 - Gen4Bridge also deposits "fx <pass>" times into FrameProfile.add. PerfOverlay turns capture on while it shows and prints "last hitch Ns ago: X ms" and "in: section ms ...".
 - Next step: read the user's hitch line to find the real stutter source (engine land/model loads, GC, or a specific pass).
 - Correction (same day): the user plays the packaged Gen2Recomped.exe. It bundles its own src/ (its FrameProfile.lua is dated 2026-09-17), so engine src/ edits do NOT reach it until the exe is rebuilt, while mod edits do. The hitch capture now lives in the mod's PerfOverlay: it wraps FrameProfile.section/add, takes pass times through Bridge.passHook, and times "g4 <fn>" for the Gen4Ground calls (modelFor, building, decalModelFor, bdhcFor, permBlockFor, objectsFor, runtimePropsFor, animationsFor, bake, canopyFor, bakeAnimated, liveModel, canvasFor, drawSky, drawFree, drawCanopy). The src/core/FrameProfile.lua hitch code stays and is harmless.
+
+## 2026-10-28 — Walk-stutter pass (uncommitted, untested)
+- Hitch data from the user (run through Play-Windows.bat, so src/ edits ARE live): hitches of 98 and 141 ms were all in draw, inside "g4 drawFree" (89 and 134 ms). The fx passes were tiny and one hitch frame had a -57 MB heap drop (GC). The log showed a load burst of 2964 meshes / 2037 ms, with single builds up to trees 70 ms, fence 38 ms and water 31 ms.
+- Ground.drawFree is wrapped by Gen4Hide (runs 7 effect prepare() calls), Gen4Lawn and Gen4Sky (whose first Model.draw runs the sky and Bridge.runPre passes, i.e. the sun/shadow pre passes).
+- Fixes:
+  - Gen4Lawn Model.draw reuses one scratch materials table (was a new table per engine draw call).
+  - Gen4Sky caches the horizon-filtered shape list per source list (was a new table per draw).
+  - Gen4Hide.filtered builds its cover key once per drawFree (Hide.frameKey).
+  - Gen4Hide times each prepare as "prepare <name>" and Gen4Sky times "sky+pre passes"; both deposit into the PerfOverlay hitch line.
+  - Gen4Bridge.run has a GC pacer: up to GC_BUDGET (1.5 ms desktop / 2 ms phone) of collectgarbage("step", 0) per frame, then it rests until the heap grows to GC_REST x 1.25. It shows as "fx gc pacer".

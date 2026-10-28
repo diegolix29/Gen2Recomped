@@ -389,6 +389,36 @@ local function runScene(ground, view, vw, vh, order, effects, tag)
   Voxel3D.lampLights = nil  -- Clean up after the scene
 end
 
+-- GC PACER. A Gen 4/5 world keeps 300+ MB of Lua heap alive, and LuaJIT's
+-- collector does its work in proportion to what a frame ALLOCATES: a calm
+-- frame does almost none and a busy one (a land loading, a burst of builds)
+-- pays for the whole backlog -- the 50-140 ms hitches with a 50 MB heap drop.
+-- So every frame spends up to GC_BUDGET seconds stepping the collector. Once a
+-- cycle finishes it rests until the heap has grown GC_REST times its size, so
+-- a quiet scene is not marked over and over. GC_BUDGET = 0 turns it off.
+local function isPhone()
+  local ok, name = pcall(function() return love.system.getOS() end)
+  return ok and (name == "Android" or name == "iOS") or false
+end
+Bridge.GC_BUDGET = isPhone() and 0.002 or 0.0015
+Bridge.GC_REST = 1.25
+local gcRestUntil = 0
+local gcClock = (love and love.timer and love.timer.getTime) or os.clock
+local function paceGc()
+  local budget = Bridge.GC_BUDGET
+  if not budget or budget <= 0 then return end
+  if collectgarbage("count") < gcRestUntil then return end
+  local t0 = gcClock()
+  repeat
+    if collectgarbage("step", 0) then
+      gcRestUntil = collectgarbage("count") * (Bridge.GC_REST or 1.25)
+      break
+    end
+  until gcClock() - t0 >= budget
+  local hook = Bridge.passHook
+  if hook then hook("gc pacer", gcClock() - t0) end
+end
+
 function Bridge.run(ground)
   if not (Bridge.enabled and #Bridge.order > 0) then return end
   local view, vw, vh = ground.view3d, ground.freeW, ground.freeH
@@ -399,6 +429,7 @@ function Bridge.run(ground)
   local frameId = ground.clock or (love and love.timer and love.timer.getTime() and love.timer.getTime())
   if Bridge.lastRunFrame[ground] == frameId then return end
   Bridge.lastRunFrame[ground] = frameId
+  paceGc()
 
   Bridge.stats.runs = Bridge.stats.runs + 1
   local ok, err = pcall(runScene, ground, view, vw, vh, Bridge.order, Bridge.effects, "fx:")

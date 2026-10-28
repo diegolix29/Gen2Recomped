@@ -282,6 +282,17 @@ end
 -- model -> { key = "gw", list = {...} }
 local cache = setmetatable({}, { __mode = "k" })
 
+-- PerfOverlay hitch attribution (only while the overlay shows)
+local perfMod = nil
+local function deposit(name, dt)
+  if perfMod == nil then
+    local okP, P = pcall(V.require, "PerfOverlay")
+    perfMod = okP and type(P) == "table" and P or false
+  end
+  if perfMod and perfMod.visible and perfMod.deposit then perfMod.deposit(name, dt) end
+end
+local perfClock = (love and love.timer and love.timer.getTime) or os.clock
+
 local function filtered(model, hideGrass, hideWater, hideTrees, hideRocks, hideFlowers, hideFences, hideBumps, hideLamps)
   local GT = hideTrees and optional("Gen4Trees") or nil
   local GR = hideRocks and optional("Gen4Rocks") or nil
@@ -291,7 +302,9 @@ local function filtered(model, hideGrass, hideWater, hideTrees, hideRocks, hideF
   local GLp = hideLamps and optional("Gen4Lamps") or nil
   local GW = hideWater and optional("Gen4Water") or nil
   local covered = GW and type(GW.isCovered) == "function" and GW.isCovered or nil
-  local key = (hideGrass and "g" or "-") .. (hideWater and "w" or "-")
+  local key = Hide.frameKey
+  if not key then
+  key = (hideGrass and "g" or "-") .. (hideWater and "w" or "-")
               .. (covered and tostring(GW.coverVersion or 0) or "")
               .. (GT and ("t" .. tostring(GT.coverVersion or 0)) or "-")
               .. (GR and ("r" .. tostring(GR.coverVersion or 0)) or "-")
@@ -299,6 +312,10 @@ local function filtered(model, hideGrass, hideWater, hideTrees, hideRocks, hideF
               .. (GFe and ("e" .. tostring(GFe.coverVersion or 0)) or "-")
               .. (GB and ("b" .. tostring(GB.coverVersion or 0)) or "-")
               .. (GLp and ("p" .. tostring(GLp.coverVersion or 0)) or "-")
+  -- the versions cannot change inside one native pass: built once per
+  -- drawFree (Hide.frameKey is cleared there), not once per engine draw call
+  Hide.frameKey = key
+  end
   local rec = cache[model]
   local shapes = model.shapes
   if rec and rec.key == key and rec.source == shapes and rec.count == #shapes then
@@ -474,44 +491,52 @@ function Hide.install()
     return a
   end
 
+  -- each effect's per-frame prepare, timed for the PerfOverlay hitch line
+  local function prep(name, mod, ground)
+    local t0 = perfClock()
+    local ok = pcall(mod.prepare, ground)
+    deposit("prepare " .. name, perfClock() - t0)
+    return ok
+  end
   local originalFree = Ground.drawFree
   Ground.drawFree = function(self, ...)
+    Hide.frameKey = nil
     drawFilter.grass, drawFilter.water = grassOn(), waterOn()
     drawFilter.trees = treesOn()
     if drawFilter.water then
       -- re-tag covered water shapes for this Ground before the native pass
       local GW = optional("Gen4Water")
-      if GW and GW.prepare then pcall(GW.prepare, self) end
+      if GW and GW.prepare then prep("water", GW, self) end
     end
     if drawFilter.trees then
       -- decide which tree shapes are covered THIS frame before the native pass
       local GT = optional("Gen4Trees")
-      if not (GT and pcall(GT.prepare, self)) then drawFilter.trees = false end
+      if not (GT and prep("trees", GT, self)) then drawFilter.trees = false end
     end
     drawFilter.rocks = rocksOn()
     if drawFilter.rocks then
       local GR = optional("Gen4Rocks")
-      if not (GR and pcall(GR.prepare, self)) then drawFilter.rocks = false end
+      if not (GR and prep("rocks", GR, self)) then drawFilter.rocks = false end
     end
     drawFilter.flowers = flowersOn()
     if drawFilter.flowers then
       local GF = optional("Gen4Flowers")
-      if not (GF and pcall(GF.prepare, self)) then drawFilter.flowers = false end
+      if not (GF and prep("flowers", GF, self)) then drawFilter.flowers = false end
     end
     drawFilter.fences = fencesOn()
     if drawFilter.fences then
       local GFe = optional("Gen4Fence")
-      if not (GFe and pcall(GFe.prepare, self)) then drawFilter.fences = false end
+      if not (GFe and prep("fences", GFe, self)) then drawFilter.fences = false end
     end
     drawFilter.bumps = bumpsOn()
     if drawFilter.bumps then
       local GB = optional("Gen4Bump")
-      if not (GB and pcall(GB.prepare, self)) then drawFilter.bumps = false end
+      if not (GB and prep("bumps", GB, self)) then drawFilter.bumps = false end
     end
     drawFilter.lamps = lampsOn()
     if drawFilter.lamps then
       local GLp = optional("Gen4Lamps")
-      if not (GLp and pcall(GLp.prepare, self)) then drawFilter.lamps = false end
+      if not (GLp and prep("lamps", GLp, self)) then drawFilter.lamps = false end
     end
     Hide.active = drawFilter.grass or drawFilter.water or drawFilter.trees or drawFilter.rocks
                   or drawFilter.flowers or drawFilter.fences or drawFilter.bumps or drawFilter.lamps
