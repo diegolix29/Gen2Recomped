@@ -71,6 +71,13 @@ end
 local ring = { dt = {}, draw = {}, n = 0, head = 0 }
 local frameBuildMs, frameBuilds, frameEngMs, frameEngN = 0, 0, 0, 0
 local kindAcc, kindShown, kindAt = {}, {}, nil
+-- per Gen 4 pass, averaged per frame over the same 5 s: { name, draws, ms }
+local passShown, passFrames = {}, 0
+local function bridge()
+  if not (V and V.require) then return nil end
+  local ok, mod = pcall(V.require, "Gen4Bridge")
+  return ok and type(mod) == "table" and mod or nil
+end
 local peak = { ms = 0, kind = nil, t = -math.huge }
 local perSec = { t = nil, builds = 0, buildMs = 0, engN = 0, engMs = 0, renders = 0, reuses = 0, skips = 0 }
 local shown = { builds = 0, buildMs = 0, engN = 0, engMs = 0, renders = 0, reuses = 0, skips = 0,
@@ -209,6 +216,17 @@ local function sampleSecond(now)
     for k, ms in pairs(kindAcc) do list[#list + 1] = { k, ms } end
     table.sort(list, function(a, b) return a[2] > b[2] end)
     kindShown, kindAcc, kindAt = list, {}, now
+    local B = bridge()
+    if B and B.passStats and passFrames > 0 then
+      local passes = {}
+      for name, st in pairs(B.passStats) do
+        passes[#passes + 1] = { name, st[1] / passFrames, st[2] / passFrames }
+      end
+      table.sort(passes, function(a, b) return a[2] > b[2] end)
+      passShown = passes
+      B.passStats = {}
+    end
+    passFrames = 0
   end
 end
 
@@ -248,6 +266,14 @@ local function lines()
   out[#out + 1] = string.format("log: %.0f lines/s  %.1f ms/s in the logger", shown.logN, shown.logMs)
   if shown.engN > 0 or shown.engMs > 0 then
     out[#out + 1] = string.format("engine models: %.1f loads/s  %.0f ms/s", shown.engN, shown.engMs)
+  end
+  if #passShown > 0 then
+    local parts = {}
+    for i = 1, math.min(5, #passShown) do
+      local p = passShown[i]
+      parts[#parts + 1] = string.format("%s %.0fd %.1fms", p[1], p[2], p[3])
+    end
+    out[#out + 1] = "passes/frame: " .. table.concat(parts, "  ")
   end
   if #kindShown > 0 then
     local parts = {}
@@ -298,8 +324,11 @@ function P.frame(drawSeconds)
   if on ~= P.visible then
     P.visible = on
     if on then hookBudget(); hookEngine() end
+    local B = bridge()
+    if B then B.profile = on; B.passStats = {} end
   end
   if not on then return end
+  passFrames = passFrames + 1
   local dt = (love.timer and love.timer.getDelta) and love.timer.getDelta() or 0
   push(dt, (drawSeconds or 0) * 1000)
   local g = love.graphics

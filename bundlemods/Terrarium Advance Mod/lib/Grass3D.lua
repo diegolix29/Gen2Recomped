@@ -527,11 +527,22 @@ end
 local fastBroken = false
 
 -- meshFromInstances for grass tufts at a LOD level, through the FFI.
-function Grass3D.meshFromInstancesLod(instances, level)
+--
+-- ROOTED (Gen4Grass): every tuft is stamped at its own ground height
+-- (instance.gz) and carries that root in VertexWater (see the shader's
+-- grassRoot), so one mesh can span several terraces and draw as one call.
+-- Only the FFI path can do it; without it, a rooted request returns nil and
+-- the caller buckets by height as before.
+function Grass3D.canRoot()
+  return ffi ~= nil and not fastBroken and love.data and love.data.newByteData and true or false
+end
+
+function Grass3D.meshFromInstancesLod(instances, level, rooted)
   if not instances or #instances == 0 then return nil end
   local L = lodTemplate(level)
   if not L then return nil end
   if not ffi or fastBroken or not (love.data and love.data.newByteData) then
+    if rooted then return nil end
     if (level or 1) <= 1 then return Grass3D.meshFromInstances(instances) end
     -- table fallback on the thinned template
     local verts, indices = {}, {}
@@ -554,7 +565,7 @@ function Grass3D.meshFromInstancesLod(instances, level)
   local io = ptrOf(idata, wide and "uint32_t*" or "uint16_t*")
   if not (out and io) then
     fastBroken = true
-    return Grass3D.meshFromInstancesLod(instances, level)
+    return Grass3D.meshFromInstancesLod(instances, level, rooted)
   end
 
   local tx, ty, tz, tu, tv, tsh, tidx = L.x, L.y, L.z, L.u, L.v, L.sh, L.idx
@@ -567,15 +578,17 @@ function Grass3D.meshFromInstancesLod(instances, level)
     local yaw, scale = inst.yaw or 0, inst.scale or 1
     local ys = scale * (inst.heightScale or 1)
     local c, s = cos(yaw), sin(yaw)
+    local gy = rooted and (inst.gz or 0) or 0
+    local root = rooted and -(gy + 4097) or 0
     for j = 0, tnv - 1 do
       local x, z = tx[j] * scale, tz[j] * scale
       out[o] = ox + x * c - z * s
-      out[o + 1] = ty[j] * ys
+      out[o + 1] = ty[j] * ys + gy
       out[o + 2] = oz + x * s + z * c
       out[o + 3] = tu[j]
       out[o + 4] = tv[j]
       out[o + 5] = tsh[j]
-      out[o + 6] = 0
+      out[o + 6] = root
       o = o + FLOATS
     end
     for j = 0, tni - 1 do
@@ -594,7 +607,7 @@ function Grass3D.meshFromInstancesLod(instances, level)
   if not okX then
     pcall(mesh.release, mesh)
     fastBroken = true
-    return Grass3D.meshFromInstancesLod(instances, level)
+    return Grass3D.meshFromInstancesLod(instances, level, rooted)
   end
   local t = loadTexture()
   if t then pcall(mesh.setTexture, mesh, t) end

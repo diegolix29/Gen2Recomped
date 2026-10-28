@@ -13,3 +13,9 @@
 - lib/Gen4NpcModels.lua: disk cache for Gen 4/5 bodies in the save dir under terrarium_cache/npc3d/<md5>.bin, keyed by sheet pixels + pose + PAD + solid opts. Bump CACHE_VERSION when SpriteSolid output changes. padRGBA is now lazy (makeFacingsJob in the pump).
 - Main risk for testing: the Data-variant setVertexMap assumes 0-based raw indices. Garbled grass, trees or NPCs would point there.
 - Syntax checked with lovec loadstring (scratchpad harness). The user does the in-game testing.
+
+## 2026-10-28 — Terrarium per-draw pass (uncommitted, untested)
+- Voxel3D.lua shader: a "rooted grass" encoding. VertexWater < -0.5 means the tuft root is at -(VertexWater) - 4097, and `ly` (height above the root) replaces the raw vertex_position.y in the grass bend and crush math. isWaterHeight is false for rooted vertices.
+- Grass3D.meshFromInstancesLod(instances, level, rooted) and Grass3D.canRoot(): FFI-only, stamps the real ground Y. Gen4Grass now builds ONE rooted mesh per chunk (was one per terrace), skips chunks outside the view (scene.sphereVisible), and draws runs of meshes that share a model with a plain love.graphics.draw after one Voxel3D.draw.
+- Gen4Trees.draw: one cached translate matrix per land (was a new one per bucket per frame).
+- Profiling: Gen4Bridge.profile / Bridge.passStats (draws + ms per effect pass), shown by PerfOverlay as "passes/frame: name Nd X.Xms" (top 5, 5 s average) while the overlay is open.

@@ -163,10 +163,12 @@ local function buildChunk(Grass3D, scene, map, kx, ky, ox, oz, lod)
   local C = Grass.CHUNK
   local ox8, oz8 = (ox or 0) / 8, (oz or 0) / 8
   local order, buckets = {}, {}
+  local sumY, nY = 0, 0
   for cy = ky * C, ky * C + C - 1 do
     for cx = kx * C, kx * C + C - 1 do
       if isTallGrass(map, cx, cy) then
         local y = math.floor((scene.groundY(cx * 16 + 8, cy * 16 + 8) or 0) + 0.5)
+        sumY, nY = sumY + y, nY + 1
         local bucket = buckets[y]
         if not bucket then bucket = {}; buckets[y] = bucket; order[#order + 1] = y end
         -- the four 8 px tiles of this cell, each planted the way the voxel
@@ -186,6 +188,19 @@ local function buildChunk(Grass3D, scene, map, kx, ky, ox, oz, lod)
     end
   end
   local out = {}
+  -- one rooted mesh for the whole chunk (every terrace in one draw)
+  if Grass3D.canRoot and Grass3D.canRoot() and #order > 0 then
+    local all = {}
+    for _, y in ipairs(order) do
+      local bucket = buckets[y]
+      for i = 1, #bucket do all[#all + 1] = bucket[i] end
+    end
+    local mesh = Grass3D.meshFromInstancesLod(all, lod or 1, true)
+    if mesh then
+      return { buckets = { { mesh = mesh, y = 0, midY = sumY / nY } }, lod = lod or 1,
+               lx = (kx + 0.5) * C * 16, lz = (ky + 0.5) * C * 16 }
+    end
+  end
   for _, y in ipairs(order) do
     local mesh
     if Grass3D.meshFromInstancesLod then
@@ -193,9 +208,9 @@ local function buildChunk(Grass3D, scene, map, kx, ky, ox, oz, lod)
     else
       mesh = Grass3D.meshFromInstances(buckets[y])
     end
-    if mesh then out[#out + 1] = { mesh = mesh, y = y } end
+    if mesh then out[#out + 1] = { mesh = mesh, y = y, midY = y } end
   end
-  return { buckets = out, lod = lod or 1 }
+  return { buckets = out, lod = lod or 1, lx = (kx + 0.5) * C * 16, lz = (ky + 0.5) * C * 16 }
 end
 
 local function releaseChunk(chunk)
@@ -396,7 +411,12 @@ function Grass.draw(scene)
     local list = {}
     for i = 1, #want do
       local chunk = chunks[want[i][4]]
-      if chunk then for _, b in ipairs(chunk.buckets) do list[#list + 1] = b end end
+      if chunk then
+        for _, b in ipairs(chunk.buckets) do
+          b.lx, b.lz = chunk.lx, chunk.lz
+          list[#list + 1] = b
+        end
+      end
     end
     win.list, win.dirty = list, false
   end
@@ -407,15 +427,33 @@ function Grass.draw(scene)
   -- these meshes are not on the voxel grid and carry no window art
   Voxel3D.seams(false)
   Voxel3D.glass(false)
+  -- Consecutive meshes under the same model (every rooted chunk built under
+  -- this crop) share ONE Voxel3D.draw's uniforms: the rest are plain draws.
+  -- Their texture was set when they were built.
+  local lx, ly, lz, lastOk = nil, nil, nil, false
+  local gdraw = love.graphics.draw
+  -- chunks wholly outside the view cone are skipped (a chunk is 64 units
+  -- across; the radius covers its half-diagonal and a tuft's height)
+  local visible = scene.sphereVisible
+  local R = Grass.CHUNK * 16 * 0.75 + 16
   for i = 1, #list do
     local b = list[i]
     local cox, coz = b.cox or ox, b.coz or oz
+    if visible and b.lx and not visible(b.lx + cox, (b.midY or 0) + 6, b.lz + coz, R) then
+      goto continue
+    end
     local m = b.m
     if not m or b.mox ~= cox or b.moz ~= coz then
       m = Mat4.translate(cox, b.y, coz)          -- once per bucket, not per frame
       b.m, b.mox, b.moz = m, cox, coz
     end
-    Voxel3D.draw(b.mesh, tex, m, 0, nil, sway)
+    if lastOk and cox == lx and b.y == ly and coz == lz then
+      gdraw(b.mesh)
+    else
+      lastOk = pcall(Voxel3D.draw, b.mesh, tex, m, 0, nil, sway)
+      lx, ly, lz = cox, b.y, coz
+    end
+    ::continue::
   end
   Voxel3D.grassH, Voxel3D.grassLoad, Voxel3D.crush = nil, nil, nil
   Voxel3D.seams(true)

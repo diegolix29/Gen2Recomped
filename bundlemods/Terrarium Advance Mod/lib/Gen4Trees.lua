@@ -1753,9 +1753,16 @@ function GT.draw(scene)
   for _, item in ipairs(GT.list) do
     if (not visible) or visible(item.x, 0, item.z, radius) then
       drawn = drawn + 1
+      -- one matrix per land, kept on the item (was a new one per bucket per frame)
+      local yo = GT.Y_OFFSET or 0
+      local m = item.m
+      if not m or item.mx ~= item.x or item.my ~= yo or item.mz ~= item.z then
+        m = Mat4.translate(item.x, yo, item.z)
+        item.m, item.mx, item.my, item.mz = m, item.x, yo, item.z
+      end
       for _, b in ipairs(item.entry.buckets) do
         local mesh = (northLit and b.meshN) or b.mesh
-        Voxel3D.draw(mesh, b.tex, Mat4.translate(item.x, GT.Y_OFFSET or 0, item.z), 0, nil, 0, false)
+        Voxel3D.draw(mesh, b.tex, m, 0, nil, 0, false)
       end
     end
   end

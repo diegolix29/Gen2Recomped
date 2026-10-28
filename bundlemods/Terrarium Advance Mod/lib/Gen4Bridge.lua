@@ -258,6 +258,10 @@ local function buildScene(ground, view, vw, vh)
   return scene
 end
 
+Bridge.profile = false
+Bridge.passStats = {}
+local profileStats = {}
+
 local function runScene(ground, view, vw, vh, order, effects, tag)
   local vp = view:matrix(vw, vh)          -- Gen4's world->clip, Y already flipped
   local fx, fy, fz = view:forward()
@@ -308,12 +312,26 @@ local function runScene(ground, view, vw, vh, order, effects, tag)
   end
   local scene = buildScene(ground, view, vw, vh)
   local Sun = sun()
+  -- PROFILE (set by the PerfOverlay while it shows): draw calls and ms per pass,
+  -- accumulated into Bridge.passStats[name] = { draws, ms } for it to read.
+  local profile = Bridge.profile and love.graphics.getStats
   for _, name in ipairs(order) do
     if not Bridge.disabled[name] then
       -- the meshes these effects draw are recorded as shadow casters (the sun
       -- pass at the top of next frame's drawFree replays them)
       if Sun and tag == "fx:" then Sun.capturing = Sun.CASTING[name] == true end
+      local d0, t0
+      if profile then
+        d0 = love.graphics.getStats(profileStats).drawcalls
+        t0 = love.timer.getTime()
+      end
       local ok, err = pcall(effects[name], scene)
+      if profile then
+        local st = Bridge.passStats[name]
+        if not st then st = { 0, 0 }; Bridge.passStats[name] = st end
+        st[1] = st[1] + love.graphics.getStats(profileStats).drawcalls - d0
+        st[2] = st[2] + (love.timer.getTime() - t0) * 1000
+      end
       if not ok then
         report(tag .. name, "effect '%s' failed: %s", name, tostring(err))
         Bridge.disabled[name] = true      -- don't fail every frame

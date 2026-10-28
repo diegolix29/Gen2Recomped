@@ -253,6 +253,13 @@ local SHADER = [[
     // for the same reason: a varying left over from the previous draw is
     // a snowed hedge on a bare wall.
     vGrassCap = 0.0;
+    // ROOTED GRASS (Gen4Grass): a mesh holding tufts at several ground
+    // heights stamps each vertex at its real height and carries the tuft's
+    // root in VertexWater as -(root + 4097). Water is +1 and everything else
+    // 0, so a negative value means nothing else. `ly` is the height above the
+    // tuft's own root, which is what every bend below is measured by.
+    float grassRoot = VertexWater < -0.5 ? (-VertexWater - 4097.0) : 0.0;
+    float ly = vertex_position.y - grassRoot;
     if (sway > 0.0) {
       // Height fraction. `grassH` is what the mesh in front of the shader
       // actually stands (the bake's own height for a 3D tuft, the slab's
@@ -261,7 +268,7 @@ local SHADER = [[
       // its bend curve stretched or clipped, which is why a tall tuft went
       // stiff at the top and a short one bent from the root.
       float H = max(grassH, 1.0);
-      float hN = clamp(vertex_position.y / H, 0.0, 1.0);
+      float hN = clamp(ly / H, 0.0, 1.0);
       float bend = hN * hN;
 
       // ------- which tuft this is
@@ -341,7 +348,7 @@ local SHADER = [[
       // dot(lean, lean) IS L squared, so the square root this used to take
       // was computed only to be squared again on the next line. Same
       // number, one fewer sqrt per vertex of every grass mesh in the world.
-      w.y -= min(dot(lean, lean) / (2.0 * H), vertex_position.y * 0.5);
+      w.y -= min(dot(lean, lean) / (2.0 * H), ly * 0.5);
       // tip bob: a little vertical give under the same gust (tier 2)
       if (grassDetail >= 2.0) {
         w.y += amp * bend * 0.07 * sin(p * 1.85 + 0.6);
@@ -405,7 +412,7 @@ local SHADER = [[
                   + windDir * (t * bend * H * 0.16);
             // and DOWN with it: this is the difference between a blade that
             // has been folded over and one that has been made shorter
-            w.y -= t * bend * vertex_position.y * 0.78;
+            w.y -= t * bend * ly * 0.78;
             // A NEGATIVE strength is Grass3D's spring-back overshoot -- the
             // blade passing upright on its way back -- so the flatten runs
             // the other way and the tuft stands a shade proud for a moment.
@@ -470,9 +477,9 @@ local SHADER = [[
     // of its own -- a water-type Pokemon's stadium rig -- opts back into
     // the open test, because unlike terrain it never shares a draw call
     // with anything that isn't meant to be wet.
-    bool isWaterHeight = (waterBody > 0.5)
+    bool isWaterHeight = (VertexWater < -0.5) ? false : ((waterBody > 0.5)
       ? (vertex_position.y < 0.05)
-      : (abs(vertex_position.y - waterLevel) < 0.5);
+      : (abs(vertex_position.y - waterLevel) < 0.5));
     // Use VertexWater attribute to properly identify water tiles instead of
     // relying on Y-coordinate threshold which incorrectly affects underground areas.
     vWaterSurf = VertexWater > 0.5 ? 1.0 : 0.0;
