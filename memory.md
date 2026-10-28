@@ -38,3 +38,9 @@
   - Gen4Hide.filtered builds its cover key once per drawFree (Hide.frameKey).
   - Gen4Hide times each prepare as "prepare <name>" and Gen4Sky times "sky+pre passes"; both deposit into the PerfOverlay hitch line.
   - Gen4Bridge.run has a GC pacer: up to GC_BUDGET (1.5 ms desktop / 2 ms phone) of collectgarbage("step", 0) per frame, then it rests until the heap grows to GC_REST x 1.25. It shows as "fx gc pacer".
+
+## 2026-10-28 — Model sharing across route changes (uncommitted, untested)
+- Finding: every map is its own Gen4Ground, and self.liveModels (land meshes) and self.buildings / self.fieldModels were per ground. The first step over a route border therefore re-decoded and rebuilt every land and building already in view.
+- src/render/Gen4Ground.lua: Gen4Ground:sharedStore() shares the live models, buildings and field models between grounds keyed by terrain, set, buildingSet, fldeffSet, arealight, lightMember, lightBand and outdoors. A fogged map or the Distortion World keeps per-ground caches. Up to SHARED_STORES (3) stores are kept, evicting the least recently used. dropLitModels lets go of a shared store without freeing it. The LRU for shared stores is LIVE_CACHE_SHARED (48).
+- Engine change, so it is live through Play-Windows.bat; the packaged exe needs a rebuild.
+- Terrarium effects (trees, water, fence, rocks, flowers, bump, lamps) were already keyed by the shared land record, so they survive map changes. Gen4Glass was per ground; it now shares one cache per terrain unless the map has def.gen4ModelEdits.

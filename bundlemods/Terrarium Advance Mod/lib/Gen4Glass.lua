@@ -614,8 +614,13 @@ end
 local function prepare(ground, view)
   local grid, px, half = ground.grid, ground.chunkPx, ground.half
   if not (grid and px and half and ground.terrain) then window = {} return end
-  local cache = perGround[ground]
-  if not cache then cache = { lands = {}, resident = 0 } perGround[ground] = cache end
+  -- Only a map that edits its chunks' props needs glass of its own; every
+  -- other map shares one cache per terrain set, so stepping over a route
+  -- border does not rebuild the glass of lands already in view.
+  local edits = ground.def and ground.def.gen4ModelEdits
+  local owner = (edits and next(edits) ~= nil) and ground or ground.terrain
+  local cache = perGround[owner]
+  if not cache then cache = { lands = {}, resident = 0 } perGround[owner] = cache end
 
   local camCx, camCy = math.floor(view.x / px), math.floor(view.z / px)
   local qx, qy = math.floor(view.x * 4 / px), math.floor(view.z * 4 / px)

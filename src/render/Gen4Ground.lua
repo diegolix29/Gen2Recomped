@@ -689,6 +689,15 @@ function Gen4Ground:dropLitModels()
   self:dropBakes()
   self.buildings = {}
   self.depthModels = {}
+  -- A SHARED STORE is not this ground's to free: another map may still be
+  -- drawing it. Let go of it (the next draw finds the store for the new light)
+  -- and leave the freeing to the store limit in `sharedStore`.
+  if self.sharedStoreRef then
+    self.sharedStoreRef = nil
+    self.liveModels, self.liveOrder = {}, {}
+    return
+  end
+  self.sharedStoreRef = nil
   -- ...and the live meshes, which carry the tint in their vertex colours
   -- exactly as the baked ones do.
   for _, held in pairs(self.liveModels or {}) do
@@ -1107,12 +1116,69 @@ end
 -- which is every caller that existed before signposts; "fldeff" is the object
 -- models -- signs, mailboxes -- and it is a DIFFERENT FILE, so the same number
 -- means a different model in each and the caches must not be shared either.
+-- ---------------------------------------------------------------------------
+-- MODELS SHARED BETWEEN NEIGHBOURING MAPS
+-- ---------------------------------------------------------------------------
+--
+-- Every map is its own Gen4Ground, and a route and the town beside it draw the
+-- SAME lands and the same houses (the window is the whole matrix around the
+-- eye, not the map). With the caches on `self`, the first step over a border
+-- decoded and built every land and building in view a second time -- a
+-- visible hitch on every route change. A built model depends only on what the
+-- key below names: the shared terrain / texture / building / field-model sets,
+-- the area light and its band (baked into the vertex colours), and whether
+-- the map is outdoors. Grounds that agree on all of it share one store; a
+-- fogged map or the Distortion World keeps its own, as before.
+Gen4Ground.SHARE_MODELS = true
+Gen4Ground.SHARED_STORES = 3     -- light/set combinations kept before the oldest is freed
+local sharedStores, sharedClock = {}, 0
+
+local function releaseStore(store)
+  for _, held in pairs(store.models) do
+    if type(held) == "table" and held.release then pcall(held.release, held) end
+  end
+  store.models, store.order = {}, {}
+end
+
+function Gen4Ground:sharedStore()
+  sharedClock = sharedClock + 1
+  local store = self.sharedStoreRef
+  if store then store.used = sharedClock; return store end
+  if self.sharedStoreRef == false then return nil end
+  if not Gen4Ground.SHARE_MODELS or self.fog or (self.def and self.def.gen4DistWorld) then
+    self.sharedStoreRef = false
+    return nil
+  end
+  local key = table.concat({ tostring(self.terrain), tostring(self.set),
+    tostring(self.buildingSet), tostring(self.fldeffSet), tostring(self.arealight),
+    tostring(self.lightMember), tostring(self.lightBand), tostring(self.outdoors) }, "|")
+  store = sharedStores[key]
+  if not store then
+    store = { key = key, models = {}, order = {}, buildings = {}, fieldModels = {} }
+    sharedStores[key] = store
+    -- past the limit, free the store no ground has touched for longest
+    local count, oldest = 0, nil
+    for _, st in pairs(sharedStores) do
+      count = count + 1
+      if st ~= store and (not oldest or (st.used or 0) < (oldest.used or 0)) then oldest = st end
+    end
+    if count > (Gen4Ground.SHARED_STORES or 3) and oldest then
+      releaseStore(oldest)
+      sharedStores[oldest.key] = nil
+    end
+  end
+  store.used = sharedClock
+  self.sharedStoreRef = store
+  return store
+end
+
 function Gen4Ground:building(index, archive)
   local field = archive == "fldeff"
-  local cache = self.buildings
+  local shared = self:sharedStore()
+  local cache = shared and shared.buildings or self.buildings
   if field then
     self.fieldModels = self.fieldModels or {}
-    cache = self.fieldModels
+    cache = shared and shared.fieldModels or self.fieldModels
   end
   if cache[index] ~= nil then return cache[index] or nil end
   local packed
@@ -1735,6 +1801,10 @@ Gen4Ground.LIVE_CACHE = 32
 -- `bake` called `modelFor` once and dropped the result, which was right when a
 -- chunk was meshed once in its life.  The live pass needs it every frame.
 function Gen4Ground:liveModel(land)
+  local shared = self:sharedStore()
+  if shared then
+    self.liveModels, self.liveOrder = shared.models, shared.order
+  end
   self.liveModels = self.liveModels or {}
   self.liveOrder = self.liveOrder or {}
   local hit = self.liveModels[land]
@@ -1745,7 +1815,9 @@ function Gen4Ground:liveModel(land)
   self.liveOrder[#self.liveOrder + 1] = land
   -- Oldest first, and only the ones that cost something to hold: a `false`
   -- entry is a chunk with no geometry and remembering that is the point of it.
-  while #self.liveOrder > Gen4Ground.LIVE_CACHE do
+  -- a shared store holds the lands of every map around it: a little more room
+  local cap = shared and (Gen4Ground.LIVE_CACHE_SHARED or 48) or Gen4Ground.LIVE_CACHE
+  while #self.liveOrder > cap do
     local oldest = table.remove(self.liveOrder, 1)
     local held = self.liveModels[oldest]
     if type(held) == "table" and held.release then pcall(held.release, held) end
