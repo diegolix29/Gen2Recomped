@@ -329,8 +329,12 @@ local function runScene(ground, view, vw, vh, order, effects, tag)
       if profile then
         local st = Bridge.passStats[name]
         if not st then st = { 0, 0 }; Bridge.passStats[name] = st end
+        local dt = love.timer.getTime() - t0
         st[1] = st[1] + love.graphics.getStats(profileStats).drawcalls - d0
-        st[2] = st[2] + (love.timer.getTime() - t0) * 1000
+        st[2] = st[2] + dt * 1000
+        -- per-frame too, so a hitch names the pass (PerfOverlay hitch capture)
+        local hook = Bridge.passHook
+        if hook then hook(name, dt) end
       end
       if not ok then
         report(tag .. name, "effect '%s' failed: %s", name, tostring(err))

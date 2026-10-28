@@ -19,3 +19,12 @@
 - Grass3D.meshFromInstancesLod(instances, level, rooted) and Grass3D.canRoot(): FFI-only, stamps the real ground Y. Gen4Grass now builds ONE rooted mesh per chunk (was one per terrace), skips chunks outside the view (scene.sphereVisible), and draws runs of meshes that share a model with a plain love.graphics.draw after one Voxel3D.draw.
 - Gen4Trees.draw: one cached translate matrix per land (was a new one per bucket per frame).
 - Profiling: Gen4Bridge.profile / Bridge.passStats (draws + ms per effect pass), shown by PerfOverlay as "passes/frame: name Nd X.Xms" (top 5, 5 s average) while the overlay is open.
+
+## 2026-10-28 — Hitch capture (uncommitted, untested)
+- Verified: the NPC disk cache works. %APPDATA%/LOVE/Gen2Recomp/terrarium_cache/npc3d held 53 bodies (9.8 MB). Gen 5 uses the same path (Bridge.isNativeWorld covers gen 4 and 5; Gen4WorldHost calls Npc.drawPose/pump).
+- The user's desktop shot after the draw pass: 58 fps, 11.5 ms draw, 406 draws, pass costs all under 0.5 ms, builds peak 11 ms. Yet 41 frames in 10 s went over 50 ms, so the stutters are NOT the budgeted builds.
+- Gen4WorldHost collect() (a full GC) runs only at fight start/end on mobile, not while walking.
+- src/core/FrameProfile.lua: added FrameProfile.setHitchCapture(on, threshold) and lastHitch / hitches. Sections are summed per frame and the top 5 of any frame over the threshold are kept, plus the heap change (a negative value means a GC sweep). The window report is unchanged.
+- Gen4Bridge also deposits "fx <pass>" times into FrameProfile.add. PerfOverlay turns capture on while it shows and prints "last hitch Ns ago: X ms" and "in: section ms ...".
+- Next step: read the user's hitch line to find the real stutter source (engine land/model loads, GC, or a specific pass).
+- Correction (same day): the user plays the packaged Gen2Recomped.exe. It bundles its own src/ (its FrameProfile.lua is dated 2026-09-17), so engine src/ edits do NOT reach it until the exe is rebuilt, while mod edits do. The hitch capture now lives in the mod's PerfOverlay: it wraps FrameProfile.section/add, takes pass times through Bridge.passHook, and times "g4 <fn>" for the Gen4Ground calls (modelFor, building, decalModelFor, bdhcFor, permBlockFor, objectsFor, runtimePropsFor, animationsFor, bake, canopyFor, bakeAnimated, liveModel, canvasFor, drawSky, drawFree, drawCanopy). The src/core/FrameProfile.lua hitch code stays and is harmless.

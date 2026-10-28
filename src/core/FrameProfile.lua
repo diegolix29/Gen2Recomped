@@ -46,6 +46,31 @@ if love and love.timer and love.timer.getTime then
   clock = love.timer.getTime
 end
 
+-- HITCH CAPTURE.  The window report above averages a stutter away: one
+-- 120 ms frame in 120 is a 1 ms line.  While capture is on (the Terrarium
+-- PerfOverlay turns it on while it shows) every section is also summed per
+-- FRAME, and a frame longer than the threshold is kept as
+-- FrameProfile.lastHitch = { t, ms, heapMB, parts = { {name, ms}, ... } }.
+-- No log output; `on` (the window report) is independent of it.
+local capture = false
+local hitchAt = 0.05
+local cur = {}
+local lastFrameAt = nil
+local lastHeap = nil
+FrameProfile.lastHitch = nil
+FrameProfile.hitches = 0
+
+function FrameProfile.setHitchCapture(want, thresholdSeconds)
+  capture = want and true or false
+  hitchAt = tonumber(thresholdSeconds) or hitchAt
+  cur, lastFrameAt, lastHeap = {}, nil, nil
+  return capture
+end
+
+local function deposit(name, dt)
+  cur[name] = (cur[name] or 0) + dt
+end
+
 function FrameProfile.enabled() return on end
 
 function FrameProfile.reset()
@@ -82,10 +107,12 @@ end
 local function noop() end
 
 function FrameProfile.section(name)
-  if not on then return noop end
+  if not (on or capture) then return noop end
   local t0 = clock()
   return function()
     local dt = clock() - t0
+    if capture then deposit(name, dt) end
+    if not on then return end
     if total[name] == nil then
       total[name] = 0
       calls[name] = 0
@@ -109,6 +136,7 @@ function FrameProfile.now()
 end
 
 function FrameProfile.add(name, seconds)
+  if capture and seconds and seconds > 0 then deposit(name, seconds) end
   if not on then return end
   if not (seconds and seconds > 0) then seconds = seconds or 0 end
   if total[name] == nil then
@@ -150,6 +178,26 @@ end
 -- Called once per rendered frame, at the end.  Reports and starts over when
 -- the window is full.
 function FrameProfile.frame()
+  if capture then
+    local now = clock()
+    local heap = collectgarbage("count") / 1024
+    if lastFrameAt and now - lastFrameAt > hitchAt then
+      local parts = {}
+      for name, dt in pairs(cur) do
+        -- the whole-frame brackets contain everything else: not a finding
+        if not name:find("whole", 1, true) then
+          parts[#parts + 1] = { (name:gsub("^%s+", "")), dt * 1000 }
+        end
+      end
+      table.sort(parts, function(a, b) return a[2] > b[2] end)
+      for i = #parts, 6, -1 do parts[i] = nil end
+      FrameProfile.lastHitch = { t = now, ms = (now - lastFrameAt) * 1000,
+                                 heapMB = heap - (lastHeap or heap), parts = parts }
+      FrameProfile.hitches = FrameProfile.hitches + 1
+    end
+    lastFrameAt, lastHeap = now, heap
+    for k in pairs(cur) do cur[k] = nil end
+  end
   if not on then return end
   frames = frames + 1
   if frames < WINDOW then return end

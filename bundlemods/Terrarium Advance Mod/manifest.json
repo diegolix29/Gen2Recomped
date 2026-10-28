@@ -33,6 +33,7 @@
   ],
   "affects_link": false,
   "description": "A full 3D diorama overworld for Gen 1-3 (extruded terrain, depth-buffered occlusion, tilt-shift) and a Terrarium effects layer on Platinum's native NSBMD world -- 3D grass, wind, weather, and Colosseum/Stadium battles staged on the engine camera rather than a voxel mesh. Includes integrated Colosseum Overhaul functionality.",
+  "support": "https://buymeacoffee.com/diegolix29",
   "assets_transforms": "transform_birds.lua",
   "required_imports": [
     {

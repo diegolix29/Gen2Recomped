@@ -157,6 +157,69 @@ end
 -- Engine model loads (Gen4Ground.modelFor runs only on a cache miss; building
 -- is a cache lookup that decodes on first use, so only slow calls count).
 local engineHooked = false
+-- HITCH CAPTURE, in the mod. The packaged exe carries its own (older) copy of
+-- src/core/FrameProfile, so this does not rely on the engine having one:
+-- FrameProfile.section / .add are wrapped (the engine calls them through the
+-- module table) and every section, Gen 4 pass and engine ground call is
+-- summed per frame while the overlay shows. A frame longer than HITCH_MS is
+-- kept as P.lastHitch = { t, ms, heapMB, parts = { {name, ms}, ... } }.
+P.HITCH_MS = 50
+P.lastHitch, P.hitches = nil, 0
+local hcur, hLastAt, hLastHeap = {}, nil, nil
+local function hdeposit(name, dt)
+  hcur[name] = (hcur[name] or 0) + dt
+end
+P.deposit = hdeposit
+
+local fpHooked = false
+local function hookFrameProfile()
+  if fpHooked then return end
+  local okF, FP = pcall(require, "src.core.FrameProfile")
+  if not (okF and type(FP) == "table") then return end
+  fpHooked = true
+  local section, add = FP.section, FP.add
+  if type(section) == "function" then
+    FP.section = function(name)
+      local inner = section(name)
+      if not P.visible then return inner end
+      local t0 = clock()
+      return function()
+        hdeposit(name, clock() - t0)
+        return inner()
+      end
+    end
+  end
+  if type(add) == "function" then
+    FP.add = function(name, seconds)
+      if P.visible and seconds and seconds > 0 then hdeposit(name, seconds) end
+      return add(name, seconds)
+    end
+  end
+end
+
+local function hitchFrame(now)
+  local heap = collectgarbage("count") / 1024
+  if hLastAt and (now - hLastAt) * 1000 > P.HITCH_MS then
+    local parts, upd, drw = {}, nil, nil
+    for name, dt in pairs(hcur) do
+      -- the whole-frame brackets contain everything else: kept apart, they
+      -- say which half of the frame the time went to
+      if name:find("update: whole", 1, true) then upd = dt * 1000
+      elseif name:find("draw: whole", 1, true) then drw = dt * 1000
+      elseif not name:find("whole", 1, true) then
+        parts[#parts + 1] = { (name:gsub("^%s+", "")), dt * 1000 }
+      end
+    end
+    table.sort(parts, function(a, b) return a[2] > b[2] end)
+    for i = #parts, 6, -1 do parts[i] = nil end
+    P.lastHitch = { t = now, ms = (now - hLastAt) * 1000, update = upd, draw = drw,
+                    heapMB = heap - (hLastHeap or heap), parts = parts }
+    P.hitches = P.hitches + 1
+  end
+  hLastAt, hLastHeap = now, heap
+  for k in pairs(hcur) do hcur[k] = nil end
+end
+
 local function hookEngine()
   if engineHooked then return true end
   local Ground = package.loaded["src.render.Gen4Ground"]
@@ -169,13 +232,22 @@ local function hookEngine()
       if not P.visible then return inner(self, ...) end
       local t0 = clock()
       local a, b, c = inner(self, ...)
-      local ms = (clock() - t0) * 1000
-      if ms >= minMs then frameEngMs, frameEngN = frameEngMs + ms, frameEngN + 1 end
+      local dt = clock() - t0
+      local ms = dt * 1000
+      if minMs and ms >= minMs then frameEngMs, frameEngN = frameEngMs + ms, frameEngN + 1 end
+      hdeposit("g4 " .. name, dt)
       return a, b, c
     end
   end
   timed("modelFor", 0)
   timed("building", 0.3)
+  -- hitch attribution only (not counted as model loads)
+  for _, name in ipairs({ "decalModelFor", "bdhcFor", "permBlockFor", "objectsFor",
+                          "runtimePropsFor", "animationsFor", "bake", "canopyFor",
+                          "bakeAnimated", "liveModel", "canvasFor", "drawSky",
+                          "drawFree", "drawCanopy" }) do
+    timed(name, nil)
+  end
   return true
 end
 
@@ -267,6 +339,24 @@ local function lines()
   if shown.engN > 0 or shown.engMs > 0 then
     out[#out + 1] = string.format("engine models: %.1f loads/s  %.0f ms/s", shown.engN, shown.engMs)
   end
+  do
+    local h = P.lastHitch
+    if h then
+      local parts = {}
+      for i = 1, math.min(4, #h.parts) do
+        parts[#parts + 1] = string.format("%s %.0f", h.parts[i][1], h.parts[i][2])
+      end
+      local heap = ""
+      if h.heapMB and h.heapMB < -2 then heap = string.format("  heap %.0f MB (GC)", h.heapMB) end
+      local split = ""
+      if h.update or h.draw then
+        split = string.format("  [update %.0f  draw %.0f]", h.update or 0, h.draw or 0)
+      end
+      out[#out + 1] = string.format("last hitch %.0fs ago: %.0f ms (%d so far)%s%s",
+        clock() - h.t, h.ms, P.hitches or 0, split, heap)
+      out[#out + 1] = "  in: " .. (#parts > 0 and table.concat(parts, "  ") or "(nothing measured: GPU / present)")
+    end
+  end
   if #passShown > 0 then
     local parts = {}
     for i = 1, math.min(5, #passShown) do
@@ -326,9 +416,13 @@ function P.frame(drawSeconds)
     if on then hookBudget(); hookEngine() end
     local B = bridge()
     if B then B.profile = on; B.passStats = {} end
+    if on then hookFrameProfile() end
+    if B then B.passHook = on and function(name, dt) hdeposit("fx " .. name, dt) end or nil end
+    hLastAt = nil
   end
   if not on then return end
   passFrames = passFrames + 1
+  hitchFrame(clock())
   local dt = (love.timer and love.timer.getDelta) and love.timer.getDelta() or 0
   push(dt, (drawSeconds or 0) * 1000)
   local g = love.graphics
