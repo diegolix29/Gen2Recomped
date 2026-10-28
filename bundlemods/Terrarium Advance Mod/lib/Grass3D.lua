@@ -395,6 +395,212 @@ function Grass3D.meshFromInstances(instances)
   return mesh
 end
 
+-- ------------------------------------------------------- LOD + fast stamp --
+--
+-- WHY THIS EXISTS
+--
+-- The bake is 1719 vertices / 1800 triangles PER TUFT. A Gen 4 grass chunk
+-- (4x4 cells, four tufts a cell) is 64 tufts: ~110k vertices, each one a fresh
+-- Lua table handed to newMesh. That was the 150-300 ms single grass build on
+-- the PerfOverlay, and the meadow out to the horizon was millions of vertices
+-- every frame.
+--
+-- LOD: the bake is 170 separate blade clumps. A coarser level keeps every
+-- LOD_KEEP[level]-th clump, picked round the tuft by angle so the thinned tuft
+-- still covers its whole footprint. The shape of every kept blade, its UVs and
+-- its raw Y (what the wind shader bends by) are the bake's own.
+--
+-- FAST STAMP: vertices are written straight into a ByteData through the FFI
+-- and uploaded with setVertices / setVertexMap(Data). No per-vertex tables.
+-- Without the FFI (or ByteData pointers) it falls back to meshFromInstances.
+
+Grass3D.LOD_KEEP = { 1, 3, 10, 24 }   -- level -> keep one clump in N
+
+local lods = {}                         -- level -> flattened template, or false
+
+local okFfi, ffi = pcall(require, "ffi")
+if not okFfi or type(ffi) ~= "table" or not ffi.cast then ffi = nil end
+
+local function thinTemplate(t, keepEvery)
+  local verts, idx = t.verts, t.indices
+  local nv = #verts
+  if keepEvery <= 1 then return verts, idx end
+  local parent = {}
+  for i = 1, nv do parent[i] = i end
+  local function find(x)
+    while parent[x] ~= x do
+      parent[x] = parent[parent[x]]
+      x = parent[x]
+    end
+    return x
+  end
+  for i = 1, #idx - 2, 3 do
+    local a, b = find(idx[i]), find(idx[i + 1])
+    parent[a] = b
+    local c = find(idx[i + 2])
+    parent[c] = find(b)
+  end
+  local comps, byRoot = {}, {}
+  for i = 1, nv do
+    local r = find(i)
+    local c = byRoot[r]
+    if not c then
+      c = { root = r, sx = 0, sz = 0, n = 0 }
+      byRoot[r] = c
+      comps[#comps + 1] = c
+    end
+    c.n = c.n + 1
+    c.sx = c.sx + verts[i][1]
+    c.sz = c.sz + verts[i][3]
+  end
+  for _, c in ipairs(comps) do c.a = math.atan2(c.sz / c.n, c.sx / c.n) end
+  table.sort(comps, function(p, q) return p.a < q.a end)
+  local keep = {}
+  for k, c in ipairs(comps) do
+    if (k - 1) % keepEvery == 0 then keep[c.root] = true end
+  end
+  local remap, outV, outI = {}, {}, {}
+  for i = 1, nv do
+    if keep[find(i)] then
+      outV[#outV + 1] = verts[i]
+      remap[i] = #outV
+    end
+  end
+  for i = 1, #idx - 2, 3 do
+    local a = remap[idx[i]]
+    if a then
+      outI[#outI + 1] = a
+      outI[#outI + 1] = remap[idx[i + 1]]
+      outI[#outI + 1] = remap[idx[i + 2]]
+    end
+  end
+  return outV, outI
+end
+
+-- The template at `level` (1 = the whole bake), flattened into FFI arrays
+-- when the FFI is there: { nv, ni, x, y, z, u, v, sh, idx (0-based) }.
+local function lodTemplate(level)
+  level = level or 1
+  local cached = lods[level]
+  if cached ~= nil then return cached or nil end
+  local t = loadTemplate()
+  if not t then lods[level] = false; return nil end
+  local tv, ti = thinTemplate(t, Grass3D.LOD_KEEP[level] or 1)
+  local L = { nv = #tv, ni = #ti, verts = tv, indices = ti }
+  if ffi then
+    local nv, ni = #tv, #ti
+    L.x, L.y, L.z = ffi.new("float[?]", nv), ffi.new("float[?]", nv), ffi.new("float[?]", nv)
+    L.u, L.v, L.sh = ffi.new("float[?]", nv), ffi.new("float[?]", nv), ffi.new("float[?]", nv)
+    L.idx = ffi.new("uint32_t[?]", ni)
+    for i = 1, nv do
+      local v = tv[i]
+      local shade = v[6] or 0.8
+      if shade < 0.05 then shade = 0.05 end
+      L.x[i - 1], L.y[i - 1], L.z[i - 1] = v[1], v[2], v[3]
+      L.u[i - 1], L.v[i - 1], L.sh[i - 1] = v[4], v[5], shade
+    end
+    for i = 1, ni do L.idx[i - 1] = ti[i] - 1 end
+  end
+  lods[level] = L
+  return L
+end
+
+function Grass3D.lodStats(level)
+  local L = lodTemplate(level)
+  return L and L.nv or 0, L and L.ni or 0
+end
+
+local FLOATS = 7            -- Voxel3D.FORMAT: position 3, uv 2, shade 1, water 1
+
+local function ptrOf(data, ctype)
+  if data.getFFIPointer then
+    local ok, p = pcall(data.getFFIPointer, data)
+    if ok and p then return ffi.cast(ctype, p) end
+  end
+  if data.getPointer then
+    local ok, p = pcall(data.getPointer, data)
+    if ok and p then return ffi.cast(ctype, p) end
+  end
+  return nil
+end
+
+local fastBroken = false
+
+-- meshFromInstances for grass tufts at a LOD level, through the FFI.
+function Grass3D.meshFromInstancesLod(instances, level)
+  if not instances or #instances == 0 then return nil end
+  local L = lodTemplate(level)
+  if not L then return nil end
+  if not ffi or fastBroken or not (love.data and love.data.newByteData) then
+    if (level or 1) <= 1 then return Grass3D.meshFromInstances(instances) end
+    -- table fallback on the thinned template
+    local verts, indices = {}, {}
+    for i = 1, #instances do
+      local inst = instances[i]
+      stamp(verts, indices, L.verts, L.indices, (inst.wx or 0) + 4, (inst.wz or 0) + 4,
+            inst.yaw or 0, inst.scale or 1, inst.heightScale)
+    end
+    return Voxel3D.newMesh(verts, indices)
+  end
+
+  local n = #instances
+  local nv, ni = L.nv * n, L.ni * n
+  if nv == 0 then return nil end
+  local okV, vdata = pcall(love.data.newByteData, nv * FLOATS * 4)
+  local wide = nv > 65535
+  local okI, idata = pcall(love.data.newByteData, ni * (wide and 4 or 2))
+  if not (okV and okI) then return nil end
+  local out = ptrOf(vdata, "float*")
+  local io = ptrOf(idata, wide and "uint32_t*" or "uint16_t*")
+  if not (out and io) then
+    fastBroken = true
+    return Grass3D.meshFromInstancesLod(instances, level)
+  end
+
+  local tx, ty, tz, tu, tv, tsh, tidx = L.x, L.y, L.z, L.u, L.v, L.sh, L.idx
+  local tnv, tni = L.nv, L.ni
+  local cos, sin = math.cos, math.sin
+  local o, k, base = 0, 0, 0
+  for i = 1, n do
+    local inst = instances[i]
+    local ox, oz = (inst.wx or 0) + 4, (inst.wz or 0) + 4
+    local yaw, scale = inst.yaw or 0, inst.scale or 1
+    local ys = scale * (inst.heightScale or 1)
+    local c, s = cos(yaw), sin(yaw)
+    for j = 0, tnv - 1 do
+      local x, z = tx[j] * scale, tz[j] * scale
+      out[o] = ox + x * c - z * s
+      out[o + 1] = ty[j] * ys
+      out[o + 2] = oz + x * s + z * c
+      out[o + 3] = tu[j]
+      out[o + 4] = tv[j]
+      out[o + 5] = tsh[j]
+      out[o + 6] = 0
+      o = o + FLOATS
+    end
+    for j = 0, tni - 1 do
+      io[k] = tidx[j] + base
+      k = k + 1
+    end
+    base = base + tnv
+  end
+
+  local okM, mesh = pcall(love.graphics.newMesh, Voxel3D.FORMAT, nv, "triangles", "static")
+  if not (okM and mesh) then return nil end
+  local okS = pcall(mesh.setVertices, mesh, vdata)
+  local okX = okS and pcall(mesh.setVertexMap, mesh, idata, wide and "uint32" or "uint16")
+  pcall(vdata.release, vdata)
+  pcall(idata.release, idata)
+  if not okX then
+    pcall(mesh.release, mesh)
+    fastBroken = true
+    return Grass3D.meshFromInstancesLod(instances, level)
+  end
+  local t = loadTexture()
+  if t then pcall(mesh.setTexture, mesh, t) end
+  return mesh
+end
+
 -- Build decorative grass mesh (no effects)
 function Grass3D.decorMeshFromInstances(instances)
   local t

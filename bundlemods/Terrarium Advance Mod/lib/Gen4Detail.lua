@@ -11,8 +11,9 @@
 --
 --   FAST (default)                      FULL (the old behaviour)
 --   trees  4x4-texel blocks, 150k quads/land   2x2 blocks, 450k quads/land
---   grass  within 1024 units of the player     the whole engine window
---          (768 on a phone), every tile        every tile
+--   grass  within 896 units of the player      the whole engine window
+--          (576 on a phone), thinned LOD       every tile, full bake
+--          tufts with distance
 --   people 2x texture atlas, 1 smoothing pass  4x atlas, 2 passes
 --   arena  world at 0.6 size while the camera  full size while moving
 --          moves, full size once it stops
@@ -39,12 +40,21 @@ do
   local ok, name = pcall(function() return love.system.getOS() end)
   MOBILE = ok and (name == "Android" or name == "iOS") or false
 end
-D.GRASS_REACH_FAST = MOBILE and 768 or 1024
+D.GRASS_REACH_FAST = MOBILE and 576 or 896
+
+-- Grass LOD rings on FAST: { world units from the player, Grass3D LOD level }.
+-- Level 1 is the whole 1719-vertex bake, 2/3/4 keep 1 clump in 3/10/24 (see
+-- Grass3D.LOD_KEEP). Past the last ring the last level is used. `sparse` from
+-- that level on plants two tufts a cell instead of four: at that distance the
+-- rows do not read as stripes. A phone never builds the full bake.
+D.GRASS_LODS_FAST = MOBILE
+  and { { 160, 2 }, { 384, 3 }, { math.huge, 4 }, sparseFrom = 3 }
+  or  { { 224, 1 }, { 512, 2 }, { math.huge, 3 }, sparseFrom = 3 }
 
 D.LEVELS = {
   fast = {
     trees = { texStep = 4, maxQuads = 150000 },
-    grass = { reach = D.GRASS_REACH_FAST, tilesPerCell = 4 },
+    grass = { reach = D.GRASS_REACH_FAST, tilesPerCell = 4, lods = D.GRASS_LODS_FAST },
     npc = { texScale = 2, blur = 1 },
     arena = { motionScale = 0.6 },
   },

@@ -531,9 +531,103 @@ local function quad(b, f, x0, y0, z0, dx, dy, dz, u, v, normal)
   Voxel3D.pushQuad(b.map, n)
 end
 
+-- FAST FINISH. The table path below rewrites every vertex table three times
+-- (shade per facing, strip the bookkeeping, copy into upload chunks) and hands
+-- LOVE hundreds of thousands of tables to convert. With the FFI the shaded
+-- vertices are written straight into a ByteData per facing and uploaded with
+-- one setVertices(Data) -- a memcpy. Every bucket is quads in pushQuad order,
+-- so the index buffer is generated once per bucket and shared by both meshes.
+local okFfi, ffi = pcall(require, "ffi")
+if not okFfi or type(ffi) ~= "table" or not ffi.cast then ffi = nil end
+local fastBroken = false
+
+local function dataPtr(data, ctype)
+  for _, name in ipairs({ "getFFIPointer", "getPointer" }) do
+    local f = data[name]
+    if f then
+      local ok, p = pcall(f, data)
+      if ok and p then return ffi.cast(ctype, p) end
+    end
+  end
+  return nil
+end
+
+local function quadIndexData(quads)
+  local count = quads * 4
+  local wide = count > 65535
+  local ok, data = pcall(love.data.newByteData, quads * 6 * (wide and 4 or 2))
+  if not ok then return nil end
+  local p = dataPtr(data, wide and "uint32_t*" or "uint16_t*")
+  if not p then return nil end
+  local k = 0
+  for q = 0, quads - 1 do
+    local b = q * 4
+    p[k], p[k + 1], p[k + 2] = b, b + 1, b + 2
+    p[k + 3], p[k + 4], p[k + 5] = b, b + 2, b + 3
+    k = k + 6
+    if q % 8192 == 0 then checkpoint() end
+  end
+  return data, wide and "uint32" or "uint16"
+end
+
+local function finishBucketFast(b)
+  local verts = b.verts
+  local count = #verts
+  if count == 0 or count % 4 ~= 0 or #b.map ~= count / 4 * 6 then return nil end
+  local idata, itype = quadIndexData(count / 4)
+  if not idata then return nil end
+  local facings = variantFacings()
+  local meshes = {}
+  local debugLayers = GT.DEBUG_LAYERS
+  for k, fv in ipairs(facings) do
+    local okV, vdata = pcall(love.data.newByteData, count * 7 * 4)
+    local out = okV and dataPtr(vdata, "float*") or nil
+    if not out then
+      for _, m in ipairs(meshes) do pcall(m.release, m) end
+      return nil
+    end
+    local fx, fz = fv[1], fv[2]
+    local o = 0
+    for i = 1, count do
+      if i % 4096 == 0 then checkpoint() end
+      local v = verts[i]
+      local value = surfaceShade(v[8], v[9], v[10], fx, fz)
+      if debugLayers and v[12] then value = value * (DEBUG_TINT[v[12]] or DEBUG_TINT[#DEBUG_TINT]) end
+      out[o], out[o + 1], out[o + 2] = v[1], v[2], v[3]
+      out[o + 3], out[o + 4] = v[4], v[5]
+      out[o + 5] = v[11] and -value or value
+      out[o + 6] = v[7] or 0
+      o = o + 7
+    end
+    local okM, mesh = pcall(love.graphics.newMesh, Voxel3D.FORMAT, count, "triangles", "static")
+    local good = okM and mesh and pcall(mesh.setVertices, mesh, vdata)
+      and pcall(mesh.setVertexMap, mesh, idata, itype)
+    pcall(vdata.release, vdata)
+    if not good then
+      if okM and mesh then pcall(mesh.release, mesh) end
+      for _, m in ipairs(meshes) do pcall(m.release, m) end
+      pcall(idata.release, idata)
+      return nil
+    end
+    meshes[k] = mesh
+    checkpoint()
+  end
+  pcall(idata.release, idata)
+  -- the vertex tables are no longer needed by anyone: let the GC have them
+  b.verts, b.map = {}, {}
+  return meshes
+end
+
 -- Turn a bucket's recorded normals into baked shades and make its mesh(es).
 -- Returns the first mesh and, in camera mode, the second (lit from the north).
 local function finishBucket(b)
+  if ffi and not fastBroken and love.data and love.data.newByteData then
+    local ok, meshes = pcall(finishBucketFast, b)
+    if ok and meshes then return meshes[1], meshes[2] end
+    if not ok then fastBroken = true end
+    -- a nil result with the vertices untouched falls through to the table path
+    if #b.verts == 0 then return nil end
+  end
   local verts = b.verts
   local facings = variantFacings()
   local count = #verts

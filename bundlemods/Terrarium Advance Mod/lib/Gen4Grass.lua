@@ -64,6 +64,9 @@ local Grass = {
 -- behaviour.
 Grass.REACH = nil
 Grass.TILES_PER_CELL = 4
+-- LOD rings (Gen4Detail GRASS_LODS_*): { {world units, Grass3D LOD level}, ...,
+-- sparseFrom = level }. nil = the whole bake everywhere (FULL).
+Grass.LODS = nil
 local detailLevel = nil
 local function applyDetail()
   local ok, Detail = pcall(V.require, "Gen4Detail")
@@ -71,6 +74,7 @@ local function applyDetail()
   local d = Detail.get("grass")
   Grass.REACH = d.reach
   Grass.TILES_PER_CELL = d.tilesPerCell or 4
+  Grass.LODS = d.lods
   local level = Detail.level()
   -- the row changed: rebuild every chunk at the new density and reach
   if detailLevel and detailLevel ~= level then Grass.invalidate() end
@@ -155,7 +159,7 @@ Grass.isGrassCell = isTallGrass
 -- scene's own; only where they stand and how big they are is Gen 4's.
 -- Vertices are stamped in WORLD pixels (tile + map origin / 8) so a mesh
 -- built on one crop is still in the right place on the next.
-local function buildChunk(Grass3D, scene, map, kx, ky, ox, oz)
+local function buildChunk(Grass3D, scene, map, kx, ky, ox, oz, lod)
   local C = Grass.CHUNK
   local ox8, oz8 = (ox or 0) / 8, (oz or 0) / 8
   local order, buckets = {}, {}
@@ -167,7 +171,9 @@ local function buildChunk(Grass3D, scene, map, kx, ky, ox, oz)
         if not bucket then bucket = {}; buckets[y] = bucket; order[#order + 1] = y end
         -- the four 8 px tiles of this cell, each planted the way the voxel
         -- scene plants it (instanceForTile puts the origin at tile * 8)
+        local rings = Grass.LODS
         local sparse = (Grass.TILES_PER_CELL or 4) < 4
+          or (rings and rings.sparseFrom and (lod or 1) >= rings.sparseFrom) or false
         for ty = cy * 2, cy * 2 + 1 do
           for tx = cx * 2, cx * 2 + 1 do
             -- sparse: the two tiles on one diagonal of the cell
@@ -181,10 +187,42 @@ local function buildChunk(Grass3D, scene, map, kx, ky, ox, oz)
   end
   local out = {}
   for _, y in ipairs(order) do
-    local mesh = Grass3D.meshFromInstances(buckets[y])
+    local mesh
+    if Grass3D.meshFromInstancesLod then
+      mesh = Grass3D.meshFromInstancesLod(buckets[y], lod or 1)
+    else
+      mesh = Grass3D.meshFromInstances(buckets[y])
+    end
     if mesh then out[#out + 1] = { mesh = mesh, y = y } end
   end
-  return { buckets = out }
+  return { buckets = out, lod = lod or 1 }
+end
+
+local function releaseChunk(chunk)
+  for _, b in ipairs(chunk.buckets or {}) do
+    if b.mesh and b.mesh.release then pcall(b.mesh.release, b.mesh) end
+  end
+end
+
+-- The LOD level a chunk `d` world units from the player should have. A chunk
+-- already built finer keeps that level for one more chunk past its ring, so a
+-- player pacing on a ring edge does not rebuild the same chunk back and forth.
+local function lodFor(d, current, span)
+  local rings = Grass.LODS
+  if not rings or #rings == 0 then return 1 end
+  local level = rings[#rings][2]
+  for i = 1, #rings do
+    if d <= rings[i][1] then level = rings[i][2]; break end
+  end
+  if current and current < level then
+    for i = 1, #rings do
+      if rings[i][2] == current then
+        if d <= rings[i][1] + span then level = current end
+        break
+      end
+    end
+  end
+  return level
 end
 
 -- Voxel3D's per-scene grass state. beginScene() clears it every frame, so it is
@@ -299,6 +337,21 @@ function Grass.draw(scene)
       end
     end
     table.sort(want, function(a, b) return a[1] < b[1] end)
+    -- world units to each chunk, for its LOD ring
+    local keep = {}
+    for i = 1, #want do
+      local w = want[i]
+      w[5] = math.sqrt(w[1]) * span
+      keep[w[4]] = true
+    end
+    -- chunks the window has left are freed: they were kept forever before,
+    -- which is most of the heap a long walk through Sinnoh piled up
+    for key, chunk in pairs(chunks) do
+      if not keep[key] then
+        releaseChunk(chunk)
+        chunks[key] = nil
+      end
+    end
     win.want, win.kx0, win.ky0, win.camCx, win.camCy = want, kx0, ky0, camCx, camCy
     win.ox, win.oz, win.grid, win.dirty = ox, oz, grid, true
   end
@@ -310,16 +363,21 @@ function Grass.draw(scene)
   local builds = 0
   for i = 1, #want do
     local w = want[i]
-    if not chunks[w[4]] then
-      if builds < Grass.BUILDS_PER_FRAME and Budget.allow(false) then
+    local have = chunks[w[4]]
+    local lod = lodFor(w[5] or 0, have and have.lod, span)
+    -- a chunk with no tall grass is the same at every level: never rebuilt
+    if not have or (have.lod ~= lod and #have.buckets > 0) then
+      -- a missing chunk is a warm (window filling) build; a LOD swap is not
+      if builds < Grass.BUILDS_PER_FRAME and Budget.allow(not have) then
         builds = builds + 1
         local t0 = clock()
-        local ok, built = pcall(buildChunk, Grass3D, scene, map, w[2], w[3])
+        local ok, built = pcall(buildChunk, Grass3D, scene, map, w[2], w[3], nil, nil, lod)
         Budget.charge(t0, "grass")
         if not ok then
           once("chunk", "a chunk failed to build and was skipped: %s", tostring(built))
-          built = { buckets = {} }
+          built = { buckets = {}, lod = lod }
         end
+        if have then releaseChunk(have) end
         -- Mesh vertices are map-local; keep the offset they were built under
         -- so a later crop with a different origin still places them in world.
         built.ox, built.oz = ox, oz
@@ -365,11 +423,7 @@ function Grass.draw(scene)
 end
 
 function Grass.invalidate()
-  for _, chunk in pairs(chunks) do
-    for _, b in ipairs(chunk.buckets or {}) do
-      if b.mesh and b.mesh.release then pcall(b.mesh.release, b.mesh) end
-    end
-  end
+  for _, chunk in pairs(chunks) do releaseChunk(chunk) end
   chunks = {}
   win = {}
 end

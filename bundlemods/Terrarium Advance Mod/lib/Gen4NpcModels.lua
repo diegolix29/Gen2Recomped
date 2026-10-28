@@ -414,15 +414,135 @@ local function loadSheet(rec)
     if h < need * rec.ch then return false, ("sheet is %d tall, poses need %d"):format(h, need * rec.ch) end
   end
   rec.rgba, rec.imgW, rec.imgH = rgba, w, h
-  rec.padded = Solid.padRGBA(rgba, w, h, rec.cw, rec.ch, Npc.PAD)
+  if rec.kind == "classic" then
+    rec.padded = Solid.padRGBA(rgba, w, h, rec.cw, rec.ch, Npc.PAD)
+  else
+    -- Gen 4/5: the padded copy is only needed by a body the disk cache does
+    -- not have, so the first such build makes it (makeFacingsJob), and the
+    -- sheet's own pixels key the cache
+    rec.sheetHash = Npc._md5hex(rgba)
+  end
   Npc.stats.sheets = Npc.stats.sheets + 1
   return true
 end
 
 -- --------------------------------------------------------------- bodies --
 
+-- ----------------------------------------------------------- disk cache --
+--
+-- A Gen 4/5 body depends only on the sheet's pixels, the pose, PAD and the
+-- SpriteSolid options, so a finished one is written to the save directory and
+-- every later session (or a body evicted and wanted again) loads it instead of
+-- padding the sheet and running the whole solid bake. File: a 32-byte header,
+-- the vertices as Voxel3D.FORMAT floats, the vertex map as 0-based uint32 and
+-- the rgba8 atlas. Bump CACHE_VERSION whenever SpriteSolid's output changes.
+Npc.DISK_CACHE = true
+local CACHE_DIR = "terrarium_cache/npc3d"
+local CACHE_VERSION = 1
+local HEADER = "<c4I4I4I4I4I4fI4"
+local HEADER_SIZE = 32
+
+local okFfi, ffi = pcall(require, "ffi")
+if not okFfi or type(ffi) ~= "table" or not ffi.cast then ffi = nil end
+
+function Npc._md5hex(str)
+  if not (love and love.data and love.data.hash and love.data.encode) then return nil end
+  local ok, d = pcall(love.data.hash, "md5", str)
+  if not (ok and d) then return nil end
+  local okE, hex = pcall(love.data.encode, "string", "hex", d)
+  return okE and hex or nil
+end
+
+local function cachePath(rec, key)
+  if not Npc.DISK_CACHE or rec.kind == "classic" or not rec.sheetHash then return nil end
+  local opts = {}
+  for k, v in pairs(Npc.solid or {}) do opts[#opts + 1] = tostring(k) .. "=" .. tostring(v) end
+  table.sort(opts)
+  local h = Npc._md5hex(table.concat({ CACHE_VERSION, rec.sheetHash, rec.cw, rec.ch, key,
+                                       Npc.PAD, table.concat(opts, ";") }, "|"))
+  return h and (CACHE_DIR .. "/" .. h .. ".bin") or nil
+end
+
+local function dataPtr(data, ctype)
+  for _, name in ipairs({ "getFFIPointer", "getPointer" }) do
+    local f = data[name]
+    if f then
+      local ok, p = pcall(f, data)
+      if ok and p then return ffi.cast(ctype, p) end
+    end
+  end
+  return nil
+end
+
+local function saveCached(path, r)
+  if not (ffi and love.data and love.data.newByteData and love.data.pack and love.filesystem.write) then return end
+  local verts, map = r.verts, r.map
+  local nv, ni = #verts, #map
+  if nv == 0 or ni == 0 or type(r.atlas) ~= "string" or #r.atlas ~= r.atlasW * r.atlasH * 4 then return end
+  local vd, md = love.data.newByteData(nv * 28), love.data.newByteData(ni * 4)
+  local vp, mp = dataPtr(vd, "float*"), dataPtr(md, "uint32_t*")
+  if not (vp and mp) then return end
+  for i = 1, nv do
+    local v, o = verts[i], (i - 1) * 7
+    vp[o], vp[o + 1], vp[o + 2] = v[1], v[2], v[3]
+    vp[o + 3], vp[o + 4] = v[4], v[5]
+    vp[o + 5], vp[o + 6] = v[6] or 1, v[7] or 0
+  end
+  for i = 1, ni do mp[i - 1] = map[i] - 1 end
+  local header = love.data.pack("string", HEADER, "NPC3", CACHE_VERSION, nv, ni,
+                                r.atlasW, r.atlasH, r.height or 0, r.triangleCount or ni / 3)
+  pcall(love.filesystem.createDirectory, CACHE_DIR)
+  love.filesystem.write(path, header .. vd:getString() .. md:getString() .. r.atlas)
+  pcall(vd.release, vd)
+  pcall(md.release, md)
+end
+
+-- Fill body.mesh / body.image from its cache file; false when unusable.
+local function loadCached(body)
+  local Voxel3D = lazy("Voxel3D")
+  if not (Voxel3D and love.data and love.data.unpack and love.data.newByteData) then return false end
+  local s = love.filesystem.read(body.cachePath)
+  if type(s) ~= "string" or #s < HEADER_SIZE then return false end
+  local magic, ver, nv, ni, aw, ah, height, tris = love.data.unpack(HEADER, s)
+  if magic ~= "NPC3" or ver ~= CACHE_VERSION then return false end
+  local vb, mb = nv * 28, ni * 4
+  if #s ~= HEADER_SIZE + vb + mb + aw * ah * 4 then return false end
+  local at = HEADER_SIZE + 1
+  local mesh = love.graphics.newMesh(Voxel3D.FORMAT, nv, "triangles", "static")
+  local okV = pcall(mesh.setVertices, mesh, love.data.newByteData(s:sub(at, at + vb - 1)))
+  local okM = okV and pcall(mesh.setVertexMap, mesh,
+                            love.data.newByteData(s:sub(at + vb, at + vb + mb - 1)), "uint32")
+  if not okM then
+    pcall(mesh.release, mesh)
+    return false
+  end
+  local id = love.image.newImageData(aw, ah, "rgba8", s:sub(at + vb + mb))
+  local img = love.graphics.newImage(id)
+  img:setFilter(Npc.FILTER, Npc.FILTER)
+  body.mesh, body.image = mesh, img
+  body.height, body.tris = height, tris
+  return true
+end
+
 local function startBody(rec, key, frames)
+  local body = { used = frameNo, frames = frames }
+  rec.bodies[key] = body
+  local path = cachePath(rec, key)
+  if path and love.filesystem.getInfo and love.filesystem.getInfo(path, "file") then
+    body.cachePath = path
+    queue[#queue + 1] = { kind = "cached", rec = rec, key = key, body = body }
+    return
+  end
+  body.cacheSave = path
+  queue[#queue + 1] = { kind = "body", rec = rec, key = key, body = body }
+end
+
+-- Gen 4/5: the SpriteSolid job for one pose. Run by the pump, not in a draw.
+local function makeFacingsJob(rec, frames)
   local Solid = lazy("SpriteSolid")
+  if not rec.padded then
+    rec.padded = Solid.padRGBA(rec.rgba, rec.imgW, rec.imgH, rec.cw, rec.ch, Npc.PAD)
+  end
   local views, cellY = {}, {}
   local map = { front = "down", back = "up", left = "left", right = "right" }
   for k, d in pairs(map) do
@@ -432,10 +552,7 @@ local function startBody(rec, key, frames)
   end
   local layout = { imgW = rec.imgW, imgH = rec.imgH, cellW = rec.cw, cellH = rec.ch,
                    cellX = 0, cellY = cellY, src = rec.padded }
-  local body = { used = frameNo }
-  body.job = Solid.newJob(views, layout, Npc.solid, clock)
-  rec.bodies[key] = body
-  queue[#queue + 1] = { kind = "body", rec = rec, key = key, body = body }
+  return Solid.newJob(views, layout, Npc.solid, clock)
 end
 
 -- One cell of a sheet (frame `frame`), as raw RGBA rows, optionally mirrored.
@@ -528,7 +645,7 @@ end
 local function finish(item)
   local body = item.body
   local job = body.job
-  body.job, body.spec = nil, nil
+  body.job, body.spec, body.frames = nil, nil, nil
   local r = job.result
   if job.failed or not r then
     body.failed = job.failed or job.reason or "no result"
@@ -558,6 +675,11 @@ local function finish(item)
   end
   body.mesh, body.image = mesh, image
   body.height, body.tris = r.height, r.triangleCount
+  if body.cacheSave then
+    local okW, err = pcall(saveCached, body.cacheSave, r)
+    if not okW then no("cache-write: " .. tostring(err)) end
+    body.cacheSave = nil
+  end
   Npc.stats.builds = Npc.stats.builds + 1
   revision = revision + 1
   evict()
@@ -617,10 +739,28 @@ function Npc.pump()
       elseif item.rec.kind == "classic" then
         preloadClassic(item.rec)
       end
+    elseif item.kind == "cached" then
+      table.remove(queue, 1)
+      local body = item.body
+      local okC, hit = pcall(loadCached, body)
+      if okC and hit then
+        Npc.stats.cached = (Npc.stats.cached or 0) + 1
+        revision = revision + 1
+        evict()
+      else
+        -- unreadable or stale: build it, and overwrite the file when done
+        body.cacheSave, body.cachePath = body.cachePath, nil
+        queue[#queue + 1] = { kind = "body", rec = item.rec, key = item.key, body = body }
+      end
     else
       local body = item.body
       if not body.job and not body.failed then
-        local okJ, job = pcall(makeClassicJob, item.rec, body.spec)
+        local okJ, job
+        if item.rec.kind == "classic" then
+          okJ, job = pcall(makeClassicJob, item.rec, body.spec)
+        else
+          okJ, job = pcall(makeFacingsJob, item.rec, body.frames)
+        end
         if okJ then
           body.job = job
         else
