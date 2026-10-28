@@ -50,3 +50,9 @@
 - src/render/Gen4Model.lua: added Gen4Model.multiplyInto(out, a, b). Gen4Model:draw now sends mvp and the uvRotScale/uvTranslate values from scratch tables (it allocated per shape per frame). Gen4Ground.drawFree uses scratch FREE_LAND_MVP / FREE_BUILDING_MVP for the per-land and per-building matrices.
 - New lib/Gen4Slice.lua: coroutine land builds. Slice.landStep(state, Budget, warm, kind, ground, land, buildLand) keeps one job in flight per module and drops it if unstepped for 0.5 s on another land. Slice.check() yields at checkpoints. Slice.newMesh converts table verts into a ByteData in chunks (FFI) inside a job.
 - Gen4Rocks, Gen4Fence, Gen4Bump and Gen4Water now build through it, with check() in boulder / readShape, buildBay / buildPost / readShape, pile / readShape and emit / shapeTriangles, and newMesh() for their final mesh.
+
+## 2026-10-28 — Load throttling in drawFree (uncommitted, untested)
+- The overlay showed logging is negligible (0-16 lines/s, at most 2.2 ms/s), so debug logs are not the stutter.
+- Remaining hitches: "g4 drawFree" of 60-150 ms, sometimes with -50 MB GC and sometimes with g4 liveModel/modelFor ~27 ms (a new land loading). Gen4Model.new builds one Lua table per vertex (eager, not lazy), so a land load means tens of thousands of tables plus GC debt.
+- src/render/Gen4Ground.lua: Gen4Ground.FREE_LOADS_PER_FRAME = 2 (0 = off). While drawFree runs, liveModel() and building() build at most 2 new models per frame; a deferred one returns nil without caching the miss and appears a frame later. Not applied with drawAllChunks or forceField3d. The freeLoads / freeLoadAllowed locals sit above Gen4Ground:building so both functions can see them.
+- An idea not done (large refactor): an FFI vertex path in Gen4Model.new. The vertex tables are reused for billboard pivots, the back-wall cap and grass.
