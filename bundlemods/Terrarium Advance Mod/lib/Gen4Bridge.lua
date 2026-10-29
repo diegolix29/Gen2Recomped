@@ -402,21 +402,69 @@ local function isPhone()
 end
 Bridge.GC_BUDGET = isPhone() and 0.002 or 0.0015
 Bridge.GC_REST = 1.25
-local gcRestUntil = 0
+-- THE PACER OWNS THE COLLECTOR while a native world is drawing. LuaJIT steps
+-- its collector inside whatever code allocates, so a land loading in drawFree
+-- paid for the whole backlog there (58 ms of "g4 drawFree" with no load and no
+-- section of its own). Between pacer runs the automatic collector is stopped;
+-- anything that steps it (the engine's one step per update, a mod's step)
+-- re-arms it, so the wrapper below stops it again. If the world is not drawn
+-- for GC_RELEASE seconds (a battle, a menu) it is handed back. When the heap
+-- runs ahead of the pacer, the budget grows: x3 past twice the post-cycle
+-- size, x6 past three times. GC_OWN = false keeps the old behaviour.
+Bridge.GC_OWN = true
+Bridge.GC_RELEASE = 1.0
+local gcRestUntil, gcBase = 0, nil
 local gcClock = (love and love.timer and love.timer.getTime) or os.clock
+-- shared through _G so a second load of this module finds the same wrapper
+local GCS = rawget(_G, "__terrariumGc")
+if not GCS then
+  GCS = { owned = false, pacedAt = 0, release = 1.0, raw = collectgarbage }
+  rawset(_G, "__terrariumGc", GCS)
+  if type(GCS.raw) == "function" then
+    local raw = GCS.raw
+    _G.collectgarbage = function(opt, ...)
+      local a, b = raw(opt, ...)
+      if GCS.owned and opt ~= "count" and opt ~= "stop" then
+        if gcClock() - GCS.pacedAt > GCS.release then
+          GCS.owned = false
+          raw("restart")
+        elseif opt == "step" or opt == "restart" or opt == "collect" then
+          raw("stop")
+        end
+      end
+      return a, b
+    end
+  end
+end
+local rawCollect = GCS.raw
 local function paceGc()
   local budget = Bridge.GC_BUDGET
-  if not budget or budget <= 0 then return end
-  if collectgarbage("count") < gcRestUntil then return end
-  local t0 = gcClock()
-  repeat
-    if collectgarbage("step", 0) then
-      gcRestUntil = collectgarbage("count") * (Bridge.GC_REST or 1.25)
-      break
-    end
-  until gcClock() - t0 >= budget
-  local hook = Bridge.passHook
-  if hook then hook("gc pacer", gcClock() - t0) end
+  if not budget or budget <= 0 then
+    if GCS.owned then GCS.owned = false; rawCollect("restart") end
+    return
+  end
+  local own = Bridge.GC_OWN ~= false
+  local heap = rawCollect("count")
+  gcBase = gcBase or heap
+  if own then
+    GCS.owned, GCS.pacedAt, GCS.release = true, gcClock(), Bridge.GC_RELEASE or 1
+  end
+  if heap >= gcRestUntil then
+    if heap > gcBase * 3 then budget = budget * 6
+    elseif heap > gcBase * 2 then budget = budget * 3 end
+    local t0 = gcClock()
+    repeat
+      if rawCollect("step", 0) then
+        gcBase = rawCollect("count")
+        gcRestUntil = gcBase * (Bridge.GC_REST or 1.25)
+        break
+      end
+    until gcClock() - t0 >= budget
+    local hook = Bridge.passHook
+    if hook then hook("gc pacer", gcClock() - t0) end
+  end
+  if own then rawCollect("stop")
+  elseif GCS.owned then GCS.owned = false; rawCollect("restart") end
 end
 
 function Bridge.run(ground)
