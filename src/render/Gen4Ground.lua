@@ -1116,26 +1116,6 @@ end
 -- which is every caller that existed before signposts; "fldeff" is the object
 -- models -- signs, mailboxes -- and it is a DIFFERENT FILE, so the same number
 -- means a different model in each and the caches must not be shared either.
--- NEW MODELS PER FRAME, while the free pass draws. Every land and building that
--- comes into view was decoded and built in the frame it first appeared -- a
--- land is tens of thousands of vertex tables, and the frame that built three
--- of them (plus the collector paying for them) was the 70-150 ms hitch on
--- walking into a new area. Inside drawFree at most this many are built per
--- frame; one not built yet is skipped for that frame (it appears a frame or two
--- later). Outside drawFree (bakes, collision, screens) nothing is limited.
--- 0 or nil = no limit.
-Gen4Ground.FREE_LOADS_PER_FRAME = 2
-local freeLoads = nil     -- { left = n } while a free pass is drawing
-
-local function freeLoadAllowed()
-  if not freeLoads then return true end
-  if freeLoads.left > 0 then
-    freeLoads.left = freeLoads.left - 1
-    return true
-  end
-  return false
-end
-
 -- ---------------------------------------------------------------------------
 -- MODELS SHARED BETWEEN NEIGHBOURING MAPS
 -- ---------------------------------------------------------------------------
@@ -1201,7 +1181,6 @@ function Gen4Ground:building(index, archive)
     cache = shared and shared.fieldModels or self.fieldModels
   end
   if cache[index] ~= nil then return cache[index] or nil end
-  if not freeLoadAllowed() then return nil end
   local packed
   if field then
     -- BY MEMBER, NOT BY POSITION.  `models[index + 1]` below is right for the
@@ -1830,7 +1809,6 @@ function Gen4Ground:liveModel(land)
   self.liveOrder = self.liveOrder or {}
   local hit = self.liveModels[land]
   if hit ~= nil then return hit or nil end
-  if not freeLoadAllowed() then return nil end
 
   local model = self:modelFor(land)
   self.liveModels[land] = model or false
@@ -2625,7 +2603,6 @@ end
 
 local FREE_LAND_MVP, FREE_BUILDING_MVP = {}, {}
 
-
 function Gen4Ground:drawFree(vw, vh)
   local view = self.view3d
   local grid = self.grid
@@ -2725,9 +2702,6 @@ function Gen4Ground:drawFree(vw, vh)
       end
     end
   end
-  local limit = Gen4Ground.FREE_LOADS_PER_FRAME
-  freeLoads = (limit and limit > 0 and not self.drawAllChunks and not Gen4Camera.forceField3d)
-              and { left = limit } or nil
   local fy0, fy1, fx0, fx1 = camCy - FREE_RADIUS, camCy + FREE_RADIUS, camCx - FREE_RADIUS, camCx + FREE_RADIUS
   if self.drawAllChunks then fy0, fy1, fx0, fx1 = 0, grid.height - 1, 0, grid.width - 1 end
   -- A DISTORTION WORLD CAMERA (Gen4DistSurface) can swing to 18 degrees above
@@ -2781,7 +2755,6 @@ function Gen4Ground:drawFree(vw, vh)
       end
     end
   end
-  freeLoads = nil
   -- THE DISTORTION WORLD'S NEXT FLOOR, drawn below this one (Gen4DistNeighbour)
   if self.def and self.def.gen4DistWorld then
     local okN, errN = pcall(function() require("src.render.Gen4DistNeighbour").draw(self, vp) end)
