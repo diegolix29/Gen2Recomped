@@ -79,3 +79,10 @@
 - H3D materials now keep `at` / `paramsAt` raw offsets.
 - Suspects for Gen 4/5 flames: textures in LA8 / ETC1A4 / RGBA formats are not GLOW_FORMATS (mesh skipped); colour comes from the name ("Fire"), so other names (or Chandelure's purple) get white/orange; shared effect textures missing from the species pack are skipped.
 - Suspect for world layers over flames: glow groups do not write depth and the arena world is composited separately (Gen4WorldHost.renderPose copies colour), so later world passes can paint over them. Needs the trace.
+
+## 2026-10-30 — First F12 dump: both flame bugs found and fixed (uncommitted, untested in game)
+- Dump (Chimchar 390 + Charizard 6 on T02): Chimchar's flame textures are species-prefixed (pm0390_00_FireCoreA1 / FireStenA1, L4/L8) while Charizard's are shared (FireCoreA1). The "own prefix = body" rule made Chimchar's flames opaque BODY groups.
+- Fix (ORASActorCache): effectTexture(prefix, tname, t) = intensity format AND (no prefix OR name has Fire/Flame/Sten/Glow). patchSize excludes those from height. Stamp oras-actor=7; a species on =6 runs needsGlowRebuild once on the next ORAS MODELS build: rebuilt if it has a prefixed flame texture, else just re-stamped. Restart after the build.
+- Trace: over a native Gen 4/5 world the actors draw INSIDE drawFree, before every Gen4Bridge pass (water, sand, bump, trees, rocks, fence, flowers, lamps, glass, light, grass). Flames write no depth, so those passes painted over them.
+- Fix (PokemonActors + main.lua): while Bridge.Ground.freeOpen, Actor:draw skips glow groups and queues {A, actor, matrix, vp, eye} in _G.__terrariumGlow; a Gen4Bridge.after hook (main.lua) calls GLOW.flush, which replays actor:draw(matrix, "glowOnly") inside withRenderer. Records older than 0.1 s are dropped; A.glowDefer = false turns it off. The F12 trace shows "glow-replay N".
+- Not checked yet: battles (renderPose / renderBattleBody path) with these changes.

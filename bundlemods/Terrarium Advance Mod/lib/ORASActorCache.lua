@@ -172,10 +172,29 @@ local function glowColor(name)
   if name:find("Fire") then return { 1.0, 0.36, 0.12 } end
   return { 1.0, 1.0, 1.0 }
 end
+-- Is this texture an effect (flame) map?  Shared ones (Charizard: FireCoreA1)
+-- carry no species prefix; Gen 4/5 species' own (Chimchar:
+-- pm0390_00_FireCoreA1) do, so a prefixed name still counts when it names
+-- an effect and is an intensity format.
+local EFFECT_WORDS = { "Fire", "Flame", "Sten", "Glow" }
+local function effectTexture(prefix, tname, t)
+  if not (tname and t and GLOW_FORMATS[t.format]) then return false end
+  if tname:sub(1, #prefix) ~= prefix then return true end
+  local rest = tname:sub(#prefix + 1)
+  for _, w in ipairs(EFFECT_WORDS) do
+    if rest:find(w, 1, true) then return true end
+  end
+  return false
+end
+C.effectTexture = effectTexture
 local FPS = 30
 -- bumped whenever the cache layout changes: a species whose rev.txt holds an
 -- older stamp is rebuilt, one with this stamp is skipped
-local ORAS_STAMP = "oras-actor=6\n"
+-- =7: species-prefixed flame textures became glow groups.  A species still
+-- on =6 is rebuilt only if it has such a texture (needsGlowRebuild), else
+-- just re-stamped.
+local PREV_STAMP = "oras-actor=6\n"
+local ORAS_STAMP = "oras-actor=7\n"
 C.STAMP = ORAS_STAMP
 
 -- set by a background build (ORASModels) to yield between stages
@@ -327,9 +346,9 @@ function C.buildSpecies(mod, rom, g, index, dex)
     -- is an intensity map (luminance / alpha formats) become GLOW groups:
     -- the intensity is baked into a flame colour and PokemonActors draws them
     -- unlit and additive, after the body.  Anything else is still skipped.
-    local own = tname and tname:sub(1, #prefix) == prefix
     local t = tname and textures[tname]
-    local glow = not own and t and GLOW_FORMATS[t.format]
+    local glow = effectTexture(prefix, tname, t)
+    local own = not glow and tname and tname:sub(1, #prefix) == prefix
     if own or glow then
       local bind = H3D.bindPose(model, mesh)
       local entry = { mesh = mesh, mat = mat, tname = tname, bind = bind,
@@ -605,7 +624,13 @@ local function patchSize(mod, g, index, dex)
   for _, mesh in ipairs(model.meshes) do
     local mat = model.materials[mesh.materialIndex + 1] or {}
     local tname = mat.textures and mat.textures[1]
-    if tname and tname:sub(1, #prefix) == prefix then
+    local fx = false
+    if tname then
+      for _, w in ipairs(EFFECT_WORDS) do
+        if tname:find(w, #prefix + 1, true) then fx = true end
+      end
+    end
+    if tname and tname:sub(1, #prefix) == prefix and not fx then
       for _, v in ipairs(H3D.bindPose(model, mesh)) do
         if v.position[2] < lo then lo = v.position[2] end
         if v.position[2] > hi then hi = v.position[2] end
@@ -636,6 +661,25 @@ local function patchSize(mod, g, index, dex)
   assert(writeLua(mod, rt .. "/base.lua", meta), "runtime base write failed")
   assert(writeLua(mod, root(dex) .. "/model_cache.lua", meta), "model cache write failed")
   return true
+end
+
+-- true when species `dex` has a species-prefixed flame texture, i.e. its
+-- PREV_STAMP cache drew the flame as an opaque body surface
+local function needsGlowRebuild(g, index, dex)
+  local base, _, _, model = findSpecies(g, index, dex)
+  if not base then return false end
+  local td, th = packBch(g, base + 3, 1)
+  if not td then return false end
+  local textures = H3D.textures(td, th)
+  local prefix = (model.name or ""):match("^(pm%d+)") or "pm"
+  for _, mesh in ipairs(model.meshes) do
+    local mat = model.materials[mesh.materialIndex + 1] or {}
+    local tname = mat.textures and mat.textures[1]
+    if tname and tname:sub(1, #prefix) == prefix and effectTexture(prefix, tname, textures[tname]) then
+      return true
+    end
+  end
+  return false
 end
 
 -- Build `list` (dex numbers) and register them.  `log(fmt, ...)` reports each
@@ -678,6 +722,13 @@ function C.build(mod, list, log, progress)
   for n, dex in ipairs(list) do
     local okRev, rev = pcall(mod.cache.read, mod.cache, root(dex) .. "/rev.txt")
     local current = okRev and rev == C.STAMP and listed[dex]
+    if not current and okRev and rev == PREV_STAMP and listed[dex] then
+      local okG, stale = pcall(needsGlowRebuild, g, index, dex)
+      if okG and stale == false then
+        mod.cache:write(root(dex) .. "/rev.txt", C.STAMP)
+        current = true
+      end
+    end
     if current then
       skipped = skipped + 1
       local okP, patched = pcall(patchSize, mod, g, index, dex)
@@ -769,11 +820,12 @@ function C.inspect(mod, dex, writePng)
   for i, mesh in ipairs(model.meshes) do
     local mat = model.materials[mesh.materialIndex + 1] or {}
     local tname = mat.textures and mat.textures[1]
-    local own = tname and tname:sub(1, #prefix) == prefix
     local t = tname and textures[tname]
+    local glow = effectTexture(prefix, tname, t)
+    local own = not glow and tname and tname:sub(1, #prefix) == prefix
     local verdict
     if own then verdict = "BODY"
-    elseif t and GLOW_FORMATS[t.format] then verdict = "GLOW (color " .. table.concat(glowColor(tname), ",") .. ")"
+    elseif glow then verdict = "GLOW (color " .. table.concat(glowColor(tname), ",") .. ")"
     elseif not tname or tname == "" then verdict = "SKIPPED: no texture"
     elseif not t then verdict = "SKIPPED: texture not in this model's pack (shared effect texture?)"
     else verdict = "SKIPPED: not own, format " .. (FORMAT_NAME[t.format] or "?") .. " is not a glow format" end

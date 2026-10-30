@@ -212,6 +212,19 @@ local BattleExit = V.require("BattleExit")
 -- run too and match nothing until Unova ids are added.
 local Gen4Bridge = V.require("Gen4Bridge")
 V.Gen4Bridge = Gen4Bridge
+-- ORAS flames over a native world: PokemonActors queues them while the
+-- world frame is open, this replays them after every bridge pass
+do
+  local GLOW = rawget(_G, "__terrariumGlow")
+  if type(GLOW) ~= "table" then GLOW = { queue = {} }; rawset(_G, "__terrariumGlow", GLOW) end
+  GLOW.bridge = Gen4Bridge
+  if not GLOW.hooked then
+    GLOW.hooked = true
+    Gen4Bridge.after[#Gen4Bridge.after + 1] = function()
+      if GLOW.flush then GLOW.flush() end
+    end
+  end
+end
 -- F12 in battle: one report of what is on screen (lib/RenderDump.lua)
 pcall(function() V.require("RenderDump").install() end)
 -- Idempotent: main.lua may load before a ROM is chosen (generation() is then

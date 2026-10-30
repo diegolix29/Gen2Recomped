@@ -1816,7 +1816,60 @@ local function setBaseWeights()
   for i=1,12 do shader:send(W_UNIFORM[i],0) end
 end
 
-function Actor:draw(matrix)
+-- ------------------------------------------------- deferred flames (glow) ----
+-- Shared across every PokemonActors copy (main.lua's Colosseum bootstrap and
+-- ORASRuntime can each load one): the queue and the bridge live in one global
+-- table, each record carries the module that drew it.
+local GLOW=rawget(_G,"__terrariumGlow")
+if type(GLOW)~="table" then GLOW={queue={}};rawset(_G,"__terrariumGlow",GLOW) end
+local GLOW_MAX_AGE=0.1   -- a record the bridge never replayed is dropped
+local GLOW_MAX=64
+
+local function copyDeep(t)
+  if type(t)=="userdata" and t.clone then return t:clone() end
+  if type(t)~="table" then return t end
+  local o={}
+  for k,v in pairs(t) do o[k]=copyDeep(v) end
+  return o
+end
+
+local function glowDeferActive()
+  if GLOW.flushing or A.glowDefer==false then return false end
+  local B=GLOW.bridge
+  local G=B and B.Ground
+  return (B and B.installed and B.enabled~=false and G and G.freeOpen) and true or false
+end
+A.glowDeferActive=glowDeferActive
+
+local function queueGlow(actor,matrix)
+  local q=GLOW.queue
+  if #q>=GLOW_MAX then return end
+  local now=(love.timer and love.timer.getTime()) or 0
+  q[#q+1]={A=A,actor=actor,matrix=copyDeep(matrix),vp=copyDeep(A._curVp),
+           eye=copyDeep(A._curEye),t=now}
+end
+
+-- The Gen4Bridge.after hook (main.lua). Runs on the still-open world canvas,
+-- depth intact, after every world pass.
+function GLOW.flush()
+  local q=GLOW.queue
+  if #q==0 then return end
+  GLOW.queue={}
+  GLOW.flushing=true
+  local RD=rawget(_G,"__terrariumRenderDump")
+  if RD and RD.trace then RD.trace("glow-replay",("%d actor(s) after the world passes"):format(#q)) end
+  local now=(love.timer and love.timer.getTime()) or 0
+  for _,rec in ipairs(q) do
+    if now-(rec.t or 0)<=GLOW_MAX_AGE and rec.vp and rec.actor and rec.actor.scene then
+      pcall(rec.A.withRenderer,rec.vp,function()
+        return rec.actor:draw(rec.matrix,"glowOnly")
+      end,{eye=rec.eye})
+    end
+  end
+  GLOW.flushing=false
+end
+
+function Actor:draw(matrix,mode)
   local sc=self.scene
   if not (sc and shader) then return false end
   local w=self:frameWeights()
@@ -1871,8 +1924,18 @@ function Actor:draw(matrix)
   local drawGroups=(not self.forceBasePlayback and playback and playback.groups) or sc.groups
   if self.forceBasePlayback then setBaseWeights() end
   local drawFault=false
+  -- Flames over a native Gen 4/5 world: Terrarium's world passes (trees,
+  -- grass, sand, rocks...) draw AFTER the actors, and a flame writes no
+  -- depth, so they painted over it. While that frame is open the glow groups
+  -- are queued instead and replayed by the bridge after its passes
+  -- (A.flushGlow, a Gen4Bridge.after hook). mode "glowOnly" is that replay.
+  local glowOnly=mode=="glowOnly"
+  local deferGlow=not glowOnly and glowDeferActive()
+  local deferred=false
   for i,grp in ipairs(drawGroups) do
-    if not only or only==i then
+    local skipGlow=deferGlow and grp.glow
+    if skipGlow and (not only or only==i) then deferred=true end
+    if (not only or only==i) and not skipGlow and (grp.glow or not glowOnly) then
       -- Preserve the source HSD material state per render group. 1.5.24 threw
       -- this away after extraction, so every untextured material rendered as
       -- opaque white and every alpha-controlled helper surface became solid.
@@ -1901,10 +1964,11 @@ function Actor:draw(matrix)
   -- A source action GPU bank is optional presentation data. If one group is
   -- malformed on a particular backend, draw the always-resident base body in
   -- the SAME frame. Never convert a damage-animation fault into invisibility.
+  if deferred then queueGlow(self,matrix) end
   if drawFault and drawGroups~=sc.groups then
     setBaseWeights()
     for i,grp in ipairs(sc.groups) do
-      if not only or only==i then
+      if (not only or only==i) and not (deferGlow and grp.glow) and (grp.glow or not glowOnly) then
         local d=grp.diffuse
         MATERIAL_RGBA[1]=(d and d[1]) or 1;MATERIAL_RGBA[2]=(d and d[2]) or 1
         MATERIAL_RGBA[3]=(d and d[3]) or 1;MATERIAL_RGBA[4]=grp.alpha or 1
@@ -2538,6 +2602,8 @@ function A.withRenderer(vp,callback,opts)
     if g.setMeshCullMode then g.setMeshCullMode("none") end
     sh:send("vp","row",vp)
     sh:send("cameraEye",(opts and opts.eye) or {54,24,13})
+    -- what a deferred flame replays with (queueGlow)
+    A._curVp,A._curEye=vp,(opts and opts.eye) or nil
     return callback()
   end)
   pcall(g.setShader)
