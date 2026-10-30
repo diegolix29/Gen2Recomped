@@ -71,3 +71,11 @@
 - PerfTest.install wraps Gen4Ground.drawFree last (outermost) and applies only on change; it only re-enables effects it disabled itself. Installed at the end of installNativeWorldFx in main.lua.
 - Lawn's modelFor texture tagging still runs while TILE SWAP is OFF (load-time only); the per-draw material merge is skipped.
 - Syntax checked with lovec loadstring.
+
+## 2026-10-30 — ORAS context entry + RenderDump (uncommitted, untested in game)
+- Status from the user: ORAS models + meshes + flames work for Gen 1-3 species. Gen 4/5 species' flames look wrong, and on a Gen 4 world some world layers draw in front of Gen 1-3 flames. Wanted next: ORAS move animations + effects, ORAS battle arenas (a new Terrarium battle next to the Colosseum one).
+- Added the ORAS section to context.md. ORAS history: 7036fb1d, d72b0c41, c2c59576, b16462b7.
+- New lib/RenderDump.lua (installed in main.lua after Gen4Bridge, global _G.__terrariumRenderDump). F12 polled from PokemonActors debugFrame and withRenderer. Report: live actors + groups, ORASActorCache.inspect(mod, dex, writePng) ROM breakdown (body/glow/skipped + reason, raw material struct and 0x200 bytes of params, effect textures as PNG), and ~60 ms trace of setCanvas/clear, Gen4Bridge passes (forces Bridge.profile on) and actor group draws.
+- H3D materials now keep `at` / `paramsAt` raw offsets.
+- Suspects for Gen 4/5 flames: textures in LA8 / ETC1A4 / RGBA formats are not GLOW_FORMATS (mesh skipped); colour comes from the name ("Fire"), so other names (or Chandelure's purple) get white/orange; shared effect textures missing from the species pack are skipped.
+- Suspect for world layers over flames: glow groups do not write depth and the arena world is composited separately (Gen4WorldHost.renderPose copies colour), so later world passes can paint over them. Needs the trace.

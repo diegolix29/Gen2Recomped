@@ -331,6 +331,9 @@ function H3D.models(d, h)
         textures = { str(d, b + 0x1C), str(d, b + 0x20), str(d, b + 0x24) },
         uvTransform = params and params > 0 and H3D.uvTransform(d, params + 0x0C) or nil,
         wrapU = wrapU, wrapV = wrapV,
+        -- raw offsets (relocated data) for RenderDump: blend / stencil /
+        -- constant colours are not decoded yet, the dump prints the bytes
+        at = b, paramsAt = params,
       }
     end
 

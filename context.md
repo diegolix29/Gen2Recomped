@@ -31,3 +31,10 @@
 
 ## Current State / Open Work
 - Branch name suggests Gen 5 (Black/White) fixes; recent commits are about Emerald voxels and load lag / perf settings.
+
+## ORAS import (Terrarium Advance Mod, bundlemods/Terrarium Advance Mod/)
+- Player-supplied decrypted Omega Ruby / Alpha Sapphire dump, launcher import id `pokemon_oras` (file pokemon_oras.3ds), read in slices by lib/N3DSRom.lua. Built from OPTIONS -> ORAS MODELS (lib/ORASModels.lua); lib/ORASProbe.lua writes survey reports (mod cache oras/probe.txt, oras/export.txt).
+- Models: GARC a/0/0/8 (lib/GARC.lua). Member 0 = index (4 bytes per species: u16 first form, u8 forms, u8 flags); form f block starts at member 2 + 8f. Block slots: +1 model BCH, +3 textures, +4 shiny textures, +6 battle motions (GF1Motion), +2 face/eye anim. Gen 6 model names are internal numbers, not dex.
+- Decode: lib/BCH.lua (relocate), lib/H3D.lua (models, materials, bones, skinning), lib/PICA.lua (textures), lib/GF1Motion.lua. lib/ORASActorCache.lua bakes species into mod cache oras/pokemon/<dex>/ (rev.txt stamp "oras-actor=6"; bump C.STAMP on layout change). lib/ORASRuntime.lua installs PokemonActors without the Colosseum runtime. Drawn by lib/PokemonActors.lua (sc.source == "ORAS").
+- Flames: meshes whose texture is not the species' own (pmNNNN prefix) and is an intensity format (L8/A8/LA4/L4/A4) become GLOW groups: colour hardcoded by texture name (glowColor, "Fire"/"Core"), drawn additive + unlit, no depth write, after the body. Other non-own meshes are skipped. H3D does not decode material blend/stencil/constant colours yet.
+- Debug keys in battle (PokemonActors): F9 overlay, F5 isolate group, F6 skin fix, F10 decode mode, F7/F8 scale trim, F12 RenderDump (lib/RenderDump.lua) -> <save dir>/terrarium_dumps/<time>/report.txt + effect texture PNGs.

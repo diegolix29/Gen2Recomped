@@ -1886,6 +1886,13 @@ function Actor:draw(matrix)
       end
       setGlow(grp.glow)
       setEyeCell(grp,eyeCell)
+      local RD=rawget(_G,"__terrariumRenderDump")
+      if RD and RD.trace then
+        local cv=love.graphics.getCanvas()
+        RD.trace("actor",("dex %s g%d glow=%s xlu=%s noz=%s depthWrite=%s onCanvas=%s"):format(
+          tostring(self.dex),i,tostring(grp.glow),tostring(grp.xlu),tostring(grp.noz),
+          tostring(not (grp.noz or grp.xlu or grp.glow)),cv and tostring(cv):match("0x%x+") or (cv and "set" or "SCREEN")))
+      end
       local okDraw=grp.mesh and pcall(love.graphics.draw,grp.mesh)
       setGlow(false)
       if not okDraw then drawFault=true;break end
@@ -2519,6 +2526,7 @@ end
 -- canvas, and restore every render state we change -- the contract every
 -- battleActors provider is held to.
 function A.withRenderer(vp,callback,opts)
+  if A.pollDumpKey then pcall(A.pollDumpKey) end   -- defined further down
   local sh,err=ensureShader()
   if not sh then return false,err end
   local g=love.graphics
@@ -2624,6 +2632,19 @@ local function refreshLiveActors()
   return refreshed
 end
 
+-- F12: one RenderDump report of what is on screen (lib/RenderDump.lua).
+-- Polled from debugFrame (Colosseum battles) and withRenderer (any path).
+local dumpKeyHeld=false
+local function pollDumpKey()
+  if not (love and love.keyboard and love.keyboard.isDown) then return end
+  local okX,xk=pcall(love.keyboard.isDown,"f12")
+  local RD=rawget(_G,"__terrariumRenderDump")
+  if okX and xk and not dumpKeyHeld and RD and RD.request then pcall(RD.request,A) end
+  dumpKeyHeld=okX and xk or false
+  if RD and RD.frame then pcall(RD.frame) end
+end
+A.pollDumpKey=pollDumpKey
+
 local trimDownHeld,trimUpHeld,modeKeyHeld,skinKeyHeld,isolateKeyHeld,rigidKeyHeld=false,false,false,false,false,false
 local function pollDebugKey()
   if not (love and love.keyboard and love.keyboard.isDown) then return end
@@ -2680,6 +2701,8 @@ local function pollDebugKey()
     end
   end
   isolateKeyHeld=okI and ik or false
+
+  pollDumpKey()
 
   local okD,dn=pcall(love.keyboard.isDown,"f7")
   local okU,up=pcall(love.keyboard.isDown,"f8")
@@ -3775,6 +3798,7 @@ end
 function A.debugFrame()
   pcall(pollDebugKey)
   pcall(drawDebug)
+
   A.drewThisFrame=false
 end
 

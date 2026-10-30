@@ -212,6 +212,8 @@ local BattleExit = V.require("BattleExit")
 -- run too and match nothing until Unova ids are added.
 local Gen4Bridge = V.require("Gen4Bridge")
 V.Gen4Bridge = Gen4Bridge
+-- F12 in battle: one report of what is on screen (lib/RenderDump.lua)
+pcall(function() V.require("RenderDump").install() end)
 -- Idempotent: main.lua may load before a ROM is chosen (generation() is then
 -- 1). drawWorld retries once a Gen4Ground map is actually on screen.
 local nativeWorldFx = false

@@ -712,4 +712,100 @@ function C.build(mod, list, log, progress)
   return built, failed, nil, skipped
 end
 
+-- ------------------------------------------------------------- RenderDump
+
+local FORMAT_NAME = {}
+for k, v in pairs(PICA.FORMAT) do FORMAT_NAME[v] = k end
+
+local function hexRows(d, at, len)
+  local out = {}
+  if not (at and at > 0) then return out end
+  for row = 0, len - 1, 16 do
+    local p = at + row
+    if p + 1 > #d then break end
+    local bytes = {}
+    for i = 0, 15 do
+      local b = d:byte(p + i + 1)
+      if not b then break end
+      bytes[#bytes + 1] = ("%02X"):format(b)
+    end
+    out[#out + 1] = ("      +%03X  %s"):format(row, table.concat(bytes, " "))
+  end
+  return out
+end
+
+-- A report of how species `dex`'s model is split into body / glow / skipped
+-- meshes and why, with the raw material bytes (blend, stencil, constant
+-- colours are not decoded by H3D) and every non-body texture decoded as-is.
+-- writePng(name, ImageData) saves a texture next to the report.
+-- Read-only: touches neither the cache nor the live scenes.
+function C.inspect(mod, dex, writePng)
+  local rom, err = N3DSRom.open(mod, IMPORT_ID)
+  if not rom then return nil, "ROM: " .. tostring(err) end
+  local g, gerr = GARC.open(rom, assert(rom:file(MODEL_GARC), "no " .. MODEL_GARC))
+  if not g then return nil, gerr end
+  local index = g:member(0)
+  local base, md, mh, model = findSpecies(g, index, dex)
+  if not base then return nil, md end
+  local td, th = packBch(g, base + 3, 1)
+  local textures = td and H3D.textures(td, th) or {}
+  local prefix = (model.name or ""):match("^(pm%d+)") or "pm"
+  local out = {}
+  local function p(fmt, ...) out[#out + 1] = fmt:format(...) end
+  p("  model %s  (member block %d)  prefix %s  meshes %d  materials %d",
+    tostring(model.name), base, prefix, #model.meshes, #model.materials)
+  p("  textures in the texture pack:")
+  local tnames = {}
+  for name in pairs(textures) do tnames[#tnames + 1] = name end
+  table.sort(tnames)
+  for _, name in ipairs(tnames) do
+    local t = textures[name]
+    p("    %-28s %4dx%-4d %-8s%s", name, t.width or 0, t.height or 0,
+      FORMAT_NAME[t.format] or tostring(t.format),
+      GLOW_FORMATS[t.format] and "  (glow format)" or "")
+  end
+  p("  meshes:")
+  local seenMat, exported = {}, {}
+  for i, mesh in ipairs(model.meshes) do
+    local mat = model.materials[mesh.materialIndex + 1] or {}
+    local tname = mat.textures and mat.textures[1]
+    local own = tname and tname:sub(1, #prefix) == prefix
+    local t = tname and textures[tname]
+    local verdict
+    if own then verdict = "BODY"
+    elseif t and GLOW_FORMATS[t.format] then verdict = "GLOW (color " .. table.concat(glowColor(tname), ",") .. ")"
+    elseif not tname or tname == "" then verdict = "SKIPPED: no texture"
+    elseif not t then verdict = "SKIPPED: texture not in this model's pack (shared effect texture?)"
+    else verdict = "SKIPPED: not own, format " .. (FORMAT_NAME[t.format] or "?") .. " is not a glow format" end
+    local verts = 0
+    for _, sm in ipairs(mesh.submeshes or {}) do verts = verts + #(sm.indices or {}) end
+    local bone = model.bones and model.bones[(mesh.nodeIndex or 0) + 1]
+    p("    mesh %2d  mat %2d %-24s tex %s | %s | %s   -> %s", i, mesh.materialIndex,
+      tostring(mat.name), tostring(tname), tostring(mat.textures and mat.textures[2]),
+      tostring(mat.textures and mat.textures[3]), verdict)
+    p("             node %d (%s)  indices %d  wrap %s/%s", mesh.nodeIndex or -1,
+      tostring(bone and bone.name), verts, tostring(mat.wrapU), tostring(mat.wrapV))
+    if not own and not seenMat[mesh.materialIndex] then
+      seenMat[mesh.materialIndex] = true
+      p("      material struct @%s (0x2C bytes):", tostring(mat.at))
+      for _, l in ipairs(hexRows(md, mat.at, 0x2C)) do out[#out + 1] = l end
+      p("      material params @%s (0x200 bytes):", tostring(mat.paramsAt))
+      for _, l in ipairs(hexRows(md, mat.paramsAt, 0x200)) do out[#out + 1] = l end
+    end
+    -- every non-body texture this mesh names, decoded untouched
+    if not own and writePng and td then
+      for slot = 1, 3 do
+        local n = mat.textures and mat.textures[slot]
+        local tt = n and textures[n]
+        if tt and not exported[n] then
+          exported[n] = true
+          local okT, img = pcall(PICA.decodeTexture, td, tt.address, tt.width, tt.height, tt.format)
+          if okT and img then pcall(writePng, ("dex%d_%s.png"):format(dex, n:gsub("[^%w_%-]", "_")), img) end
+        end
+      end
+    end
+  end
+  return table.concat(out, "\n")
+end
+
 return C
