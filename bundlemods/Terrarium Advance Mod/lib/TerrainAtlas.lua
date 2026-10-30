@@ -807,6 +807,9 @@ end
 local function withOverrides(map, base, baked)
   local TO = tileOverrides()
   if not TO then return base, baked end
+  -- PERFORMANCE > TILE SWAP OFF (lib/PerfTest.lua)
+  local okP, PT = pcall(V.optional, "PerfTest")
+  if okP and PT and PT.tilesOff and PT.tilesOff() then return base, baked end
   local tileset = map.tileset
   local okPlan, plan = pcall(TO.planFor, tileset)
   if not (okPlan and plan) then return base, baked end

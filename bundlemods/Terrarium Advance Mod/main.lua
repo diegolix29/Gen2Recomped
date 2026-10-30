@@ -197,6 +197,8 @@ local DrawDistance = V.require("DrawDistance")
 -- Gen 4 only: how far the voxel trees reach (DrawDistance above never runs on Platinum)
 local Gen4Distance = V.require("Gen4Distance")
 local Gen4Detail = V.require("Gen4Detail")
+-- TILE SWAP / SKY / MESH FX test rows (lib/PerfTest.lua)
+local PerfTest = V.require("PerfTest")
 -- Gen 4 only: Platinum's NPCs as smooth 3D bodies built from their own sprites
 local Gen4NpcModels = V.require("Gen4NpcModels")
 local OverworldBattle = V.require("OverworldBattle")
@@ -251,6 +253,8 @@ local function installNativeWorldFx()
   -- roamers: spawn logic for grass/water/cave on the native 3D field
   pcall(function() V.require("Gen4Spawn").install() end)
   pcall(function() Gen4WorldHost.install() end)
+  -- last: its drawFree wrapper must run before Gen4Sky / Lawn / Hide read their flags
+  pcall(function() PerfTest.install() end)
   nativeWorldFx = true
   return true
 end
@@ -999,6 +1003,24 @@ local SETTINGS = {
     .. "softer 3D people, and a lighter battle backdrop while the camera "
     .. "moves -- maps load much faster and run smoother. FULL: the original "
     .. "detail. Changing it rebuilds those effects.",
+    when = function() return Gen4Bridge.isNativeWorld() end,
+    full = true, cat = "perf" },
+  -- ------- perf test rows: switch one suspect off at a time and compare FPS
+  { PerfTest.tiles,
+    "Perf test. OFF stops the mod's ground texture swaps (grass / mulch / "
+    .. "sand pictures on the native ground). Gen 4/5: at once. Gen 1-2 tile "
+    .. "overrides: from the next map load.",
+    full = true, cat = "perf" },
+  { PerfTest.sky,
+    "Perf test, Gen 4/5. FULL: the mod's whole sky (banded sky, clouds, "
+    .. "painted horizon, sky layer with birds and planes, scenery ring). "
+    .. "FLAT: only the 2D banded sky. OFF: the game's own horizon.",
+    when = function() return Gen4Bridge.isNativeWorld() end,
+    full = true, cat = "perf" },
+  { PerfTest.mesh,
+    "Perf test, Gen 4/5. OFF stops every effect that builds 3D meshes: "
+    .. "trees, grass, rocks, fences, ledge piles, flowers, lamp posts and "
+    .. "water. The game's own flat cards draw instead.",
     when = function() return Gen4Bridge.isNativeWorld() end,
     full = true, cat = "perf" },
   { Gen4NpcModels.setting,

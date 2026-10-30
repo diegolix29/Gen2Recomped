@@ -61,3 +61,13 @@
 - Desktop shot after the load throttle: 58 fps but 21 frames > 50 ms in 10 s; the hitch was 66 ms with "g4 drawFree 58" and no liveModel/modelFor or GC drop listed, so the time was untimed self time in drawFree. Most likely LuaJIT's allocation-driven GC steps (295 MB heap) running inside whatever code allocates. The log's Gen4Budget burst also showed trees max 52.8 ms.
 - Gen4Bridge.lua: the pacer now owns the collector while a native world draws (Bridge.GC_OWN = true). After each pacer run it calls collectgarbage("stop"). A global collectgarbage wrapper (state shared in _G.__terrariumGc) re-stops it after any step/restart/collect, such as the engine's per-update step in src/core/Game.lua, and hands GC back ("restart") once the world has not been drawn for Bridge.GC_RELEASE (1 s). The budget grows x3 when the heap passes 2x the post-cycle size and x6 past 3x.
 - Diagnostic meaning: if hitches now show up as "fx gc pacer", the cost is one atomic GC step (unbounded) and the fix is a smaller heap; if they stay in "g4 drawFree", it is not GC, and drawFree needs finer sections.
+
+## 2026-10-30 — PERFORMANCE perf-test rows (uncommitted, untested in game)
+- Goal: find what makes mobile slow with Terrarium Advance: ground tile swaps, the sky, or mesh-building effects. Vertex fixes alone did not help.
+- New lib/PerfTest.lua, three ModSetting rows in PERFORMANCE (keys perfTestTiles / perfTestSky / perfTestMesh):
+  - TILE SWAP ON/OFF: Gen4Lawn.enabled + Gen4Sand.enabled (+ bridge "sand"/"lawn"). Gen 1-2: TerrainAtlas.withOverrides skips data/tile_overrides.lua stamps (next map load).
+  - SKY FULL/FLAT/OFF (Gen 4/5): FLAT = Bridge.setEffect("sky", false) so only Sky.paint runs; OFF = Gen4Sky.enabled false (engine horizon).
+  - MESH FX ON/OFF (Gen 4/5): Bridge.setEffect off for water, bump, trees, rocks, fence, flowers, lamps, grass; Gen4Hide keeps native cards.
+- PerfTest.install wraps Gen4Ground.drawFree last (outermost) and applies only on change; it only re-enables effects it disabled itself. Installed at the end of installNativeWorldFx in main.lua.
+- Lawn's modelFor texture tagging still runs while TILE SWAP is OFF (load-time only); the per-draw material merge is skipped.
+- Syntax checked with lovec loadstring.
