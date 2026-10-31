@@ -3169,8 +3169,16 @@ function P:event(context,name,payload)
       return true
     end
     if actor and type(actor.hit)=="function" then
+      -- an ORAS physical attack has not reached its contact pose yet: the
+      -- reaction (and its damage FX, via onStarted) waits for it
+      local holdFor=0
+      local attackerActor=attacker and P.stadiumActors[attacker] and P.stadiumActors[attacker].actor
+      if attackerActor and attackerActor~=actor and type(attackerActor.orasContactWait)=="function" then
+        local okWait,wait=pcall(attackerActor.orasContactWait,attackerActor)
+        if okWait then holdFor=tonumber(wait) or 0 end
+      end
       pcall(actor.hit,actor,payload,{nativeSlot=damageSlot,
-        sourceSequenceKind=damageSequenceKind,onStarted=bindStartedDamage})
+        sourceSequenceKind=damageSequenceKind,onStarted=bindStartedDamage,holdFor=holdFor})
     else bindStartedDamage(nil,true) end
   elseif semantic=="battle.fainted" then
     side=(S and S.payload and S.payload(context,payload,{"battler","side"})) or (payload and payload.side)
