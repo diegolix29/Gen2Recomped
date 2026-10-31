@@ -38,8 +38,23 @@ local HOT_CAP_BYTES=1536*1024*1024
 local MAGIC="CBEUNIT1"
 local VERSION=1
 
+-- ORAS models (lib/ORASActorCache.lua): oras/pokemon/<dex>/..., one unit per
+-- species (both variants share the folder)
+local ORAS_DIR=ARCHIVE_ROOT.."/oras"
+local INDEX_ORAS="cache/archive_v1/oras.lua"
+local MARKER_ORAS="build/cache_archive_oras_v1.complete"
+
+-- per kind: loose prefix, unit folder, index, done marker
+local KINDS={
+  pokemon={prefix="cache/pokemon/",dir=POKEMON_DIR,index=INDEX_POKEMON,marker=MARKER_POKEMON},
+  movefx={prefix="cache/movefx/",dir=MOVEFX_DIR,index=INDEX_MOVEFX,marker=MARKER_MOVEFX},
+  oras={prefix="oras/pokemon/",dir=ORAS_DIR,index=INDEX_ORAS,marker=MARKER_ORAS},
+}
+local KIND_LIST={"pokemon","movefx","oras"}
+A.KINDS=KINDS
+
 local job=nil
-local indexMemo={pokemon=nil,movefx=nil}
+local indexMemo={}
 
 local function call(obj,name,...)
   if not obj or type(obj[name])~="function" then return nil,"unavailable" end
@@ -95,6 +110,10 @@ end
 function A.running()
   return job~=nil
 end
+-- the running job's progress label, without status()'s folder listing
+function A.stage()
+  return job and job.label or nil
+end
 
 local function compressBytes(raw)
   local tool=A.available()
@@ -142,7 +161,7 @@ end
 
 local function readIndex(kind)
   if indexMemo[kind] then return indexMemo[kind] end
-  local path=kind=="movefx" and INDEX_MOVEFX or INDEX_POKEMON
+  local path=KINDS[kind].index
   local v=loadLua(select(1,call(mod.cache,"read",path)))
   if type(v)~="table" then v=emptyIndex() end
   v.byUnit=v.byUnit or {};v.entries=v.entries or {}
@@ -153,7 +172,7 @@ local function readIndex(kind)
 end
 
 local function writeIndex(kind,idx)
-  local path=kind=="movefx" and INDEX_MOVEFX or INDEX_POKEMON
+  local path=KINDS[kind].index
   local out={"return {originalBytes=",tostring(math.floor(idx.originalBytes or 0)),
     ",archiveBytes=",tostring(math.floor(idx.archiveBytes or 0)),",entries={"}
   for p,size in pairs(idx.entries) do
@@ -186,6 +205,11 @@ local function pinnedLoose(path)
   if name=="model_cache.lua" or name=="rev.txt" or name=="extract.txt" then return true end
   if startsWith(path,"cache/archive_v1/") then return true end
   if startsWith(path,"build/cache_archive_") then return true end
+  -- ORAS: the species list, and what ORASActorCache.build / ORASRuntime read
+  -- through mod.cache directly (stamp, compact marker, "is it built")
+  if path=="oras/pokemon/index.lua" then return true end
+  local oname=path:match("^oras/pokemon/%d+/([^/]+)$")
+  if oname=="rev.txt" or oname=="q16.txt" or oname=="model_cache.lua" or oname=="metadata_v1.lua" then return true end
   return false
 end
 
@@ -193,10 +217,14 @@ local function kindFor(path)
   if type(path)~="string" then return nil end
   if startsWith(path,"cache/pokemon/") then return "pokemon" end
   if startsWith(path,"cache/movefx/") then return "movefx" end
+  if startsWith(path,"oras/pokemon/") then return "oras" end
   return nil
 end
 
 local function unitKey(kind,path)
+  if kind=="oras" then
+    return path:match("^oras/pokemon/(%d+)/") or "_meta"
+  end
   if kind=="pokemon" then
     local dex,rest=path:match("^cache/pokemon/(%d+)/(.*)$")
     if not dex then return "_meta" end
@@ -208,8 +236,7 @@ end
 
 local function unitRel(kind,key)
   local safe=tostring(key):gsub("[^%w%-_]+","_")
-  local dir=kind=="movefx" and MOVEFX_DIR or POKEMON_DIR
-  return dir.."/"..safe..".cbeu"
+  return KINDS[kind].dir.."/"..safe..".cbeu"
 end
 
 local function pumpEvents()
@@ -336,7 +363,7 @@ local function queueFor(kind)
   -- Preferred: the files that are really there (host mod.cache:list).  This
   -- also takes the runtime action sidecars (runtime_mesh_v1/action_*) that
   -- the manifest walk below never named.
-  local listed,method=listKeys(kind=="movefx" and "cache/movefx" or "cache/pokemon")
+  local listed,method=listKeys((KINDS[kind].prefix:gsub("/$","")))
   A.lastListing={kind=kind,method=method,keys=#listed}
   if #listed>0 then
     for _,path in ipairs(listed) do
@@ -350,7 +377,9 @@ local function queueFor(kind)
     if #queue>0 then return queue end
     A.lastListing.method=method.." (unusable, manifest walk)"
   end
-  if kind=="pokemon" then
+  if kind=="oras" then
+    -- no manifest to walk: the store listing is the only source
+  elseif kind=="pokemon" then
     for _,path in ipairs(pokemonManifestPaths()) do add(path) end
     for _,path in ipairs(generatedPrefixPaths("cache/pokemon/")) do add(path) end
   else
@@ -536,7 +565,7 @@ function A.infoEntry(path)
 end
 
 local function archiveBytesOnDisk(kind)
-  local dir=kind=="movefx" and MOVEFX_DIR or POKEMON_DIR
+  local dir=KINDS[kind].dir
   local info=love.filesystem.getInfo and love.filesystem.getInfo(dir)
   if not (info and info.type=="directory") then
     local idx=readIndex(kind)
@@ -562,15 +591,21 @@ function A.status()
   local tool=A.available()
   local p=readIndex("pokemon")
   local m=readIndex("movefx")
+  local o=readIndex("oras")
   local pBytes=archiveBytesOnDisk("pokemon")
   local mBytes=archiveBytesOnDisk("movefx")
+  local oBytes=archiveBytesOnDisk("oras")
+  -- totals are the Colosseum caches (the PACK CACHE menu); ORAS has its own
+  -- fields below (ORAS MODELS reports them)
   local original=(p.originalBytes or 0)+(m.originalBytes or 0)
   local packed=pBytes+mBytes
-  local pCount,mCount=0,0
+  local pCount,mCount,oCount=0,0,0
   for _ in pairs(p.entries) do pCount=pCount+1 end
   for _ in pairs(m.entries) do mCount=mCount+1 end
+  for _ in pairs(o.entries) do oCount=oCount+1 end
   local pokemonPacked=looseExists(MARKER_POKEMON)
   local movefxPacked=looseExists(MARKER_MOVEFX)
+  local orasPacked=looseExists(MARKER_ORAS)
   return {
     toolAvailable=tool and true or false,
     toolLabel=tool and tool.label or "LÖVE zlib unavailable",
@@ -579,8 +614,12 @@ function A.status()
     error=(job and job.error) or A.lastError,
     pokemonPacked=pokemonPacked and true or false,
     movefxPacked=movefxPacked and true or false,
+    orasPacked=orasPacked and true or false,
     pokemonEntries=pCount,
     movefxEntries=mCount,
+    orasEntries=oCount,
+    orasArchiveLabel=prettyBytes(oBytes),
+    orasOriginalLabel=prettyBytes(o.originalBytes or 0),
     originalBytes=original,
     archiveBytes=packed,
     savedBytes=math.max(0,original-packed),
@@ -606,18 +645,47 @@ end
 -- packed again (replacing it in the unit) when it differs -- a species
 -- extracted again.  A loose file is deleted only if it did not change while
 -- it was being packed (size + modtime).
+-- ORAS species built before paged action banks keep the old unpaged files
+-- (runtime_mesh_v1/action_<name>_NN.f32, action_<name>_floor.lua) next to the
+-- paged ones; once a manifest lists pages, nothing reads them.  Returns the
+-- set of such paths among `paths` -- only for actions whose first paged bank
+-- is really there (a species missing it is rebuilt by ORAS MODELS instead).
+local function orasDeadFiles(paths)
+  local have={}
+  for _,p in ipairs(paths) do have[p]=true end
+  local dead={}
+  for _,p in ipairs(paths) do
+    local dir,name=p:match("^(oras/pokemon/%d+/runtime_mesh_v1)/action_(%w+)%.lua$")
+    if name then
+      local meta=loadLua(looseRead(p))
+      if type(meta.pages)=="table" and #meta.pages>0 and not meta.alias
+          and have[("%s/action_%s_page1_01.f32"):format(dir,name)] then
+        local stem=dir.."/action_"..name.."_"
+        for _,q in ipairs(paths) do
+          if q:sub(1,#stem)==stem then
+            local rest=q:sub(#stem+1)
+            if rest:match("^%d%d%.f32$") or rest=="floor.lua" then dead[q]=true end
+          end
+        end
+      end
+    end
+  end
+  return dead
+end
+A._orasDeadFiles=orasDeadFiles   -- offline tests
+
 local function packKind(kind,onlyKeys)
   if not A.available() then error("love.data.compress (zlib) is unavailable on this host",0) end
   love.filesystem.createDirectory(ARCHIVE_ROOT)
-  love.filesystem.createDirectory(kind=="movefx" and MOVEFX_DIR or POKEMON_DIR)
+  love.filesystem.createDirectory(KINDS[kind].dir)
   local idx=readIndex(kind)
   local source
   if onlyKeys then
     source={}
-    local root=kind=="movefx" and "cache/movefx/" or "cache/pokemon/"
+    local root=KINDS[kind].prefix
     local seenPrefix={}
     for key in pairs(onlyKeys) do
-      local prefix=root..(kind=="movefx" and tostring(key) or tostring(key):match("^(%d+)") or tostring(key))
+      local prefix=root..(kind~="pokemon" and tostring(key) or tostring(key):match("^(%d+)") or tostring(key))
       if not seenPrefix[prefix] then
         seenPrefix[prefix]=true
         for _,path in ipairs((listKeys(prefix))) do
@@ -629,6 +697,23 @@ local function packKind(kind,onlyKeys)
     end
   else
     source=queueFor(kind)
+  end
+  if kind=="oras" then
+    local all={}
+    for _,item in ipairs(source) do all[#all+1]=item.path end
+    local dead=orasDeadFiles(all)
+    if next(dead) then
+      local kept,dropped={},0
+      for _,item in ipairs(source) do
+        if dead[item.path] then
+          looseDelete(item.path);dropped=dropped+1
+          local G=V.GeneratedAssets
+          if G and G.invalidateInfo then G.invalidateInfo(item.path) end
+        else kept[#kept+1]=item end
+      end
+      source=kept
+      A.lastDeadDropped=(A.lastDeadDropped or 0)+dropped
+    end
   end
   local queue={}
   for _,item in ipairs(source) do
@@ -704,7 +789,7 @@ local function packKind(kind,onlyKeys)
     local L=A.lastListing or {}
     looseWrite(("build/cache_archive_%s_report.txt"):format(kind),
       ("listing=%s\nkeys=%s\nqueued=%s\nunits=%d\nfiles=%d\n"):format(tostring(L.method),tostring(L.keys),tostring(L.queued),#units,#queue))
-    local marker=kind=="movefx" and MARKER_MOVEFX or MARKER_POKEMON
+    local marker=KINDS[kind].marker
     local n=0;for _ in pairs(idx.entries) do n=n+1 end
     looseWrite(marker,("cbe-cache-archive=1\nkind=%s\nentries=%d\n"):format(kind,n))
   end
@@ -713,8 +798,11 @@ end
 
 local function packBody(scope)
   scope=scope or "all"
+  -- "all" is the Colosseum caches; ORAS is packed only on its own scope, by
+  -- ORAS MODELS (lib/ORASModels.lua) -- the two games are independent imports
   if scope=="all" or scope=="pokemon" then packKind("pokemon") end
   if scope=="all" or scope=="movefx" then packKind("movefx") end
+  if scope=="oras" then packKind("oras") end
   return true
 end
 
@@ -724,7 +812,8 @@ function A.beginPack(scope)
   if not A.available() then return false,"love.data.compress unavailable" end
   scope=scope or "all"
   local label=scope=="pokemon" and "PACKING POKEMON CACHE"
-    or (scope=="movefx" and "PACKING MOVEFX CACHE" or "PACKING POKEMON + MOVEFX")
+    or (scope=="movefx" and "PACKING MOVEFX CACHE")
+    or (scope=="oras" and "PACKING ORAS MODELS" or "PACKING POKEMON + MOVEFX")
   A.lastError=nil
   local co=WorkBudget.new(function()
     local ok,err=xpcall(function() packBody(scope) end,debug.traceback)
@@ -749,12 +838,13 @@ end
 ----------------------------------------------------------------------
 A.autoPack=true
 local AUTO_SETTLE=20
-local dirty={pokemon={},movefx={}}
+local dirty={pokemon={},movefx={},oras={}}
 local function now()
   if love and love.timer and love.timer.getTime then return love.timer.getTime() end
   return os.clock()
 end
--- kind "pokemon": key = dex (number or "<dex>/normal|shiny"); "movefx": stem
+-- kind "pokemon": key = dex (number or "<dex>/normal|shiny"); "movefx": stem;
+-- "oras": dex
 function A.markDirty(kind,key)
   if not dirty[kind] or key==nil then return end
   key=tostring(key)
@@ -768,7 +858,7 @@ end
 function A.tick()
   if job or not A.autoPack or not WorkBudget or not A.available() then return false end
   local t=now()
-  for _,kind in ipairs({"pokemon","movefx"}) do
+  for _,kind in ipairs(KIND_LIST) do
     local ready=nil
     for key,at in pairs(dirty[kind]) do
       if t-at>=AUTO_SETTLE then ready=ready or {};ready[key]=true end
@@ -798,7 +888,7 @@ end
 -- Mark every unit of `kind` that has loose (unpacked) files; returns count.
 function A.scanLoose(kind)
   local n=0
-  for _,path in ipairs((listKeys(kind=="movefx" and "cache/movefx" or "cache/pokemon"))) do
+  for _,path in ipairs((listKeys((KINDS[kind].prefix:gsub("/$",""))))) do
     if not pinnedLoose(path) and kindFor(path)==kind then
       local key=unitKey(kind,path)
       if dirty[kind] and not dirty[kind][key] then dirty[kind][key]=0;n=n+1 end
@@ -925,7 +1015,7 @@ end
 function A.restorePinned(force)
   if not force and looseExists(PINNED_RESTORE_MARKER) then return 0,0 end
   local restored,missing=0,0
-  for _,kind in ipairs({"pokemon","movefx"}) do
+  for _,kind in ipairs(KIND_LIST) do
     local idx=readIndex(kind)
     for key,paths in pairs(idx.byUnit or {}) do
       local wanted,any={},false
@@ -972,7 +1062,7 @@ end
 function A.repairLostEntries(force)
   if not force and looseExists(REPAIR_MARKER) then return 0,0 end
   local dropped,lost=0,0
-  for _,kind in ipairs({"pokemon","movefx"}) do
+  for _,kind in ipairs(KIND_LIST) do
     local idx=readIndex(kind)
     local changed=false
     for key,paths in pairs(idx.byUnit or {}) do
@@ -991,7 +1081,10 @@ function A.repairLostEntries(force)
         idx.byUnit[key]=nil
         closeUnit(rel)
         pcall(love.filesystem.remove,rel)
-        if kind=="pokemon" then
+        if kind=="oras" then
+          -- ORAS MODELS rebuilds a species whose stamp is gone
+          looseDelete(("oras/pokemon/%s/rev.txt"):format(tostring(key)))
+        elseif kind=="pokemon" then
           local dex,variant=tostring(key):match("^(%d+)/(%a+)$")
           if dex then looseDelete(("cache/pokemon/%s%s/rev.txt"):format(dex,variant=="shiny" and "/shiny" or "")) end
         else
@@ -1002,7 +1095,7 @@ function A.repairLostEntries(force)
     if changed then
       idx.archiveBytes=archiveBytesOnDisk(kind)
       writeIndex(kind,idx)
-      looseDelete(kind=="movefx" and MARKER_MOVEFX or MARKER_POKEMON)
+      looseDelete(KINDS[kind].marker)
     end
   end
   -- GeneratedAssets' persisted size registry still lists the lost files as
@@ -1014,15 +1107,18 @@ end
 
 function A.wipe()
   rmrf(ARCHIVE_ROOT)
-  looseDelete(INDEX_POKEMON);looseDelete(INDEX_MOVEFX);looseDelete(HOT_PATH)
-  looseDelete(MARKER_POKEMON);looseDelete(MARKER_MOVEFX)
-  indexMemo={pokemon=nil,movefx=nil}
+  for _,kind in ipairs(KIND_LIST) do looseDelete(KINDS[kind].index);looseDelete(KINDS[kind].marker) end
+  looseDelete(HOT_PATH)
+  indexMemo={}
   job=nil
   return true
 end
 
-function A.install()
-  local G=V.GeneratedAssets
+-- Hooks a GeneratedAssets instance so packed files read like loose ones.
+-- Default: the one this module was loaded with (V.GeneratedAssets).  The
+-- ORAS-only runtime (lib/ORASRuntime.lua) loads its own copy and passes it.
+function A.install(G)
+  G=G or V.GeneratedAssets
   if not (G and not G._cacheArchiveInstalled) then return G end
   G._cacheArchiveInstalled=true
   local origRead,origInfo=G.read,G.info

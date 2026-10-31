@@ -2657,6 +2657,14 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
   if okOras and orasRow and not rowExists(orasRow.id) then
     table.insert(out, orasRow)
   end
+  -- ORAS PACK, right below ORAS MODELS (ORAS only; the Colosseum caches have
+  -- their own PACK CACHE row)
+  local okOrasPack, orasPackRow = pcall(function()
+    return V.require("ORASModels").packRow()
+  end)
+  if okOrasPack and orasPackRow and not rowExists(orasPackRow.id) then
+    table.insert(out, orasPackRow)
+  end
 
   local okMewtwo, mewtwoRow = pcall(function()
     local StadiumInstall = V.require("StadiumInstall")

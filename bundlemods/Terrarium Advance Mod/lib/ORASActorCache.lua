@@ -994,6 +994,8 @@ function C.build(mod, list, log, progress)
         built = built + 1
         listed[dex] = true
         writeIndex()
+        -- packed by ORAS MODELS right after the build (lib/ORASModels.lua);
+        -- the fresh loose files replace any archived copies
         log("ORAS dex %d: %s", dex, summary)
       else
         failed = failed + 1

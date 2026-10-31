@@ -60,6 +60,18 @@ function R.install(mod, loadPackage)
   local Dex = ns.ColosseumDex
   pcall(Dex.loadOras, mod)
 
+  -- packed ORAS models (PACK CACHE, lib/CacheArchive.lua) must read like loose
+  -- ones through this runtime's own GeneratedAssets copy; without the
+  -- Colosseum runtime nothing has loaded the archive yet
+  local arch = mod.exports and mod.exports.cacheArchive
+  if not arch then
+    arch = load("lib/CacheArchive.lua", { mod = mod, WorkBudget = ns.WorkBudget, GeneratedAssets = ns.GeneratedAssets })
+    if arch and mod.exports then mod.exports.cacheArchive = arch end
+  end
+  if arch and arch.install then pcall(arch.install, ns.GeneratedAssets) end
+  ns.CacheArchive = arch
+  V.CacheArchive = V.CacheArchive or arch
+
   local Actors = module("PokemonActors")
   if not Actors then return nil, "PokemonActors unavailable" end
 
