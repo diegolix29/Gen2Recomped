@@ -33,7 +33,10 @@
 - Branch name suggests Gen 5 (Black/White) fixes; recent commits are about Emerald voxels and load lag / perf settings.
 
 ## Colosseum cache packing (lib/CacheArchive.lua, PACK CACHE menu)
-- Units: <save>/cbe_cache_archive/{pokemon,movefx}/<key>.cbeu (zlib per file), index cache/archive_v1/<kind>.lua, readEntry rehydrates a whole unit loose (1.5 GB hot cap). Must be loaded BEFORE BuildPipeline.run (main.lua creates it early). Identity files that code reads via mod.cache directly stay loose (pinnedLoose): manifests, movefx index/coverage, per-species model_cache.lua / rev.txt / extract.txt.
+- Units: <save>/cbe_cache_archive/{pokemon,movefx}/<key>.cbeu (zlib per file), index cache/archive_v1/<kind>.lua, readEntry reads one entry straight from its unit (no loose copy). Auto-pack: species/moves written by the extractor or GeneratedAssets.write are packed in the background (A.tick from BattleRuntime, 20 s settle). Must be loaded BEFORE BuildPipeline.run (main.lua creates it early). Identity files that code reads via mod.cache directly stay loose (pinnedLoose): manifests, movefx index/coverage, per-species model_cache.lua / rev.txt / extract.txt.
+- Where: units in C:/Users/<user>/AppData/Roaming/LOVE/Gen2Recomp/cbe_cache_archive/ (pokemon/<dex>_normal|shiny.cbeu, movefx/<stem>.cbeu); index in modstorage/DRAMATIC_SHAPE/cache/archive_v1/{pokemon,movefx}.lua. The two belong together: delete both or neither.
+- GeneratedAssets hooks (A.install): info, read, write (marks auto-pack), revalidateInfo (model library texture checks / disk-cache count) all fall back to the archive.
+- Status 2026-10-31: confirmed working in game by the user (packed cache loads, model library prepares).
 
 ## ORAS import (Terrarium Advance Mod, bundlemods/Terrarium Advance Mod/)
 - Player-supplied decrypted Omega Ruby / Alpha Sapphire dump, launcher import id `pokemon_oras` (file pokemon_oras.3ds), read in slices by lib/N3DSRom.lua. Built from OPTIONS -> ORAS MODELS (lib/ORASModels.lua); lib/ORASProbe.lua writes survey reports (mod cache oras/probe.txt, oras/export.txt).

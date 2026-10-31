@@ -501,6 +501,8 @@ function R.runWorkFrame(game,topBefore,topAfter)
       pcall(PokemonActors.pumpPartyPrewarm,game)
     end
     local Archive=V.CacheArchive
+    -- auto-pack of freshly extracted species / moves (lib/CacheArchive.lua)
+    if Archive and type(Archive.tick)=="function" and onOverworld then pcall(Archive.tick) end
     if Archive and type(Archive.pump)=="function" and Archive.running and Archive.running() then
       pcall(Archive.pump,40)
     end

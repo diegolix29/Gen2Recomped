@@ -195,6 +195,13 @@ local function extractSource(...)
   local ok,value,why=pcall(extractor.extractSpecies,...)
   sourceBusy=false;committed()
   if not ok then return nil,tostring(value) end
+  -- a freshly extracted species is packed in the background once it settles
+  -- (lib/CacheArchive.lua auto-pack); the extractor writes through mod.cache
+  local Arch=V.CacheArchive
+  if value and Arch and Arch.markDirty then
+    local dex=select(3,...)
+    pcall(Arch.markDirty,"pokemon",tonumber(dex) or tostring(dex or ""):match("^(%d+)"))
+  end
   return value,why
 end
 local metadataReader

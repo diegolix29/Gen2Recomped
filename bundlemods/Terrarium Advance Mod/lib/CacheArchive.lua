@@ -99,7 +99,9 @@ end
 local function compressBytes(raw)
   local tool=A.available()
   if not tool then return raw,0 end
-  local ok,out=pcall(love.data.compress,"string","zlib",raw,9)
+  -- level 6: close to 9 in size, several times faster -- packing runs in
+  -- the background while playing (auto-pack), one file is not interruptible
+  local ok,out=pcall(love.data.compress,"string","zlib",raw,6)
   if ok and type(out)=="string" and #out>0 then return out,1 end
   return raw,0
 end
@@ -378,12 +380,63 @@ local function unitRecords(bytes)
   return out
 end
 
+-- Where each entry of a unit sits, read from its headers once (File:seek
+-- past the data): unitTables[rel][path] = {pos, rawSize, codec, size}.  A
+-- read then fetches and inflates just that entry.
+local unitTables={}
+local openRel,openFile=nil,nil
+local function closeUnit(rel)
+  if openFile and (rel==nil or rel==openRel) then pcall(openFile.close,openFile);openFile=nil;openRel=nil end
+  if rel then unitTables[rel]=nil else unitTables={} end
+end
+local function unitTable(rel)
+  local t=unitTables[rel];if t then return t end
+  local f=love.filesystem.newFile and love.filesystem.newFile(rel)
+  if not (f and f:open("r")) then return nil end
+  t={}
+  local head=f:read(16)
+  if type(head)=="string" and #head==16 and head:sub(1,8)==MAGIC then
+    local pos=16
+    for _=1,ru32(head,13) or 0 do
+      local h=f:read(2);if not h or #h<2 then break end
+      local plen=ru16(h,1)
+      local path=f:read(plen);local meta=f:read(9)
+      if not (path and meta and #meta==9) then break end
+      pos=pos+2+plen+9
+      local size=ru32(meta,6)
+      t[path]={pos=pos,rawSize=ru32(meta,1),codec=meta:byte(5),size=size}
+      pos=pos+size
+      f:seek(pos)
+    end
+  end
+  f:close()
+  unitTables[rel]=t
+  return t
+end
+local function readFromUnit(rel,path)
+  local t=unitTable(rel);local e=t and t[path]
+  if not e then return nil,"entry not in unit file" end
+  if openRel~=rel then
+    closeUnit(openRel and openRel or nil)
+    unitTables[rel]=t
+    local f=love.filesystem.newFile(rel)
+    if not (f and f:open("r")) then return nil,"unit file unreadable" end
+    openFile,openRel=f,rel
+  end
+  openFile:seek(e.pos)
+  local packed=openFile:read(e.size)
+  local bytes=decompressBytes(packed,e.codec)
+  if type(bytes)~="string" or #bytes~=e.rawSize then return nil,"unit entry inflate failed" end
+  return bytes
+end
+
 -- Writes `items` into unit `rel`.  An existing unit keeps every entry that
 -- `items` does not replace: a second pack used to rewrite the unit with only
 -- its new files, losing everything the first pack had put there (whose loose
 -- originals were already deleted).
 local function writeUnit(rel,items)
   ensureDirFor(rel)
+  closeUnit(rel)
   local keep={}
   do
     local replacing={}
@@ -541,36 +594,57 @@ end
 ----------------------------------------------------------------------
 -- Packing
 ----------------------------------------------------------------------
-local function packKind(kind)
+local function looseStamp(path)
+  local info=select(1,call(mod.cache,"info",path))
+  if type(info)~="table" then return nil end
+  return tostring(info.size).."@"..tostring(info.modtime)
+end
+
+-- Pack loose files of `kind` into their units.  `onlyKeys` (set of unit
+-- keys, e.g. {["6/normal"]=true}) limits it to those species / moves.  A
+-- loose file already archived is deleted when equal to the archived copy and
+-- packed again (replacing it in the unit) when it differs -- a species
+-- extracted again.  A loose file is deleted only if it did not change while
+-- it was being packed (size + modtime).
+local function packKind(kind,onlyKeys)
   if not A.available() then error("love.data.compress (zlib) is unavailable on this host",0) end
   love.filesystem.createDirectory(ARCHIVE_ROOT)
   love.filesystem.createDirectory(kind=="movefx" and MOVEFX_DIR or POKEMON_DIR)
   local idx=readIndex(kind)
-  local archived={}
-  for path in pairs(idx.entries) do archived[path]=true end
-  local queue,dupes={},{}
-  for _,item in ipairs(queueFor(kind)) do
-    if not archived[item.path] then queue[#queue+1]=item
-    else
-      -- loose copy of an archived file: a rehydrated one, or one re-extracted
-      -- while the archive was invisible at startup -- dropped below if equal
-      local d=dupes[item.key];if not d then d={};dupes[item.key]=d end
-      d[#d+1]=item.path
-    end
-  end
-  for key,paths in pairs(dupes) do
-    if WorkBudget then WorkBudget.checkpoint(("PACK %s: loose duplicates"):format(kind:upper())) end
-    local blob=love.filesystem.read(unitRel(kind,key))
-    local files=type(blob)=="string" and parseUnit(blob,nil) or nil
-    if files then
-      for _,path in ipairs(paths) do
-        local loose=looseRead(path)
-        if loose~=nil and loose==files[path] then
-          looseDelete(path)
-          local G=V.GeneratedAssets
-          if G and G.invalidateInfo then G.invalidateInfo(path) end
+  local source
+  if onlyKeys then
+    source={}
+    local root=kind=="movefx" and "cache/movefx/" or "cache/pokemon/"
+    local seenPrefix={}
+    for key in pairs(onlyKeys) do
+      local prefix=root..(kind=="movefx" and tostring(key) or tostring(key):match("^(%d+)") or tostring(key))
+      if not seenPrefix[prefix] then
+        seenPrefix[prefix]=true
+        for _,path in ipairs((listKeys(prefix))) do
+          if not pinnedLoose(path) and kindFor(path)==kind and onlyKeys[unitKey(kind,path)] then
+            source[#source+1]={path=path,key=unitKey(kind,path)}
+          end
         end
       end
+    end
+  else
+    source=queueFor(kind)
+  end
+  local queue={}
+  for _,item in ipairs(source) do
+    if idx.entries[item.path] then
+      if WorkBudget then WorkBudget.checkpoint(("PACK %s: loose duplicates"):format(kind:upper())) end
+      local loose=looseRead(item.path)
+      local packed=loose and A.readEntry(item.path)
+      if loose~=nil and loose==packed then
+        looseDelete(item.path)
+        local G=V.GeneratedAssets
+        if G and G.invalidateInfo then G.invalidateInfo(item.path) end
+      elseif loose~=nil then
+        queue[#queue+1]=item
+      end
+    else
+      queue[#queue+1]=item
     end
   end
   local byUnit={}
@@ -582,17 +656,18 @@ local function packKind(kind)
   for _,u in pairs(byUnit) do units[#units+1]=u end
   table.sort(units,function(a,b) return tostring(a.key)<tostring(b.key) end)
 
-  local newly={}
   for ui,unit in ipairs(units) do
     if WorkBudget then WorkBudget.checkpoint(("PACK %s %d/%d"):format(kind:upper(),ui,#units)) end
     local batch={}
     for _,item in ipairs(unit.items) do
+      local stamp=looseStamp(item.path)
       local bytes=looseRead(item.path)
       if type(bytes)=="string" then
-        local row={path=item.path,bytes=bytes,key=item.key,size=#bytes}
+        local row={path=item.path,bytes=bytes,key=item.key,size=#bytes,stamp=stamp}
         if #batch==0 then row.verify=bytes end
         batch[#batch+1]=row
       end
+      if WorkBudget then WorkBudget.checkpoint(("PACK %s %d/%d"):format(kind:upper(),ui,#units)) end
     end
     if #batch>0 then
       local rel=unitRel(kind,unit.key)
@@ -600,17 +675,23 @@ local function packKind(kind)
       local ok,why=verifyUnit(rel,batch)
       if not ok then error(("archive verify failed [%s/%s], originals kept: %s"):format(kind,tostring(unit.key),tostring(why)),0) end
       local paths=idx.byUnit[unit.key] or {}
+      local listed={}
+      for _,pth in ipairs(paths) do listed[pth]=true end
       for _,item in ipairs(batch) do
+        if idx.entries[item.path] then
+          idx.originalBytes=math.max(0,(idx.originalBytes or 0)-(tonumber(idx.entries[item.path]) or 0))
+        end
         idx.entries[item.path]=item.size
-        paths[#paths+1]=item.path
-        newly[item.path]=item.size
+        if not listed[item.path] then paths[#paths+1]=item.path;listed[item.path]=true end
       end
       idx.byUnit[unit.key]=paths
       idx.originalBytes=(idx.originalBytes or 0)+(tonumber(original) or 0)
-      idx.archiveBytes=(idx.archiveBytes or 0)+(tonumber(packedTotal) or 0)
+      idx.archiveBytes=archiveBytesOnDisk(kind)
       writeIndex(kind,idx)
       for _,item in ipairs(batch) do
-        looseDelete(item.path)
+        if item.stamp==nil or looseStamp(item.path)==item.stamp then
+          looseDelete(item.path)
+        end
         local G=V.GeneratedAssets
         if G and G.invalidateInfo then G.invalidateInfo(item.path) end
       end
@@ -619,12 +700,14 @@ local function packKind(kind)
   end
 
   writeIndex(kind,idx)
-  local L=A.lastListing or {}
-  looseWrite(("build/cache_archive_%s_report.txt"):format(kind),
-    ("listing=%s\nkeys=%s\nqueued=%s\nunits=%d\nfiles=%d\n"):format(tostring(L.method),tostring(L.keys),tostring(L.queued),#units,#queue))
-  local marker=kind=="movefx" and MARKER_MOVEFX or MARKER_POKEMON
-  local n=0;for _ in pairs(idx.entries) do n=n+1 end
-  looseWrite(marker,("cbe-cache-archive=1\nkind=%s\nentries=%d\n"):format(kind,n))
+  if not onlyKeys then
+    local L=A.lastListing or {}
+    looseWrite(("build/cache_archive_%s_report.txt"):format(kind),
+      ("listing=%s\nkeys=%s\nqueued=%s\nunits=%d\nfiles=%d\n"):format(tostring(L.method),tostring(L.keys),tostring(L.queued),#units,#queue))
+    local marker=kind=="movefx" and MARKER_MOVEFX or MARKER_POKEMON
+    local n=0;for _ in pairs(idx.entries) do n=n+1 end
+    looseWrite(marker,("cbe-cache-archive=1\nkind=%s\nentries=%d\n"):format(kind,n))
+  end
   return true
 end
 
@@ -656,6 +739,84 @@ function A.beginPack(scope)
   end,label)
   job={co=co,label=label,error=nil}
   return true,"Packing started. Loose files are removed only after each unit verifies."
+end
+
+----------------------------------------------------------------------
+-- Auto-pack: a species / move whose cache was just written is packed in
+-- the background once nothing has written to it for AUTO_SETTLE seconds,
+-- so an install never grows the full loose cache.  A.autoPack = false
+-- turns it off (PACK CACHE still works by hand).
+----------------------------------------------------------------------
+A.autoPack=true
+local AUTO_SETTLE=20
+local dirty={pokemon={},movefx={}}
+local function now()
+  if love and love.timer and love.timer.getTime then return love.timer.getTime() end
+  return os.clock()
+end
+-- kind "pokemon": key = dex (number or "<dex>/normal|shiny"); "movefx": stem
+function A.markDirty(kind,key)
+  if not dirty[kind] or key==nil then return end
+  key=tostring(key)
+  if kind=="pokemon" and not key:find("/",1,true) then
+    dirty.pokemon[key.."/normal"]=now();dirty.pokemon[key.."/shiny"]=now()
+  else
+    dirty[kind][key]=now()
+  end
+end
+-- once a frame: start a background pack of the units that have settled
+function A.tick()
+  if job or not A.autoPack or not WorkBudget or not A.available() then return false end
+  local t=now()
+  for _,kind in ipairs({"pokemon","movefx"}) do
+    local ready=nil
+    for key,at in pairs(dirty[kind]) do
+      if t-at>=AUTO_SETTLE then ready=ready or {};ready[key]=true end
+    end
+    if ready then
+      for key in pairs(ready) do dirty[kind][key]=nil end
+      local label="AUTO-PACKING "..kind:upper()
+      local co=WorkBudget.new(function()
+        local ok,err=xpcall(function() packKind(kind,ready) end,debug.traceback)
+        if not ok then
+          job.error=tostring(err);A.lastError=job.error
+          call(mod.cache,"write","build/cache_archive_error.txt",job.error)
+          return false
+        end
+        return true
+      end,label)
+      job={co=co,label=label,error=nil,auto=true}
+      return true
+    end
+  end
+  return false
+end
+
+-- One background pass after an install that used the old reader: the
+-- species it unpacked whole (cache/archive_v1/hot.lua) left loose copies of
+-- archived files behind; equal ones are deleted.
+-- Mark every unit of `kind` that has loose (unpacked) files; returns count.
+function A.scanLoose(kind)
+  local n=0
+  for _,path in ipairs((listKeys(kind=="movefx" and "cache/movefx" or "cache/pokemon"))) do
+    if not pinnedLoose(path) and kindFor(path)==kind then
+      local key=unitKey(kind,path)
+      if dirty[kind] and not dirty[kind][key] then dirty[kind][key]=0;n=n+1 end
+    end
+  end
+  return n
+end
+
+function A.dropHotCopies()
+  local raw=select(1,call(mod.cache,"read",HOT_PATH))
+  if type(raw)~="string" then return false end
+  local hot=loadLua(raw)
+  for _,name in ipairs(type(hot.order)=="table" and hot.order or {}) do
+    local kind,key=tostring(name):match("^([^/]+)/(.*)$")
+    if dirty[kind] and key then dirty[kind][key]=0 end
+  end
+  looseDelete(HOT_PATH)
+  return true
 end
 
 function A.pump(budgetMs)
@@ -716,6 +877,9 @@ local function evictOldest(hot)
   return freed
 end
 
+-- One archived file, straight from its unit: no loose copy is written (the
+-- old reader unpacked the whole species -- ~150 MB of writes, the hitch --
+-- and kept up to 1.5 GB of such copies around).
 function A.readEntry(path)
   local kind=kindFor(path)
   if not kind then return nil,"not an archived cache path" end
@@ -723,37 +887,7 @@ function A.readEntry(path)
   local idx=readIndex(kind)
   if not idx.entries[path] then return nil,"path not present in archive" end
   if not A.available() then return nil,"love.data.decompress unavailable" end
-  local key=unitKey(kind,path)
-  local unitPaths=idx.byUnit[key]
-  if not unitPaths or #unitPaths==0 then return nil,"unit missing from archive index" end
-  local hot=readHotLog()
-  local name=hotName(kind,key)
-  local already=false
-  for _,k in ipairs(hot.order) do if k==name then already=true;break end end
-  if not (already and looseExists(path)) then
-    local rel=unitRel(kind,key)
-    local blob=love.filesystem.read(rel)
-    if type(blob)~="string" then return nil,"archived unit file missing: "..rel end
-    local files,err=parseUnit(blob,nil)
-    if not files then return nil,err end
-    local unitBytes=0
-    for _,p in ipairs(unitPaths) do
-      local bytes=files[p]
-      if type(bytes)=="string" then
-        looseWrite(p,bytes)
-        unitBytes=unitBytes+#bytes
-        local G=V.GeneratedAssets
-        if G and G.invalidateInfo then G.invalidateInfo(p) end
-      end
-    end
-    if not already then
-      hot.order[#hot.order+1]=name
-      hot.bytes=hot.bytes+unitBytes
-      while hot.bytes>HOT_CAP_BYTES and #hot.order>1 do hot.bytes=math.max(0,hot.bytes-evictOldest(hot)) end
-      writeHotLog(hot)
-    end
-  end
-  return looseRead(path)
+  return readFromUnit(unitRel(kind,unitKey(kind,path)),path)
 end
 
 -- One pass after an install packed with the old rules: the identity files
@@ -855,6 +989,7 @@ function A.repairLostEntries(force)
           if G and G.invalidateInfo then G.invalidateInfo(p) end
         end
         idx.byUnit[key]=nil
+        closeUnit(rel)
         pcall(love.filesystem.remove,rel)
         if kind=="pokemon" then
           local dex,variant=tostring(key):match("^(%d+)/(%a+)$")
@@ -896,6 +1031,27 @@ function A.install()
     local hit=origInfo(path)
     if type(hit)=="table" then return hit end
     return A.infoEntry(path)
+  end
+  -- revalidateInfo asks the host directly (model library texture checks,
+  -- runtime bin checks, the disk-cache count): an archived file answers
+  -- with its archived size, or every packed species reads as damaged
+  local origRevalidate=G.revalidateInfo
+  if type(origRevalidate)=="function" then
+    function G.revalidateInfo(path)
+      local hit=origRevalidate(path)
+      if type(hit)=="table" then return hit end
+      return A.infoEntry(tostring(path or ""))
+    end
+  end
+  -- every cache write through GeneratedAssets (runtime sidecars, action
+  -- bakes) marks its species / move for auto-pack
+  local origWrite=G.write
+  function G.write(path,data)
+    local a,b=origWrite(path,data)
+    local p=tostring(path or "")
+    local kind=kindFor(p)
+    if kind and not pinnedLoose(p) then A.markDirty(kind,unitKey(kind,p)) end
+    return a,b
   end
   function G.read(path)
     local data,err=origRead(path)

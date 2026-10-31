@@ -121,3 +121,15 @@
 - Fix: writeUnit keeps the existing unit's records it does not replace (unitRecords). A.repairLostEntries() (once at the early load, marker build/cache_archive_repair_v1.complete) drops every unit that lacks an indexed entry (unit file + index rows), deletes the loose cache/pokemon/<dex>[/shiny]/rev.txt or cache/movefx/<stem>/effect.lua so the species/move is extracted again from the disc, and deletes build/hard_cache_registry_v1.lua (stale positive sizes). Scratch-save test: pack -> add -> pack keeps both; repair drops the broken unit and its rev.txt.
 - Consequence for the user: every Colosseum species re-extracts on first use (or via Hard Cache Save), the 56 moves via the startup MoveFX repair; then PACK CACHE again.
 
+## 2026-10-31 — CacheArchive: direct reads + auto-pack (uncommitted, untested in game)
+- User log after repair + Hard Cache Save + repack: no rebuild ("Colosseum source build: READY"), species load from the archive. Freezes came from readEntry unpacking a whole species unit loose (~150 MB writes; hot log had 1.5 GB of copies).
+- readEntry now reads one entry: per-unit header table (unitTables, File:seek) + one open unit file; no loose writes. writeUnit / repair close and forget the unit table.
+- Auto-pack: A.markDirty(kind,key) from PokemonActors.extractSource (after extractSpecies) and from every GeneratedAssets.write under cache/pokemon|movefx (hook in A.install); A.tick() (BattleRuntime overworld frames, outside battle) starts a background packKind(kind, keys) for units idle 20 s (AUTO_SETTLE). main.lua after BuildPipeline.run: scanLoose("movefx") + dropHotCopies() (old hot units re-checked, equal loose copies deleted). A.autoPack = false disables.
+- packKind: loose file already archived -> deleted if equal, packed again (replacing it in the unit) if different; loose deleted only if size+modtime unchanged since read. zlib level 6 (was 9).
+- Offline test (scratch save): auto-pack after settle, 30/30 direct reads identical with 0 writes, re-extracted file replaces the archived one.
+- ORAS: user said leave ORAS alone for now. oras/ folder is missing from modstorage (deleted outside our code, before 2026-10-31 12:01); needs ORAS MODELS rebuild later.
+- 2026-10-31 follow-up: model library (BattleCache "Preparation paused", "missing or damaged model texture: cache/pokemon/5/tex_01.rgba", DISK CACHE 8/386) -- GeneratedAssets.revalidateInfo asks mod.cache directly, so packed files read as missing. A.install now wraps revalidateInfo to fall back to A.infoEntry (archived size).
+
+## 2026-10-31 — Colosseum cache packing confirmed; next: ORAS
+- User confirmed the Colosseum packed cache works in game (loads from cbe_cache_archive, model library prepares after the revalidateInfo fix). Still uncommitted.
+- NEXT: back to ORAS. Open items: the oras/ folder is gone from modstorage (rebuild with OPTIONS -> ORAS MODELS; new builds write OQ16 compact banks), ORAS cache packing (same idea as CacheArchive, ORAS ~9 GB with the new animations), then the battle roadmap (step 1 leftovers: hit sync, named attachment points; step 2 move effects; step 3 arenas).

@@ -3902,6 +3902,15 @@ local function initializeColosseumIntegration()
     if not okPipeline then error(result, 0) end
     colosseumBuildStatus = result or colosseumBuildStatus
 
+    -- auto-pack (lib/CacheArchive.lua): loose MoveFX files the build just
+    -- wrote, and the loose copies the old archive reader left behind, are
+    -- packed in the background once the overworld runs
+    do
+      local arch = mod.exports.cacheArchive
+      if arch and arch.scanLoose then pcall(arch.scanLoose, "movefx") end
+      if arch and arch.dropHotCopies then pcall(arch.dropHotCopies) end
+    end
+
     -- MOVE PREP acquisition: 386 PokemonStats rows plus the retail TM/HM
     -- table. A failure does not fabricate a partial catalog.
     local okMoveData, moveData = pcall(ColosseumPokemonMoveData.load, mod, openColosseumDisc)
