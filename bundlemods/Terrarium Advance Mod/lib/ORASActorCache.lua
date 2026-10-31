@@ -896,6 +896,34 @@ local function compactSpecies(mod, dex)
 end
 C.compactSpecies = compactSpecies
 
+-- Does every action manifest's first bank exist?  Some caches carry a current
+-- stamp over an older layout (action_<name>_NN.f32, no _page<i>_): the
+-- manifests name page files that are not there, every action fails to load
+-- and the battle plays a procedural lunge.  Such a species is rebuilt.
+-- Returns true, or false + the first missing file.
+local function speciesComplete(mod, dex)
+  local rt = root(dex) .. "/runtime_mesh_v1"
+  local have = {}
+  for _, key in ipairs(listKeys(mod, rt)) do have[key] = true end
+  if not next(have) then return true end   -- nothing listed: cannot tell
+  for key in pairs(have) do
+    local name = key:match("/action_([%w]+)%.lua$")
+    if name then
+      local okS, src = pcall(mod.cache.read, mod.cache, key)
+      local chunk = okS and type(src) == "string" and loadstring(src)
+      local okM, meta = pcall(chunk or error)
+      if okM and type(meta) == "table" and not meta.alias and type(meta.pages) == "table" then
+        for pi = 1, #meta.pages do
+          local first = ("%s/action_%s_page%d_01.f32"):format(rt, name, pi)
+          if not have[first] then return false, first end
+        end
+      end
+    end
+  end
+  return true
+end
+C.speciesComplete = speciesComplete
+
 -- Build `list` (dex numbers) and register them.  `log(fmt, ...)` reports each
 -- species; `progress(done, total, dex)` is told after each one.  A species
 -- whose rev.txt already holds C.STAMP is skipped (counted as skipped), and the
@@ -936,6 +964,13 @@ function C.build(mod, list, log, progress)
   for n, dex in ipairs(list) do
     local okRev, rev = pcall(mod.cache.read, mod.cache, root(dex) .. "/rev.txt")
     local current = okRev and rev == C.STAMP and listed[dex]
+    if current then
+      local okC, complete, missing = pcall(speciesComplete, mod, dex)
+      if okC and not complete then
+        current = false
+        log("ORAS dex %d: rebuilding, missing %s", dex, tostring(missing))
+      end
+    end
     if current and C.compactBanks ~= false then
       local okQ2, q = pcall(mod.cache.read, mod.cache, root(dex) .. "/q16.txt")
       if not (okQ2 and q == Q16_MARK) then
