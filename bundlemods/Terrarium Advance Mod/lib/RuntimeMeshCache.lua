@@ -86,7 +86,59 @@ function R.writeRows(path,rows,stride,checkpoint,preserveExisting)
   return ok~=false and ok~=nil,why,#bytes
 end
 
+-- Compact pose banks ("OQ16"), written by lib/ORASActorCache.lua and read
+-- back by RuntimeMeshCache.meshFromBytes.  A bank is rows of 44 float32
+-- (slot-0 position, uv, normal, slots 1-12 positions); the compact file is
+--   "OQ16", u32 rows, f32 posScale, f32 uvScale, u32 zlen, then zlen bytes
+--   of zlib, zero-padded so the file size is a multiple of 176 (one float
+--   row) -- the size checks that guard plain banks pass unchanged.
+-- Inflated: rows * 44 int16, low bytes first (all of them), then high bytes.
+-- Per row: position * posScale, uv * uvScale, normal * 32000, then each of
+-- slots 1-12 as (quantized position - the previous slot's), wrapped to 16
+-- bits (exact: every quantized position fits int16), so the poses of a
+-- vertex, which barely move, become small numbers zlib packs well.
+local okFfi,ffi=pcall(require,"ffi");if not okFfi then ffi=nil end
+function R.decodeQ16(bytes)
+  if not (ffi and type(bytes)=="string" and #bytes>=20 and bytes:sub(1,4)=="OQ16") then return nil,"not an OQ16 bank" end
+  local head=ffi.new("uint32_t[5]");ffi.copy(head,bytes,20)
+  local rows=tonumber(head[1]);local zlen=tonumber(head[4])
+  local ps=tonumber(ffi.cast("float*",head)[2]);local us=tonumber(ffi.cast("float*",head)[3])
+  if not (rows and rows>0 and zlen and zlen>0 and 20+zlen<=#bytes and ps>0 and us>0) then return nil,"bad OQ16 header" end
+  local ok,raw=pcall(love.data.decompress,"string","zlib",bytes:sub(21,20+zlen))
+  local n=rows*44
+  if not (ok and type(raw)=="string" and #raw==n*2) then return nil,"OQ16 inflate failed" end
+  local src=ffi.cast("const uint8_t*",raw)
+  local out=ffi.new("float[?]",n)
+  local ip,iu,inr=1/ps,1/us,1/32000
+  for r=0,rows-1 do
+    local o=r*44
+    local p0,p1,p2
+    for c=0,43 do
+      local i=o+c
+      local q=src[i]+src[n+i]*256
+      if q>=32768 then q=q-65536 end
+      if c<3 then
+        if c==0 then p0=q elseif c==1 then p1=q else p2=q end
+        out[i]=q*ip
+      elseif c<5 then out[i]=q*iu
+      elseif c<8 then out[i]=q*inr
+      else
+        local k=(c-8)%3
+        if k==0 then p0=(p0+q+32768)%65536-32768;out[i]=p0*ip
+        elseif k==1 then p1=(p1+q+32768)%65536-32768;out[i]=p1*ip
+        else p2=(p2+q+32768)%65536-32768;out[i]=p2*ip end
+      end
+    end
+  end
+  return ffi.string(out,n*4)
+end
+
 function R.meshFromBytes(format,bytes,stride,usage)
+  if type(bytes)=="string" and bytes:sub(1,4)=="OQ16" then
+    local plain,err=R.decodeQ16(bytes)
+    if not plain then return nil,err end
+    bytes=plain
+  end
   if not (R.supported() and type(bytes)=="string") then return nil,"runtime binary mesh unavailable" end
   stride=math.max(1,math.floor(tonumber(stride) or 0))
   local bytesPerVertex=stride*4

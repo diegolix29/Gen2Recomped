@@ -32,6 +32,9 @@
 ## Current State / Open Work
 - Branch name suggests Gen 5 (Black/White) fixes; recent commits are about Emerald voxels and load lag / perf settings.
 
+## Colosseum cache packing (lib/CacheArchive.lua, PACK CACHE menu)
+- Units: <save>/cbe_cache_archive/{pokemon,movefx}/<key>.cbeu (zlib per file), index cache/archive_v1/<kind>.lua, readEntry rehydrates a whole unit loose (1.5 GB hot cap). Must be loaded BEFORE BuildPipeline.run (main.lua creates it early). Identity files that code reads via mod.cache directly stay loose (pinnedLoose): manifests, movefx index/coverage, per-species model_cache.lua / rev.txt / extract.txt.
+
 ## ORAS import (Terrarium Advance Mod, bundlemods/Terrarium Advance Mod/)
 - Player-supplied decrypted Omega Ruby / Alpha Sapphire dump, launcher import id `pokemon_oras` (file pokemon_oras.3ds), read in slices by lib/N3DSRom.lua. Built from OPTIONS -> ORAS MODELS (lib/ORASModels.lua); lib/ORASProbe.lua writes survey reports (mod cache oras/probe.txt, oras/export.txt).
 - Models: GARC a/0/0/8 (lib/GARC.lua). Member 0 = index (4 bytes per species: u16 first form, u8 forms, u8 flags); form f block starts at member 2 + 8f. Block slots: +1 model BCH, +3 textures, +4 shiny textures, +6 battle motions (GF1Motion), +2 face/eye anim. Gen 6 model names are internal numbers, not dex.
@@ -40,4 +43,5 @@
 - Battle motion pack (block +6, part 1) has 28 slots: 0 idle A, 1 idle B, 2 idle C, 3/4/5 send-out drop/land/recover, 6 flyer send-out, 8-11 physical, 12-15 special, 16 damage, 17 faint, 18 material-only loop (fire species, Zygarde), 25 cry (jaw only, 70 frames). Part 2 = 18 per-motion bounding boxes (6 floats each); parts 3.. = per-motion BCH material/visibility anims; SESD parts = sound timing. Block +7 (PK) is a 36-slot non-battle pack (Amie/refresh).
 - Baked actions: physicalA-D, specialA-C, damage, faint, appear (chain 3+4+5, else 6), cry (25 layered over idle), idleB (1). One-shot banks are dense pages (ACTION_FRAMES_PER_SLOT = 3 source frames per pose) and carry jointPositions/jointFrames for every model bone (base.lua has boneNames). PokemonActors plays cry after appear and idleB every 3-5 idle loops (A.orasExtras = false turns both off).
 - Offline probe: a lovec harness can open the dump directly (fake mod.imports over io.open on <save dir>/bundlemods/Terrarium Advance Mod/pokemon_oras.3ds) and call ORASActorCache.buildSpecies with a fake mod.cache.
+- Compact banks: ORASActorCache writes every pose bank as "OQ16" (int16, per-file scales, slot deltas wrapped to 16 bits, zlib, padded to a multiple of 176 bytes so size checks pass; same .f32 names). RuntimeMeshCache.meshFromBytes decodes it (decodeQ16); plain float banks still load. About 28% of the float size, max error ~0.0005 units. Species already built are converted in place on the next ORAS MODELS run (marker oras/pokemon/<dex>/q16.txt; C.compactBanks = false skips).
 - Debug keys in battle (PokemonActors): F9 overlay, F5 isolate group, F6 skin fix, F10 decode mode, F7/F8 scale trim, F12 RenderDump (lib/RenderDump.lua) -> <save dir>/terrarium_dumps/<time>/report.txt + effect texture PNGs.

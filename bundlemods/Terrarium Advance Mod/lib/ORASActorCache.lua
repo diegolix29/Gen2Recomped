@@ -113,6 +113,77 @@ local function packFloats(values, n)
   return table.concat(parts)
 end
 
+-- Compact pose banks ("OQ16"), written by lib/ORASActorCache.lua and read
+-- back by RuntimeMeshCache.meshFromBytes.  A bank is rows of 44 float32
+-- (slot-0 position, uv, normal, slots 1-12 positions); the compact file is
+--   "OQ16", u32 rows, f32 posScale, f32 uvScale, u32 zlen, then zlen bytes
+--   of zlib, zero-padded so the file size is a multiple of 176 (one float
+--   row) -- the size checks that guard plain banks pass unchanged.
+-- Inflated: rows * 44 int16, low bytes first (all of them), then high bytes.
+-- Per row: position * posScale, uv * uvScale, normal * 32000, then each of
+-- slots 1-12 as (quantized position - the previous slot's), wrapped to 16
+-- bits (exact: every quantized position fits int16), so the poses of a
+-- vertex, which barely move, become small numbers zlib packs well.
+local Q16_ROW = 44
+local function packQ16(get, n)
+  if not (ffi and love and love.data and love.data.compress) then return nil end
+  if n <= 0 or n % Q16_ROW ~= 0 then return nil end
+  local rows = n / Q16_ROW
+  local pmax, umax = 1e-6, 1e-6
+  for r = 0, rows - 1 do
+    local o = r * Q16_ROW
+    for c = 0, Q16_ROW - 1 do
+      local a = math.abs(get(o + c))
+      if c == 3 or c == 4 then
+        if a > umax then umax = a end
+      elseif c < 3 or c >= 8 then
+        if a > pmax then pmax = a end
+      end
+    end
+  end
+  local ps, us = 32000 / pmax, 32000 / umax
+  local floor = math.floor
+  local buf = ffi.new("uint8_t[?]", n * 2)
+  local function put(i, q)
+    if q < -32768 or q > 32767 then return false end
+    if q < 0 then q = q + 65536 end
+    buf[i] = q % 256
+    buf[n + i] = floor(q / 256)
+    return true
+  end
+  for r = 0, rows - 1 do
+    local o = r * Q16_ROW
+    local prev = {}
+    for c = 0, 2 do
+      local q = floor(get(o + c) * ps + 0.5)
+      prev[c] = q
+      put(o + c, q)
+    end
+    for c = 3, 4 do put(o + c, floor(get(o + c) * us + 0.5)) end
+    for c = 5, 7 do put(o + c, floor(get(o + c) * 32000 + 0.5)) end
+    for c = 8, Q16_ROW - 1 do
+      local k = (c - 8) % 3
+      local q = floor(get(o + c) * ps + 0.5)
+      local d = (q - prev[k]) % 65536
+      if d >= 32768 then d = d - 65536 end
+      put(o + c, d)
+      prev[k] = q
+    end
+  end
+  local okZ, z = pcall(love.data.compress, "string", "zlib", ffi.string(buf, n * 2), 9)
+  if not (okZ and type(z) == "string") then return nil end
+  local head = ffi.new("uint32_t[5]")
+  ffi.copy(head, "OQ16", 4)
+  head[1] = rows
+  ffi.cast("float*", head)[2] = ps
+  ffi.cast("float*", head)[3] = us
+  head[4] = #z
+  local out = ffi.string(head, 20) .. z
+  local pad = (176 - #out % 176) % 176
+  return out .. string.rep("\0", pad)
+end
+C.packQ16 = packQ16
+
 -- a plain Lua literal, the shape RuntimeMeshCache.readLua loads
 local function literal(v)
   local t = type(v)
@@ -534,7 +605,8 @@ function C.buildSpecies(mod, rom, g, index, dex)
         end
       end
       vertexCount = vertexCount + #entry.tris
-      assert(mod.cache:write(pathOf(m), packFloats(values, n)) ~= false, "bank write failed: " .. pathOf(m))
+      local bytes = packQ16(function(i) return values[i + 1] end, n) or packFloats(values, n)
+      assert(mod.cache:write(pathOf(m), bytes) ~= false, "bank write failed: " .. pathOf(m))
       checkpoint()
     end
     for i = 1, MORPH_SLOTS + 1 do if floor[i] == math.huge then floor[i] = 0 end end
@@ -690,6 +762,7 @@ function C.buildSpecies(mod, rom, g, index, dex)
   assert(writeLua(mod, rt .. "/base.lua", meta), "runtime base write failed")
   assert(writeLua(mod, dir .. "/model_cache.lua", meta), "model cache write failed")
   mod.cache:write(dir .. "/rev.txt", ORAS_STAMP)
+  mod.cache:write(dir .. "/q16.txt", "oras-q16=1\n")
 
   local blinkCount = 0
   for _ in pairs(blinks) do blinkCount = blinkCount + 1 end
@@ -738,7 +811,7 @@ local function patchSize(mod, g, index, dex)
   for _, grp in ipairs(meta.groups) do
     if not grp.glow and grp.runtimeBin then
       local okB, data = pcall(mod.cache.read, mod.cache, grp.runtimeBin)
-      if okB and type(data) == "string" and #data >= 44 * 4 then
+      if okB and type(data) == "string" and #data >= 44 * 4 and data:sub(1, 4) ~= "OQ16" then
         local f = ffi.cast("const float*", data)
         for r = 0, math.floor(#data / (44 * 4)) - 1 do
           local o = r * 44
@@ -755,6 +828,31 @@ local function patchSize(mod, g, index, dex)
   if not applyExtent(meta, posed, s) then return false end
   assert(writeLua(mod, rt .. "/base.lua", meta), "runtime base write failed")
   assert(writeLua(mod, root(dex) .. "/model_cache.lua", meta), "model cache write failed")
+  return true
+end
+
+-- A current species built before compact banks: rewrite every plain float
+-- bank under its runtime_mesh_v1 as OQ16 (no ROM work; same names, so every
+-- manifest stays valid), then mark it.  A file that is already compact, or
+-- that does not encode (int16 overflow), is left as it is.
+local function compactSpecies(mod, dex)
+  if not ffi then return false end
+  local okL, keys = pcall(mod.cache.list, mod.cache, root(dex) .. "/runtime_mesh_v1")
+  if not (okL and type(keys) == "table") then return false end
+  for _, key in ipairs(keys) do
+    if key:sub(-4) == ".f32" then
+      local okB, data = pcall(mod.cache.read, mod.cache, key)
+      if okB and type(data) == "string" and #data >= 176 and #data % 176 == 0 and data:sub(1, 4) ~= "OQ16" then
+        local f = ffi.cast("const float*", data)
+        local bytes = packQ16(function(i) return f[i] end, #data / 4)
+        if bytes and #bytes < #data then
+          assert(mod.cache:write(key, bytes) ~= false, "bank write failed: " .. key)
+        end
+      end
+      checkpoint()
+    end
+  end
+  mod.cache:write(root(dex) .. "/q16.txt", "oras-q16=1\n")
   return true
 end
 
@@ -798,6 +896,13 @@ function C.build(mod, list, log, progress)
   for n, dex in ipairs(list) do
     local okRev, rev = pcall(mod.cache.read, mod.cache, root(dex) .. "/rev.txt")
     local current = okRev and rev == C.STAMP and listed[dex]
+    if current and C.compactBanks ~= false then
+      local okQ2, q = pcall(mod.cache.read, mod.cache, root(dex) .. "/q16.txt")
+      if not (okQ2 and type(q) == "string") then
+        local okC, why = pcall(compactSpecies, mod, dex)
+        if okC then log("ORAS dex %d: banks compacted", dex) else log("ORAS dex %d: compact failed: %s", dex, tostring(why)) end
+      end
+    end
     if current then
       skipped = skipped + 1
       local okP, patched = pcall(patchSize, mod, g, index, dex)

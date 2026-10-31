@@ -3710,6 +3710,8 @@ local function initializeColosseumIntegration()
   local PKXMetadataRef = nil
   local MoveFXExtractorRef = nil
   local BuildPipelineRef = nil
+  -- the env of the CacheArchive created ahead of the startup cache check
+  local earlyArchiveEnv = nil
   local ColosseumPokemonMoveDataRef = nil
   local ColosseumUIFontSourceRef = nil
 
@@ -3808,6 +3810,41 @@ local function initializeColosseumIntegration()
       local disc, why = GameCubeDisc.open(mod)
       if disc then residentDisc = disc end
       return disc, why
+    end
+
+    -- A packed cache (PACK CACHE, lib/CacheArchive.lua) must be visible to the
+    -- startup cache check below: BuildPipeline asks mod.exports.cacheArchive
+    -- for every file that is not loose.  The archive used to be loaded only
+    -- after BuildPipeline.run, so a packed install read as deleted and the
+    -- MoveFX / Pokemon caches were re-extracted on the next start.
+    if not mod.exports.cacheArchive then
+      local env = { mod = mod }
+      local okW, wb = pcall(colosseumPackage, "lib/WorkBudget.lua")
+      if okW then env.WorkBudget = wb end
+      local okA, arch = pcall(colosseumPackage, "lib/CacheArchive.lua", env)
+      if okA and arch then
+        mod.exports.cacheArchive = arch
+        earlyArchiveEnv = env
+        -- an archive damaged by the old unit writer (a second pack replaced
+        -- units instead of adding to them): drop the broken units so those
+        -- species / moves are extracted again
+        if arch.repairLostEntries then
+          local okP, dropped, lost = pcall(arch.repairLostEntries)
+          if mod.log and mod.log.info then
+            pcall(mod.log.info, mod.log, "CacheArchive repair: %s dropped %s units, %s lost entries", tostring(okP), tostring(dropped), tostring(lost))
+          end
+        end
+        -- an install packed before identity files were kept loose: put them
+        -- back before anything asks whether a species is extracted
+        if arch.restorePinned then
+          local okR, restored, missing = pcall(arch.restorePinned)
+          if mod.log and mod.log.info then
+            pcall(mod.log.info, mod.log, "CacheArchive pinned restore: %s %s %s", tostring(okR), tostring(restored), tostring(missing))
+          end
+        end
+      elseif mod.log and mod.log.warn then
+        pcall(mod.log.warn, mod.log, "CacheArchive early load failed: %s", tostring(arch))
+      end
     end
 
     local BuildPipeline = colosseumPackage("extract/BuildPipeline.lua", {
@@ -4058,8 +4095,17 @@ local function initializeColosseumIntegration()
     end
     loadColosseumModule("RuntimeMeshCache")
     loadColosseumModule("WorkBudget")
-    local CacheArchive = loadColosseumModule("CacheArchive")
-    if CacheArchive then mod.exports.cacheArchive = CacheArchive end
+    -- reuse the instance the startup check already used (one index, one job)
+    -- and hook it into GeneratedAssets now that that exists
+    local CacheArchive = earlyArchiveEnv and mod.exports.cacheArchive or nil
+    if CacheArchive then
+      earlyArchiveEnv.GeneratedAssets = namespace.GeneratedAssets
+      namespace.CacheArchive = CacheArchive
+      if CacheArchive.install then pcall(CacheArchive.install) end
+    else
+      CacheArchive = loadColosseumModule("CacheArchive")
+      if CacheArchive then mod.exports.cacheArchive = CacheArchive end
+    end
     loadColosseumModule("FrameWork")
     namespace.MoveFXExtractor = MoveFXExtractorRef
     loadColosseumModule("WazaPhasePolicy")

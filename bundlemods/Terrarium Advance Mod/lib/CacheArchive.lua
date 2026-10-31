@@ -168,19 +168,29 @@ local function writeIndex(kind,idx)
   return call(mod.cache,"write",path,table.concat(out))
 end
 
+-- plain prefix test.  (The old checks were find("^x",1,true): with plain
+-- matching on, "^" is a literal character, so they never matched -- every
+-- path read as "not a cache path", and a packed file could never be read back.)
+local function startsWith(s,prefix) return s:sub(1,#prefix)==prefix end
+
 local function pinnedLoose(path)
   if path=="cache/movefx/index.lua" or path=="build/movefx_coverage.txt" then return true end
   if path=="cache/pokemon/manifest.lua" or path=="cache/pokemon/_last_attempt.txt" then return true end
   if path:find("^cache/pokemon/manifest_v2/",1,false) then return true end
-  if path:find("^cache/archive_v1/",1,true) then return true end
-  if path:find("^build/cache_archive_",1,true) then return true end
+  -- per-species identity: PokemonExtractor.isCached reads these through
+  -- mod.cache directly (not GeneratedAssets), so an archived one reads as
+  -- "not extracted" and the species is extracted again
+  local name=path:match("^cache/pokemon/%d+/([^/]+)$") or path:match("^cache/pokemon/%d+/shiny/([^/]+)$")
+  if name=="model_cache.lua" or name=="rev.txt" or name=="extract.txt" then return true end
+  if startsWith(path,"cache/archive_v1/") then return true end
+  if startsWith(path,"build/cache_archive_") then return true end
   return false
 end
 
 local function kindFor(path)
   if type(path)~="string" then return nil end
-  if path:find("^cache/pokemon/",1,true) then return "pokemon" end
-  if path:find("^cache/movefx/",1,true) then return "movefx" end
+  if startsWith(path,"cache/pokemon/") then return "pokemon" end
+  if startsWith(path,"cache/movefx/") then return "movefx" end
   return nil
 end
 
@@ -250,6 +260,10 @@ end
 
 local function addRuntimeSidecars(path,add)
   if type(path)~="string" or not path:find("%.lua$") then return end
+  -- a sidecar's own base.lua has no sidecars: without this check every
+  -- base.lua queued <it>_runtime_v1/base.lua, forever (stack overflow, and
+  -- the pack job died before writing a single unit)
+  if path:find("_runtime_v1/",1,true) then return end
   local root=path:gsub("%.lua$","").."_runtime_v1"
   add(root.."/base.lua")
   for i=0,48 do add(root..("/base_%02d.f32"):format(i)) end
@@ -274,6 +288,39 @@ local function collectMovefxFromIndex(add)
   end
 end
 
+-- Every stored key under `prefix`.  Walks the host store's folder directly
+-- (mod.cache.storage: root + fs, files are <key>.bin / <key>.rec), which does
+-- not depend on mod.cache:list; falls back to that.  Returns keys, method.
+local function listKeys(prefix)
+  local store=mod.cache and mod.cache.storage
+  local root=type(store)=="table" and store.root
+  local fs=(type(store)=="table" and type(store.fs)=="table" and store.fs) or love.filesystem
+  if type(root)=="string" and fs and fs.getDirectoryItems and fs.getInfo then
+    local out={}
+    local function walk(dir)
+      for _,name in ipairs(fs.getDirectoryItems(dir) or {}) do
+        local path=dir.."/"..name
+        local info=fs.getInfo(path)
+        if info and info.type=="directory" then walk(path)
+        else
+          local key=path:sub(#root+2)
+          local stem=key:match("^(.*)%.bin$") or key:match("^(.*)%.rec$")
+          if stem then out[#out+1]=stem end
+        end
+      end
+      if WorkBudget then WorkBudget.checkpoint("PACK: listing "..prefix) end
+    end
+    local info=fs.getInfo(root.."/"..prefix)
+    if info and info.type=="directory" then
+      walk(root.."/"..prefix)
+      if #out>0 then return out,"store walk" end
+    end
+  end
+  local listed=select(1,call(mod.cache,"list",prefix))
+  if type(listed)=="table" then return listed,"mod.cache:list" end
+  return {},"none"
+end
+
 local function queueFor(kind)
   local seen,queue={},{}
   local function add(path)
@@ -283,6 +330,23 @@ local function queueFor(kind)
       queue[#queue+1]={path=path,key=unitKey(kind,path)}
     end
     addRuntimeSidecars(path,add)
+  end
+  -- Preferred: the files that are really there (host mod.cache:list).  This
+  -- also takes the runtime action sidecars (runtime_mesh_v1/action_*) that
+  -- the manifest walk below never named.
+  local listed,method=listKeys(kind=="movefx" and "cache/movefx" or "cache/pokemon")
+  A.lastListing={kind=kind,method=method,keys=#listed}
+  if #listed>0 then
+    for _,path in ipairs(listed) do
+      if type(path)=="string" and not seen[path] and not pinnedLoose(path) and kindFor(path)==kind then
+        seen[path]=true
+        queue[#queue+1]={path=path,key=unitKey(kind,path)}
+      end
+    end
+    A.lastListing.queued=#queue
+    -- a listing that named nothing usable falls through to the manifest walk
+    if #queue>0 then return queue end
+    A.lastListing.method=method.." (unusable, manifest walk)"
   end
   if kind=="pokemon" then
     for _,path in ipairs(pokemonManifestPaths()) do add(path) end
@@ -297,8 +361,38 @@ end
 ----------------------------------------------------------------------
 -- Unit codec
 ----------------------------------------------------------------------
+-- The records of an existing unit, still compressed: { {path,rawSize,codec,packed} }.
+local function unitRecords(bytes)
+  if type(bytes)~="string" or #bytes<16 or bytes:sub(1,8)~=MAGIC then return nil end
+  local out,i={},17
+  for _=1,ru32(bytes,13) or 0 do
+    local plen=ru16(bytes,i);if not plen then break end
+    i=i+2
+    local path=bytes:sub(i,i+plen-1);i=i+plen
+    local rawSize=ru32(bytes,i);local codec=bytes:byte(i+4);local packedSize=ru32(bytes,i+5)
+    if not (rawSize and codec and packedSize) then break end
+    i=i+9
+    out[#out+1]={path=path,rawSize=rawSize,codec=codec,packed=bytes:sub(i,i+packedSize-1)}
+    i=i+packedSize
+  end
+  return out
+end
+
+-- Writes `items` into unit `rel`.  An existing unit keeps every entry that
+-- `items` does not replace: a second pack used to rewrite the unit with only
+-- its new files, losing everything the first pack had put there (whose loose
+-- originals were already deleted).
 local function writeUnit(rel,items)
   ensureDirFor(rel)
+  local keep={}
+  do
+    local replacing={}
+    for _,item in ipairs(items) do replacing[item.path]=true end
+    local old=love.filesystem.getInfo(rel) and love.filesystem.read(rel)
+    for _,r in ipairs(unitRecords(old) or {}) do
+      if not replacing[r.path] then keep[#keep+1]=r end
+    end
+  end
   love.filesystem.createDirectory(rel:match("^(.*)/") or ARCHIVE_ROOT)
   local f=love.filesystem.newFile and love.filesystem.newFile(rel)
   if not (f and f.open) then return nil,"love.filesystem.newFile unavailable" end
@@ -310,7 +404,10 @@ local function writeUnit(rel,items)
   end
   emit(MAGIC)
   emit(u32(VERSION))
-  emit(u32(#items))
+  emit(u32(#items+#keep))
+  for _,r in ipairs(keep) do
+    emit(u16(#r.path));emit(r.path);emit(u32(r.rawSize));emit(string.char(r.codec));emit(u32(#r.packed));emit(r.packed)
+  end
   local original=0
   local packedTotal=16
   for _,item in ipairs(items) do
@@ -426,7 +523,7 @@ function A.status()
     toolLabel=tool and tool.label or "LÖVE zlib unavailable",
     running=job~=nil,
     stage=job and job.label or ((pokemonPacked or movefxPacked) and "READY" or "NOT PACKED"),
-    error=job and job.error or nil,
+    error=(job and job.error) or A.lastError,
     pokemonPacked=pokemonPacked and true or false,
     movefxPacked=movefxPacked and true or false,
     pokemonEntries=pCount,
@@ -451,9 +548,30 @@ local function packKind(kind)
   local idx=readIndex(kind)
   local archived={}
   for path in pairs(idx.entries) do archived[path]=true end
-  local queue={}
+  local queue,dupes={},{}
   for _,item in ipairs(queueFor(kind)) do
-    if not archived[item.path] then queue[#queue+1]=item end
+    if not archived[item.path] then queue[#queue+1]=item
+    else
+      -- loose copy of an archived file: a rehydrated one, or one re-extracted
+      -- while the archive was invisible at startup -- dropped below if equal
+      local d=dupes[item.key];if not d then d={};dupes[item.key]=d end
+      d[#d+1]=item.path
+    end
+  end
+  for key,paths in pairs(dupes) do
+    if WorkBudget then WorkBudget.checkpoint(("PACK %s: loose duplicates"):format(kind:upper())) end
+    local blob=love.filesystem.read(unitRel(kind,key))
+    local files=type(blob)=="string" and parseUnit(blob,nil) or nil
+    if files then
+      for _,path in ipairs(paths) do
+        local loose=looseRead(path)
+        if loose~=nil and loose==files[path] then
+          looseDelete(path)
+          local G=V.GeneratedAssets
+          if G and G.invalidateInfo then G.invalidateInfo(path) end
+        end
+      end
+    end
   end
   local byUnit={}
   for _,item in ipairs(queue) do
@@ -501,6 +619,9 @@ local function packKind(kind)
   end
 
   writeIndex(kind,idx)
+  local L=A.lastListing or {}
+  looseWrite(("build/cache_archive_%s_report.txt"):format(kind),
+    ("listing=%s\nkeys=%s\nqueued=%s\nunits=%d\nfiles=%d\n"):format(tostring(L.method),tostring(L.keys),tostring(L.queued),#units,#queue))
   local marker=kind=="movefx" and MARKER_MOVEFX or MARKER_POKEMON
   local n=0;for _ in pairs(idx.entries) do n=n+1 end
   looseWrite(marker,("cbe-cache-archive=1\nkind=%s\nentries=%d\n"):format(kind,n))
@@ -521,9 +642,16 @@ function A.beginPack(scope)
   scope=scope or "all"
   local label=scope=="pokemon" and "PACKING POKEMON CACHE"
     or (scope=="movefx" and "PACKING MOVEFX CACHE" or "PACKING POKEMON + MOVEFX")
+  A.lastError=nil
   local co=WorkBudget.new(function()
     local ok,err=xpcall(function() packBody(scope) end,debug.traceback)
-    if not ok then job.error=tostring(err);return false end
+    if not ok then
+      job.error=tostring(err)
+      -- kept after the job ends so the menu can show it (status().error)
+      A.lastError=job.error
+      call(mod.cache,"write","build/cache_archive_error.txt",job.error)
+      return false
+    end
     return true
   end,label)
   job={co=co,label=label,error=nil}
@@ -535,6 +663,7 @@ function A.pump(budgetMs)
   local ok,state=WorkBudget.resume(job.co,budgetMs or 40)
   if not ok then
     local err=job.error or tostring(state);job=nil
+    A.lastError=A.lastError or err
     return "error",err
   end
   if state=="done" then
@@ -625,6 +754,127 @@ function A.readEntry(path)
     end
   end
   return looseRead(path)
+end
+
+-- One pass after an install packed with the old rules: the identity files
+-- now pinned loose (pinnedLoose) that sit only inside a unit are written back
+-- loose.  Reads unit HEADERS and only the wanted entries (File:seek past the
+-- rest), so it does not inflate the archive.  Returns restored, missing.
+local PINNED_RESTORE_MARKER="build/cache_archive_pinned_v2.complete"
+local function readUnitEntries(rel,wanted)
+  local f=love.filesystem.newFile and love.filesystem.newFile(rel)
+  if not (f and f:open("r")) then return nil end
+  local out={}
+  local head=f:read(16)
+  if type(head)~="string" or #head<16 or head:sub(1,8)~=MAGIC then f:close();return nil end
+  local pos=16
+  for _=1,ru32(head,13) or 0 do
+    local h=f:read(2);if not h or #h<2 then break end
+    local plen=ru16(h,1)
+    local path=f:read(plen)
+    local meta=f:read(9)
+    if not (path and meta and #meta==9) then break end
+    local rawSize,codec,packedSize=ru32(meta,1),meta:byte(5),ru32(meta,6)
+    pos=pos+2+plen+9
+    if wanted[path] then
+      local packed=f:read(packedSize)
+      local raw=decompressBytes(packed,codec)
+      if type(raw)=="string" and #raw==rawSize then out[path]=raw end
+    else
+      f:seek(pos+packedSize)
+    end
+    pos=pos+packedSize
+  end
+  f:close()
+  return out
+end
+function A.restorePinned(force)
+  if not force and looseExists(PINNED_RESTORE_MARKER) then return 0,0 end
+  local restored,missing=0,0
+  for _,kind in ipairs({"pokemon","movefx"}) do
+    local idx=readIndex(kind)
+    for key,paths in pairs(idx.byUnit or {}) do
+      local wanted,any={},false
+      for _,p in ipairs(paths) do
+        if pinnedLoose(p) and not looseExists(p) then wanted[p]=true;any=true end
+      end
+      if any then
+        local files=readUnitEntries(unitRel(kind,key),wanted) or {}
+        for p in pairs(wanted) do
+          if files[p] then looseWrite(p,files[p]);restored=restored+1 else missing=missing+1 end
+        end
+      end
+    end
+  end
+  looseWrite(PINNED_RESTORE_MARKER,("restored=%d\nmissing=%d\n"):format(restored,missing))
+  return restored,missing
+end
+
+-- One pass for an archive damaged by the old writeUnit: a unit missing any
+-- entry its index lists is dropped whole (unit file + index rows), and the
+-- loose identity that says "built" is removed -- the species' rev.txt, the
+-- move's effect.lua -- so it is extracted again from the disc, as on a fresh
+-- install.  Returns dropped units, lost entries.
+local REPAIR_MARKER="build/cache_archive_repair_v1.complete"
+local function unitPaths(rel)
+  local f=love.filesystem.newFile and love.filesystem.newFile(rel)
+  if not (f and f:open("r")) then return nil end
+  local have={}
+  local head=f:read(16)
+  if type(head)~="string" or #head<16 or head:sub(1,8)~=MAGIC then f:close();return nil end
+  local pos=16
+  for _=1,ru32(head,13) or 0 do
+    local h=f:read(2);if not h or #h<2 then break end
+    local plen=ru16(h,1)
+    local path=f:read(plen);local meta=f:read(9)
+    if not (path and meta and #meta==9) then break end
+    have[path]=true
+    pos=pos+2+plen+9+ru32(meta,6)
+    f:seek(pos)
+  end
+  f:close()
+  return have
+end
+function A.repairLostEntries(force)
+  if not force and looseExists(REPAIR_MARKER) then return 0,0 end
+  local dropped,lost=0,0
+  for _,kind in ipairs({"pokemon","movefx"}) do
+    local idx=readIndex(kind)
+    local changed=false
+    for key,paths in pairs(idx.byUnit or {}) do
+      local rel=unitRel(kind,key)
+      local have=unitPaths(rel) or {}
+      local missing=0
+      for _,p in ipairs(paths) do if not have[p] then missing=missing+1 end end
+      if missing>0 then
+        lost=lost+missing;dropped=dropped+1;changed=true
+        for _,p in ipairs(paths) do
+          idx.originalBytes=math.max(0,(idx.originalBytes or 0)-(tonumber(idx.entries[p]) or 0))
+          idx.entries[p]=nil
+          local G=V.GeneratedAssets
+          if G and G.invalidateInfo then G.invalidateInfo(p) end
+        end
+        idx.byUnit[key]=nil
+        pcall(love.filesystem.remove,rel)
+        if kind=="pokemon" then
+          local dex,variant=tostring(key):match("^(%d+)/(%a+)$")
+          if dex then looseDelete(("cache/pokemon/%s%s/rev.txt"):format(dex,variant=="shiny" and "/shiny" or "")) end
+        else
+          looseDelete(("cache/movefx/%s/effect.lua"):format(tostring(key)))
+        end
+      end
+    end
+    if changed then
+      idx.archiveBytes=archiveBytesOnDisk(kind)
+      writeIndex(kind,idx)
+      looseDelete(kind=="movefx" and MARKER_MOVEFX or MARKER_POKEMON)
+    end
+  end
+  -- GeneratedAssets' persisted size registry still lists the lost files as
+  -- present; it is only a probe cache (Hard Cache Save writes it again)
+  if dropped>0 then looseDelete("build/hard_cache_registry_v1.lua") end
+  looseWrite(REPAIR_MARKER,("dropped=%d\nlost=%d\n"):format(dropped,lost))
+  return dropped,lost
 end
 
 function A.wipe()

@@ -103,3 +103,21 @@
 - Offline build of Charmander/Charizard/Pikachu: OK; Charizard 13 MB (was 6.7 MB); send-out and page joins continuous in joint tracks.
 - Not done in step 1 yet: hit-frame sync (no ORAS timing data found yet; SESD parts may hold it), bodyMap (named attachment points) from boneNames for effects.
 
+## 2026-10-30 — PACK CACHE fixed; ORAS compact banks (uncommitted, untested in game)
+- User confirmed the step-1 ORAS animations look right in game.
+- PACK CACHE (lib/CacheArchive.lua) never packed anything: (1) addRuntimeSidecars queued <x>_runtime_v1/base.lua for every .lua, including its own sidecars -> endless recursion, stack overflow, job error thrown away (menu stayed LOOSE FILES); (2) kindFor/pinnedLoose used find("^prefix",1,true) -- plain find takes "^" literally, so no path was ever a cache path: packed files could never have been read back. Fixed with a _runtime_v1 guard and startsWith(); the queue now comes from mod.cache:list (falls back to the manifest walk if the listing is empty), which also packs runtime action sidecars; the job error is kept (status().error, build/cache_archive_error.txt).
+- Offline test against the user's real cache (deletes faked in memory): 57 species 2.33 GiB -> 288 MiB, 5/5 readEntry round trips byte-identical.
+- ORAS compact banks ("OQ16", see context.md): 1259 real banks 139.5 MB -> 39.0 MB (28%), max error 0.00048 units. No stamp bump; existing species convert in place on the next ORAS MODELS run.
+
+## 2026-10-30 — Packed cache re-extracted on restart: three causes fixed (uncommitted, untested in game)
+- User packed (cbe_cache_archive: 395 pokemon + 264 movefx units) and the next start rebuilt the MoveFX cache (build/state.txt current_stage=movefx; 1144 cache/movefx files re-extracted).
+- Cause 1: main.lua ran BuildPipeline.run (startup cache check) before CacheArchive was loaded, so every packed file read as missing. Fix: CacheArchive is created right before BuildPipeline (env {mod, WorkBudget}, earlyArchiveEnv); installMainUI reuses that instance, sets env.GeneratedAssets and calls install().
+- Cause 2: PokemonExtractor.isCached reads cache/pokemon/<dex>[/shiny]/model_cache.lua + rev.txt through mod.cache directly; they had been packed (1185 files), so every species would re-extract on encounter. Fix: pinnedLoose keeps model_cache.lua / rev.txt / extract.txt loose; A.restorePinned() (run once at the early load, marker build/cache_archive_pinned_v2.complete) writes them back from the units by reading unit headers only (offline on the real archive: 1185 restored in 2 s).
+- Cause 3: the in-game pack used the manifest-walk fallback (Mewtwo: 48 of ~1000 files packed), so mod.cache:list did not deliver there. Fix: listKeys walks mod.cache.storage.root with its fs directly (fallback mod.cache:list); report in build/cache_archive_<kind>_report.txt. Re-packing also deletes loose copies identical to their archived entry (the re-extracted duplicates).
+
+## 2026-10-30 — PACK CACHE second pass destroyed units: writer fixed + repair (uncommitted, untested in game)
+- After the second pack nothing showed in game (log: "dex 6 native action damage cache cache/pokemon/6/actions/damage.lua failed: not_found").
+- Cause (pre-existing): writeUnit opened the unit with "w" and wrote only the new batch, so packing a unit that already existed erased the first pack's entries (their loose originals already deleted). Read-only scan of the user's archive: pokemon 21645 of 194317 index entries missing, in all 365 units; movefx 2765 missing in 56 units.
+- Fix: writeUnit keeps the existing unit's records it does not replace (unitRecords). A.repairLostEntries() (once at the early load, marker build/cache_archive_repair_v1.complete) drops every unit that lacks an indexed entry (unit file + index rows), deletes the loose cache/pokemon/<dex>[/shiny]/rev.txt or cache/movefx/<stem>/effect.lua so the species/move is extracted again from the disc, and deletes build/hard_cache_registry_v1.lua (stale positive sizes). Scratch-save test: pack -> add -> pack keeps both; repair drops the broken unit and its rev.txt.
+- Consequence for the user: every Colosseum species re-extracts on first use (or via Hard Cache Save), the 56 moves via the startup MoveFX repair; then PACK CACHE again.
+
