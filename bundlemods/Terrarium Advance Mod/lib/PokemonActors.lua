@@ -1014,7 +1014,7 @@ local function materializeSceneAction(scene,name)
   return entry
 end
 
-local PREWARM_ORDER={"damage","faint","physicalA","specialA"}
+local PREWARM_ORDER={"damage","faint","physicalA","specialA","idleB"}
 local function prewarmScene(scene)
   if not (scene and scene.actionSpecs) then return false end
   local now=(love and love.timer and love.timer.getTime and love.timer.getTime()) or 0
@@ -1237,6 +1237,11 @@ function Actor:terminalDuration(kind)
   return base
 end
 
+-- does an ORAS scene have this extra action (lib/ORASActorCache.lua)?
+local function hasOrasAction(sc,name)
+  return sc and sc.source=="ORAS" and ((sc.actions and sc.actions[name]) or (sc.actionSpecs and sc.actionSpecs[name])) and true or false
+end
+
 function Actor:update(dt)
   local step=math.max(0,tonumber(dt) or 0)
   self.clock=self.clock+step
@@ -1285,9 +1290,24 @@ function Actor:update(dt)
   if self.action then
     self.actionAge=self.actionAge+step
     if self.actionAge>self:stateDuration("attack") then
+      local finished=self.action
       self.action=nil;self.actionAge=0;self.sourceWazaPoseLock=false
       if not self.hitAge and not self.faintAge and not self.recallAge then
-        self:selectNativeSlot("idle");self:transition("idle")
+        -- ORAS: the cry follows the send-out, as in the game
+        if not (finished=="appear" and self:startOrasExtra("cry")) then
+          self:selectNativeSlot("idle");self:transition("idle")
+        end
+      end
+    end
+  elseif self.state=="idle" and not self.hitAge and not self.informationSurface then
+    -- ORAS: every few idle loops play idle B, switching on a loop boundary
+    local sc=self.scene
+    local loop=sc and sc.source=="ORAS" and tonumber(sc.idleDuration) or 0
+    if loop>0.1 and not self.cbeStructuralDeparture and hasOrasAction(sc,"idleB") and not self.nativeAction then
+      self._idleLoops=self._idleLoops or (3+math.random(0,2))
+      if (self.clipClock or 0)>=loop*self._idleLoops then
+        self._idleLoops=nil
+        self:startOrasExtra("idleB")
       end
     end
   end
@@ -1340,8 +1360,19 @@ function Actor:transition(state)
   if self.state~=state then self.state=state;self.stateAge=0 end
 end
 
--- ORAS send-out (curled up -> unfurled, lib/ORASActorCache.lua "appear"),
--- once per actor; update() hands it to idle when done.
+-- ORAS one-shot extras (lib/ORASActorCache.lua): "cry" after the send-out,
+-- "idleB" now and then while idle.  Played as an action in the idle state, so
+-- attacks / hits / faint replace them as they do any action.
+function Actor:startOrasExtra(name)
+  if A.orasExtras==false or not hasOrasAction(self.scene,name) then return false end
+  if not self:selectNativeSlot(name) then return false end
+  self.action=name;self.actionAge=0
+  self:transition("idle")
+  return true
+end
+
+-- ORAS send-out (drop from the ball, land, recover: lib/ORASActorCache.lua
+-- "appear"), once per actor; update() hands it to the cry, then idle.
 function Actor:startAppear()
   if self._appearTried then return false end
   self._appearTried=true
@@ -1381,8 +1412,8 @@ function Actor:idle()
   -- request used to truncate the source hurt clip. Ignore it and let update()
   -- perform the single deterministic Damage -> next-state handoff.
   if self.hitAge then return false end
-  -- the ORAS send-out finishes on its own (update)
-  if self.action=="appear" then return true end
+  -- the ORAS send-out, cry and idle B finish on their own (update)
+  if self.action=="appear" or self.action=="cry" or self.action=="idleB" then return true end
   -- Idle is a state notification, not a request to rewind the source clip.
   -- Hosts may publish it repeatedly during commands/text and in both battle
   -- modes; preserve the current loop phase when it is already playing.

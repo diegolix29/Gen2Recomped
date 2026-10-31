@@ -149,6 +149,17 @@ end
 -- special ones (ba21_tokusyu01..); most species fill only the first of each,
 -- some have more (Squirtle: slot 9).  PokemonActors picks among them per move
 -- for ORAS scenes (orasAttackVariant).
+--
+-- All 28 slots, as found over the 721 species of the dump (count = species
+-- that have the slot): 0 idle A (721), 1 idle B (342), 2 idle C (2), 3-5 the
+-- send-out from the ball: drop / land / recover (517), 6 the flyers'
+-- send-out (205), 8-11 physical (683/65/5/-), 12-15 special (706/90/22/-),
+-- 16 damage (721), 17 faint (702), 18 a 200-frame loop that moves no bone
+-- (fire species, Zygarde: material-only, for effects later), 22-27 rare,
+-- 25 the cry: 70 frames that move only the jaw (370).
+--
+-- `chain` plays several slots back to back; `over` lays a slot's animated
+-- channels over the idle loop (the cry moves only the jaw).
 local ACTIONS = {
   { name = "physicalA", slot = 8 }, { name = "physicalB", slot = 9 },
   { name = "physicalC", slot = 10 }, { name = "physicalD", slot = 11 },
@@ -156,11 +167,14 @@ local ACTIONS = {
   { name = "specialC", slot = 14 },
   { name = "damage", slot = 16 },     -- ba30_damageS
   { name = "faint", slot = 17 },      -- ba41_down
-  -- the send-out: curled up as it leaves the ball, unfurling to stand (slot
-  -- 3); flyers have the airborne one in slot 6 instead (Charizard)
-  { name = "appear", slot = 3, alt = 6 },
+  { name = "appear", chain = { 3, 4, 5 }, alt = 6 },
+  { name = "cry", slot = 25, over = true },
+  { name = "idleB", slot = 1 },
 }
 local IDLE_SLOT = 0                   -- ba10_waitA
+-- action banks are paged so each pose is at most this many source frames
+-- apart (30 fps); the idle base bank stays one page of 13 poses
+local ACTION_FRAMES_PER_SLOT = 3
 
 -- effect textures that are intensity maps: L8, A8, LA4, L4, A4 (PICA.FORMAT)
 local GLOW_FORMATS = { [7] = true, [8] = true, [9] = true, [10] = true, [11] = true }
@@ -190,11 +204,10 @@ C.effectTexture = effectTexture
 local FPS = 30
 -- bumped whenever the cache layout changes: a species whose rev.txt holds an
 -- older stamp is rebuilt, one with this stamp is skipped
--- =7: species-prefixed flame textures became glow groups.  A species still
--- on =6 is rebuilt only if it has such a texture (needsGlowRebuild), else
--- just re-stamped.
-local PREV_STAMP = "oras-actor=6\n"
-local ORAS_STAMP = "oras-actor=7\n"
+-- =7: species-prefixed flame textures became glow groups.
+-- =8: paged action banks (ACTION_FRAMES_PER_SLOT), joint positions, the
+-- drop/land/recover send-out, cry and idleB.
+local ORAS_STAMP = "oras-actor=8\n"
 C.STAMP = ORAS_STAMP
 
 -- set by a background build (ORASModels) to yield between stages
@@ -329,7 +342,22 @@ function C.buildSpecies(mod, rom, g, index, dex)
   end
   local names = {}
   for i, b in ipairs(skeleton or {}) do names[i] = b.name end
-  local pose = H3D.poser(model, GF1.sample, names)
+  -- composite motions (ACTIONS `chain` / `over`) carry kind "seq" / "wrap"
+  -- curves; a nil sample keeps the bone's bind value (H3D.poser)
+  local function sampleCurve(curve, f)
+    if curve.kind == "wrap" then return GF1.sample(curve.inner, f % curve.period) end
+    if curve.kind == "seq" then
+      local parts = curve.parts
+      local part = parts[#parts]
+      for _, q in ipairs(parts) do
+        if f <= q.stop then part = q; break end
+      end
+      if not part.curve then return nil end
+      return GF1.sample(part.curve, math.min(f, part.stop) - part.start)
+    end
+    return GF1.sample(curve, f)
+  end
+  local pose = H3D.poser(model, sampleCurve, names)
   local blinks = eyeBlinks(g, base, model)
 
   -- kept meshes (effect meshes skipped, see below), their bind data and
@@ -379,13 +407,22 @@ function C.buildSpecies(mod, rom, g, index, dex)
   local s = TARGET_HEIGHT / height
   local cx, cz = (lo[1] + hi[1]) / 2, (lo[3] + hi[3]) / 2
 
-  -- positions[meshIndex][slot][vertex] = { x, y, z }, normalized
-  local function sampleBank(motion, frames, looping)
-    local out = {}
+  -- positions[meshIndex][slot][vertex] = { x, y, z }, normalized; joints[slot]
+  -- [bone] = { x, y, z } (model bone order, the same space).  A one-shot bank
+  -- covers frames f0..f1 (default 0..frames).
+  local function sampleBank(motion, frames, looping, f0, f1)
+    local out, joints = {}, {}
     for m = 1, #kept do out[m] = {} end
+    f0, f1 = f0 or 0, f1 or frames
     for slot = 0, MORPH_SLOTS do
-      local frame = motion and (looping and slot * frames / (MORPH_SLOTS + 1) or slot * frames / MORPH_SLOTS) or 0
+      local frame = motion and (looping and slot * frames / (MORPH_SLOTS + 1) or f0 + slot * (f1 - f0) / MORPH_SLOTS) or 0
       local skin, world = pose(motion, frame)
+      local js = {}
+      for bi, bone in ipairs(model.bones) do
+        local w = motion and world[bi] or bone.world
+        js[bi] = { (w[4] - cx) * s, (w[8] - lo[2]) * s, (w[12] - cz) * s }
+      end
+      joints[slot] = js
       checkpoint()
       for m, entry in ipairs(kept) do
         local list = {}
@@ -398,7 +435,7 @@ function C.buildSpecies(mod, rom, g, index, dex)
         out[m][slot] = list
       end
     end
-    return out
+    return out, joints
   end
 
   local dir = root(dex)
@@ -510,10 +547,53 @@ function C.buildSpecies(mod, rom, g, index, dex)
     entry.vertexMap = path
   end
 
-  -- base bank: the idle loop (or the bind pose, static, if there is none)
+  -- the motion an ACTIONS row plays, and the slot it reports as its clip
   local idle = motions[IDLE_SLOT]
-  local basePositions = sampleBank(idle, idle and idle.frames or 0, true)
+  local function composeAction(a)
+    if a.chain then
+      local parts, total = {}, 0
+      for _, sl in ipairs(a.chain) do
+        local m = motions[sl]
+        if m and m.frames > 0 then parts[#parts + 1] = { m = m, start = total }; total = total + m.frames end
+      end
+      if #parts == #a.chain then
+        -- every channel any part animates; a part that leaves one out holds
+        -- the bind value there, as it would on its own
+        local keys = {}
+        for _, part in ipairs(parts) do for k in pairs(part.m.curves) do keys[k] = true end end
+        local curves = {}
+        for k in pairs(keys) do
+          local list = {}
+          for i, part in ipairs(parts) do
+            list[i] = { curve = part.m.curves[k], start = part.start, stop = part.start + part.m.frames }
+          end
+          curves[k] = { kind = "seq", parts = list }
+        end
+        return { frames = total, curves = curves }, a.chain[1]
+      end
+      if a.alt and motions[a.alt] then return motions[a.alt], a.alt end
+      return nil
+    end
+    local m = motions[a.slot]
+    if not m then return nil end
+    if a.over and idle then
+      local curves = {}
+      for k, c in pairs(idle.curves) do
+        curves[k] = c.kind == "const" and c or { kind = "wrap", inner = c, period = math.max(1, idle.frames) }
+      end
+      for k, c in pairs(m.curves) do if c.kind ~= "const" then curves[k] = c end end
+      return { frames = m.frames, curves = curves }, a.slot
+    end
+    return m, a.slot
+  end
+
+  -- base bank: the idle loop (or the bind pose, static, if there is none)
+  local basePositions, baseJoints = sampleBank(idle, idle and idle.frames or 0, true)
   local baseFloor, vertexTotal = writeBank(basePositions, function(m) return ("%s/base_%02d.f32"):format(rt, m) end)
+  local baseJointFrames = {}
+  for k = 1, MORPH_SLOTS do baseJointFrames[k] = baseJoints[k] end
+  local boneNames = {}
+  for bi, bone in ipairs(model.bones) do boneNames[bi] = bone.name end
   local posed = newExtent()
   for m, entry in ipairs(kept) do
     if not entry.glow then
@@ -528,24 +608,38 @@ function C.buildSpecies(mod, rom, g, index, dex)
   end
 
   -- action banks, written straight into PokemonActors' runtime sidecar form
+  -- One-shot banks are paged (PokemonActors' dense pages: action_<name>.lua
+  -- lists them, page i's files are action_<name>_page<i>_NN.f32 / _floor.lua)
+  -- so poses are at most ACTION_FRAMES_PER_SLOT source frames apart.
   local actions, baked = {}, {}
   for _, a in ipairs(ACTIONS) do
-    local slot = (motions[a.slot] or not a.alt) and a.slot or a.alt
-    local motion = motions[slot]
+    local motion, slot = composeAction(a)
     if motion and motion.frames > 0 then
       local duration = motion.frames / FPS
-      local floor = writeBank(sampleBank(motion, motion.frames, false), function(m)
-        return ("%s/action_%s_%02d.f32"):format(rt, a.name, m)
-      end)
+      local pageCount = math.max(1, math.ceil(motion.frames / (ACTION_FRAMES_PER_SLOT * MORPH_SLOTS)))
+      local pages = {}
+      for pi = 1, pageCount do
+        local f0, f1 = motion.frames * (pi - 1) / pageCount, motion.frames * pi / pageCount
+        local positions, joints = sampleBank(motion, motion.frames, false, f0, f1)
+        local tag = ("%s_page%d"):format(a.name, pi)
+        local floor = writeBank(positions, function(m)
+          return ("%s/action_%s_%02d.f32"):format(rt, tag, m)
+        end)
+        writeLua(mod, ("%s/action_%s_floor.lua"):format(rt, tag), {
+          runtimeMeshVersion = 1, stamp = ORAS_STAMP, groupCount = #kept, floorMinYSlots = floor,
+        })
+        local jointFrames = {}
+        for k = 1, MORPH_SLOTS do jointFrames[k] = joints[k] end
+        pages[pi] = { startPhase = (pi - 1) / pageCount, endPhase = pi / pageCount,
+          morphFrames = MORPH_SLOTS, groupCount = #kept,
+          jointPositions = joints[0], jointFrames = jointFrames }
+      end
       writeLua(mod, ("%s/action_%s.lua"):format(rt, a.name), {
         runtimeMeshVersion = 1, stamp = ORAS_STAMP, clip = slot, duration = duration,
-        frameSpacing = 1, morphFrames = MORPH_SLOTS, groupCount = #kept,
-      })
-      writeLua(mod, ("%s/action_%s_floor.lua"):format(rt, a.name), {
-        runtimeMeshVersion = 1, stamp = ORAS_STAMP, groupCount = #kept, floorMinYSlots = floor,
+        frameSpacing = 1, totalIntervals = pageCount * MORPH_SLOTS, pages = pages,
       })
       actions[a.name] = { clip = slot, duration = duration }
-      baked[#baked + 1] = ("%s %.2fs"):format(a.name, duration)
+      baked[#baked + 1] = ("%s %.2fs/%dp"):format(a.name, duration, pageCount)
     end
   end
 
@@ -586,7 +680,8 @@ function C.buildSpecies(mod, rom, g, index, dex)
     heightRatio = 1, widthRatio = (hi[1] - lo[1]) / height,
     bounds = { min = { -hx, 0, -hz }, max = { hx, TARGET_HEIGHT, hz }, center = { 0, TARGET_HEIGHT / 2, 0 } },
     floorMinY = minFloor,
-    jointPositions = {}, jointFrames = {},
+    jointPositions = baseJoints[0], jointFrames = baseJointFrames,
+    boneNames = boneNames,
     actions = actions, groups = groups,
   }
   applyExtent(meta, posed, s)
@@ -663,25 +758,6 @@ local function patchSize(mod, g, index, dex)
   return true
 end
 
--- true when species `dex` has a species-prefixed flame texture, i.e. its
--- PREV_STAMP cache drew the flame as an opaque body surface
-local function needsGlowRebuild(g, index, dex)
-  local base, _, _, model = findSpecies(g, index, dex)
-  if not base then return false end
-  local td, th = packBch(g, base + 3, 1)
-  if not td then return false end
-  local textures = H3D.textures(td, th)
-  local prefix = (model.name or ""):match("^(pm%d+)") or "pm"
-  for _, mesh in ipairs(model.meshes) do
-    local mat = model.materials[mesh.materialIndex + 1] or {}
-    local tname = mat.textures and mat.textures[1]
-    if tname and tname:sub(1, #prefix) == prefix and effectTexture(prefix, tname, textures[tname]) then
-      return true
-    end
-  end
-  return false
-end
-
 -- Build `list` (dex numbers) and register them.  `log(fmt, ...)` reports each
 -- species; `progress(done, total, dex)` is told after each one.  A species
 -- whose rev.txt already holds C.STAMP is skipped (counted as skipped), and the
@@ -722,13 +798,6 @@ function C.build(mod, list, log, progress)
   for n, dex in ipairs(list) do
     local okRev, rev = pcall(mod.cache.read, mod.cache, root(dex) .. "/rev.txt")
     local current = okRev and rev == C.STAMP and listed[dex]
-    if not current and okRev and rev == PREV_STAMP and listed[dex] then
-      local okG, stale = pcall(needsGlowRebuild, g, index, dex)
-      if okG and stale == false then
-        mod.cache:write(root(dex) .. "/rev.txt", C.STAMP)
-        current = true
-      end
-    end
     if current then
       skipped = skipped + 1
       local okP, patched = pcall(patchSize, mod, g, index, dex)

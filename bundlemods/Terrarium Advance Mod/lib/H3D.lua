@@ -448,7 +448,9 @@ function H3D.poser(model, sample, skeletonNames)
             local curve = curves[gi * 9 + c]
             if curve then
               local v = sample(curve, frame)
-              if c < 3 then t[c + 1] = v elseif c < 6 then r[c - 2] = v else s[c - 5] = v end
+              -- nil: this part of a composite motion leaves the channel at bind
+              if v == nil then
+              elseif c < 3 then t[c + 1] = v elseif c < 6 then r[c - 2] = v else s[c - 5] = v end
             end
           end
           localM = H3D.localMatrix(s, r, t)

@@ -86,3 +86,20 @@
 - Trace: over a native Gen 4/5 world the actors draw INSIDE drawFree, before every Gen4Bridge pass (water, sand, bump, trees, rocks, fence, flowers, lamps, glass, light, grass). Flames write no depth, so those passes painted over them.
 - Fix (PokemonActors + main.lua): while Bridge.Ground.freeOpen, Actor:draw skips glow groups and queues {A, actor, matrix, vp, eye} in _G.__terrariumGlow; a Gen4Bridge.after hook (main.lua) calls GLOW.flush, which replays actor:draw(matrix, "glowOnly") inside withRenderer. Records older than 0.1 s are dropped; A.glowDefer = false turns it off. The F12 trace shows "glow-replay N".
 - Not checked yet: battles (renderPose / renderBattleBody path) with these changes.
+
+## 2026-10-30 — Overworld flames confirmed; ORAS battle roadmap
+- The user confirmed the overworld fire works (Gen 4/5 prefixed flames + flames over Gen 4 world layers). Still uncommitted.
+- Already there: ORASActorCache bakes idle (slot 0), physicalA-D (8-11), specialA-C (12-14), damage (16), faint (17), appear (3, flyers 6) as 13-pose vertex banks (MORPH_SLOTS 12). Move effects in battles are the Colosseum (GC) Waza pipeline (WazaHandlers, WazaSequenceRuntime, MoveFXVM, WazaCamera*).
+- Roadmap, in order:
+  1. Animations: label every ORAS motion slot from the ROM (slots 1-2, 4-5, 7, 15, 18+ unbaked); bake + wire the useful ones (idle variants, intro/roar, status move, hit variants); fix choppiness (13 poses per clip; denser sampling or GPU skinning); keep attachment bones (mouth, hands, tail) in the cache for effects; sync the hit frame with damage.
+  2. Move effects: probe the dump for the ORAS move-effect archives (format unknown yet); decode effect models (H3D) and particles (new format); play them through the existing Waza host (lanes, timing, camera); start with a few moves (Ember, Tackle, Water Gun, Thunderbolt); keep Colosseum FX as fallback.
+  3. Arenas: probe the battle-field archives, decode with H3D, add a new Terrarium battle style next to Colosseum. Could move before step 2 (reuses the working decoder).
+
+## 2026-10-30 — Battle roadmap step 1: ORAS motions (uncommitted, untested in game)
+- Surveyed all 721 species' battle motion slots offline (slot meaning in context.md ORAS section). Slot 25 = cry (jaw only), 18 = material-only loop (fire species: likely flame flicker, for the effects step), 3-5 = full send-out.
+- ORASActorCache stamp oras-actor=8 (every species rebuilds): appear = chain 3+4+5 (else 6); new cry (slot 25 over the idle loop) and idleB (slot 1); one-shot banks paged at 3 source frames per pose; joint positions per bone baked into every page and the base bank (groundwork for effect attachment points). The =6 -> =7 re-stamp shortcut (needsGlowRebuild) was removed.
+- H3D.poser keeps the bind value when a sample returns nil (needed by chained motions).
+- PokemonActors: cry plays after the send-out; idleB every 3-5 idle loops (not while hidden by Fly/Dig, not in info viewers); idle() does not cut appear/cry/idleB; idleB prewarmed. A.orasExtras = false disables both.
+- Offline build of Charmander/Charizard/Pikachu: OK; Charizard 13 MB (was 6.7 MB); send-out and page joins continuous in joint tracks.
+- Not done in step 1 yet: hit-frame sync (no ORAS timing data found yet; SESD parts may hold it), bodyMap (named attachment points) from boneNames for effects.
+
