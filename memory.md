@@ -133,3 +133,11 @@
 ## 2026-10-31 — Colosseum cache packing confirmed; next: ORAS
 - User confirmed the Colosseum packed cache works in game (loads from cbe_cache_archive, model library prepares after the revalidateInfo fix). Still uncommitted.
 - NEXT: back to ORAS. Open items: the oras/ folder is gone from modstorage (rebuild with OPTIONS -> ORAS MODELS; new builds write OQ16 compact banks), ORAS cache packing (same idea as CacheArchive, ORAS ~9 GB with the new animations), then the battle roadmap (step 1 leftovers: hit sync, named attachment points; step 2 move effects; step 3 arenas).
+
+## 2026-10-31 — ORAS rebuild converted nothing: compact banks fixed (uncommitted, untested in game)
+- User ran ORAS MODELS on the old float cache: "0 built, 721 skipped" in 8 s. On disk every species got q16.txt ("oras-q16=1") but all 82169 banks were still float (7.13 GiB in modstorage/DRAMATIC_SHAPE/oras/pokemon, files stored as <key>.bin).
+- Cause: compactSpecies listed banks with mod.cache:list, which comes back empty in game (same as CacheArchive), converted nothing and still wrote the marker.
+- Fix (ORASActorCache): listKeys walks mod.cache.storage.root with its fs (fallback mod.cache:list); compactSpecies writes the marker only when banks were listed and returns seen, converted; the marker is now Q16_MARK "oras-q16=2" (=1 no longer counts, so all 721 convert on the next ORAS MODELS run). Log: "banks compacted (converted of seen)".
+- Offline lovec test on copies of dex 1, 6, 150 with mod.cache:list faked empty: 250/250 banks converted, 24.9 -> 7.4 MB (30%), decodeQ16 round trip max error 0.0026 units. Expect the ORAS banks ~7.1 GiB -> ~2.1 GiB.
+- Confirmed by the user + on disk: second ORAS MODELS run converted all 721 (build.txt: 721 "banks compacted", 0 failed; all q16.txt = "oras-q16=2"). oras/pokemon is now 3.5 GiB total (was ~9).
+- The game log stopped at dex 20 because src/core/Logger.lua drops a line shape (numbers ignored) after 20 repeats. ORASModels now logs only failures + "N / 721 species" every 50; per-species lines stay in oras/build.txt.

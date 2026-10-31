@@ -280,6 +280,10 @@ local FPS = 30
 -- drop/land/recover send-out, cry and idleB.
 local ORAS_STAMP = "oras-actor=8\n"
 C.STAMP = ORAS_STAMP
+-- q16.txt: this species' banks are compact.  "=1" was also written when the
+-- in-game listing came back empty and nothing was converted, so only "=2"
+-- counts as done.
+local Q16_MARK = "oras-q16=2\n"
 
 -- set by a background build (ORASModels) to yield between stages
 local function checkpoint() if C.checkpoint then C.checkpoint() end end
@@ -762,7 +766,7 @@ function C.buildSpecies(mod, rom, g, index, dex)
   assert(writeLua(mod, rt .. "/base.lua", meta), "runtime base write failed")
   assert(writeLua(mod, dir .. "/model_cache.lua", meta), "model cache write failed")
   mod.cache:write(dir .. "/rev.txt", ORAS_STAMP)
-  mod.cache:write(dir .. "/q16.txt", "oras-q16=1\n")
+  mod.cache:write(dir .. "/q16.txt", Q16_MARK)
 
   local blinkCount = 0
   for _ in pairs(blinks) do blinkCount = blinkCount + 1 end
@@ -835,26 +839,62 @@ end
 -- bank under its runtime_mesh_v1 as OQ16 (no ROM work; same names, so every
 -- manifest stays valid), then mark it.  A file that is already compact, or
 -- that does not encode (int16 overflow), is left as it is.
+-- Returns banks seen, banks converted; nil + reason when nothing was listed
+-- (then no mark, so the next build tries again).
+
+-- the keys under `prefix`: walk the store's folder directly (in game
+-- mod.cache:list can come back empty, see lib/CacheArchive.lua listKeys),
+-- else mod.cache:list
+local function listKeys(mod, prefix)
+  local store = mod.cache and mod.cache.storage
+  local base = type(store) == "table" and store.root
+  local fs = (type(store) == "table" and type(store.fs) == "table" and store.fs)
+    or (love and love.filesystem)
+  if type(base) == "string" and fs and fs.getDirectoryItems and fs.getInfo then
+    local out = {}
+    local function walk(dir)
+      for _, name in ipairs(fs.getDirectoryItems(dir) or {}) do
+        local path = dir .. "/" .. name
+        local info = fs.getInfo(path)
+        if info and info.type == "directory" then walk(path)
+        else
+          local key = path:sub(#base + 2)
+          local stem = key:match("^(.*)%.bin$") or key:match("^(.*)%.rec$")
+          if stem then out[#out + 1] = stem end
+        end
+      end
+    end
+    local info = fs.getInfo(base .. "/" .. prefix)
+    if info and info.type == "directory" then walk(base .. "/" .. prefix) end
+    if #out > 0 then return out end
+  end
+  local okL, keys = pcall(mod.cache.list, mod.cache, prefix)
+  return (okL and type(keys) == "table") and keys or {}
+end
+
 local function compactSpecies(mod, dex)
-  if not ffi then return false end
-  local okL, keys = pcall(mod.cache.list, mod.cache, root(dex) .. "/runtime_mesh_v1")
-  if not (okL and type(keys) == "table") then return false end
-  for _, key in ipairs(keys) do
+  if not ffi then return nil, "no ffi" end
+  local seen, converted = 0, 0
+  for _, key in ipairs(listKeys(mod, root(dex) .. "/runtime_mesh_v1")) do
     if key:sub(-4) == ".f32" then
+      seen = seen + 1
       local okB, data = pcall(mod.cache.read, mod.cache, key)
       if okB and type(data) == "string" and #data >= 176 and #data % 176 == 0 and data:sub(1, 4) ~= "OQ16" then
         local f = ffi.cast("const float*", data)
         local bytes = packQ16(function(i) return f[i] end, #data / 4)
         if bytes and #bytes < #data then
           assert(mod.cache:write(key, bytes) ~= false, "bank write failed: " .. key)
+          converted = converted + 1
         end
       end
       checkpoint()
     end
   end
-  mod.cache:write(root(dex) .. "/q16.txt", "oras-q16=1\n")
-  return true
+  if seen == 0 then return nil, "no banks listed" end
+  mod.cache:write(root(dex) .. "/q16.txt", Q16_MARK)
+  return seen, converted
 end
+C.compactSpecies = compactSpecies
 
 -- Build `list` (dex numbers) and register them.  `log(fmt, ...)` reports each
 -- species; `progress(done, total, dex)` is told after each one.  A species
@@ -898,9 +938,13 @@ function C.build(mod, list, log, progress)
     local current = okRev and rev == C.STAMP and listed[dex]
     if current and C.compactBanks ~= false then
       local okQ2, q = pcall(mod.cache.read, mod.cache, root(dex) .. "/q16.txt")
-      if not (okQ2 and type(q) == "string") then
-        local okC, why = pcall(compactSpecies, mod, dex)
-        if okC then log("ORAS dex %d: banks compacted", dex) else log("ORAS dex %d: compact failed: %s", dex, tostring(why)) end
+      if not (okQ2 and q == Q16_MARK) then
+        local okC, seen, converted = pcall(compactSpecies, mod, dex)
+        if okC and seen then
+          log("ORAS dex %d: banks compacted (%d of %d)", dex, converted, seen)
+        else
+          log("ORAS dex %d: compact failed: %s", dex, tostring(okC and converted or seen))
+        end
       end
     end
     if current then

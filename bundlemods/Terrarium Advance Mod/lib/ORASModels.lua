@@ -87,13 +87,23 @@ function M.startBuild(list)
   local lines = {}
   job = { done = 0, total = #list, lines = lines, startedAt = now(), frameStart = now() }
   st.state, st.error, st.summary = "building", nil, nil
+  -- Every species line goes to oras/build.txt.  The game log drops a line
+  -- shape after 20 repeats (src/core/Logger.lua ignores the numbers), so it
+  -- only gets failures and a progress line every 50 species.
+  local failures = 0
   job.co = coroutine.create(function()
     return Cache.build(mod, list, function(fmt, ...)
       local line = string.format(fmt, ...)
       lines[#lines + 1] = line
-      log("info", "%s", line)
+      if line:find("fail", 1, true) or line:find("FAIL", 1, true) then
+        failures = failures + 1
+        log("warn", "%s", line)
+      end
     end, function(done, total)
       job.done, job.total = done, total
+      if done % 50 == 0 or done == total then
+        log("info", "ORAS MODELS: %d / %d species (%d problems so far)", done, total, failures)
+      end
     end)
   end)
   Cache.checkpoint = function()
@@ -121,7 +131,7 @@ local function finish(ok, built, failed, err, skipped)
   st.summary = string.format("%d built, %d skipped, %d failed in %.0fs",
                              built or 0, skipped or 0, failed or 0, seconds)
   st.error = err
-  log("info", "ORAS MODELS: %s -- restart the game so every part of the mod picks them up", st.summary)
+  log("info", "ORAS MODELS: %s -- restart the game so every part of the mod picks them up (per-species lines: modstorage/DRAMATIC_SHAPE/oras/build.txt.bin)", st.summary)
   if mod and mod.cache then pcall(mod.cache.write, mod.cache, "oras/build.txt", table.concat(lines, "\n") .. "\n") end
 end
 
