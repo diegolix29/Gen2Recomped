@@ -626,6 +626,10 @@ function BattleScene.render(state, arena, textures, token)
 
     local canvas = AntiAlias.resolve(Voxel3D.endScene(), pw, ph, "battle")
     if not canvas then return end
+    -- ORAS move effects (OPTIONS -> ORAS FX IN BATTLE), every 3D-BTL rung
+    pcall(function()
+      V.require("ORASEffectsScene").draw(canvas, pw, ph, Voxel3D.vp)
+    end)
     if V.ColosseumMoveFX then
       V.ColosseumMoveFX.drawPost(canvas, pw, ph)
     end

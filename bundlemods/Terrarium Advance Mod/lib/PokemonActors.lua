@@ -2186,7 +2186,17 @@ function Actor:attack(moveId,moveDef,opts)
   end
   self.action="attack";self.actionAge=0;self:transition("attack")
   self.lastMove=moveId;self.lastMoveDef=moveDef
-  local requested=opts.nativeSlot or orasAttackVariant(self.scene,moveSlot(moveDef),moveId)
+  local requested=opts.nativeSlot
+  -- An ORAS model only has its own banks (physicalA-D, specialA-C...).  A
+  -- slot named from Colosseum's move data (3D-BTL asks it per move) that this
+  -- model lacks would leave it standing idle -- Thundershock did: use the
+  -- model's own attack for the move instead.
+  local sc=self.scene
+  if requested and sc and sc.source=="ORAS"
+      and not ((sc.actions and sc.actions[requested]) or (sc.actionSpecs and sc.actionSpecs[requested])) then
+    requested=nil
+  end
+  requested=requested or orasAttackVariant(self.scene,moveSlot(moveDef),moveId)
   local sampled=self:selectNativeSlot(requested)
   -- The selected PKX bank is part of the retail presentation chain. Older CBE
   -- builds deliberately discarded it whenever a Waza timeline was present,

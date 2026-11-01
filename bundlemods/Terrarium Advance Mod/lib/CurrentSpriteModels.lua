@@ -1558,6 +1558,82 @@ local function vnorm(v)
   return {v[1]/l,v[2]/l,v[3]/l}
 end
 local function vcross(a,b)return {(a[2] or 0)*(b[3] or 0)-(a[3] or 0)*(b[2] or 0),(a[3] or 0)*(b[1] or 0)-(a[1] or 0)*(b[3] or 0),(a[1] or 0)*(b[2] or 0)-(a[2] or 0)*(b[1] or 0)} end
+-- ORAS move effects (OPTIONS -> ORAS EFFECTS / ORAS FX IN BATTLE): the
+-- move's own ORAS timeline and particles (lib/ORASEffectsPlayer.lua), used in
+-- place of the Colosseum move FX when switched on and an ORAS actor is out.
+-- Effects are authored in centimetres; an ORAS actor gives the scale.
+local orasPlayerModule
+local function orasPlayer()
+  if orasPlayerModule==nil then
+    local req=V and V.voxelRequire
+    local ok,m=pcall(function() return req and req("ORASEffectsPlayer") end)
+    orasPlayerModule=(ok and type(m)=="table") and m or false
+  end
+  return orasPlayerModule or nil
+end
+local function orasUnit()
+  for _,side in ipairs({"player","enemy"}) do
+    local rec=P.stadiumActors and P.stadiumActors[side]
+    local actor=rec and rec.actor
+    local sc=actor and actor.scene
+    if sc and sc.source=="ORAS" then
+      local b=sc.bounds;local nh=tonumber(sc.nativeHeight)
+      local h=b and b.max and b.min and (tonumber(b.max[2]) or 0)-(tonumber(b.min[2]) or 0) or 0
+      if nh and nh>1e-6 and h>1e-6 then return (tonumber(actor.worldScale) or 1)*h/nh end
+    end
+  end
+  return nil
+end
+local function startOrasMoveFx(context,side,moveId)
+  local player=orasPlayer()
+  if not (player and side and tonumber(moveId)) then return false end
+  -- 3D-BTL: lib/ORASEffectsScene.lua started and draws it from the engine's
+  -- performMove; here only the hit timing and the Colosseum FX skip apply
+  local staged=P.overworldContext==context
+  if not staged then
+    local req=V and V.voxelRequire
+    local okO,OB=pcall(function() return req and req("OverworldBattle") end)
+    local okA,arena=pcall(function() return okO and OB and OB.arenaInfo and OB.arenaInfo() end)
+    staged=okA and arena~=nil
+  end
+  if staged then return player.busy("scene") end
+  if not orasUnit() then
+    pcall(player.note,"move %s: not started -- no ORAS model in this battle gives the effect size",tostring(moveId))
+    return false
+  end
+  local other=side=="player" and "enemy" or "player"
+  local host={
+    point=function(role,slot)
+      local p=moveFxWorldPoint(context,role=="attacker" and side or other,slot)
+      return p
+    end,
+    forward=function()
+      local a=moveFxWorldPoint(context,side,"center");local b=moveFxWorldPoint(context,other,"center")
+      if not (a and b) then return {0,0,1} end
+      return vnorm({b[1]-a[1],0,b[3]-a[3]})
+    end,
+    unit=orasUnit,
+  }
+  local ok,id=pcall(player.start,tonumber(moveId),host,"csm")
+  return ok and id or false
+end
+local function updateOrasFx(dt)
+  local player=orasPlayerModule
+  if player and player.busy() then pcall(player.update) end
+end
+local function drawOrasFx(context)
+  local player=orasPlayerModule
+  if not (player and player.busy()) then return false end
+  local project=function(x,y,z) return projectMoveFxWorld(context,{x,y,z}) end
+  player.drawingVia="battle screen"
+  local ok,drew=pcall(player.draw,project,"csm")
+  -- 3D-BTL runs (lib/ORASEffectsScene.lua) stand in this same world: the
+  -- arena host draws this pass for COLOSSEUM rungs, so draw them here too
+  local ok2,drew2=pcall(player.draw,project,"scene")
+  player.drawingVia=nil
+  return (ok and drew==true) or (ok2 and drew2==true)
+end
+
 local function effectBasis(source,target)
   -- Keep Waza "up" tied to the arena instead of tilting the entire source
   -- coordinate frame when two differently sized Pokemon have attachment points
@@ -2607,6 +2683,7 @@ function P:update(context,dt)
     if self.overworldContext~=context then return end
     directedMoveFx(context)
     updateMoveFx(context,dt)
+    updateOrasFx(dt)
     return
   end
   if V.DoublesRuntime and (V.DoublesRuntime.presentation or V.DoublesRuntime.combat)(context and context.battle) then return end
@@ -2618,6 +2695,7 @@ function P:update(context,dt)
   selectPresentation(context,false)
   directedMoveFx(context)
   updateMoveFx(context,dt)
+  updateOrasFx(dt)
   -- CBE suppresses Battle Art's competing world/camera stage, not its Pokemon
   -- art. With models OFF, advance/install the exact Battle Art 2.x selection
   -- (ANIMATED / STATIC / ROM / MODDED) onto our generation-neutral battlers.
@@ -2769,6 +2847,7 @@ function P:drawWorld(context)
     if self.overworldContext~=context then return false end
     local wh=V.WazaHandlers
     local drew=wh and wh.drawWorld(context) or false
+    drew=drawOrasFx(context) or drew
     return drawMoveFx(context) or drew
   end
   local doubles=V.DoublesRuntime and (V.DoublesRuntime.presentation or V.DoublesRuntime.combat)(context and context.battle)
@@ -2876,6 +2955,7 @@ function P:drawWorld(context)
     if okW and drewW then any=true end
   end
   any=drawMoveFx(context) or any
+  any=drawOrasFx(context) or any
   local RP=V and V.ReleasePresentation
   if RP and type(RP.drawFaintSingle)=="function" then
     for _,side in ipairs(SIDES_PE) do
@@ -3014,6 +3094,11 @@ function P:event(context,name,payload)
       local key=tonumber(resolvedId) or tostring(resolvedId or ""):lower():gsub("[^a-z0-9]","")
       actor.cbeStructuralDeparture=STRUCTURAL_HIDE_MOVE[key] and (not payload or payload.charging~=false) or nil
     end
+    -- ORAS move effects start here, at the move itself: the target's hit
+    -- reaction (battle.damage_dealt) can arrive before the attacker's attack
+    -- animation has started, and it needs the run to time against
+    P.orasFxAttacker=nil
+    if resolvedId~=nil and side and startOrasMoveFx(context,side,resolvedId) then P.orasFxAttacker=side end
     local spec
     if resolvedId~=nil and MoveFX then
       if type(MoveFX.peek)=="function" then
@@ -3063,6 +3148,12 @@ function P:event(context,name,payload)
           local okMap,mapped=pcall(MoveFX.mapped,resolvedId,move)
           if okMap and mapped then P.moveFxError="mapped source FX was not prefetched before move playback" end
         end
+      end
+      -- ORAS effect already started at the move boundary (move_used, above)
+      if P.orasFxAttacker==side then
+        P.moveFxError=nil
+        if P.overworldContext==context then P.overworldMoveStarted=true end
+        return true
       end
       if spec then
         local hasAttackTimeline=roleHasTimeline(spec,"attack")
@@ -3142,6 +3233,8 @@ function P:event(context,name,payload)
       -- Queued multi-hit reactions own this callback. FX and camera start only
       -- after the corresponding source Damage bank has actually initialized.
       if activeActor and nativeSampled~=true then return false end
+      -- the ORAS timeline already carries this move's hit effects
+      if P.orasFxAttacker and P.orasFxAttacker==attacker then return true end
       if damageSeq then
         local seq=damageSeq
         local points=actorWazaTiming(activeActor)
@@ -3176,6 +3269,15 @@ function P:event(context,name,payload)
       if attackerActor and attackerActor~=actor and type(attackerActor.orasContactWait)=="function" then
         local okWait,wait=pcall(attackerActor.orasContactWait,attackerActor)
         if okWait then holdFor=tonumber(wait) or 0 end
+      end
+      -- an ORAS move effect is playing: the hit lands when its first
+      -- target-side effect starts (Ember's fire reaches the target ~1 s in)
+      if attacker and P.orasFxAttacker==attacker and orasPlayerModule then
+        local okFx,wait=pcall(orasPlayerModule.hitWait)
+        if okFx and tonumber(wait) then holdFor=tonumber(wait) end
+        pcall(orasPlayerModule.note,"hit on %s held %.2fs for the ORAS effect",tostring(side),holdFor)
+      elseif orasPlayerModule then
+        pcall(orasPlayerModule.note,"hit on %s: no ORAS effect running for %s (held %.2fs for contact)",tostring(side),tostring(attacker),holdFor)
       end
       pcall(actor.hit,actor,payload,{nativeSlot=damageSlot,
         sourceSequenceKind=damageSequenceKind,onStarted=bindStartedDamage,holdFor=holdFor})
@@ -3387,7 +3489,7 @@ function P.status()
     battleArt=id,battleArtWorld=battleArtWantsWorldSprites(),
     stadiumActors=stadium and true or false,stadiumError=P.stadiumError,stadiumPending=P.stadiumPending,
     retiringActorCount=#P.retiringActors,
-    moveFxActive=#P.moveFxActive,moveFxError=P.moveFxError,moveFxRenderFaults=P.moveFxRenderFaults or 0,moveFxScale=scaleStatus,
+    moveFxActive=#P.moveFxActive,moveFxError=P.moveFxError,orasFx=orasPlayerModule and {busy=orasPlayerModule.busy(),error=orasPlayerModule.lastError,attacker=P.orasFxAttacker} or nil,moveFxRenderFaults=P.moveFxRenderFaults or 0,moveFxScale=scaleStatus,
     actorLifecycle="persistent-hit / detached-recall / faint-tail",
     presentationMode=P.mode,presentationId=P.modeId,actorOwner=P.actorOwner,actorStatus=actorStatus,
     spriteOwner=P.spriteOwner,spriteError=P.spriteError,externalError=P.externalError,

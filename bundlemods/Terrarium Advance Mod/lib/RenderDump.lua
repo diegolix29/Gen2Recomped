@@ -152,6 +152,15 @@ function D.request(A)
   out[#out + 1] = "Terrarium RenderDump " .. os.date("%Y-%m-%d %H:%M:%S")
   pcall(worldInfo, out)
   out[#out + 1] = ""
+  pcall(function()
+    local okO, OB = pcall(V.require, "OverworldBattle")
+    local okS, St = pcall(V.require, "Stadium")
+    out[#out + 1] = ("3D-BTL staged: %s, rung: %s"):format(
+      tostring(okO and OB and OB.arenaInfo and OB.arenaInfo() ~= nil),
+      tostring(okS and St and St.mode and St.mode() or "none"))
+    V.require("ORASEffectsPlayer").report(out)
+  end)
+  out[#out + 1] = ""
   local okA, errA = pcall(describeActors, A, out)
   if not okA then out[#out + 1] = "actor listing failed: " .. tostring(errA) end
 

@@ -190,6 +190,13 @@ function Stadium.active()
   return session ~= nil
 end
 
+-- One side's mon (StadiumMon or ColosseumBattleMon) and the floor height, for
+-- effects that stand on it (lib/ORASEffectsScene.lua). nil with no session.
+function Stadium.sideMon(side)
+  if not session then return nil end
+  return session[side], session.groundY
+end
+
 
 -- Return the current session if in colosseum mode, nil otherwise
 function Stadium.colosseumSession(battle)

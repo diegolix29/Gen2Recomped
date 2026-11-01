@@ -649,6 +649,10 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     pcall(function()
       V.require("ORASModels").pump()
     end)
+    -- and the ORAS move-effect bake (lib/ORASEffects.lua)
+    pcall(function()
+      V.require("ORASEffects").pump()
+    end)
     -- The horde, on the same always-running tick and for the same reason:
     -- it owns no pass of the frame, it is a MODE over the overworld, and
     -- it has to keep thinking while a warp's wipe covers the screen (the
@@ -2664,6 +2668,17 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
   end)
   if okOrasPack and orasPackRow and not rowExists(orasPackRow.id) then
     table.insert(out, orasPackRow)
+  end
+  -- ORAS EFFECTS (bake the move effects from the dump) and ORAS FX IN BATTLE
+  -- (play them), under the ORAS model rows (lib/ORASEffects.lua)
+  local okOrasFx, orasFxRow, orasFxBattleRow, orasFxSizeRow = pcall(function()
+    local E = V.require("ORASEffects")
+    return E.row(), E.battleRow(), E.sizeRow()
+  end)
+  if okOrasFx then
+    if orasFxRow and not rowExists(orasFxRow.id) then table.insert(out, orasFxRow) end
+    if orasFxBattleRow and not rowExists(orasFxBattleRow.id) then table.insert(out, orasFxBattleRow) end
+    if orasFxSizeRow and not rowExists(orasFxSizeRow.id) then table.insert(out, orasFxSizeRow) end
   end
 
   local okMewtwo, mewtwoRow = pcall(function()
