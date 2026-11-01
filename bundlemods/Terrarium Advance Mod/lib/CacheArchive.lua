@@ -1,6 +1,6 @@
 -- Packs the two huge Colosseum generated trees -- cache/pokemon/* and
--- cache/movefx/* -- into per-unit zlib blobs in LOVE's save directory, then
--- serves files back on demand. Extraction still writes loose files through
+-- cache/movefx/* -- into per-unit zlib blobs under the live game-data root
+-- (see unitFs below), then serves files back on demand. Extraction still writes loose files through
 -- mod.cache; this module only runs after the user asks to pack, and only
 -- deletes a loose original after that file's unit has been written and
 -- round-tripped.
@@ -64,18 +64,55 @@ local function call(obj,name,...)
 end
 
 local function sep() return package.config:sub(1,1) end
+
+-- WHERE UNITS ARE WRITTEN.  love.filesystem always writes the OS save
+-- directory, but the index and markers go through mod.cache, which follows
+-- the game-data folder the player picked.  Writing units with love.filesystem
+-- split a pack in two: units on internal storage, index in the chosen folder,
+-- so copying that folder to another device lost
+-- every unit.  CacheFs.dataFs() is the engine's seam for exactly this: reads
+-- and listing see every home (love.filesystem), writes/creates/removes go to
+-- the live root.  With no folder chosen it is love.filesystem in effect.
+local function unitFs()
+  local ok,CacheFs=pcall(require,"src.import.CacheFs")
+  if ok and type(CacheFs)=="table" and type(CacheFs.dataFs)=="function" then
+    local okFs,fs=pcall(CacheFs.dataFs)
+    if okFs and type(fs)=="table" then return fs,CacheFs end
+  end
+  return love.filesystem,nil
+end
+
+-- True when units are written somewhere other than the save directory.  Then
+-- a stale copy of the same unit in the save directory must go: on Android the
+-- chosen folder is mounted AFTER the save directory, so the old copy would
+-- keep winning every read and the freshly written unit would never be seen.
+local function rootIsElsewhere()
+  local _,CacheFs=unitFs()
+  if not (CacheFs and type(CacheFs.root)=="function") then return false end
+  local okRoot,root=pcall(CacheFs.root)
+  if not (okRoot and type(root)=="string" and root~="") then return false end
+  local okSave,save=pcall(love.filesystem.getSaveDirectory)
+  if not (okSave and type(save)=="string") then return true end
+  local function norm(p) return (p:gsub("[/\\]+","/"):gsub("/$",""):lower()) end
+  return norm(root)~=norm(save)
+end
+
 local function ensureDirFor(rel)
   local dir=rel:match("^(.*)/[^/]+$")
-  if dir then love.filesystem.createDirectory(dir) end
+  if dir then unitFs().createDirectory(dir) end
 end
+-- Listing through love.filesystem (every home); removal through unitFs,
+-- whose remove clears the live root AND the save directory, so a wipe does
+-- not leave units behind in whichever home was used before.
 local function rmrf(rel)
+  local fs=unitFs()
   local info=love.filesystem.getInfo and love.filesystem.getInfo(rel)
   if not info then return end
   if info.type=="directory" then
     for _,name in ipairs(love.filesystem.getDirectoryItems(rel) or {}) do rmrf(rel.."/"..name) end
-    pcall(love.filesystem.remove,rel)
+    pcall(fs.removeDir or fs.remove,rel)
   else
-    pcall(love.filesystem.remove,rel)
+    pcall(fs.remove,rel)
   end
 end
 
@@ -475,9 +512,10 @@ local function writeUnit(rel,items)
       if not replacing[r.path] then keep[#keep+1]=r end
     end
   end
-  love.filesystem.createDirectory(rel:match("^(.*)/") or ARCHIVE_ROOT)
-  local f=love.filesystem.newFile and love.filesystem.newFile(rel)
-  if not (f and f.open) then return nil,"love.filesystem.newFile unavailable" end
+  local fs=unitFs()
+  fs.createDirectory(rel:match("^(.*)/") or ARCHIVE_ROOT)
+  local f=fs.newFile and fs.newFile(rel)
+  if not (f and f.open) then return nil,"newFile unavailable" end
   local okOpen,errOpen=f:open("w")
   if not okOpen then return nil,tostring(errOpen or "could not open unit file") end
   local function emit(s)
@@ -508,6 +546,9 @@ local function writeUnit(rel,items)
     pumpEvents()
   end
   f:close()
+  -- the merged unit now lives in the live root; a save-directory copy would
+  -- shadow it (see rootIsElsewhere) and its entries are already in `keep`
+  if rootIsElsewhere() then pcall(love.filesystem.remove,rel) end
   return original,packedTotal
 end
 
@@ -676,8 +717,8 @@ A._orasDeadFiles=orasDeadFiles   -- offline tests
 
 local function packKind(kind,onlyKeys)
   if not A.available() then error("love.data.compress (zlib) is unavailable on this host",0) end
-  love.filesystem.createDirectory(ARCHIVE_ROOT)
-  love.filesystem.createDirectory(KINDS[kind].dir)
+  unitFs().createDirectory(ARCHIVE_ROOT)
+  unitFs().createDirectory(KINDS[kind].dir)
   local idx=readIndex(kind)
   local source
   if onlyKeys then
@@ -1061,6 +1102,28 @@ local function unitPaths(rel)
 end
 function A.repairLostEntries(force)
   if not force and looseExists(REPAIR_MARKER) then return 0,0 end
+  -- A folder that is not visible is not a damaged archive.  When NOT ONE
+  -- listed unit can be opened (the cache was moved to a custom game-data
+  -- folder that is not mounted yet, or only the index was copied), dropping
+  -- everything would empty the index for good and mark the repair done, so
+  -- the packed cache would stay ignored after the folder shows up.  Leave it
+  -- alone, keep the repair pending, and say so.
+  local listed,readable=0,0
+  for _,kind in ipairs(KIND_LIST) do
+    for key in pairs(readIndex(kind).byUnit or {}) do
+      listed=listed+1
+      if readable==0 and unitPaths(unitRel(kind,key)) then readable=1 end
+      if readable>0 then break end
+    end
+    if readable>0 then break end
+  end
+  if listed>0 and readable==0 then
+    if mod and mod.log and mod.log.warn then
+      pcall(mod.log.warn,mod.log,"CacheArchive: none of the %d+ packed units in the index can be opened (%s missing or not on the read path); index left untouched",listed,ARCHIVE_ROOT)
+    end
+    A.unitsUnreadable=true
+    return 0,0
+  end
   local dropped,lost=0,0
   for _,kind in ipairs(KIND_LIST) do
     local idx=readIndex(kind)
@@ -1080,7 +1143,7 @@ function A.repairLostEntries(force)
         end
         idx.byUnit[key]=nil
         closeUnit(rel)
-        pcall(love.filesystem.remove,rel)
+        pcall(unitFs().remove,rel)
         if kind=="oras" then
           -- ORAS MODELS rebuilds a species whose stamp is gone
           looseDelete(("oras/pokemon/%s/rev.txt"):format(tostring(key)))
@@ -1106,6 +1169,7 @@ function A.repairLostEntries(force)
 end
 
 function A.wipe()
+  closeUnit(nil)   -- an open unit cannot be deleted on Windows
   rmrf(ARCHIVE_ROOT)
   for _,kind in ipairs(KIND_LIST) do looseDelete(KINDS[kind].index);looseDelete(KINDS[kind].marker) end
   looseDelete(HOT_PATH)
