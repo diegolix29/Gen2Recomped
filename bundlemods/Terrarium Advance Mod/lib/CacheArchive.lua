@@ -246,7 +246,7 @@ local function pinnedLoose(path)
   -- through mod.cache directly (stamp, compact marker, "is it built")
   if path=="oras/pokemon/index.lua" then return true end
   local oname=path:match("^oras/pokemon/%d+/([^/]+)$")
-  if oname=="rev.txt" or oname=="q16.txt" or oname=="model_cache.lua" or oname=="metadata_v1.lua" then return true end
+  if oname=="rev.txt" or oname=="q16.txt" or oname=="ssc.txt" or oname=="model_cache.lua" or oname=="metadata_v1.lua" then return true end
   return false
 end
 

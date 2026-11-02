@@ -266,9 +266,33 @@ local function readBones(d, at, count)
   for _, bone in ipairs(bones) do
     bone.localMatrix = H3D.localMatrix(bone.scale, bone.rotation, bone.translation)
     local parent = bone.parent >= 0 and bones[bone.parent + 1]
-    bone.world = parent and parent.world and matMul(parent.world, bone.localMatrix) or bone.localMatrix
+    local localM = parent and H3D.compensate(bone, bone.localMatrix, parent.scale) or bone.localMatrix
+    bone.world = parent and parent.world and matMul(parent.world, localM) or localM
   end
   return bones
+end
+
+-- Segment scale compensation (bone flag bit 22, set on nearly every ORAS
+-- bone): like Maya's joints, a child sits where its parent's scale puts it,
+-- but does not inherit that scale -- local = T * inverse(S parent) * R * S.
+-- Without it a scaled chain compounds: Haunter's four tongue bones each
+-- stretch x2.5 in its lick, which reached 2.5^4 = 39x at the tip (a spike
+-- through the foe) instead of x2.5.  A zero parent scale (parts hidden by
+-- scale, Pidgey's folded wings) is left alone: the child collapses with it.
+H3D.SSC_FLAG = 0x400000
+function H3D.compensate(bone, localM, parentScale)
+  if not (parentScale and math.floor((bone.flags or 0) / H3D.SSC_FLAG) % 2 == 1) then return localM end
+  local sx, sy, sz = parentScale[1] or 1, parentScale[2] or 1, parentScale[3] or 1
+  if sx == 1 and sy == 1 and sz == 1 then return localM end
+  local m = {}
+  for i = 1, 16 do m[i] = localM[i] end
+  for row, sc in ipairs({ sx, sy, sz }) do
+    if math.abs(sc) > 1e-6 then
+      local k = (row - 1) * 4
+      m[k + 1], m[k + 2], m[k + 3] = m[k + 1] / sc, m[k + 2] / sc, m[k + 3] / sc
+    end
+  end
+  return m
 end
 
 -- ------------------------------------------------------ texture transform
@@ -452,9 +476,10 @@ function H3D.poser(model, sample, skeletonNames)
   local inverseBind = {}
   for i, bone in ipairs(model.bones) do inverseBind[i] = H3D.affineInverse(bone.world) end
   return function(motion, frame)
-    local world, skin = {}, {}
+    local world, skin, scales = {}, {}, {}
     for i, bone in ipairs(model.bones) do
       local localM = bone.localMatrix
+      scales[i] = bone.scale
       local gi = motion and gfIndex[bone.name]
       if gi then
         local curves = motion.curves
@@ -474,9 +499,11 @@ function H3D.poser(model, sample, skeletonNames)
             end
           end
           localM = H3D.localMatrix(s, r, t)
+          scales[i] = s
         end
       end
       local parent = bone.parent >= 0 and world[bone.parent + 1]
+      if parent then localM = H3D.compensate(bone, localM, scales[bone.parent + 1]) end
       world[i] = parent and matMul(parent, localM) or localM
       skin[i] = matMul(world[i], inverseBind[i])
     end

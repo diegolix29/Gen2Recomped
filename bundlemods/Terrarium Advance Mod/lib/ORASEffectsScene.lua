@@ -219,12 +219,19 @@ end
 -- its own distance
 local CLEAR_FRACTION = 0.4
 local MIN_PULL = 0.25
+local MAX_FOV = 80        -- degrees; ORAS CAM ZOOM 25% on a pulled-in eye reaches it
 
 -- BattleScene's camera, moved by the move's camera records (op 0x17).
 -- cam = { eye, focus, fov }, changed in place; true when it moved.
 function S.camera(cam)
   local run, f, attacker = stageNow()
   if not (run and cam and cam.eye and cam.focus) then return false end
+  -- OPTIONS -> ORAS CAMERA
+  local okE, on = pcall(function() return Effects().cameraEnabled() end)
+  if okE and on == false then
+    run.camNote = "off (ORAS CAMERA)"
+    return false
+  end
   local arena, groundY = staged()
   if not arena then return false end
   local okU, u = pcall(run.host.unit)
@@ -312,8 +319,14 @@ function S.camera(cam)
   cam.eye, cam.focus = c.eye, c.look
   -- ORAS frames every move with an 11.3 degree lens (op 0x63, all moves),
   -- opened up when the eye was pulled in
-  local orasFov = 2 * math.atan(math.tan(math.rad(11.3) / 2) / math.max(t, 1e-3))
-  orasFov = math.min(orasFov, math.rad(60))
+  -- OPTIONS -> ORAS CAM ZOOM: how big the subject is against ORAS's own
+  -- framing (50% = half as big); a wider lens, so the eye stays where it is
+  -- clear of both Pokemon
+  local okZ, zoom = pcall(function() return Effects().cameraZoom() end)
+  zoom = (okZ and tonumber(zoom) or 100) / 100
+  local orasFov = 2 * math.atan(math.tan(math.rad(11.3) / 2) / (math.max(t, 1e-3) * math.max(zoom, 0.05)))
+  orasFov = math.min(orasFov, math.rad(MAX_FOV))
+  run.camNote = run.camNote .. (" zoom %d%% fov %.1f"):format(zoom * 100, math.deg(orasFov))
   if cam.fov then cam.fov = cam.fov + (orasFov - cam.fov) * c.weight end
   return true
 end

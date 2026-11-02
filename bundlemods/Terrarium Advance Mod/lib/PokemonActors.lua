@@ -2259,6 +2259,18 @@ function Actor:attack(moveId,moveDef,opts)
       and not ((sc.actions and sc.actions[requested]) or (sc.actionSpecs and sc.actionSpecs[requested])) then
     requested=nil
   end
+  -- ORAS's own choice wins on an ORAS model: the move timeline's motion kind
+  -- (lib/ORASEffects.lua E.motionAction, published on mod.exports). Colosseum's
+  -- per-move slot comes from another game's numbering and sent a whole
+  -- moveset to one bank. NATIVE_FALLBACKS takes a missing variant to the A bank.
+  if sc and sc.source=="ORAS" and not opts.keepSlot then
+    local ex=V and V.mod and V.mod.exports
+    local pick=ex and ex.orasMotionFor
+    if type(pick)=="function" then
+      local okP,bank=pcall(pick,tonumber(moveId))
+      if okP and type(bank)=="string" then requested=bank;self.orasMotionBank=bank end
+    end
+  end
   requested=requested or orasAttackVariant(self.scene,moveSlot(moveDef),moveId)
   local sampled=self:selectNativeSlot(requested)
   -- The selected PKX bank is part of the retail presentation chain. Older CBE

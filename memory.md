@@ -242,3 +242,12 @@ Confirmed in game 2026-11-01: Pidgey shows 2 wings and Growlithe stays upright a
 - Also found offline: Double Team's eye (3 m in front of the user) landed inside the foe -- our cells are ~305 cm apart at Pikachu's scale.
 - Fix: anchors / shot.vp / eye / focus from the battle's own camera; shot.dofY for the depth of field; camera eye pulled in to stay 0.4 x the cell gap from both Pokemon with the lens opened to match; eye above ground; broken cameras skipped. Offline (lovec, real bake, staged arena like the dump): Double Team 190/190 frames keep their anchors (162 would have dropped before), Fly / Thunderbolt / Agility / foe-side Double Team the same.
 
+## 2026-11-02 — ORAS CAMERA + ORAS CAM ZOOM rows (uncommitted, untested in game)
+- User: move cameras better after the fix but too zoomed in; wanted an on/off row and a zoom percentage. Rows under ORAS FX SIZE (main.lua ORAS rows): ORAS CAMERA ON/OFF (camera.txt), ORAS CAM ZOOM 25-200% (zoom.txt, default 50%). Zoom widens the lens only. Verified offline: row stepping/wrap/saving, OFF leaves the battle camera untouched, Double Team framing 19/39/78/117% of frame height at 25/50/100/150%.
+
+## 2026-11-02 — Haunter: tongue spike, covered mouth, one attack for every move (uncommitted, untested in game)
+- F12 dump (COLOSSEUM A, player dex 93 Haunter; the user called it Gengar). Probe of the real dump (scratchpad haunter/): tongue = BodyVco01 on Tongue1-4; the lick (slot 12) scales each tongue bone x2.5 -> we compounded to 39x (444 units past a 187-unit body). Fixed with segment scale compensation (H3D.compensate, bone flag bit 22); after it slot 12's worst vertex is a finger at 180 (normal reach). Pidgey / Pikachu / Charizard / Gengar checked: no spikes.
+- Mouth: Body_Mask (Haunter, Gengar only) is a purple lid over the open mouth; skipped now. Jaw and tongue textures were right all along.
+- Attacks: Haunter's ORAS pack has one physical (8) and one special (12) motion only. Colosseum's per-move slot picked the bank for ORAS models; now the ORAS timeline's own motion kind (op 0x0D) does (Lick physical; Thunderbolt / Hypnosis / Night Shade / Double Team special; punches, kicks, beams to B/C/D/B banks where a species has them).
+- User steps: ORAS EFFECTS (stamp 6), then ORAS MODELS (rebuilds 255 of 721 species: 253 with scaled parent bones, 93 + 94 for the mask; the check itself ~20 s offline), then ORAS PACK if packed.
+

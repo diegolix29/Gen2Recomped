@@ -27,8 +27,8 @@ local E = { ID = "oras_fx", LABEL = "ORAS EFFECTS" }
 
 E.ROOT = "oras/movefx"
 E.INDEX = E.ROOT .. "/index.lua"
-E.STAMP = "oras-fx=5"   -- 2: per-effect scale (0x34) and side (0x2F); 3: body point + offset, hit cue (0x0C);
-                        -- 5: stage records (actor moves / scale, stage tint, camera)
+E.STAMP = "oras-fx=6"   -- 2: per-effect scale (0x34) and side (0x2F); 3: body point + offset, hit cue (0x0C);
+                        -- 5: stage records (actor moves / scale, stage tint, camera); 6: body motion kind (0x0D)
 E.SETTING = E.ROOT .. "/battle.txt"
 E.IMPORT_ID = "pokemon_oras"
 
@@ -116,6 +116,41 @@ function E.cycleSize()
   pcall(mod.cache.write, mod.cache, E.SIZE_FILE, tostring(nxt))
 end
 
+-- move cameras (op 0x17) in 3D-BTL: ON / OFF (oras/movefx/camera.txt, default
+-- ON), and their zoom as a percentage of ORAS's own framing
+-- (oras/movefx/zoom.txt, default 50: the subject half the size ORAS shows
+-- it; 100 = ORAS).  Applied by ORASEffectsScene.camera.
+E.CAMERA_FILE = E.ROOT .. "/camera.txt"
+E.ZOOM_FILE = E.ROOT .. "/zoom.txt"
+E.ZOOM_MIN, E.ZOOM_MAX, E.ZOOM_STEP, E.ZOOM_DEFAULT = 25, 200, 25, 50
+local cameraValue, zoomValue
+function E.cameraEnabled()
+  if cameraValue == nil then
+    local ok, s = pcall(mod.cache.read, mod.cache, E.CAMERA_FILE)
+    cameraValue = not (ok and type(s) == "string" and s:find("off", 1, true))
+  end
+  return cameraValue
+end
+function E.setCameraEnabled(on)
+  cameraValue = on and true or false
+  pcall(mod.cache.write, mod.cache, E.CAMERA_FILE, on and "on\n" or "off\n")
+end
+function E.cameraZoom()
+  if zoomValue == nil then
+    local ok, s = pcall(mod.cache.read, mod.cache, E.ZOOM_FILE)
+    local v = ok and tonumber(type(s) == "string" and s:match("%d+")) or nil
+    zoomValue = (v and v >= E.ZOOM_MIN and v <= E.ZOOM_MAX) and v or E.ZOOM_DEFAULT
+  end
+  return zoomValue
+end
+-- dir -1 (left) / +1 (right, A); wraps at the ends so A alone reaches every value
+function E.stepZoom(dir)
+  local v = E.cameraZoom() + ((tonumber(dir) or 1) < 0 and -E.ZOOM_STEP or E.ZOOM_STEP)
+  if v > E.ZOOM_MAX then v = E.ZOOM_MIN elseif v < E.ZOOM_MIN then v = E.ZOOM_MAX end
+  zoomValue = v
+  pcall(mod.cache.write, mod.cache, E.ZOOM_FILE, tostring(v) .. "\n")
+end
+
 function E.setBattleEnabled(on)
   settingValue = on and true or false
   pcall(mod.cache.write, mod.cache, E.SETTING, on and "on\n" or "off\n")
@@ -131,6 +166,31 @@ function E.index()
 end
 
 function E.built() return E.index() ~= nil end
+
+-- Which of an ORAS model's attack banks a move plays.  Every ORAS move
+-- timeline names the attacker's motion kind (op 0x0D): 1 contact (Scratch,
+-- Quick Attack, Lick), 2 at range (Thunderbolt, Hypnosis, Psychic), 32
+-- tackle, 33 punch (Pound, Mega Punch, Shadow Punch), 34 kick, 38 beam /
+-- breath (Flamethrower, Water Gun, Hyper Beam, Shadow Ball), 39 roar (Growl),
+-- 42 Double Team.  Physical kinds take ORAS battle slots 8-11 (physicalA-D),
+-- the others 12-14 (specialA-C); PokemonActors falls back to the family's A
+-- bank when a species lacks the variant (Haunter has only physicalA and
+-- specialA).  nil: not built, or the move names no kind.
+E.MOTION_BANK = {
+  [1] = "physicalA", [32] = "physicalB", [33] = "physicalC", [34] = "physicalD",
+  [35] = "physicalA", [36] = "physicalA", [37] = "physicalA",
+  [2] = "specialA", [38] = "specialB", [39] = "specialC",
+  [40] = "specialA", [41] = "specialA", [42] = "specialA",
+}
+function E.motionAction(move)
+  local idx = E.index()
+  local entry = idx and idx.moves[tonumber(move) or -1]
+  local kind = entry and entry.motion
+  if not kind then return nil end
+  return E.MOTION_BANK[kind] or (kind >= 32 and kind < 38 and "physicalA") or "specialA", kind
+end
+-- PokemonActors is loaded outside V.require; it finds this on mod.exports
+if mod and mod.exports then mod.exports.orasMotionFor = E.motionAction end
 
 -- usable in battle right now: built and switched on
 function E.active() return E.battleEnabled() and E.built() end
@@ -258,7 +318,7 @@ local function bake(onProgress)
       local recs = seq.records
       -- attach state per slot from 0x2F (effects) and 0x68 (sounds; side only)
       local attach = {}
-      local hit
+      local hit, motion
       local stage = {}
       local function readAttach(q)
         return { role = S.u32(q.args, 1), point = S.u32(q.args, 5),
@@ -272,6 +332,8 @@ local function bake(onProgress)
         end
         -- the target's damage cue: 0x0C with u32 1 (Tackle 22, Ember 36, Thunder 90)
         if r.op == 0x0C and hit == nil and #r.args >= 4 and S.u32(r.args, 1) == 1 then hit = r.start end
+        -- the attacker's body motion kind (0x0D: who, id), see E.motionAction
+        if r.op == 0x0D and motion == nil and #r.args >= 8 and S.u32(r.args, 1) == 0 then motion = S.u32(r.args, 5) end
         local st = stageRecord(S, r)
         if st then stage[#stage + 1] = st end
         if r.op == 0x2B and #r.args >= 4 then
@@ -316,8 +378,8 @@ local function bake(onProgress)
           end
         end
       end
-      if #list > 0 or #stage > 0 then
-        moves[move] = { frames = seq.frames, fx = list, hit = hit, stage = #stage > 0 and stage or nil }
+      if #list > 0 or #stage > 0 or motion then
+        moves[move] = { frames = seq.frames, fx = list, hit = hit, stage = #stage > 0 and stage or nil, motion = motion }
       end
     end
     if move % 25 == 0 then job.done = move; checkpoint() end
@@ -447,6 +509,27 @@ function E.sizeRow()
     label = "ORAS FX SIZE",
     value = function() return "X" .. tostring(E.particleSize()) end,
     step = function() E.cycleSize(); return true end,
+  }
+end
+
+function E.cameraRow()
+  return {
+    id = "oras_fx_camera",
+    label = "ORAS CAMERA",
+    value = function() return E.cameraEnabled() and "ON" or "OFF" end,
+    step = function() E.setCameraEnabled(not E.cameraEnabled()); return true end,
+  }
+end
+
+function E.zoomRow()
+  return {
+    id = "oras_fx_zoom",
+    label = "ORAS CAM ZOOM",
+    value = function()
+      if not E.cameraEnabled() then return "CAMERA OFF" end
+      return tostring(E.cameraZoom()) .. "%"
+    end,
+    step = function(_, dir) E.stepZoom(dir); return true end,
   }
 end
 

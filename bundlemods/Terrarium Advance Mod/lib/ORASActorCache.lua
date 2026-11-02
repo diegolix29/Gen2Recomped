@@ -555,6 +555,57 @@ local function motionsOf(g, index, dex)
   return okRead and mots or nil
 end
 
+-- Haunter's and Gengar's Body_Mask (node MaskSkin): a lid over the open
+-- mouth whose UVs point off the texture (plain body purple).  The game never
+-- shows it as a surface (a stencil / depth helper); drawn, it hid the mouth
+-- and tongue.  Only those two species have one.
+local function isMask(mat)
+  local n = tostring(mat and mat.name or ""):lower()
+  return n:find("_mask$") ~= nil
+end
+
+-- SSC_FIX (meta.sscFix): banks posed with segment scale compensation
+-- (H3D.compensate).  A species built before it is rebuilt only when that
+-- changes its poses: a motion scales a bone whose child compensates, or it
+-- has a mask mesh to drop.
+local SSC_FIX = 1
+local SSC_MARK = "oras-ssc=1"
+local function needsScaleFix(g, index, dex)
+  local base, _, _, model = findSpecies(g, index, dex)
+  if not base then return false end
+  for _, mat in ipairs(model.materials) do if isMask(mat) then return true, "mouth mask" end end
+  local okPb, pb = pcall(g.member, g, base + 6)
+  if not (okPb and pb and #pb >= 12 and u16(pb, 3) > 0) then return false end
+  local GF1 = V.require("GF1Motion")
+  local okRead, skel, mots = pcall(GF1.readPack, pb:sub(u32(pb, 5) + 1, u32(pb, 9)))
+  if not (okRead and skel and mots) then return false end
+  -- bones with a compensating child
+  local parentOf = {}
+  for _, bone in ipairs(model.bones) do
+    if bone.parent >= 0 and math.floor((bone.flags or 0) / H3D.SSC_FLAG) % 2 == 1 then
+      local p = model.bones[bone.parent + 1]
+      if p then parentOf[p.name] = true end
+    end
+  end
+  for gi, b in ipairs(skel) do
+    if parentOf[b.name] then
+      for _, m in pairs(mots) do
+        for c = 6, 8 do
+          local cv = m.curves[(gi - 1) * 9 + c]
+          if cv then
+            for f = 0, m.frames do
+              local v = GF1.sample(cv, f)
+              if v and math.abs(v - 1) > 1e-3 and math.abs(v) > 1e-6 then return true, "scaled " .. b.name end
+            end
+          end
+        end
+      end
+    end
+  end
+  return false
+end
+C._needsScaleFix = needsScaleFix
+
 -- Build one species. Returns a summary string, or nil and a reason.
 function C.buildSpecies(mod, rom, g, index, dex)
   local GF1 = V.require("GF1Motion")
@@ -619,6 +670,7 @@ function C.buildSpecies(mod, rom, g, index, dex)
     local t = tname and textures[tname]
     local glow = effectTexture(prefix, tname, t)
     local own = not glow and tname and tname:sub(1, #prefix) == prefix
+      and not isMask(mat)
     if own or glow then
       local bind = H3D.bindPose(model, mesh)
       local entry = { mesh = mesh, mat = mat, tname = tname, bind = bind,
@@ -927,7 +979,7 @@ function C.buildSpecies(mod, rom, g, index, dex)
     floorMinY = minFloor,
     jointPositions = baseJoints[0], jointFrames = baseJointFrames,
     boneNames = boneNames,
-    actions = actions, groups = groups, cryFix = CRY_FIX,
+    actions = actions, groups = groups, cryFix = CRY_FIX, sscFix = SSC_FIX,
   }
   applyExtent(meta, posed, s)
   do
@@ -1206,6 +1258,21 @@ function C.build(mod, list, log, progress)
         if okF and flat then
           current = false
           log("ORAS dex %d: rebuilding, cry pose fix", dex)
+        end
+      end
+      -- built before bone scale compensation: rebuild when it changes it
+      -- (oras/pokemon/<dex>/ssc.txt: checked, nothing to change -- so the
+      -- next press does not decode the model again)
+      if current and okM and type(meta) == "table" and meta.sscFix ~= SSC_FIX then
+        local okMk, mark = pcall(mod.cache.read, mod.cache, root(dex) .. "/ssc.txt")
+        if not (okMk and mark == SSC_MARK) then
+          local okS2, need, why = pcall(needsScaleFix, g, index, dex)
+          if okS2 and need then
+            current = false
+            log("ORAS dex %d: rebuilding, bone scale fix (%s)", dex, tostring(why))
+          elseif okS2 then
+            pcall(mod.cache.write, mod.cache, root(dex) .. "/ssc.txt", SSC_MARK)
+          end
         end
       end
     end
