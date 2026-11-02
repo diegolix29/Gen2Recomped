@@ -488,14 +488,31 @@ function BattleScene.render(state, arena, textures, token)
     if okRig and c then cam, pitch, capFrameH = c, p or math.rad(80), fh end
   end
   if not cam then cam, pitch = BattleCam.rig(arena, groundY) end
-  -- ORAS move cameras (op 0x17, lib/ORASStage.lua), eased in and back out
-  pcall(function() V.require("ORASEffectsScene").camera(cam) end)
+  -- ORAS move cameras (op 0x17, lib/ORASStage.lua), eased in and back out.
+  -- They draw the 3D shot only: the mons' screen anchors below still come
+  -- from the battle's own camera (baseCam). A close-up has the other side
+  -- BEHIND the lens, toGB has no answer for it, and the whole 3D frame was
+  -- dropped for the flat GB battle on every move camera.
+  local baseCam
+  pcall(function()
+    local copy = { eye = { cam.eye[1], cam.eye[2], cam.eye[3] },
+                   focus = { cam.focus[1], cam.focus[2], cam.focus[3] },
+                   fov = cam.fov, curve = cam.curve, up = cam.up }
+    if V.require("ORASEffectsScene").camera(cam) then baseCam = copy end
+  end)
   cam.fov = BattleScene.letterboxFov(cam.fov, ph, s)
+  if baseCam then baseCam.fov = BattleScene.letterboxFov(baseCam.fov, ph, s) end
 
   local cx, cy = arena.mid[1], arena.mid[2]
   local vh = (capFrameH or BattleCam.frameH(arena)) * ph / (select(2, BattleScene.surface()) * s)
   local vw = vh * pw / ph
 
+  local anchorVp
+  if baseCam then
+    Voxel3D.camera = baseCam
+    local okB, m = pcall(Voxel3D.viewProjection, cx, cy, vw, vh)
+    anchorVp = okB and m or nil
+  end
   Voxel3D.camera = cam
   Voxel3D.viewProjection(cx, cy, vw, vh)
   local cards = monCards(arena, groundY, textures)
@@ -650,7 +667,8 @@ function BattleScene.render(state, arena, textures, token)
       V.ColosseumMoveFX.drawPost(canvas, pw, ph)
     end
 
-    local vp = Voxel3D.vp
+    -- anchors from the battle's own camera while an ORAS move camera runs
+    local vp = anchorVp or Voxel3D.vp
     local pmx, pmy = BattleScene.toGB(vp, arena.player[1], groundY, arena.player[2], lx, ly, s, pw, ph)
     local emx, emy = BattleScene.toGB(vp, arena.enemy[1], groundY, arena.enemy[2], lx, ly, s, pw, ph)
     if not (pmx and emx) then return end
@@ -666,6 +684,12 @@ function BattleScene.render(state, arena, textures, token)
       local ns = math.sqrt((x4 - x3) ^ 2 + (y4 - y3) ^ 2)
       return math.max(ew, ns)
     end
+    local dofY
+    if anchorVp then
+      local _, py2 = BattleScene.toGB(Voxel3D.vp, arena.player[1], groundY, arena.player[2], lx, ly, s, pw, ph)
+      local _, ey2 = BattleScene.toGB(Voxel3D.vp, arena.enemy[1], groundY, arena.enemy[2], lx, ly, s, pw, ph)
+      if py2 and ey2 then dofY = { py2, ey2 } end
+    end
     local pSpan = cellSpan(arena.player[1], arena.player[2])
     local eSpan = cellSpan(arena.enemy[1], arena.enemy[2])
     if not (pSpan and eSpan) then return end
@@ -677,9 +701,15 @@ function BattleScene.render(state, arena, textures, token)
       playerSpan = pSpan,
       enemySpan = eSpan,
       lx = lx, ly = ly, scale = s, pw = pw, ph = ph,
-      eye = { cam.eye[1], cam.eye[2], cam.eye[3] },
-      focus = { cam.focus[1], cam.focus[2], cam.focus[3] },
+      -- the battle's own camera (what the anchors above were measured
+      -- with), also while an ORAS move camera drew the canvas
+      eye = { (baseCam or cam).eye[1], (baseCam or cam).eye[2], (baseCam or cam).eye[3] },
+      focus = { (baseCam or cam).focus[1], (baseCam or cam).focus[2], (baseCam or cam).focus[3] },
       vp = vp,
+      -- where the depth of field should focus (GB y of the two marks) in
+      -- the shot actually drawn; nil = the anchors. A move camera's marks,
+      -- when both are in front of it.
+      dofY = dofY,
       -- and the hour's light, for anything drawn over this shot that is NOT
       -- geometry and so never went past the shader that applied it -- the back
       -- pic pinned to the menu (see OverworldBattle.backPinned). Neutral

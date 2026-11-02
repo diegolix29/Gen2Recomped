@@ -884,8 +884,9 @@ function OverworldBattle.update(dt)
     -- the depth of field is measured off the two marks: the slab in focus is
     -- the one the mons are standing in, at whatever the drift has done to
     -- where that lands
-    local y1 = shot.ly + shot.player[2] * shot.scale
-    local y2 = shot.ly + shot.enemy[2] * shot.scale
+    -- (an ORAS move camera hands its own marks: BattleScene shot.dofY)
+    local y1 = shot.ly + (shot.dofY and shot.dofY[1] or shot.player[2]) * shot.scale
+    local y2 = shot.ly + (shot.dofY and shot.dofY[2] or shot.enemy[2]) * shot.scale
     local focusY, band, range = BattleDOF.bandFor(y1, y2, shot.ph)
     local okDof, blurred = pcall(BattleDOF.apply, shot.canvas,
                                  focusY, band, range)

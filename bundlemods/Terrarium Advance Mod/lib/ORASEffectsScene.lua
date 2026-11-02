@@ -70,7 +70,7 @@ local function point(arena, groundY, side, slot)
     for _, name in ipairs({ slot, "center", "chest" }) do
       local ok, a = pcall(actor.attachment, actor, name)
       local p = ok and type(a) == "table" and a.position
-      if p and tonumber(p[1]) then return { p[1], p[2], p[3] } end
+      if p and tonumber(p[1]) then return { p[1], p[2], p[3] }, true end
     end
   end
   local m = mon and mon.model_matrix
@@ -214,6 +214,12 @@ function S.tint()
   return Stage().tint(run.entry, f)
 end
 
+-- a move camera keeps this share of the gap between the two cells away from
+-- either Pokemon (horizontally), and never comes in closer than MIN_PULL of
+-- its own distance
+local CLEAR_FRACTION = 0.4
+local MIN_PULL = 0.25
+
 -- BattleScene's camera, moved by the move's camera records (op 0x17).
 -- cam = { eye, focus, fov }, changed in place; true when it moved.
 function S.camera(cam)
@@ -229,12 +235,16 @@ function S.camera(cam)
   -- the side's own spot (its cell, at the body point's height without the
   -- move's hops): the camera must not shake along with Double Team
   local function spot(side, slot)
-    local p = point(arena, groundY, side, slot)
+    local p, onActor = point(arena, groundY, side, slot)
     local c = cellOf(arena, side)
     if not (p and c) then return p end
-    local okP, pose = pcall(S.actorPose, side)
-    local dy = okP and pose and pose[2] or 0
-    return { c[1], p[2] - dy, c[2] }
+    -- only an actor's body point carries the hop (a card's point is its cell)
+    local dy = 0
+    if onActor then
+      local okP, pose = pcall(S.actorPose, side)
+      dy = okP and pose and pose[2] or 0
+    end
+    return { c[1], math.max(groundY, p[2] - dy), c[2] }
   end
   local function place(op)
     local side = (op.w == 1) and defender or attacker
@@ -253,9 +263,57 @@ function S.camera(cam)
   local c = Stage().camera(run.entry, f,
     { eye = cam.eye, look = cam.focus }, place)
   if not c then return false end
+  -- a broken camera (eye on its target, NaN) would throw in the projection,
+  -- and one render error retires the 3D scene for the rest of the battle
+  local d2 = 0
+  for i = 1, 3 do
+    local e, l = c.eye[i], c.look[i]
+    if e ~= e or l ~= l or math.abs(e) > 1e6 or math.abs(l) > 1e6 then return false end
+    d2 = d2 + (e - l) ^ 2
+  end
+  if d2 < 1e-4 then return false end
+  -- ORAS stands the two Pokemon much further apart than our cells do: its
+  -- close-ups (Double Team: 3 m in front of the user) put the eye INSIDE the
+  -- other Pokemon here.  Slide the eye toward its target until it is clear
+  -- of both cells, and open the lens by the same ratio so the subject keeps
+  -- the size ORAS gives it.
+  local far = math.sqrt(d2)
+  local pa, pd = cellOf(arena, attacker), cellOf(arena, defender)
+  local keep = CLEAR_FRACTION * (pa and pd and math.sqrt((pa[1] - pd[1]) ^ 2 + (pa[2] - pd[2]) ^ 2) or 32)
+  -- horizontal room between the eye (at t of its way out from the target)
+  -- and the nearer of the two cells
+  local function room(t)
+    local x = c.look[1] + (c.eye[1] - c.look[1]) * t
+    local z = c.look[3] + (c.eye[3] - c.look[3]) * t
+    local r = math.huge
+    for _, p in ipairs({ pa, pd }) do
+      if p then r = math.min(r, math.sqrt((x - p[1]) ^ 2 + (z - p[2]) ^ 2)) end
+    end
+    return r
+  end
+  local t = 1
+  if room(1) < keep then
+    -- the farthest clear spot on the way in, else the roomiest one
+    local best, bestRoom = 1, room(1)
+    local found = false
+    for k = 1, 60 do
+      local tk = 1 - (1 - MIN_PULL) * k / 60
+      local r = room(tk)
+      if r >= keep then best, found = tk, true; break end
+      if r > bestRoom then best, bestRoom = tk, r end
+    end
+    t = best
+    for i = 1, 3 do c.eye[i] = c.look[i] + (c.eye[i] - c.look[i]) * t end
+  end
+  -- never under the ground (Fly's low shots, a sunk arena floor)
+  c.eye[2] = math.max(c.eye[2], (groundY or 0) + 2)
+  run.camNote = ("eye (%.1f, %.1f, %.1f) look (%.1f, %.1f, %.1f) weight %.2f pulled in x%.2f"):format(
+    c.eye[1], c.eye[2], c.eye[3], c.look[1], c.look[2], c.look[3], c.weight, t)
   cam.eye, cam.focus = c.eye, c.look
-  -- ORAS frames every move with an 11.3 degree lens (op 0x63, all moves)
-  local orasFov = math.rad(11.3)
+  -- ORAS frames every move with an 11.3 degree lens (op 0x63, all moves),
+  -- opened up when the eye was pulled in
+  local orasFov = 2 * math.atan(math.tan(math.rad(11.3) / 2) / math.max(t, 1e-3))
+  orasFov = math.min(orasFov, math.rad(60))
   if cam.fov then cam.fov = cam.fov + (orasFov - cam.fov) * c.weight end
   return true
 end

@@ -417,6 +417,7 @@ function Player.report(out)
     if run.stageEnd then
       out[#out + 1] = ("    stage: %d records, runs to frame %d, last pose %s"):format(
         #(run.entry.stage or {}), run.stageEnd, tostring(run.stageNote))
+      out[#out + 1] = ("    camera: %s"):format(tostring(run.camNote or "none (battle camera)"))
     end
     for _, l in ipairs(run.live) do
       local a = l.lastAnchor
