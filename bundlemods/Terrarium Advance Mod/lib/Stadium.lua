@@ -644,6 +644,20 @@ function Stadium.update(dt, battle, groundY)
             mon.model_matrix = mon:matrix(cell[1], session.groundY, cell[2],
                                           other[1] - cell[1],
                                           other[2] - cell[2])
+            -- ORAS move timelines move the Pokemon too (Double Team's hops,
+            -- Minimize, Fly; lib/ORASStage.lua). The actor's own world
+            -- matrix follows, so effects stay on its body.
+            local okFx, FXS = pcall(V.require, "ORASEffectsScene")
+            if okFx and FXS and FXS.adjustMatrix and mon.model_matrix then
+              local before = mon.model_matrix
+              local okM, m = pcall(FXS.adjustMatrix, side, before,
+                                   cell[1], session.groundY, cell[2])
+              if okM and m and m ~= before then
+                mon.model_matrix = m
+                local a = mon.actor
+                if a and a.worldMatrix == before then a.worldMatrix = m end
+              end
+            end
             mon:build()
           end)
           if side == "player" and battle.phase == "intro" then
@@ -728,6 +742,25 @@ function Stadium.captureBody()
            hh = math.max(4, h * 0.55) }
 end
 
+-- ORAS afterimages (Double Team, Agility): see-through copies of the same
+-- posed model beside it (lib/ORASStage.lua). Only actors with an opacity
+-- (ORAS / Colosseum models); drawn after the body, writing no depth.
+function Stadium.drawGhosts(side, mon, matrix, pull)
+  local a = mon.actor
+  if not (a and matrix) then return end
+  local okFx, FXS = pcall(V.require, "ORASEffectsScene")
+  if not (okFx and FXS and FXS.actorPose) then return end
+  local okP, pose = pcall(FXS.actorPose, side)
+  if not (okP and pose and pose.ghosts and #pose.ghosts > 0) then return end
+  local Mat4 = V.require("Mat4")
+  local was = a.opacity
+  for _, g in ipairs(pose.ghosts) do
+    a.opacity, a.ghostDraw = (was or 1) * g[4], true
+    pcall(mon.rig.draw, mon.rig, Mat4.mul(Mat4.translate(g[1], g[2], g[3]), matrix), pull)
+  end
+  a.opacity, a.ghostDraw = was, nil
+end
+
 function Stadium.draw(pull, worldShift)
   if not session then return end
   local Mat4 = worldShift and V.require("Mat4") or nil
@@ -740,6 +773,7 @@ function Stadium.draw(pull, worldShift)
           matrix = Mat4.mul(worldShift, matrix)
         end
         mon.rig:draw(matrix, pull)
+        Stadium.drawGhosts(side, mon, matrix, pull)
       end)
     end
   end

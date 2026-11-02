@@ -99,6 +99,8 @@ function Player.start(moveId, host, space)
   local run = { id = serial, move = tonumber(moveId), host = host, entry = entry, space = space or "csm",
                 frame = -1, acc = 0, next = 1, live = {} }
   table.sort(entry.fx, function(a, b) return a[1] < b[1] end)
+  local Stage = V.require("ORASStage")
+  if Stage.has(entry) then run.stageEnd = Stage.length(entry) end
   -- the move lands at the timeline's damage cue (0x0C), else when its first
   -- target-side effect starts
   run.hitFrame = entry.hit
@@ -108,8 +110,8 @@ function Player.start(moveId, host, space)
   end
   active[#active + 1] = run
   while #active > MAX_ACTIVE do table.remove(active, 1) end
-  Player.note("move %d (%s): started, %d particle files, lands at frame %s",
-    run.move, run.space, #entry.fx, tostring(run.hitFrame))
+  Player.note("move %d (%s): started, %d particle files, %d stage records, lands at frame %s",
+    run.move, run.space, #entry.fx, entry.stage and #entry.stage or 0, tostring(run.hitFrame))
   return run.id
 end
 
@@ -174,7 +176,21 @@ local function stepRun(run)
     if l.age >= l.stopAt then S.stopEmitting(l.sim) end
     if S.done(l.sim) or l.age > 600 then table.remove(run.live, i) end
   end
+  -- actor moves / camera / stage tint (lib/ORASStage.lua) run to the
+  -- timeline's end even when the particles are already gone
+  if run.stageEnd and run.frame < run.stageEnd then return true end
   return run.next <= #list or #run.live > 0
+end
+
+-- The newest run in `space` whose timeline moves the stage, and its frame
+-- (fractional, for smooth moves at 60 Hz).
+function Player.stageRun(space)
+  for i = #active, 1, -1 do
+    local run = active[i]
+    if run.space == space and run.stageEnd and run.frame >= 0 then
+      return run, run.frame + math.min(run.acc or 0, 0.999)
+    end
+  end
 end
 
 local lastTick
@@ -398,6 +414,10 @@ function Player.report(out)
   for _, run in ipairs(active) do
     out[#out + 1] = ("  run move %d (%s): frame %d, lands at %s, live files %d, drawn %d by %s"):format(
       run.move, run.space, run.frame, tostring(run.hitFrame), #run.live, run.drawn or 0, tostring(run.drawnBy))
+    if run.stageEnd then
+      out[#out + 1] = ("    stage: %d records, runs to frame %d, last pose %s"):format(
+        #(run.entry.stage or {}), run.stageEnd, tostring(run.stageNote))
+    end
     for _, l in ipairs(run.live) do
       local a = l.lastAnchor
       out[#out + 1] = ("    %s at %s: anchor %s, unit %s, scale %s, particles %d"):format(l.role, l.slot,

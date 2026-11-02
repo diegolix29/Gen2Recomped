@@ -2175,7 +2175,8 @@ function Actor:draw(matrix,mode)
       shader:send("materialColor",MATERIAL_RGBA)
       shader:send("useTexture",grp.textured and 1 or 0)
       if love.graphics.setDepthMode then
-        love.graphics.setDepthMode("lequal",not (grp.noz or grp.xlu or grp.glow))
+        -- ghostDraw: an ORAS afterimage copy (Stadium.drawGhosts), see-through
+        love.graphics.setDepthMode("lequal",not (grp.noz or grp.xlu or grp.glow or self.ghostDraw))
       end
       setGlow(grp.glow)
       setEyeCell(grp,eyeCell)

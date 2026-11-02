@@ -122,10 +122,142 @@ function S.start(battle, user, moveIndex)
       return { dx / l, 0, dz / l }
     end,
     unit = function() return unit(attacker, defender) end,
+    attackerSide = attacker,
   }
   local ok, id = pcall(Player().start, moveIndex, host, "scene")
   if ok and id then S.lastSide = attacker end
   return ok and id or false
+end
+
+-- ------------------------------------------------------------------ stage
+--
+-- Timeline records that move the fight itself (lib/ORASStage.lua): the
+-- Pokemon's own position and size, afterimage ghosts, the stage dimming and
+-- the camera.  Asked by lib/Stadium.lua (3D models), BattleScene's 2D cards
+-- and BattleScene's camera, every frame; nil whenever no such move runs.
+
+local function Stage() return V.require("ORASStage") end
+
+-- the running stage move: run, frame, attacker side
+local function stageNow()
+  if not Effects().active() then return nil end
+  local ok, run, f = pcall(Player().stageRun, "scene")
+  if ok and run and run.host and run.host.attackerSide then return run, f, run.host.attackerSide end
+end
+
+-- a side's frame on the map: right, forward (unit vectors, y = 0)
+local function sideBasis(arena, side)
+  local a = cellOf(arena, side)
+  local b = cellOf(arena, side == "player" and "enemy" or "player")
+  local fx, fz = 0, 1
+  if a and b then
+    local dx, dz = b[1] - a[1], b[2] - a[2]
+    local l = math.sqrt(dx * dx + dz * dz)
+    if l > 1e-6 then fx, fz = dx / l, dz / l end
+  end
+  return { fz, 0, -fx }, { fx, 0, fz }   -- right = up x forward, as ORASEffectsPlayer
+end
+
+local function toWorld(arena, side, v, u)
+  local r, f = sideBasis(arena, side)
+  return (r[1] * v[1] + f[1] * v[3]) * u, v[2] * u, (r[3] * v[1] + f[3] * v[3]) * u
+end
+
+-- Where `side` stands this frame relative to its own place: { dx, dy, dz
+-- (world), sx, sy, sz, ghosts = { {dx, dy, dz, alpha} } } or nil.
+function S.actorPose(side)
+  local run, f, attacker = stageNow()
+  if not run then return nil end
+  local arena = staged()
+  if not arena then return nil end
+  local who = (side == attacker) and 0 or 1
+  local p = Stage().actor(run.entry, who, f)
+  local o, sc = p.offset, p.scale
+  if o[1] == 0 and o[2] == 0 and o[3] == 0 and sc[1] == 1 and sc[2] == 1 and sc[3] == 1
+      and #p.ghosts == 0 then
+    return nil
+  end
+  local okU, u = pcall(run.host.unit)
+  u = okU and tonumber(u) or nil
+  if not u or u <= 0 then return nil end
+  local dx, dy, dz = toWorld(arena, side, o, u)
+  local out = { dx, dy, dz, sc[1], sc[2], sc[3], ghosts = {} }
+  for _, g in ipairs(p.ghosts) do
+    local gx, gy, gz = toWorld(arena, side, g, u)
+    out.ghosts[#out.ghosts + 1] = { gx, gy, gz, g[4] }
+  end
+  run.stageNote = ("%s off (%.0f,%.0f,%.0f)cm scale (%.2f,%.2f,%.2f) ghosts %d"):format(
+    side, o[1], o[2], o[3], sc[1], sc[2], sc[3], #out.ghosts)
+  return out
+end
+
+-- A model matrix moved by this frame's pose: scaled about its feet
+-- (fx, fy, fz) and shifted.  Mat4 is lib/Mat4.lua.
+function S.adjustMatrix(side, m, fx, fy, fz)
+  local pose = S.actorPose(side)
+  if not (pose and m) then return m, nil end
+  local Mat4 = V.require("Mat4")
+  if pose[4] ~= 1 or pose[5] ~= 1 or pose[6] ~= 1 then
+    m = Mat4.mul(Mat4.translate(fx, fy, fz),
+      Mat4.mul(Mat4.scale(pose[4], pose[5], pose[6]), Mat4.mul(Mat4.translate(-fx, -fy, -fz), m)))
+  end
+  if pose[1] ~= 0 or pose[2] ~= 0 or pose[3] ~= 0 then
+    m = Mat4.mul(Mat4.translate(pose[1], pose[2], pose[3]), m)
+  end
+  return m, pose
+end
+
+-- Stage colour {r, g, b, a}: the arena fades to it (the Pokemon do not).
+function S.tint()
+  local run, f = stageNow()
+  if not run then return nil end
+  return Stage().tint(run.entry, f)
+end
+
+-- BattleScene's camera, moved by the move's camera records (op 0x17).
+-- cam = { eye, focus, fov }, changed in place; true when it moved.
+function S.camera(cam)
+  local run, f, attacker = stageNow()
+  if not (run and cam and cam.eye and cam.focus) then return false end
+  local arena, groundY = staged()
+  if not arena then return false end
+  local okU, u = pcall(run.host.unit)
+  u = okU and tonumber(u) or nil
+  if not u or u <= 0 then return false end
+  local defender = attacker == "player" and "enemy" or "player"
+  local POINT = { [0] = "origin", [2] = "mouth", [3] = "center", [5] = "center", [6] = "chest" }
+  -- the side's own spot (its cell, at the body point's height without the
+  -- move's hops): the camera must not shake along with Double Team
+  local function spot(side, slot)
+    local p = point(arena, groundY, side, slot)
+    local c = cellOf(arena, side)
+    if not (p and c) then return p end
+    local okP, pose = pcall(S.actorPose, side)
+    local dy = okP and pose and pose[2] or 0
+    return { c[1], p[2] - dy, c[2] }
+  end
+  local function place(op)
+    local side = (op.w == 1) and defender or attacker
+    local slot = POINT[op.point] or "center"
+    local base = spot(side, slot)
+    if op.w == 2 then
+      -- both: halfway between the two
+      local p, q = spot(attacker, slot), spot(defender, slot)
+      if p and q then base = { (p[1] + q[1]) / 2, (p[2] + q[2]) / 2, (p[3] + q[3]) / 2 } end
+    end
+    if not base then return nil end
+    local ex, ey, ez = toWorld(arena, side, op.eye, u)
+    local lx, ly, lz = toWorld(arena, side, op.look, u)
+    return { base[1] + ex, base[2] + ey, base[3] + ez }, { base[1] + lx, base[2] + ly, base[3] + lz }
+  end
+  local c = Stage().camera(run.entry, f,
+    { eye = cam.eye, look = cam.focus }, place)
+  if not c then return false end
+  cam.eye, cam.focus = c.eye, c.look
+  -- ORAS frames every move with an 11.3 degree lens (op 0x63, all moves)
+  local orasFov = math.rad(11.3)
+  if cam.fov then cam.fov = cam.fov + (orasFov - cam.fov) * c.weight end
+  return true
 end
 
 function S.busy()

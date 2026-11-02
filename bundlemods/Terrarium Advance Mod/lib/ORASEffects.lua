@@ -27,7 +27,8 @@ local E = { ID = "oras_fx", LABEL = "ORAS EFFECTS" }
 
 E.ROOT = "oras/movefx"
 E.INDEX = E.ROOT .. "/index.lua"
-E.STAMP = "oras-fx=4"   -- 2: per-effect scale (0x34) and side (0x2F); 3: body point + offset, hit cue (0x0C)
+E.STAMP = "oras-fx=5"   -- 2: per-effect scale (0x34) and side (0x2F); 3: body point + offset, hit cue (0x0C);
+                        -- 5: stage records (actor moves / scale, stage tint, camera)
 E.SETTING = E.ROOT .. "/battle.txt"
 E.IMPORT_ID = "pokemon_oras"
 
@@ -202,6 +203,42 @@ local function compactFx(P, Sim, fx, role)
   return out
 end
 
+-- Timeline records that move the battle itself rather than spawn particles
+-- (played by lib/ORASStage.lua).  who: 0 attacker, 1 target (2 both, cameras).
+--   0x02 (who, dx, dy, dz cm)              move the actor by that much over the span
+--   0x03 (who, mode, ?, dx, dy, dz, ease)  the same, eased (1 linear, 2 smooth)
+--   0x04 (who)                             back to its own place and size
+--   0x08 (who, sx, sy, sz)                 stretch / squash to that size
+--   0x76 (r, g, b, a)                      fade the stage (not the actors) to that colour
+--   0x17 (who, point, eye xyz, look xyz cm) camera, in that side's frame
+-- Double Team is 0x02 hops of +-50 cm every frame: three places at once.
+local function stageRecord(S, r)
+  local a, n = r.args, #r.args
+  local f, u = S.f32, S.u32
+  local base = { r.start, r.finish }
+  if r.op == 0x02 and n >= 16 then
+    base.k, base.w, base.v = "move", u(a, 1), { f(a, 5), f(a, 9), f(a, 13) }
+  elseif r.op == 0x03 and n >= 28 then
+    base.k, base.w, base.v, base.ease = "move", u(a, 1), { f(a, 13), f(a, 17), f(a, 21) }, u(a, 25)
+  elseif r.op == 0x04 and n >= 4 then
+    base.k, base.w = "home", u(a, 1)
+  elseif r.op == 0x08 and n >= 16 then
+    base.k, base.w, base.v = "scale", u(a, 1), { f(a, 5), f(a, 9), f(a, 13) }
+  elseif r.op == 0x76 and n >= 16 then
+    base.k, base.v = "tint", { f(a, 1), f(a, 5), f(a, 9), f(a, 13) }
+  elseif r.op == 0x17 and n >= 32 then
+    base.k, base.w, base.point = "cam", u(a, 1), u(a, 5)
+    base.eye = { f(a, 9), f(a, 13), f(a, 17) }
+    base.look = { f(a, 21), f(a, 25), f(a, 29) }
+  else
+    return nil
+  end
+  for _, x in ipairs(base.v or base.eye or {}) do
+    if x ~= x or math.abs(x) > 1e5 then return nil end
+  end
+  return base
+end
+
 local function bake(onProgress)
   local R = V.require("N3DSRom")
   local G = V.require("GARC")
@@ -222,6 +259,7 @@ local function bake(onProgress)
       -- attach state per slot from 0x2F (effects) and 0x68 (sounds; side only)
       local attach = {}
       local hit
+      local stage = {}
       local function readAttach(q)
         return { role = S.u32(q.args, 1), point = S.u32(q.args, 5),
                  off = { S.f32(q.args, 9), S.f32(q.args, 13), S.f32(q.args, 17) } }
@@ -234,6 +272,8 @@ local function bake(onProgress)
         end
         -- the target's damage cue: 0x0C with u32 1 (Tackle 22, Ember 36, Thunder 90)
         if r.op == 0x0C and hit == nil and #r.args >= 4 and S.u32(r.args, 1) == 1 then hit = r.start end
+        local st = stageRecord(S, r)
+        if st then stage[#stage + 1] = st end
         if r.op == 0x2B and #r.args >= 4 then
           local m = S.u32(r.args, 1)
           if m < fxG.count then
@@ -276,7 +316,9 @@ local function bake(onProgress)
           end
         end
       end
-      if #list > 0 then moves[move] = { frames = seq.frames, fx = list, hit = hit } end
+      if #list > 0 or #stage > 0 then
+        moves[move] = { frames = seq.frames, fx = list, hit = hit, stage = #stage > 0 and stage or nil }
+      end
     end
     if move % 25 == 0 then job.done = move; checkpoint() end
   end

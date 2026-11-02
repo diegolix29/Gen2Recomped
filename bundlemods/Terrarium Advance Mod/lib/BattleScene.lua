@@ -208,6 +208,11 @@ local function monCards(arena, groundY, textures)
                             Mat4.translate(-ax, -ay, -az))),
           model)
       end
+      -- ORAS move timelines move the card too (Double Team's hops, Minimize)
+      pcall(function()
+        local m = V.require("ORASEffectsScene").adjustMatrix(side, model, cell[1], groundY, cell[2])
+        if m then model = m end
+      end)
       out[#out + 1] = { tex = tex.canvas, model = model }
     end
   end
@@ -483,6 +488,8 @@ function BattleScene.render(state, arena, textures, token)
     if okRig and c then cam, pitch, capFrameH = c, p or math.rad(80), fh end
   end
   if not cam then cam, pitch = BattleCam.rig(arena, groundY) end
+  -- ORAS move cameras (op 0x17, lib/ORASStage.lua), eased in and back out
+  pcall(function() V.require("ORASEffectsScene").camera(cam) end)
   cam.fov = BattleScene.letterboxFov(cam.fov, ph, s)
 
   local cx, cy = arena.mid[1], arena.mid[2]
@@ -525,6 +532,14 @@ function BattleScene.render(state, arena, textures, token)
       return
     end
 
+    -- ORAS move stage colour (op 0x76: Double Team darkens the arena): the
+    -- ground fades, the Pokemon drawn after the reset below do not
+    local stageTint
+    pcall(function() stageTint = V.require("ORASEffectsScene").tint() end)
+    if stageTint then
+      Voxel3D.flatten({ stageTint[1], stageTint[2], stageTint[3] }, stageTint[4])
+    end
+
     -- PNG arena fills the bound battle canvas in screen space (not world 0,0).
     -- Scenery, if chosen, is a prop on that PNG. 3D fighters/discs draw after.
     pcall(function()
@@ -561,6 +576,7 @@ function BattleScene.render(state, arena, textures, token)
       end
     end
 
+    if stageTint then Voxel3D.flatten(nil) end
     local flashing = textures and textures.flash
     if flashing then
       Voxel3D.flatten(BattleScene.FLASH_COLOR, BattleScene.FLASH_STRENGTH)
