@@ -208,6 +208,28 @@ local function literal(v)
   return table.concat(out)
 end
 
+-- Read a cache file, packed or loose.  mod.cache only sees loose files; once
+-- ORAS PACK has run, base.lua and the banks live in cbe_cache_archive/oras
+-- and only the archive can read them.  In game this module is loaded with the
+-- mod's main V, which has no GeneratedAssets (that lives in the Colosseum
+-- namespace), so the shared archive (mod.exports.cacheArchive) is asked
+-- directly.
+local function readCache(mod, path)
+  local G = V.GeneratedAssets
+  if G and type(G.read) == "function" then
+    local okG, data = pcall(G.read, path)
+    if okG and type(data) == "string" then return data end
+  end
+  local okL, data = pcall(mod.cache.read, mod.cache, path)
+  if okL and type(data) == "string" then return data end
+  local A = mod.exports and mod.exports.cacheArchive
+  if A and type(A.readEntry) == "function" then
+    local okA, packed = pcall(A.readEntry, path)
+    if okA and type(packed) == "string" then return packed end
+  end
+  return nil
+end
+
 local function writeLua(mod, path, value)
   return mod.cache:write(path, "return " .. literal(value) .. "\n") ~= false
 end
@@ -386,6 +408,151 @@ local function applyExtent(meta, ext, s)
     center = { 0, (ext.lo[2] + ext.hi[2]) / 2, 0 },
   }
   return true
+end
+
+-- Mesh-node visibility.  ORAS models carry alternative parts behind show /
+-- hide switches (Pidgey's folded wings: LWingCloseSkin / RWingCloseSkin),
+-- and each battle motion has a visibility animation, part slot + 3 of the
+-- battle-motion member, that turns them on and off by node name.  Pidgey's
+-- faint shows the folded wings for frames 0-2 and hides them from frame 3,
+-- when the open wings spread; drawn always, the bird had four wings.
+--
+-- Returns nil when no node of this species is ever hidden (most), else
+--   { groupNode = { [group] = node }, nodeNames = { [node] = name },
+--     tracks = { [action] = { frames = n, nodes = { [node] = "1110000..." } } } }
+-- one character per source frame 0..n ("1" shown); "idle" is the base bank.
+-- `groupMeshes[m]` is group m's H3D mesh; `actions` the meta.actions table.
+local VIS_SLOT_PART = 3
+local VIS_VERSION = 1   -- meta.visibilityVersion: this species has been looked at
+local function visibilityFor(g, base, model, motions, groupMeshes, actions)
+  local names, default = model.nodeNames or {}, model.nodeVisible or {}
+  local anims = {}
+  local function animFor(slot)
+    if anims[slot] == nil then
+      anims[slot] = false
+      local okP, pd, ph = pcall(packBch, g, base + 6, slot + VIS_SLOT_PART)
+      if okP and pd then
+        local okA, list = pcall(H3D.visibilityAnimations, pd, ph)
+        if okA and list and list[1] then anims[slot] = list[1] end
+      end
+    end
+    return anims[slot] or nil
+  end
+  local function framesOf(slot)
+    local m = motions[slot]
+    local a = animFor(slot)
+    return math.max(1, math.floor((m and m.frames) or (a and a.frames) or 1))
+  end
+  -- `node` over motion `slot`: frames 0..n-1, and n too when it ends the track
+  local function slotString(slot, node, withLast)
+    local a = animFor(slot)
+    local el = a and names[node] and a.elements[names[node]]
+    local n = framesOf(slot)
+    local out = {}
+    for f = 0, withLast and n or n - 1 do
+      local v
+      if el then v = H3D.sampleVisibility(el, f) end
+      if v == nil then v = default[node] ~= false end
+      out[#out + 1] = v and "1" or "0"
+    end
+    return table.concat(out), n
+  end
+  local function actionTrack(a, nodes)
+    local slots = {}
+    if a.chain then
+      local all = true
+      for _, sl in ipairs(a.chain) do
+        if not (motions[sl] and motions[sl].frames > 0) then all = false end
+      end
+      if all then slots = a.chain elseif a.alt and motions[a.alt] then slots = { a.alt } end
+    elseif motions[a.slot] then
+      slots = { a.slot }
+    end
+    if #slots == 0 then return nil end
+    local track = { frames = 0, nodes = {} }
+    for _, node in ipairs(nodes) do
+      local parts, total = {}, 0
+      for i, sl in ipairs(slots) do
+        local str, n = slotString(sl, node, i == #slots)
+        parts[i] = str; total = total + n
+      end
+      track.nodes[node] = table.concat(parts)
+      track.frames = total
+    end
+    return track
+  end
+  local used, nodes = {}, {}
+  for _, mesh in ipairs(groupMeshes) do
+    local node = mesh.nodeIndex
+    if node and not used[node] then used[node] = true; nodes[#nodes + 1] = node end
+  end
+  table.sort(nodes)
+  local tracks = { idle = actionTrack({ slot = IDLE_SLOT }, nodes) }
+  for _, a in ipairs(ACTIONS) do
+    if actions[a.name] and not actions[a.name].alias then tracks[a.name] = actionTrack(a, nodes) end
+  end
+  for name, spec in pairs(actions) do
+    if spec.alias and tracks[spec.alias] then tracks[name] = tracks[spec.alias] end
+  end
+  -- keep only the switch nodes: ones some track turns off
+  local switching = {}
+  for _, track in pairs(tracks) do
+    for node, str in pairs(track.nodes) do
+      if str:find("0", 1, true) then switching[node] = true end
+    end
+  end
+  if not next(switching) then return nil end
+  for _, track in pairs(tracks) do
+    for node in pairs(track.nodes) do
+      if not switching[node] then track.nodes[node] = nil end
+    end
+  end
+  local groupNode, nodeNames = {}, {}
+  for m, mesh in ipairs(groupMeshes) do
+    if switching[mesh.nodeIndex] then groupNode[m] = mesh.nodeIndex end
+  end
+  for node in pairs(switching) do nodeNames[node] = names[node] end
+  return { groupNode = groupNode, tracks = tracks, nodeNames = nodeNames }
+end
+C.visibilityFor = visibilityFor
+
+-- Does a keyed curve actually move over frames 0..n?  Some cries key a
+-- channel at one fixed value (Growlithe's Waist roll, 1.57 throughout), in
+-- the cry's own reference pose.  Laid over the idle loop as if it moved, it
+-- replaced that one rotation channel and left the idle's others: the body
+-- turned 90 degrees onto its side for the whole cry.
+local CRY_SLOT = 25
+local CRY_FIX = 1        -- meta.cryFix: cry bank built with flat channels left out
+local function curveMoves(curve, frames)
+  local GF1 = V.require("GF1Motion")
+  local lo, hi = math.huge, -math.huge
+  for f = 0, math.max(1, math.floor(frames or 1)) do
+    local v = GF1.sample(curve, f)
+    if v then
+      if v < lo then lo = v end
+      if v > hi then hi = v end
+      if hi - lo > 1e-3 then return true end
+    end
+  end
+  return false
+end
+-- a species whose cry has a flat keyed channel (its cry bank needs rebuilding)
+local function cryHasFlatChannel(motions)
+  local cry = motions and motions[CRY_SLOT]
+  if not (cry and motions[IDLE_SLOT]) then return false end
+  for _, c in pairs(cry.curves) do
+    if c.kind ~= "const" and not curveMoves(c, cry.frames) then return true end
+  end
+  return false
+end
+local function motionsOf(g, index, dex)
+  local rec = (dex - 1) * 4 + 1
+  if rec + 3 > #index then return nil end
+  local base = FIRST_MEMBER + u16(index, rec) * PER_FORM
+  local okPb, pb = pcall(g.member, g, base + 6)
+  if not (okPb and pb and #pb >= 12 and u16(pb, 3) > 0) then return nil end
+  local okRead, _, mots = pcall(V.require("GF1Motion").readPack, pb:sub(u32(pb, 5) + 1, u32(pb, 9)))
+  return okRead and mots or nil
 end
 
 -- Build one species. Returns a summary string, or nil and a reason.
@@ -657,7 +824,9 @@ function C.buildSpecies(mod, rom, g, index, dex)
       for k, c in pairs(idle.curves) do
         curves[k] = c.kind == "const" and c or { kind = "wrap", inner = c, period = math.max(1, idle.frames) }
       end
-      for k, c in pairs(m.curves) do if c.kind ~= "const" then curves[k] = c end end
+      for k, c in pairs(m.curves) do
+        if c.kind ~= "const" and curveMoves(c, m.frames) then curves[k] = c end
+      end
       return { frames = m.frames, curves = curves }, a.slot
     end
     return m, a.slot
@@ -758,9 +927,16 @@ function C.buildSpecies(mod, rom, g, index, dex)
     floorMinY = minFloor,
     jointPositions = baseJoints[0], jointFrames = baseJointFrames,
     boneNames = boneNames,
-    actions = actions, groups = groups,
+    actions = actions, groups = groups, cryFix = CRY_FIX,
   }
   applyExtent(meta, posed, s)
+  do
+    local groupMeshes = {}
+    for m, entry in ipairs(kept) do groupMeshes[m] = entry.mesh end
+    local okV, vis = pcall(visibilityFor, g, base, model, motions, groupMeshes, actions)
+    if okV then meta.orasVisibility = vis end
+    meta.visibilityVersion = VIS_VERSION
+  end
   -- base.lua is what PokemonActors loads (its stamp matches rev.txt);
   -- model_cache.lua is the same table, which marks the species as present
   assert(writeLua(mod, rt .. "/base.lua", meta), "runtime base write failed")
@@ -783,7 +959,7 @@ end
 local function patchSize(mod, g, index, dex)
   if not ffi then return false end
   local rt = root(dex) .. "/runtime_mesh_v1"
-  local okS, src = pcall(mod.cache.read, mod.cache, rt .. "/base.lua")
+  local okS, src = pcall(readCache, mod, rt .. "/base.lua")
   if not (okS and type(src) == "string") then return false end
   local chunk = loadstring(src)
   local okM, meta = pcall(chunk or error)
@@ -814,7 +990,7 @@ local function patchSize(mod, g, index, dex)
   local posed = newExtent()
   for _, grp in ipairs(meta.groups) do
     if not grp.glow and grp.runtimeBin then
-      local okB, data = pcall(mod.cache.read, mod.cache, grp.runtimeBin)
+      local okB, data = pcall(readCache, mod, grp.runtimeBin)
       if okB and type(data) == "string" and #data >= 44 * 4 and data:sub(1, 4) ~= "OQ16" then
         local f = ffi.cast("const float*", data)
         for r = 0, math.floor(#data / (44 * 4)) - 1 do
@@ -834,6 +1010,55 @@ local function patchSize(mod, g, index, dex)
   assert(writeLua(mod, root(dex) .. "/model_cache.lua", meta), "model cache write failed")
   return true
 end
+
+-- A species built before mesh-node visibility was baked: work it out from
+-- the ROM and rewrite only its metadata (base.lua, model_cache.lua).  Groups
+-- are matched to meshes the way buildSpecies keeps them (own body meshes in
+-- order, then glow meshes) and checked by material name.
+-- Returns patched, hasSwitches.
+local function patchVisibility(mod, g, index, dex)
+  local rt = root(dex) .. "/runtime_mesh_v1"
+  local okS, src = pcall(readCache, mod, rt .. "/base.lua")
+  if not (okS and type(src) == "string") then return false end
+  local chunk = loadstring(src)
+  local okM, meta = pcall(chunk or error)
+  if not (okM and type(meta) == "table" and type(meta.groups) == "table") then return false end
+  if meta.visibilityVersion == VIS_VERSION then return false end
+  local okF, base, _, _, model = pcall(findSpecies, g, index, dex)
+  if not (okF and base and model) then return false end
+  local td, th = packBch(g, base + 3, 1)
+  local textures = td and H3D.textures(td, th) or {}
+  local prefix = (model.name or ""):match("^(pm%d+)") or "pm"
+  local bodies, glows = {}, {}
+  for _, mesh in ipairs(model.meshes) do
+    local mat = model.materials[mesh.materialIndex + 1] or {}
+    local tname = mat.textures and mat.textures[1]
+    local t = tname and textures[tname]
+    if effectTexture(prefix, tname, t) then glows[#glows + 1] = mesh
+    elseif tname and tname:sub(1, #prefix) == prefix then bodies[#bodies + 1] = mesh end
+  end
+  for _, mesh in ipairs(glows) do bodies[#bodies + 1] = mesh end
+  if #bodies ~= #meta.groups then return false end
+  for m, mesh in ipairs(bodies) do
+    local mat = model.materials[mesh.materialIndex + 1] or {}
+    if (mat.name or ("mesh" .. m)) ~= meta.groups[m].material then return false end
+  end
+  local motions = {}
+  local okPb, pb = pcall(g.member, g, base + 6)
+  if okPb and pb and #pb >= 12 and u16(pb, 3) > 0 then
+    local GF1 = V.require("GF1Motion")
+    local okRead, _, mots = pcall(GF1.readPack, pb:sub(u32(pb, 5) + 1, u32(pb, 9)))
+    if okRead and mots then motions = mots end
+  end
+  local okV, vis = pcall(visibilityFor, g, base, model, motions, bodies, meta.actions or {})
+  if not okV then return false end
+  meta.orasVisibility = vis
+  meta.visibilityVersion = VIS_VERSION
+  assert(writeLua(mod, rt .. "/base.lua", meta), "runtime base write failed")
+  assert(writeLua(mod, root(dex) .. "/model_cache.lua", meta), "model cache write failed")
+  return true, vis ~= nil
+end
+C.patchVisibility = patchVisibility
 
 -- A current species built before compact banks: rewrite every plain float
 -- bank under its runtime_mesh_v1 as OQ16 (no ROM work; same names, so every
@@ -971,6 +1196,19 @@ function C.build(mod, list, log, progress)
         log("ORAS dex %d: rebuilding, missing %s", dex, tostring(missing))
       end
     end
+    if current then
+      -- built before CRY_FIX: rebuild only if its cry has a flat channel
+      local okS, src = pcall(readCache, mod, root(dex) .. "/runtime_mesh_v1/base.lua")
+      local chunk = okS and type(src) == "string" and loadstring(src)
+      local okM, meta = pcall(chunk or error)
+      if okM and type(meta) == "table" and meta.cryFix ~= CRY_FIX then
+        local okF, flat = pcall(function() return cryHasFlatChannel(motionsOf(g, index, dex)) end)
+        if okF and flat then
+          current = false
+          log("ORAS dex %d: rebuilding, cry pose fix", dex)
+        end
+      end
+    end
     if current and C.compactBanks ~= false then
       local okQ2, q = pcall(mod.cache.read, mod.cache, root(dex) .. "/q16.txt")
       if not (okQ2 and q == Q16_MARK) then
@@ -986,6 +1224,8 @@ function C.build(mod, list, log, progress)
       skipped = skipped + 1
       local okP, patched = pcall(patchSize, mod, g, index, dex)
       if okP and patched then log("ORAS dex %d: posed size recorded", dex) end
+      local okV, patchedV, switches = pcall(patchVisibility, mod, g, index, dex)
+      if okV and patchedV and switches then log("ORAS dex %d: mesh visibility recorded", dex) end
     else
       -- pcall does not cross a coroutine yield in plain Lua 5.1, but does in
       -- LuaJIT (which this runs on): yields inside buildSpecies are fine

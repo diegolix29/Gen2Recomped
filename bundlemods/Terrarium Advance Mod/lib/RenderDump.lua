@@ -51,6 +51,7 @@ local function push(kind, text)
   end
 end
 D.trace = push
+function D.tracing() return state ~= nil and state.trace ~= nil end
 
 local function startTrace()
   local g = love.graphics
@@ -88,11 +89,15 @@ local function describeActors(A, out)
   local live = {}
   for _, rec in pairs(A._liveActors or {}) do live[#live + 1] = rec end
   out[#out + 1] = ("LIVE ACTORS: %d"):format(#live)
+  local now = love.timer and love.timer.getTime() or 0
   for n, rec in ipairs(live) do
     local sc = rec.scene or {}
     out[#out + 1] = ("[%d] dex %s  variant %s  source %s  stem %s  state %s  opacity %s  hidden %s")
       :format(n, tostring(rec.dex), tostring(rec.variant), tostring(sc.source),
         tostring(sc.stem), tostring(rec.state), fmtNum(rec.opacity), tostring(rec.hidden))
+    out[#out + 1] = ("    acquired by %s  draws %d  last drawn %s")
+      :format(tostring(rec.acquireSource), tonumber(rec.drawCount) or 0,
+        rec.lastDrawAt and ("%.2fs ago"):format(now - rec.lastDrawAt) or "never")
     for i, grp in ipairs(sc.groups or {}) do
       local nv = (grp.mesh and grp.mesh.getVertexCount) and grp.mesh:getVertexCount() or 0
       local d = grp.diffuse or {}

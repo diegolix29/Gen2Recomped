@@ -339,6 +339,26 @@ function H3D.models(d, h)
 
     model.bones = readBones(d, W(d, m + 0x70), W(d, m + 0x74))
 
+    -- Mesh nodes: each mesh's node index names one of these.  They are not
+    -- bones but show/hide switches (Pidgey: BodySkin, LWingCloseSkin,
+    -- RWingCloseSkin), each motion's visibility animation turns them on and
+    -- off by name.  +7C: default visibility, one bit per node (LSB first);
+    -- +88 node count, +8C the names' patricia tree (12-byte entries: ref bit
+    -- u32, left u16, right u16, name; entry 0 is the root, node i is entry
+    -- i + 1).
+    model.nodeVisible, model.nodeNames = {}, {}
+    local visAt, visCount = W(d, m + 0x7C), W(d, m + 0x80) or 0
+    for i = 0, visCount - 1 do
+      local word = visAt and visAt > 0 and W(d, visAt + math.floor(i / 32) * 4) or 0xFFFFFFFF
+      model.nodeVisible[i] = math.floor(word / 2 ^ (i % 32)) % 2 == 1
+    end
+    local nodeCount, treeAt = W(d, m + 0x88) or 0, W(d, m + 0x8C)
+    if treeAt and treeAt > 0 then
+      for i = 0, math.min(nodeCount, 256) - 1 do
+        model.nodeNames[i] = str(d, treeAt + (i + 1) * 12 + 8)
+      end
+    end
+
     local meshAt, meshCount = W(d, m + 0x40), W(d, m + 0x44)
     for i = 0, meshCount - 1 do
       local b = meshAt + i * 0x38
@@ -657,6 +677,43 @@ function H3D.materialAnimations(d, h)
     out[#out + 1] = anim
   end
   return out
+end
+
+-- Visibility animations of a BCH: { name, frames, elements = { name ->
+-- { start, stop, values } } }, values[k] (1-based) the node's visibility at
+-- frame start + k - 1, held after the last one.  Element: name, target u16,
+-- primitive u8 (8 = boolean), then start / end frame floats, repeat bytes and
+-- curve index, a pointer to the bits (one per frame, LSB first) and their count.
+function H3D.visibilityAnimations(d, h)
+  local out = {}
+  for _, a in ipairs(contentEntries(d, h, "visibilityAnimations")) do
+    local anim = { name = str(d, a), frames = F(d, a + 8), elements = {} }
+    local ep, ec = W(d, a + 12), W(d, a + 16) or 0
+    for k = 0, ec - 1 do
+      local e = W(d, ep + k * 4)
+      local name = str(d, e)
+      if name and d:byte(e + 7) == 8 then
+        local vp, vc = W(d, e + 20), W(d, e + 24) or 0
+        local values = {}
+        for i = 0, math.min(vc, 4096) - 1 do
+          local word = vp and vp > 0 and W(d, vp + math.floor(i / 32) * 4) or 1
+          values[i + 1] = math.floor(word / 2 ^ (i % 32)) % 2 == 1
+        end
+        anim.elements[name] = { start = F(d, e + 8) or 0, stop = F(d, e + 12) or 0, values = values }
+      end
+    end
+    out[#out + 1] = anim
+  end
+  return out
+end
+
+-- A node's visibility at `frame` of an animation element (see above)
+function H3D.sampleVisibility(el, frame)
+  local v = el.values
+  if not (v and v[1] ~= nil) then return nil end
+  local i = math.floor((frame or 0) - (el.start or 0)) + 1
+  if i < 1 then i = 1 elseif i > #v then i = #v end
+  return v[i]
 end
 
 return H3D

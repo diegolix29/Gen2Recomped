@@ -838,6 +838,7 @@ local function loadScene(dex,diskOnly,checkpoint)
     idleDuration=tonumber(cache.idleDuration) or 0,
     stem=cache.stem,source=cache.source,
     nativeHeight=tonumber(cache.nativeHeight),nativeSpan=tonumber(cache.nativeSpan),
+    orasVisibility=type(cache.orasVisibility)=="table" and cache.orasVisibility or nil,
     vertexCount=tonumber(cache.vertexCount) or 0,
     groupCount=tonumber(cache.groupCount) or #groups,
     requestedDecodeMode=tostring(cache.requestedDecodeMode or "auto"),
@@ -1683,6 +1684,49 @@ function Actor:playbackBank()
   return bank,self.clipClock or self.clock,self.nativeDuration,false
 end
 
+-- ORAS mesh-node visibility (lib/ORASActorCache.lua visibilityFor): which
+-- groups the playing motion switches off this frame, as { [group]=true }, or
+-- nil when nothing is hidden.  Pidgey's faint hides its folded wings from
+-- frame 3; drawn anyway they doubled the spread ones.
+function Actor:orasHiddenGroups()
+  local sc=self.scene
+  local vis=sc and sc.orasVisibility
+  if not (vis and vis.tracks and vis.groupNode) then return nil end
+  local key=(self.nativeAction and self.nativeActionName) or "idle"
+  local track=vis.tracks[key]
+  local guard=0
+  while not track and guard<8 do
+    local spec=sc.actionSpecs and sc.actionSpecs[key]
+    if not (spec and spec.alias) then break end
+    key=tostring(spec.alias);track=vis.tracks[key];guard=guard+1
+  end
+  if not track and not self.nativeAction then track=vis.tracks.idle end
+  if not (track and track.nodes) then return nil end
+  local frames=math.max(1,tonumber(track.frames) or 1)
+  local clock=math.max(0,tonumber(self.clipClock or self.clock) or 0)
+  local duration
+  if self.nativeAction then
+    duration=tonumber(self.nativeDuration) or tonumber(self.nativeAction.duration)
+  else
+    duration=tonumber(self.nativeDuration)
+    if not duration or duration<=0 then duration=tonumber(sc.idleDuration) end
+  end
+  duration=math.max(.001,duration or frames/30)
+  local looping=(self.state=="idle" or self.state=="spawn")
+    and (self.nativeAction~=nil or self.action~="appear")
+  local phase=looping and (clock%duration)/duration or clamp(clock/duration,0,1)
+  local i=math.floor(phase*frames)+1
+  local hidden=nil
+  for group,node in pairs(vis.groupNode) do
+    local str=track.nodes[node] or track.nodes[tostring(node)]
+    if type(str)=="string" and #str>0 then
+      local k=i>#str and #str or i
+      if str:sub(k,k)=="0" then hidden=hidden or {};hidden[tonumber(group) or group]=true end
+    end
+  end
+  return hidden
+end
+
 function Actor:frameWeights()
   local bank,clock,duration,dense=self:playbackBank()
   local n=bank and bank.morphFrames or self.scene.morphFrames
@@ -2040,6 +2084,22 @@ end
 function Actor:draw(matrix,mode)
   local sc=self.scene
   if not (sc and shader) then return false end
+  -- F12 report: when this actor was last drawn and by whom
+  self.drawCount=(self.drawCount or 0)+1
+  self.lastDrawAt=love.timer and love.timer.getTime() or 0
+  do
+    local RD=rawget(_G,"__terrariumRenderDump")
+    if RD and RD.trace and RD.tracing and RD.tracing() then
+      local tb=debug.traceback("",2) or ""
+      local parts={}
+      for file,line in tb:gmatch("([%w_]+)%.lua:(%d+):") do
+        if file~="PokemonActors" then parts[#parts+1]=file..":"..line end
+        if #parts>=5 then break end
+      end
+      RD.trace("draw",("dex %s state %s source %s  via %s"):format(tostring(self.dex),
+        tostring(self.state),tostring(self.acquireSource),table.concat(parts," < ")))
+    end
+  end
   local w=self:frameWeights()
   love.graphics.setShader(shader)
   shader:send("model","row",matrix)
@@ -2098,12 +2158,14 @@ function Actor:draw(matrix,mode)
   -- are queued instead and replayed by the bridge after its passes
   -- (A.flushGlow, a Gen4Bridge.after hook). mode "glowOnly" is that replay.
   local glowOnly=mode=="glowOnly"
+  local hiddenGroups=(sc.source=="ORAS") and self:orasHiddenGroups() or nil
   local deferGlow=not glowOnly and glowDeferActive()
   local deferred=false
   for i,grp in ipairs(drawGroups) do
     local skipGlow=deferGlow and grp.glow
     if skipGlow and (not only or only==i) then deferred=true end
-    if (not only or only==i) and not skipGlow and (grp.glow or not glowOnly) then
+    if (not only or only==i) and not skipGlow and (grp.glow or not glowOnly)
+        and not (hiddenGroups and hiddenGroups[i]) then
       -- Preserve the source HSD material state per render group. 1.5.24 threw
       -- this away after extraction, so every untextured material rendered as
       -- opaque white and every alpha-controlled helper surface became solid.
@@ -2659,6 +2721,7 @@ function A.acquire(source,dex,variant,opts)
 
   local actor=Actor.new(dex,variant,scene,opts)
   actor.cacheKey=cacheKey
+  actor.acquireSource=tostring(source)  -- who asked for it (F12 report)
   local metadataKey=tostring(cacheKey)
   local informationSurface=actor.informationSurface==true
   local metadata=sourceMetadata[metadataKey]
