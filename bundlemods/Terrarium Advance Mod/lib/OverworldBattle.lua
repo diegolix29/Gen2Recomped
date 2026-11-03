@@ -160,8 +160,17 @@ local function vrOn()
   return ok and vr and vr.enabled and vr.enabled() or false
 end
 
+-- Whether the ORAS ARENA row is on (and stages are built): every fight is
+-- then staged in that arena, whatever this row says -- this row still picks
+-- what stands there. Required lazily, like VR.
+local function orasArena()
+  local ok, stage = pcall(V.require, "ORASArenaStage")
+  return ok and stage and stage.wanted() or false
+end
+
 function OverworldBattle.enabled()
   if vrOn() then return true end
+  if orasArena() then return true end
   return OverworldBattle.setting:get() and true or false
 end
 
@@ -271,8 +280,8 @@ function OverworldBattle.wantsFront()
   local ow = g and g.overworld
   if not (ow and ow.map and ow.player) then return false end
   -- a B rung carries its own stage, so the answer is yes on every map and
-  -- there is nothing to search or to cache
-  if OverworldBattle.discs() then return true end
+  -- there is nothing to search or to cache; so does an ORAS arena
+  if OverworldBattle.discs() or orasArena() then return true end
   if staged.mapId ~= ow.map.id then
     local ok, arena = pcall(BattleArena.find, ow.map,
                             ow.player.cellX, ow.player.cellY,
@@ -569,7 +578,14 @@ end
 -- as the vanilla game does. A B rung cannot fail: its stage is not something
 -- the map has to have room for, so a fight in the tightest cave in Kanto is
 -- staged as readily as one on Route 1.
-function OverworldBattle.stageFor(state)
+function OverworldBattle.stageFor(state, battle)
+  -- an ORAS arena first (lib/ORASArenaStage.lua): its own stage and camera
+  if orasArena() and Voxel3D.available() then
+    local okOras, arena = pcall(function()
+      return V.require("ORASArenaStage").arena(state, battle)
+    end)
+    if okOras and arena then return arena end
+  end
   if OverworldBattle.discs() and Voxel3D.available() then
     local okStage, arena = pcall(function()
       return V.require("StadiumStage").arena(state.map)
@@ -608,7 +624,7 @@ function OverworldBattle.begin(state, battle)
   if not (state and state.map and state.player) then return false end
   if not Voxel3D.available() then return false end
 
-  local arena = OverworldBattle.stageFor(state)
+  local arena = OverworldBattle.stageFor(state, battle)
   if not arena then return false end
 
   local bt = battle and tostring(battle.battleType or ""):lower() or ""

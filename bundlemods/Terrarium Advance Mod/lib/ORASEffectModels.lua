@@ -62,9 +62,11 @@ local function fragmentRegs(d, h, paramsAt)
     if ptr and cnt and cnt > 0 and cnt < 256 and ptr >= h.commands and ptr < h.commands + h.commandsLen then
       local ok, cmds = pcall(PICA.commands, PICA.words(d, ptr, cnt))
       if ok then
+        -- the texture combiner (0xC0-0xFD) rides in the same list
         local regs, found = {}, false
         for _, c in ipairs(cmds) do
-          if c.reg >= 0x100 and c.reg <= 0x107 then regs[c.reg] = c.params[1]; found = true end
+          if c.reg >= 0x100 and c.reg <= 0x107 then regs[c.reg] = c.params[1]; found = true
+          elseif c.reg >= 0xC0 and c.reg <= 0xFD then regs[c.reg] = c.params[1] end
         end
         if found then return regs end
       end
@@ -73,9 +75,34 @@ local function fragmentRegs(d, h, paramsAt)
   return {}
 end
 
+-- The combiner's constant colour, when a stage multiplies by it: battle
+-- stages are tex0 x vertex colour (stage 0) x const (stage 1). Stage bases
+-- 0xC0 0xC8 0xD0 0xD8 0xF0 0xF8: +0 sources, +2 ops, +3 const (R low byte).
+local TEV = { 0xC0, 0xC8, 0xD0, 0xD8, 0xF0, 0xF8 }
+local function constColor(regs)
+  for _, base in ipairs(TEV) do
+    local src, cmb, col = regs[base], regs[base + 2], regs[base + 3]
+    if src and cmb and col and cmb % 16 == 1 then
+      for k = 0, 2 do
+        if math.floor(src / 16 ^ k) % 16 == 14 then
+          return { col % 256 / 255, math.floor(col / 256) % 256 / 255,
+                   math.floor(col / 65536) % 256 / 255, math.floor(col / 16777216) % 256 / 255 }
+        end
+      end
+    end
+  end
+  return nil
+end
+M.constColor = constColor
+
 -- One a/0/3/2 member -> the compact model above, or nil, why.
 -- writeTexture(name, width, height, imageData) -> key
-function M.bakeModel(raw, writeTexture)
+-- opts (battle arenas, lib/ORASArenas.lua): raw = vertex positions as stored
+-- (the arena bases' bind pose is scaled to nothing until their intro anim),
+-- maxSpan = size cap (default M.MAX_SPAN), const = keep the combiner's
+-- constant colour as mesh.kc
+function M.bakeModel(raw, writeTexture, opts)
+  opts = opts or {}
   local B, H, PICA = V.require("BCH"), H3D(), V.require("PICA")
   local h, why = B.header(raw)
   if not h then return nil, why end
@@ -107,6 +134,7 @@ function M.bakeModel(raw, writeTexture)
         cutout = at and at % 2 == 1 and (math.floor(at / 256) % 256) / 255 or nil,
         wrapU = mt.wrapU, wrapV = mt.wrapV, mat = mt.name,
         uvt = u and { u.kind, u.sx, u.sy, u.rot, u.tx, u.ty } or nil,
+        kc = opts.const and constColor(regs) or nil,
       }
     end
     for _, mesh in ipairs(model.meshes) do
@@ -132,7 +160,7 @@ function M.bakeModel(raw, writeTexture)
             vbone[i] = bone or 1
           end
           local raw0 = mesh.vertices[i].uv0 or { 0, 0 }
-          local p = b.position
+          local p = opts.raw and mesh.vertices[i].position or b.position
           v[#v + 1], v[#v + 2], v[#v + 3] = p[1], p[2], p[3]
           v[#v + 1], v[#v + 2] = raw0[1] or 0, raw0[2] or 0
           if colors then
@@ -147,6 +175,7 @@ function M.bakeModel(raw, writeTexture)
           out.meshes[#out.meshes + 1] = {
             tex = mat.tex, blend = mat.blend, cutout = mat.cutout, wrapU = mat.wrapU, wrapV = mat.wrapV,
             mat = mat.mat, uvt = mat.uvt, colors = colors or nil, v = v, idx = idx, bone = vbone,
+            kc = mat.kc,
           }
         end
       end
@@ -168,7 +197,7 @@ function M.bakeModel(raw, writeTexture)
     end
   end
   out.span = hi - lo
-  if out.span > M.MAX_SPAN then
+  if out.span > (opts.maxSpan or M.MAX_SPAN) then
     return nil, ("stage-sized (%.0f cm), needs depth against the arena"):format(out.span)
   end
   return out

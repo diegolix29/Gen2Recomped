@@ -334,3 +334,12 @@ Confirmed in game 2026-11-01: Pidgey shows 2 wings and Growlithe stays upright a
 - NEXT (user's order): 1. arenas (GARC a/1/5/2) -- not started; 2. pack the arenas; 3. ORAS player/trainer 3D characters in battle; 4. 3D-BTL ladder (2D-3D A/B, 3D-3D A/B, OFF).
 - Later the same day (user): effects are too wide to test all at once, so the stamp 13/14 in-game test is PENDING (the user F12s issues as they meet them). Moved on to ARENAS (a/1/5/2) -- current step, not started yet.
 
+## 2026-11-03 — ORAS arenas (step 2), uncommitted, untested in game
+- The roadmap's a/1/5/2 is the CUTSCENE archive (ad00 opening, ad01 title, ad80 ending, shinka evolution, tradedemo, cutins). The battle stages are GARC a/1/3/6: btl_G_<env> stages (79), btl_F_<env> backdrops (15), btl_O_<env>_m bases. Details in context.md "Battle arenas".
+- User choice (2026-11-03): a NEW STANDALONE ORAS battle (not just the B-rung discs), arena picked by AUTO + a fixed list.
+- New lib/ORASArenas.lua (bake, rows ORAS ARENAS / ORAS ARENA, AUTO) and lib/ORASArenaStage.lua (arena, rig, draw). Hooks: OverworldBattle.enabled / wantsFront / stageFor(state, battle), BattleScene (draw instead of discs, no disc shadow cast), main.lua (rows under the ORAS effect rows, pump), ORASEffectModels.bakeModel opts (raw / maxSpan / const + combiner regs 0xC0-0xFD kept by fragmentRegs).
+- Verified offline (session 039f6a77 scratchpad ar/: probe10.lua = real bake into an in-memory cache + raster through the orasArena rig with stand-in posts; sheet.png = all 79 stages; battle*.png = rig shots). AUTO checked: route -> kusa, woods -> mori, granite cave -> do_i, rustboro city -> city, pewter gym -> gym5, BROCK -> gym1.
+- User step: OPTIONS -> ORAS ARENAS (build, ~3 s), ORAS ARENA -> AUTO, start any battle. F12 if the ground is missing ('ORAS ARENA: draw failed' / 'shader failed' go to the log).
+- NEXT (user's order): 1. in-game test of the arenas (and of effect stamps 13/14); 2. pack the arenas; 3. ORAS player/trainer 3D characters in battle; 4. 3D-BTL ladder (2D-3D A/B, 3D-3D A/B, OFF).
+- Open: mon shadows on the ORAS ground; water / UV scroll animations; fragment lighting (desert, beach centre look bluish); rock columns in the do_0 / do_s shots, gym6 statue over the player.
+

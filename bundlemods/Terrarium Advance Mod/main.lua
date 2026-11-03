@@ -653,6 +653,10 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     pcall(function()
       V.require("ORASEffects").pump()
     end)
+    -- and the ORAS battle-stage bake (lib/ORASArenas.lua)
+    pcall(function()
+      V.require("ORASArenas").pump()
+    end)
     -- The horde, on the same always-running tick and for the same reason:
     -- it owns no pass of the frame, it is a MODE over the overworld, and
     -- it has to keep thinking while a warp's wipe covers the screen (the
@@ -2681,6 +2685,17 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     local rows = { orasFxRow, orasFxPackRow, orasFxBattleRow, orasFxSizeRow, orasSoundRow, orasCamRow, orasZoomRow }
     for i = 1, 7 do
       local row = rows[i]
+      if row and not rowExists(row.id) then table.insert(out, row) end
+    end
+  end
+  -- ORAS ARENAS (bake the battle stages) and ORAS ARENA (OFF / AUTO / one
+  -- stage), under the effect rows (lib/ORASArenas.lua)
+  local okOrasArena, orasArenaRow, orasArenaChoiceRow = pcall(function()
+    local A = V.require("ORASArenas")
+    return A.row(), A.choiceRow()
+  end)
+  if okOrasArena then
+    for _, row in ipairs({ orasArenaRow, orasArenaChoiceRow }) do
       if row and not rowExists(row.id) then table.insert(out, row) end
     end
   end

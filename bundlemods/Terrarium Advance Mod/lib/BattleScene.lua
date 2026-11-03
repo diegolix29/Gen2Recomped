@@ -316,7 +316,9 @@ local function castShadows(state, arena, terrain, nbMesh, cx, cy, vw, vh,
         fxCast = Port.castArena(ShadowMap, arena, groundY or 0) and true or false
       end
     end)
-    if not fxCast then
+    -- an ORAS arena's ground is not in the sun pass (its own shader does not
+    -- read the shadow map), and its discs are not drawn at all
+    if not fxCast and not arena._oras then
       pcall(function()
         V.require("StadiumStage").cast(ShadowMap, arena, groundY or 0)
       end)
@@ -565,12 +567,19 @@ function BattleScene.render(state, arena, textures, token)
     
     if discs then
       local fxDrew = false
-      pcall(function()
+      -- an ORAS battle stage (lib/ORASArenaStage.lua) instead of the discs
+      if arena._oras then
+        local okO, drew = pcall(function()
+          return V.require("ORASArenaStage").draw(arena, groundY)
+        end)
+        fxDrew = okO and drew and true or false
+      end
+      if not fxDrew then pcall(function()
         local Port = V.require("StadiumBattleFXPort")
         if Port and Port.drawArena and arena._stadiumFxVenue then
           fxDrew = Port.drawArena(Voxel3D, arena, groundY) and true or false
         end
-      end)
+      end) end
       if not fxDrew then
         V.require("StadiumStage").draw(arena, groundY)
       end
