@@ -2669,45 +2669,21 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
     table.insert(out, importRow2)
   end
 
-  local okOras, orasRow = pcall(function()
-    return V.require("ORASModels").row()
-  end)
-  if okOras and orasRow and not rowExists(orasRow.id) then
-    table.insert(out, orasRow)
-  end
-  -- ORAS PACK, right below ORAS MODELS (ORAS only; the Colosseum caches have
-  -- their own PACK CACHE row)
-  local okOrasPack, orasPackRow = pcall(function()
-    return V.require("ORASModels").packRow()
-  end)
-  if okOrasPack and orasPackRow and not rowExists(orasPackRow.id) then
-    table.insert(out, orasPackRow)
-  end
-  -- ORAS EFFECTS (bake the move effects from the dump) and ORAS FX IN BATTLE
-  -- (play them), under the ORAS model rows (lib/ORASEffects.lua)
-  -- then ORAS CAMERA (move cameras on / off) and ORAS CAM ZOOM (percent)
-  local okOrasFx, orasFxRow, orasFxBattleRow, orasFxSizeRow, orasSoundRow, orasCamRow, orasZoomRow, orasFxPackRow = pcall(function()
-    local E = V.require("ORASEffects")
-    return E.row(), E.battleRow(), E.sizeRow(), E.soundRow(), E.cameraRow(), E.zoomRow(), E.packRow()
-  end)
-  if okOrasFx then
-    -- ORAS FX PACK right below ORAS EFFECTS, as ORAS PACK is below ORAS MODELS
-    local rows = { orasFxRow, orasFxPackRow, orasFxBattleRow, orasFxSizeRow, orasSoundRow, orasCamRow, orasZoomRow }
-    for i = 1, 7 do
-      local row = rows[i]
-      if row and not rowExists(row.id) then table.insert(out, row) end
-    end
-  end
-  -- ORAS ARENAS (bake the battle stages), ORAS ARENA (OFF / AUTO / one
-  -- stage) and ORAS ARENA PACK, under the effect rows (lib/ORASArenas.lua)
-  local okOrasArena, orasArenaRow, orasArenaChoiceRow, orasArenaPackRow = pcall(function()
-    local A = V.require("ORASArenas")
-    return A.row(), A.choiceRow(), A.packRow()
-  end)
-  if okOrasArena then
-    for _, row in ipairs({ orasArenaRow, orasArenaChoiceRow, orasArenaPackRow }) do
-      if row and not rowExists(row.id) then table.insert(out, row) end
-    end
+  -- ORAS.. : one row for every ORAS row (models, effects, arenas and their
+  -- build / pack / play settings, lib/ORASMenu.lua); it opens SettingsMenu's
+  -- "oras" category, a menu of its own, so OPTIONS is not twelve rows longer
+  if not rowExists(SettingsMenu.id("oras")) then
+    table.insert(out, {
+      id = SettingsMenu.id("oras"),
+      label = "ORAS..",
+      value = function()
+        local ok, rows = pcall(function() return V.require("ORASMenu").rows() end)
+        return ("%d SETTINGS"):format(ok and type(rows) == "table" and #rows or 0)
+      end,
+      activate = function(g)
+        g.stack:push(SettingsMenu.new(g, "oras"))
+      end,
+    })
   end
 
   local okMewtwo, mewtwoRow = pcall(function()

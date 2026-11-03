@@ -94,6 +94,13 @@ SettingsMenu.CATEGORIES = {
     summary = function() return V.require("OverworldBattle").setting:valueLabel() end,
     help = "What a fight is drawn over, how it is framed, and how a ball is "
       .. "thrown." },
+  -- ORAS.. holds no ModSetting rows: `rowsFn` hands it the ORAS modules' own
+  -- rows (lib/ORASMenu.lua) -- models, effects and arenas, with their build
+  -- and pack rows. The engine's OPTIONS list opens it too (main.lua).
+  { id = "oras", label = "ORAS..",
+    rowsFn = function(game) return V.require("ORASMenu").rows(game) end,
+    help = "3D Pokemon, move effects and battle stages from your own Omega "
+      .. "Ruby / Alpha Sapphire dump: build them, pack them, and how they play." },
   { id = "perf", label = "PERFORMANCE..",
     help = "What the look costs -- shadows, anti-aliasing, render "
       .. "resolution and draw distance, the most expensive things in the "
@@ -366,13 +373,7 @@ function SettingsMenu.rows(catId, game)
       out[#out + 1] = hdRow
     end
 
-    -- ORAS models (3D Pokemon 1-721 from the player's decrypted 3DS dump)
-    local okOR, orasRow = pcall(function()
-      return V.require("ORASModels").row()
-    end)
-    if okOR and orasRow and not rowExists(orasRow.id) then
-      out[#out + 1] = orasRow
-    end
+    -- (ORAS MODELS moved into the ORAS.. category with the other ORAS rows)
 
     -- Stadium 2 status display (informational only)
     local okS2, Stadium2Setting = pcall(V.require, "Stadium2Setting")
@@ -384,6 +385,13 @@ function SettingsMenu.rows(catId, game)
     end
     
     return out
+  end
+  -- a category that brings its own rows (ORAS..)
+  for _, cat in ipairs(SettingsMenu.CATEGORIES) do
+    if cat.id == catId and cat.rowsFn then
+      local ok, rows = pcall(cat.rowsFn, game)
+      return (ok and type(rows) == "table") and rows or {}
+    end
   end
   for _, entry in ipairs(settings) do
     if entry.cat == catId and offered(entry, full) then
