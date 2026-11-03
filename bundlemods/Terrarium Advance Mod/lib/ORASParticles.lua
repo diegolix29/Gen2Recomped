@@ -244,6 +244,18 @@ local function readMaterial(s, o, limit)
     or (m.blendDst == "oneMinusSrcAlpha" and "alpha")
     or (m.blendSrc == "dstColor" and "multiply")
     or (m.blendDst == "zero" and "replace") or "alpha"
+  -- texture coordinator 0: the UV matrix rows at +0x194 (u' = m00 u + m03)
+  -- and +0x1A4 (v' = m11 v + m13), in PICA's bottom-up v; and texture
+  -- mapper 0's PICA commands at +0x2F0: header 0x809F0081 writes 0x81 on, so
+  -- +0x2FC is TEXUNIT0_PARAM (wrap T bits 8-10, wrap S 12-14: 0 clamp,
+  -- 2 repeat, 3 mirror).  All 5657 particle materials have this layout; a
+  -- third sample a quarter texture over UV 0..2 / -1..1 with a mirrored wrap
+  -- (round glows stored as one corner, drawn as a hard square without it).
+  if u32(s, o + 0x2F4) == 0x809F0081 then
+    local prm = u32(s, o + 0x2FC)
+    m.wrapS, m.wrapT = math.floor(prm / 0x1000) % 8, math.floor(prm / 0x100) % 8
+    m.uv = { f32(s, o + 0x194), f32(s, o + 0x1A0), f32(s, o + 0x1A8), f32(s, o + 0x1B0) }
+  end
   -- texture: the first texture reference (TXOB type 0x20000004) after it
   local a = s:find("\4\0\0\32TXOB", o + 1, true)
   if a and (not limit or a - 1 < limit) then

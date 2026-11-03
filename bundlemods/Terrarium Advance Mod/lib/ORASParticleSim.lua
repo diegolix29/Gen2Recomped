@@ -8,7 +8,7 @@
 --
 -- A quad: x, y, z (effect space, emitter origin = 0), w, h (full size),
 -- rot {x, y, z} radians, orient ("billboard" camera-facing, "upright" turns
--- about Y only, "oriented" flat quad in the XZ plane turned by rot), pivot
+-- about Y only, "oriented" flat quad in the XY plane turned by rot), pivot
 -- {x, y} (-1 = pivot at the left / bottom edge), r, g, b, a, u0, v0, u1, v1,
 -- texture name, blend ("add", "alpha", "multiply", "replace").
 --
@@ -85,6 +85,8 @@ local function compileSet(set)
     orient = set.orient or "billboard", pivot = set.pivot or { 0, 0 },
     texture = set.material and set.material.texture,
     blend = set.material and set.material.blend or "add",
+    uvMap = set.material and set.material.uv,
+    wrapS = set.material and set.material.wrapS, wrapT = set.material and set.material.wrapT,
     life = type(c[A_LIFE]) == "number" and c[A_LIFE] or 30,
     init = {}, upd = {},
   }
@@ -310,6 +312,7 @@ function Sim.quads(e)
       r = p.r, g = p.g, b = p.bl, a = math.max(0, math.min(1, p.a)),
       u0 = u0, v0 = v0, u1 = u0 + su, v1 = v0 + sv,
       texture = b.texture, blend = b.blend, layer = b.name,
+      uvMap = b.uvMap, wrapS = b.wrapS, wrapT = b.wrapT,
     }
   end
   return out

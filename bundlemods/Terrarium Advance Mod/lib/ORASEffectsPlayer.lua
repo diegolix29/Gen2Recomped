@@ -478,6 +478,9 @@ local function quadMesh()
   return mesh or nil
 end
 
+-- PICA texture wrap -> LOVE
+local WRAP = { [0] = "clamp", [1] = "clampzero", [2] = "repeat", [3] = "mirroredrepeat" }
+
 local function setBlend(g, blend)
   if blend == "add" then g.setBlendMode("add", "alphamultiply")
   elseif blend == "multiply" then g.setBlendMode("multiply", "premultiplied")
@@ -624,6 +627,7 @@ local function drawLive(g, run, l, project)
   for _, q0 in ipairs(Sim().quads(l.sim)) do
     -- effect scale: positions and quad sizes alike
     local q = q0
+    local rw, rh = q.w * grow, q.h * grow   -- unscaled: oriented quads scale after their turn
     q.x, q.y, q.z = q.x * ksx, q.y * ksy, q.z * ksz
     q.w, q.h = q.w * ksx * grow, q.h * ksy * grow
     local key = q.texture and textures[q.texture]
@@ -636,10 +640,17 @@ local function drawLive(g, run, l, project)
         local px, py = q.pivot and q.pivot[1] or 0, q.pivot and q.pivot[2] or 0
         local p = {}
         if q.orient == "oriented" then
-          -- flat quad: local width along X, height along Z, turned by rot
+          -- flat quad in the local XY plane (width X, height Y), turned by
+          -- rot: unturned it stands facing +Z (steam rising, camera boards);
+          -- 90 deg about X lays it along +Z (Flamethrower's / Hydro Pump's
+          -- line quads, spun about Z by a random Z turn into a round beam)
+          -- The slot scale (0x34) is per effect axis, so it applies after
+          -- the turn (a line laid on Z stretches by the Z scale)
           local r = q.rot
-          local ux, uy, uz = rotate(r[1], r[2], r[3], hw, 0, 0)
-          local vx, vy, vz = rotate(r[1], r[2], r[3], 0, 0, hh)
+          local ux, uy, uz = rotate(r[1], r[2], r[3], rw * 0.5, 0, 0)
+          local vx, vy, vz = rotate(r[1], r[2], r[3], 0, rh * 0.5, 0)
+          ux, uy, uz = ux * ksx, uy * ksy, uz * ksz
+          vx, vy, vz = vx * ksx, vy * ksy, vz * ksz
           local ox, oy, oz = q.x - px * ux - py * vx, q.y - px * uy - py * vy, q.z - px * uz - py * vz
           local corners = {
             { ox - ux - vx, oy - uy - vy, oz - uz - vz, 0, 1 },
@@ -699,12 +710,20 @@ local function drawLive(g, run, l, project)
         end
         if p then
           local du, dv = q.u1 - q.u0, q.v1 - q.v0
+          -- material UV matrix (u' = a u + b, v' = c v + d with PICA's
+          -- bottom-up v): quarter glows run 0..2 and fold back by mirroring
+          local mu = q.uvMap
           for i = 1, 4 do
             local v = verts[i]
             v[1], v[2] = p[i][1], p[i][2]
-            v[3], v[4] = q.u0 + p[i][3] * du, q.v0 + p[i][4] * dv
+            local tu, tv = q.u0 + p[i][3] * du, q.v0 + p[i][4] * dv
+            if mu then tu, tv = mu[1] * tu + mu[2], 1 - (mu[3] * (1 - tv) + mu[4]) end
+            v[3], v[4] = tu, tv
             v[5], v[6], v[7], v[8] = q.r, q.g, q.b, q.a
           end
+          local ws, wt = WRAP[q.wrapS] or "clamp", WRAP[q.wrapT] or "clamp"
+          -- every draw: effect models set their own wrap on shared images
+          pcall(img.setWrap, img, ws, wt)
           m:setVertices(verts)
           m:setTexture(img)
           setBlend(g, q.blend)

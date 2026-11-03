@@ -306,3 +306,12 @@ Confirmed in game 2026-11-01: Pidgey shows 2 wings and Growlithe stays upright a
 - Verified offline (lovec, own identity, real store read-only, writes in memory): 2496 files 35.7 MiB -> 26.0 MiB in 6 units, all read back byte-equal through readFile, 6 loose (index + 5 settings), fresh repack equal again.
 - Moving a packed install: copy cbe_cache_archive/orasfx + cache/archive_v1/orasfx.lua.bin + build/cache_archive_orasfx_v1.complete.bin (+ _report) together.
 - User step: OPTIONS -> ORAS FX PACK, then play a few ORAS moves (particles, models, sounds must still show/play).
+
+## 2026-11-03 — Flamethrower flicker / no fire line; quarter glows; ORAS FX SIZE steps (stamp 13, uncommitted, untested in game)
+- User: Flamethrower flickers and sometimes shows no fire line (screenshot: pink squares, blobby fire). F12 at frame 38 matched the offline replay exactly (67 particles, scale 6), so data + timing were right, drawing was wrong.
+- Cause 1: 'oriented' quads drew their height along local +Z. The line sets (ew053_fire01_line01, hit03_line01, ew056 water line) start at rx 90 + random rz: with +Z they pointed down and spun into a starburst; with height on Y they lie along the shot and the random spin makes a round beam. Survey: 1361 oriented sets; the 16-byte orientation object has no plane field. Changed to XY plane (ORASEffectsPlayer drawLive). Hydro Pump's jet now spans attacker -> target (the 'no beam' from the stamp-12 entry).
+- Cause 2: a third of particle materials (1883 / 5657) sample a quarter texture over UV 0..2 with mirrored wrap (MTOB coordinator + TEXUNIT0_PARAM, see context.md). Unmirrored they drew as lit squares (Flamethrower's big flash, the pink/red squares). ORASParticles.readMaterial reads uv + wrapS/T, bake carries them (stamp oras-fx=13), Sim quads carry uvMap/wrap, Player applies the matrix per corner and setWrap per draw (images are shared with effect models).
+- Also: slot scale on oriented quads applied after the turn. ORAS FX SIZE finer steps, default 1.5 (user said particles look too small; was at X1), new file size_v2.txt.
+- Verified offline (lovec, in-memory rebake from the dump, software raster): Flamethrower flash is a round glow, line along the shot, no squares; Hydro Pump jet joins both Pokemon; Ember unchanged. Hyper Beam not re-checked.
+- User step: ORAS EFFECTS (stamp 13; ORAS FX PACK repacks itself if packed). Check Flamethrower, Hydro Pump, Hyper Beam, and that glows look round; ORAS FX SIZE now starts at X1.5.
+

@@ -27,9 +27,10 @@ local E = { ID = "oras_fx", LABEL = "ORAS EFFECTS" }
 
 E.ROOT = "oras/movefx"
 E.INDEX = E.ROOT .. "/index.lua"
-E.STAMP = "oras-fx=12"   -- 2: per-effect scale (0x34) and side (0x2F); 3: body point + offset, hit cue (0x0C);
+E.STAMP = "oras-fx=13"   -- 2: per-effect scale (0x34) and side (0x2F); 3: body point + offset, hit cue (0x0C);
                         -- 5: stage records (actor moves / scale, stage tint, camera); 6: body motion kind (0x0D);
-                        -- 7: move sounds; 8: sound placement (0x68) for pan; 9: effect models (0x3F); 10: model sprays (0x7B); 11: model motions (0x50); 12: aim 0x32/0x46, slot turn 0x35
+                        -- 7: move sounds; 8: sound placement (0x68) for pan; 9: effect models (0x3F); 10: model sprays (0x7B); 11: model motions (0x50); 12: aim 0x32/0x46, slot turn 0x35;
+                        -- 13: particle UV coordinator + mirrored wrap (round glows)
 E.SETTING = E.ROOT .. "/battle.txt"
 E.IMPORT_ID = "pokemon_oras"
 
@@ -127,21 +128,27 @@ function E.battleEnabled()
 end
 
 -- particle size in battle: x1 is ORAS's own size against the model; the 3D-BTL
--- camera sits far back, so x2 by default.  Only the quads grow, not the
--- effect's spread, so it still lands on the same body points.
-E.SIZE_FILE = E.ROOT .. "/size.txt"
-E.SIZES = { 1, 2, 3 }
+-- camera sits far back, so x1.5 by default.  Only the quads grow, not the
+-- effect's spread, so it still lands on the same body points.  size_v2.txt:
+-- the finer steps came with a new default (the old size.txt held 1 / 2 / 3).
+E.SIZE_FILE = E.ROOT .. "/size_v2.txt"
+E.SIZES = { 1, 1.25, 1.5, 1.75, 2, 2.5, 3 }
+E.SIZE_DEFAULT = 1.5
 local sizeValue
 function E.particleSize()
   if sizeValue == nil then
     local ok, s = pcall(mod.cache.read, mod.cache, E.SIZE_FILE)
-    sizeValue = ok and tonumber(type(s) == "string" and s:match("%d+")) or 2
+    sizeValue = ok and tonumber(type(s) == "string" and s:match("[%d%.]+")) or E.SIZE_DEFAULT
   end
   return sizeValue
 end
-function E.cycleSize()
-  local cur, nxt = E.particleSize(), E.SIZES[1]
-  for i, v in ipairs(E.SIZES) do if v == cur then nxt = E.SIZES[i % #E.SIZES + 1] end end
+-- dir -1 (left) / +1 (right, A); wraps at the ends
+function E.cycleSize(dir)
+  dir = (tonumber(dir) or 1) < 0 and -1 or 1
+  local cur, at = E.particleSize(), nil
+  for i, v in ipairs(E.SIZES) do if math.abs(v - cur) < 1e-6 then at = i end end
+  at = at or 3
+  local nxt = E.SIZES[(at - 1 + dir) % #E.SIZES + 1]
   sizeValue = nxt
   pcall(mod.cache.write, mod.cache, E.SIZE_FILE, tostring(nxt))
 end
@@ -295,7 +302,8 @@ local function compactFx(P, Sim, fx, role)
   for _, s in ipairs(fx.sets) do
     local set = {
       name = s.name, orient = s.orient, pivot = s.pivot,
-      material = s.material and { texture = s.material.texture, blend = s.material.blend } or nil,
+      material = s.material and { texture = s.material.texture, blend = s.material.blend,
+                                  uv = s.material.uv, wrapS = s.material.wrapS, wrapT = s.material.wrapT } or nil,
       attributes = { constant = s.attributes and s.attributes.constant or {} },
       initializers = {}, updaters = {},
     }
@@ -890,7 +898,7 @@ function E.sizeRow()
     id = "oras_fx_size",
     label = "ORAS FX SIZE",
     value = function() return "X" .. tostring(E.particleSize()) end,
-    step = function() E.cycleSize(); return true end,
+    step = function(_, dir) E.cycleSize(dir); return true end,
   }
 end
 
