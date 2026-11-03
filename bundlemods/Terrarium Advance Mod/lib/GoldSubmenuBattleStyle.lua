@@ -394,7 +394,7 @@ local function partyModelPanel(screen, mon, geo, ww, wh)
     and game.data.pokemon[mon.species]
   local speciesName = cleanText((def and def.name) or (mon and mon.species) or "POKéMON")
   local nickname = cleanText(mon and (mon.nickname or mon.name) or speciesName)
-  local dex = def and tonumber(def.dex or def.index) or nil
+  local dex = def and tonumber(def.nationalDex or def.dex or def.index) or nil
   local subtitle = dex and (speciesName .. "    #" .. string.format("%03d", dex)) or speciesName
   if not mon then
     nickname, subtitle = "PARTY", "SELECT A POKéMON"

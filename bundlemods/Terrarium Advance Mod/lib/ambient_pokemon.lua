@@ -304,8 +304,8 @@ function AmbientPokemon:_resolveSprite(species, game)
     local sheets = self.render.runtimeSheets
     local dex
     local poke = game and game.data and game.data.pokemon
-    if poke and poke[species] and poke[species].dex then
-      dex = tonumber(poke[species].dex)
+    if poke and poke[species] and (poke[species].nationalDex or poke[species].dex) then
+      dex = tonumber((poke[species].nationalDex or poke[species].dex))
     end
     if dex then
       local sd = sheets:spriteDef(dex, "normal", "SPRITE_WILDS_AMBIENT")

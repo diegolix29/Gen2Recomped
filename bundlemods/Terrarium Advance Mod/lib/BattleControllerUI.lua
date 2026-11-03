@@ -1469,7 +1469,7 @@ local function drawPartyModelPreview(screen, ww, wh, o, listX, listY, listH, gap
   local def = screen and screen.game and screen.game.data and screen.game.data.pokemon
     and screen.game.data.pokemon[mon.species]
   if def and def.name then species = cleanText(def.name) end
-  local dex = def and tonumber(def.dex or def.index) or nil
+  local dex = def and tonumber(def.nationalDex or def.dex or def.index) or nil
   if titleFont then G.setFont(titleFont) end
   G.setColor(1, 1, 1, 0.98)
   G.print(name, x + w * 0.055, y + h * 0.035)

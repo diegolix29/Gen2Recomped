@@ -16,7 +16,7 @@ local RP={}
 local MAX_DEX=386
 
 local function dexNumber(def)
-  return tonumber(def and (def.dex or def.number or def.index))
+  return tonumber(def and (def.nationalDex or def.dex or def.number or def.index))
 end
 
 local function generationForDex(dex)

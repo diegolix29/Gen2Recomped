@@ -33,6 +33,13 @@
 -- A missing file at ANY step returns nil, which every host treats as "leave
 -- the native art alone".
 local V = ...
+-- "SPECIES_013" -> dex. Prism numbers species its own way, so go through
+-- lib/PrismNationalDex.lua rather than reading the digits directly.
+local function speciesConst(s, pattern)
+  local P = V.PrismNationalDex or (V.mod and V.mod.exports and V.mod.exports.prismNationalDex)
+  if P and type(P.speciesConst) == "function" then return P.speciesConst(s, pattern) end
+  return type(s) == "string" and s:match(pattern) or nil
+end
 
 local M = {
   VERSION = 1,
@@ -622,7 +629,7 @@ function M.dexOf(src, data)
   if type(src) == "string" then
     local n = tonumber(src)
     if M.supported(n) then return n end
-    local tagged = src:match("SPECIES_(%d+)")
+    local tagged = speciesConst(src, "SPECIES_(%d+)")
     if tagged then
       n = tonumber(tagged)
       return M.supported(n) and n or nil

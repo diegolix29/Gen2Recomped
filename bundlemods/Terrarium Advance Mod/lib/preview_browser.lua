@@ -48,7 +48,7 @@ local function allSpecies(mod, game)
     rows[#rows + 1] = {
       id = id,
       name = mon.name or id,
-      dex = mon.dex or 9999,
+      dex = mon.nationalDex or mon.dex or 9999,
     }
   end
   if game and game.data and type(game.data.pokemon) == "table" then
@@ -193,7 +193,7 @@ function PreviewBrowser:_openDetail(game, speciesId)
   local seen, owned = pokedexDiag(game)
   local AnimatedSprites = V.require("animated_sprites")
   local enh = render:enhancedStatusFor(speciesId, game)
-  local dexId = enh.dexId or mon.dex
+  local dexId = enh.dexId or mon.nationalDex or mon.dex
   local mapping = enh.mapping
 
   local runtimeLabel

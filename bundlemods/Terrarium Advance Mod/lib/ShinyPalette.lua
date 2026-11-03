@@ -217,7 +217,7 @@ function ShinyPalette.stadium2Palette(dex)
   -- Get species ID from dex
   local species = nil
   for id, def in pairs(pokemon) do
-    if type(def) == "table" and tonumber(def.dex) == dex then
+    if type(def) == "table" and tonumber(def.nationalDex or def.dex) == dex then
       species = id
       break
     end

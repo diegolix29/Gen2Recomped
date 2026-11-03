@@ -56,7 +56,7 @@ local function dexFor(screen, mon)
   local game = screen and screen.game
   local pokemon = game and game.data and game.data.pokemon
   local def = pokemon and pokemon[species]
-  return def and tonumber(def.dex or def.index) or nil
+  return def and tonumber(def.nationalDex or def.dex or def.index) or nil
 end
 
 local function stateFor(screen)

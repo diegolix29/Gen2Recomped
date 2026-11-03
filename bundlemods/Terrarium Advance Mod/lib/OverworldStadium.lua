@@ -118,8 +118,8 @@ local function speciesDex(v)
 
   -- Engine species are normally canonical string keys such as "PIKACHU".
   local direct = pokemon[v] or pokemon[v:upper()]
-  if direct and direct.dex then
-    local d = dexNumber(direct.dex)
+  if direct and (direct.nationalDex or direct.dex) then
+    local d = dexNumber(direct.nationalDex or direct.dex)
     nameCache[cacheKey] = d or false
     return d
   end
@@ -128,7 +128,7 @@ local function speciesDex(v)
   -- runs only on a cache miss and the Gen 1 table is tiny.
   for key, def in pairs(pokemon) do
     if cleanName(key) == cacheKey then
-      local d = def and dexNumber(def.dex)
+      local d = def and dexNumber(def.nationalDex or def.dex)
       nameCache[cacheKey] = d or false
       return d
     end

@@ -11,7 +11,7 @@ function Sky.iconClass(data, species)
   local def = data.pokemon and data.pokemon[species]
   local entry = (icons.bySpecies and icons.bySpecies[species])
              or (def and def.icon)
-             or (def and def.dex and icons.byDex and icons.byDex[def.dex])
+             or (def and (def.nationalDex or def.dex) and icons.byDex and icons.byDex[def.dex])
   return type(entry) == "string" and entry or nil
 end
 
@@ -156,7 +156,7 @@ local mountCache = {}
 function Sky.mountSprite(data, species, seedPrefix)
   local class = species and Sky.iconClass(data, species) or nil
   local mon = species and data.pokemon and data.pokemon[species]
-  local borrowed = mon and borrowedSprite(species, mon.dex, seedPrefix)
+  local borrowed = mon and borrowedSprite(species, mon.nationalDex or mon.dex, seedPrefix)
   if borrowed then return borrowed, class end
   local spriteId = (class and Sky.MOUNT_SPRITES[class]) or "SPRITE_BIRD"
   local def = data.sprites and data.sprites[spriteId]

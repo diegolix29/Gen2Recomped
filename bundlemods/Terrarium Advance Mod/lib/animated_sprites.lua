@@ -96,8 +96,8 @@ function AnimatedSprites.resolveSpeciesId(speciesKey, game, mod)
   if not mon and mod and mod.content and mod.content.pokemon then
     mon = mod.content.pokemon:get(speciesKey)
   end
-  if mon and mon.dex ~= nil then
-    local dex = tonumber(mon.dex)
+  if mon and (mon.nationalDex or mon.dex) ~= nil then
+    local dex = tonumber(mon.nationalDex or mon.dex)
     if dex and dex >= 1 then
       return math.floor(dex)
     end

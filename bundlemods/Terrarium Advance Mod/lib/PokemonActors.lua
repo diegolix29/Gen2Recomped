@@ -3250,7 +3250,7 @@ local function battlerCacheKey(game,battler)
   local mon=type(battler)=="table" and (battler.mon or battler.pokemon or battler.partyMon or battler) or nil
   local species=mon and mon.species
   local def=species~=nil and game and game.data and game.data.pokemon and game.data.pokemon[species]
-  local dex=tonumber(def and (def.dex or def.index or def.number)) or tonumber(species)
+  local dex=tonumber(def and (def.nationalDex or def.dex or def.index or def.number)) or tonumber(species)
   return dex and modelKey(dex,monVariant(battler)) or nil
 end
 
@@ -3441,7 +3441,7 @@ local function battlerDex(game,battler)
   local species=mon and mon.species
   if species==nil then return nil end
   local def=game and game.data and game.data.pokemon and game.data.pokemon[species]
-  local dex=tonumber(def and (def.dex or def.index or def.number))
+  local dex=tonumber(def and (def.nationalDex or def.dex or def.index or def.number))
   if not dex and tonumber(species) and Dex.supported(tonumber(species)) then dex=tonumber(species) end
   return dex
 end

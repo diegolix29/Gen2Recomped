@@ -161,7 +161,7 @@ local function loadSpriteFallback(dex)
   local species = nil
   if data.pokemon then
     for speciesId, def in pairs(data.pokemon) do
-      if def and def.dex == dex then
+      if def and (def.nationalDex or def.dex) == dex then
         species = speciesId
         break
       end

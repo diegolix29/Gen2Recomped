@@ -25,7 +25,7 @@ local function byDexFromPokemon(pokemon,limit)
   local out={}
   for key,def in pairs(type(pokemon)=="table" and pokemon or {}) do
     if type(def)=="table" then
-      local dex=tonumber(def.dex)
+      local dex=tonumber(def.nationalDex or def.dex)
       if dex and dex%1==0 and dex>=1 and dex<=limit then
         if out[dex] and out[dex].def~=def then
           return fail("duplicate-native-dex","hostPokemon."..tostring(dex),dex)
@@ -53,7 +53,7 @@ local function extendedDefFor(opts,dex,id)
   if type(defs)~="table" then return nil end
   local def=defs[id] or defs[dex]
   if type(def)~="table" or def.sourceBacked~=true then return nil end
-  local claimed=tonumber(def.dex)
+  local claimed=tonumber(def.nationalDex or def.dex)
   if claimed and claimed~=dex then return false,{code="extended-dex-mismatch",path="extendedDefinitions."..id..".dex",detail=claimed} end
   return def
 end

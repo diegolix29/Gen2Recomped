@@ -151,7 +151,7 @@ tryAcquire=function(s,r,force)
   r.requiresActor=selected==true
   if not selected then r.spriteMode=true;r.pendingModel=nil;r.error=nil;return true end
   local def=s.screen.game.data.pokemon[r.mon.species]
-  local dex=tonumber(def and (def.dex or def.index or def.number) or r.mon.dex)
+  local dex=tonumber(def and (def.nationalDex or def.dex or def.index or def.number) or r.mon.dex)
   if V.ModelIdentity then dex=V.ModelIdentity.resolve(s.screen.game,r.mon) end
   if not dex and V.ModelIdentity and V.ModelIdentity.unsupported
       and V.ModelIdentity.unsupported(s.screen.game,r.mon) then

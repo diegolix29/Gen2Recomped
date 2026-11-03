@@ -737,7 +737,7 @@ local function playerDex(context)
   local game=(context and context.game) or (battle and battle.game)
   local data=game and game.data
   local def=data and data.pokemon and data.pokemon[mon.species]
-  return tonumber((def and (def.dex or def.index or def.number))
+  return tonumber((def and (def.nationalDex or def.dex or def.index or def.number))
     or mon.dex or mon.speciesIndex or mon.species)
 end
 

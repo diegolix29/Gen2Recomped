@@ -64,7 +64,7 @@ end
 function ShinyUI.tintFor(mon, data)
   if not (mon and Shiny.isShiny(mon)) then return nil end
   local def = data and data.pokemon and data.pokemon[mon.species]
-  local dex = def and def.dex
+  local dex = def and (def.nationalDex or def.dex)
   if not dex then return nil end
   return ShinyPalette.tintFor(dex)
 end
@@ -149,8 +149,8 @@ function ShinyUI.installSummary()
       if type(out) ~= "table" or not Shiny.isShiny(self.mon) then return out end
       local def = game and game.data and game.data.pokemon
                   and game.data.pokemon[self.mon.species]
-      local fn = def and def.dex
-                 and ShinyPalette.transform(ShinyPalette.forDex(def.dex))
+      local fn = def and (def.nationalDex or def.dex)
+                 and ShinyPalette.transform(ShinyPalette.forDex(def.nationalDex or def.dex))
       if not fn then return out end
       for _, z in ipairs(out) do
         if type(z) == "table" and z.w and z.h and type(z.colors) == "table" then

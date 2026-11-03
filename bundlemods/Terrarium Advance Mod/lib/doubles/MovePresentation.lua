@@ -190,7 +190,7 @@ local function updateChannel(s,m,dt)
     local dex=sourceActor and sourceActor.dex
     if not dex and source and source.mon then
      local data=s.screen and s.screen.game and s.screen.game.data
-     local def=data and data.pokemon and data.pokemon[source.mon.species];dex=def and (def.dex or def.index or def.number)
+     local def=data and data.pokemon and data.pokemon[source.mon.species];dex=def and (def.nationalDex or def.dex or def.index or def.number)
     end
     local selectionMoveId=tonumber(m.event.move)
       or (type(m.event.moveDef)=='table' and (tonumber(m.event.moveDef.index) or tonumber(m.event.moveDef.colosseumMoveId)))

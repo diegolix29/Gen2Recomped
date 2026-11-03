@@ -51,7 +51,7 @@ local function speciesDex(game, species)
   local pokemon = data and data.pokemon
   if type(pokemon) == "table" then
     local def = pokemon[species] or pokemon[species:upper()]
-    n = def and dexNumber(def.dex or def.number or def.id)
+    n = def and dexNumber(def.nationalDex or def.dex or def.number or def.id)
     if n then return n end
     local wanted = cleanSpecies(species)
     if wanted then

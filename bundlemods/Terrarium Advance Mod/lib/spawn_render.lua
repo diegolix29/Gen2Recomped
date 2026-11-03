@@ -331,7 +331,7 @@ function SpawnRender:assetCandidates(speciesId, game, mon)
     push(self:_modAssetPath(explicit), "explicit_map")
   end
 
-  local padded = mon and dexPadded(mon.dex)
+  local padded = mon and dexPadded(mon.nationalDex or mon.dex)
   if padded then
     push(self:_modAssetPath("assets/pokemon/" .. padded .. ".png"), "dex_padded")
     push(self:_modAssetPath("assets/pokemon/species_" .. padded .. ".png"), "species_dex")
@@ -377,7 +377,7 @@ function SpawnRender:resolveAsset(speciesId, game, opts)
   local result = {
     speciesId = speciesId,
     speciesName = mon and mon.name or tostring(speciesId),
-    dex = mon and mon.dex or nil,
+    dex = mon and (mon.nationalDex or mon.dex) or nil,
     source = nil,
     path = nil,
     status = "REAL_ASSET_MISSING",
@@ -576,8 +576,8 @@ function SpawnRender:registerContent()
       local fallbackReason = nil
 
       local dexId = nil
-      if def and def.dex ~= nil then
-        dexId = tonumber(def.dex)
+      if def and (def.nationalDex or def.dex) ~= nil then
+        dexId = tonumber(def.nationalDex or def.dex)
       end
       if not dexId then
         dexId = AnimatedSprites.resolveSpeciesId(speciesId, nil, self.mod)

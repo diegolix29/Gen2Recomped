@@ -126,7 +126,7 @@ local function speciesName(dex)
     end)
     if ok and data and data.pokemon then
       for key, def in pairs(data.pokemon) do
-        if type(def) == "table" and def.dex then dexNames[def.dex] = key end
+        if type(def) == "table" and def.dex then dexNames[def.nationalDex or def.dex] = key end
       end
     end
   end

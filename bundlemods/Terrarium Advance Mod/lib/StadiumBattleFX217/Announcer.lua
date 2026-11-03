@@ -983,7 +983,7 @@ local function dexFor(battle, battler)
   local species = battler and battler.mon and battler.mon.species
   local pokemon = battle and battle.data and battle.data.pokemon
   local def = species and pokemon and pokemon[species]
-  local dex = def and tonumber(def.dex)
+  local dex = def and tonumber(def.nationalDex or def.dex)
   if not dex or dex < 1 or dex > 151 then return nil end
   return dex
 end

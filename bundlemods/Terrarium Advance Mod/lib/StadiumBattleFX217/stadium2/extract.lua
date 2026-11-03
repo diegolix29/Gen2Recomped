@@ -60,7 +60,7 @@ local function normalPaletteForDex(dex)
   if species == nil then
     species = false
     for id, def in pairs(pokemon) do
-      if type(def) == "table" and tonumber(def.dex) == dex then species = id break end
+      if type(def) == "table" and tonumber(def.nationalDex or def.dex) == dex then species = id break end
     end
     speciesIdByDex[dex] = species
   end

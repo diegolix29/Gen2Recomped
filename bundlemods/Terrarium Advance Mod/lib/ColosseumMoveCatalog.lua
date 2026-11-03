@@ -56,7 +56,7 @@ local function dexFor(game,mon)
   if type(def)=="table" then
     n=tonumber(def.nationalDex)
     if n and n%1==0 and n>=1 and n<=386 then return n end
-    n=tonumber(def.dex)
+    n=tonumber(def.nationalDex or def.dex)
     if n and n%1==0 and n>=1 and n<=386 then return n end
   end
   local key=type(mon.species)=="string" and mon.species:upper() or nil

@@ -47,6 +47,9 @@ M.log=logf
 -- used for the detached numeric hints a challenge clone may carry.
 local function lookupDex(defs,species,mon)
   if species==nil then return nil end
+  -- Prism: make sure def.nationalDex is there before it is read.
+  local P=V.PrismNationalDex
+  if P and defs then pcall(P.apply,defs) end
   local def=defs and (defs[species] or defs[tostring(species)])
   -- Species identity wins over detached numeric hints. This keeps 3D actors and
   -- HUD portraits on the exact same National-Dex identity even when a challenge
@@ -271,6 +274,10 @@ function M.unsupported(game,battler)
   if type(battler)~="table" then return nil end
   local mon=type(battler.mon)=="table" and battler.mon or battler
   local defs=game and game.data and game.data.pokemon
+  -- A Prism-original species (Phancero, ...) has no National Dex number and
+  -- no 3D body anywhere: draw its 2D sprite rather than failing the battle.
+  local own=defs and (defs[mon.species] or defs[tostring(mon.species or mon.id)])
+  if type(own)=="table" and own.prismFakemon and not M.transformDex(battler,mon) then return 0 end
   local candidates={}
   local tdex=M.transformDex(battler,mon)
   if tdex then candidates[#candidates+1]=tdex end

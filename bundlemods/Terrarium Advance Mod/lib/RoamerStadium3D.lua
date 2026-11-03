@@ -84,7 +84,7 @@ local function dexOf(species)
   if not species then return nil end
   local data = game() and game().data
   local def = data and data.pokemon and data.pokemon[species]
-  return def and def.dex or nil
+  return def and (def.nationalDex or def.dex) or nil
 end
 
 local function loadModel(dex)

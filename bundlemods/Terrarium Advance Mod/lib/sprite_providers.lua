@@ -124,14 +124,14 @@ local function speciesKeyFromId(speciesId, game, mod)
   local pokemon = game and game.data and game.data.pokemon
   if type(pokemon) == "table" then
     for key, def in pairs(pokemon) do
-      if type(key) == "string" and def and tonumber(def.dex) == dex then
+      if type(key) == "string" and def and tonumber(def.nationalDex or def.dex) == dex then
         return key
       end
     end
   end
   if mod and mod.content and mod.content.pokemon and mod.content.pokemon.each then
     for key, def in mod.content.pokemon:each() do
-      if type(key) == "string" and def and tonumber(def.dex) == dex then
+      if type(key) == "string" and def and tonumber(def.nationalDex or def.dex) == dex then
         return key
       end
     end

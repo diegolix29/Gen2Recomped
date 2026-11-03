@@ -536,7 +536,7 @@ local function dexFor(context,battler)
   local def=game and game.data and game.data.pokemon and game.data.pokemon[species]
   -- Gen 1 content commonly calls this field `dex`; the real Gen 2 data model
   -- calls the same National Dex ordinal `index` (Cyndaquil=155, Pidgey=16).
-  local dex=(def and (def.dex or def.index or def.number))
+  local dex=(def and (def.nationalDex or def.dex or def.index or def.number))
     or (mon and (mon.dex or mon.speciesIndex))
   return tonumber(dex),(V.ShinySupport and V.ShinySupport.variant(battler)) or (mon and mon.shiny and "shiny" or "normal")
 end

@@ -72,7 +72,7 @@ function ShinyPics.note(ctx)
   local mon = ctx.mon
   if not (mon and Shiny.isShiny(mon)) then return end
   local def = ctx.data and ctx.data.pokemon and ctx.data.pokemon[ctx.species]
-  local dex = def and def.dex
+  local dex = def and (def.nationalDex or def.dex)
   if not dex then return end
   pending = { species = ctx.species, dex = dex }
 end

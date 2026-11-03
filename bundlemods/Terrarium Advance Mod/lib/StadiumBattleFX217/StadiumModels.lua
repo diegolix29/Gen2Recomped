@@ -209,7 +209,7 @@ local function dexOf(species, battle)
   -- already-merged data set for this battle.
   local data = battle and (battle.data or (battle.game and battle.game.data))
   local def = data and data.pokemon and data.pokemon[species]
-  return def and def.dex or nil
+  return def and (def.nationalDex or def.dex) or nil
 end
 
 -- Read-only test/diagnostic seam. This deliberately takes BattleState so a

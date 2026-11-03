@@ -174,6 +174,16 @@ end
 
 -- ------- pipelines
 
+-- Pokemon Prism: stamp each species with its National Dex number so models
+-- and sprites match the Naljo Pokedex instead of Prism's internal order.
+V.PrismNationalDex = V.require("PrismNationalDex")
+mod.exports = mod.exports or {}
+mod.exports.prismNationalDex = V.PrismNationalDex
+for _, ev in ipairs({ "content.loaded", "mods.loaded", "game.ready", "save.loaded", "save.created", "map.entered" }) do
+  mod.events:on(ev, function(payload)
+    pcall(V.PrismNationalDex.applyLive, type(payload) == "table" and payload.game or nil)
+  end)
+end
 local Voxel = V.require("VoxelState")
 local Voxel3D = V.require("Voxel3D")
 local VoxelScene = V.require("VoxelScene")
@@ -3212,6 +3222,7 @@ end)
 -- battle screen, and the wipe those battles skip is where it would have
 -- shown.
 mod.events:on("battle.started", function(payload)
+  pcall(V.PrismNationalDex.applyLive, payload and payload.battle and payload.battle.game)
   OverworldBattle.ensure(payload and payload.battle)
 end)
 
@@ -4186,6 +4197,9 @@ local function initializeColosseumIntegration()
 local ArenaOverworldSnapshot = loadColosseumModule("ArenaOverworldSnapshot")
     BattleArtBridge = loadColosseumModule("BattleArtBridge")
     loadColosseumModule("ShinySupport")
+    -- Prism species carry their own internal numbers; give the model lookups
+    -- the real National Dex (see lib/PrismNationalDex.lua).
+    namespace.PrismNationalDex = V.PrismNationalDex
     local ModelIdentityRef = loadColosseumModule("ModelIdentity")
     -- Observes the engine's Transform seams so a Transformed Pokemon's 3D
     -- actor follows what it copied (see lib/ModelIdentity.lua).

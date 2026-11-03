@@ -1,6 +1,13 @@
 -- Free Fly integration for Terrarium Advance Mod
 -- Full port of the free_fly mod adapted for Terrarium's architecture
 local V = ...
+-- "SPECIES_013" -> dex. Prism numbers species its own way, so go through
+-- lib/PrismNationalDex.lua rather than reading the digits directly.
+local function speciesConst(s, pattern)
+  local P = V.PrismNationalDex or (V.mod and V.mod.exports and V.mod.exports.prismNationalDex)
+  if P and type(P.speciesConst) == "function" then return P.speciesConst(s, pattern) end
+  return type(s) == "string" and s:match(pattern) or nil
+end
 
 local function loadShared(file)
   local src = V.mod:read("lib/shared/" .. file)
@@ -475,7 +482,7 @@ local function startFlight(game, mon)
       flyingPokemonDex = species
     end
     if type(species) == "string" and species:match("^SPECIES_%d+$") then
-      local dexNum = tonumber(species:match("^SPECIES_(%d+)$"))
+      local dexNum = tonumber(speciesConst(species, "^SPECIES_(%d+)$"))
       if dexNum then
         flyingPokemonDex = dexNum
         V.mod.log:info("Extracted dex %d from Gen2 species format %s", dexNum, species)

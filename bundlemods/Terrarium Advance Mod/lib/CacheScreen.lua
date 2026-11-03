@@ -87,7 +87,7 @@ local function nameFor(s,row)
     s.displayNames={}
     for _,def in pairs(s.game and s.game.data and s.game.data.pokemon or {})do
       if type(def)=='table' then
-        local n=tonumber(def.dex or def.index or def.number)
+        local n=tonumber(def.nationalDex or def.dex or def.index or def.number)
         if n then s.displayNames[n]=def.name or def.id end
       end
     end

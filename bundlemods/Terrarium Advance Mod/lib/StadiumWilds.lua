@@ -6,6 +6,13 @@
 
 -- the mod namespace (see main.lua): V.require loads a sibling module
 local V = ...
+-- "SPECIES_013" -> dex. Prism numbers species its own way, so go through
+-- lib/PrismNationalDex.lua rather than reading the digits directly.
+local function speciesConst(s, pattern)
+  local P = V.PrismNationalDex or (V.mod and V.mod.exports and V.mod.exports.prismNationalDex)
+  if P and type(P.speciesConst) == "function" then return P.speciesConst(s, pattern) end
+  return type(s) == "string" and s:match(pattern) or nil
+end
 
 local Mat4 = V.require("Mat4")
 local StadiumPack = V.require("StadiumPack")
@@ -233,7 +240,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
       
       -- Handle "SPECIES_XXX" format from nested entity
       if type(nestedSpecies) == "string" then
-        local dexStr = nestedSpecies:match("SPECIES_(%d+)")
+        local dexStr = speciesConst(nestedSpecies, "SPECIES_(%d+)")
         if dexStr then
           local dexNum = tonumber(dexStr)
           if dexNum and dexNum >= 1 and dexNum <= 721 then
@@ -255,7 +262,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
   
   -- Handle "SPECIES_XXX" format (e.g., "SPECIES_016" -> 16)
   if type(species) == "string" then
-    local dexStr = species:match("SPECIES_(%d+)")
+    local dexStr = speciesConst(species, "SPECIES_(%d+)")
     if dexStr then
       local dexNum = tonumber(dexStr)
       if dexNum and dexNum >= 1 and dexNum <= 721 then
@@ -280,7 +287,7 @@ function StadiumWilds.getEntitySpeciesDex(entity)
       return spriteNum
     end
     if type(spriteSpecies) == "string" then
-      local dexStr = spriteSpecies:match("SPECIES_(%d+)")
+      local dexStr = speciesConst(spriteSpecies, "SPECIES_(%d+)")
       if dexStr then
         local dexNum = tonumber(dexStr)
         if dexNum and dexNum >= 1 and dexNum <= 721 then
@@ -295,8 +302,8 @@ function StadiumWilds.getEntitySpeciesDex(entity)
   local game = mod.world and mod.world.game
   if game and game.data and game.data.pokemon then
     local mon = game.data.pokemon[species]
-    if mon and mon.dex then
-      local dexNum = tonumber(mon.dex)
+    if mon and (mon.nationalDex or mon.dex) then
+      local dexNum = tonumber(mon.nationalDex or mon.dex)
       if dexNum and dexNum >= 1 and dexNum <= 721 then
         return dexNum
       end
@@ -305,13 +312,13 @@ function StadiumWilds.getEntitySpeciesDex(entity)
     -- Try iterating through all pokemon to find by name
     for id, def in pairs(game.data.pokemon) do
       if def and def.name and def.name:upper() == tostring(species):upper() then
-        local dexNum = tonumber(def.dex)
+        local dexNum = tonumber(def.nationalDex or def.dex)
         if dexNum and dexNum >= 1 and dexNum <= 721 then
           return dexNum
         end
       end
       if tostring(id):upper() == tostring(species):upper() then
-        local dexNum = tonumber(def.dex)
+        local dexNum = tonumber(def.nationalDex or def.dex)
         if dexNum and dexNum >= 1 and dexNum <= 721 then
           return dexNum
         end

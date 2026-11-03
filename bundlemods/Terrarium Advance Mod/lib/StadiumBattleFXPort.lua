@@ -396,7 +396,7 @@ local function speciesDex(mon)
   local pokemon = data and data.pokemon
   local def = pokemon and pokemon[mon.species]
   if type(def) == "table" then
-    local n = tonumber(def.dex or def.dexNo or def.nationalDex or def.index or def.number)
+    local n = tonumber(def.nationalDex or def.dex or def.dexNo or def.index or def.number)
     if n then return math.floor(n) end
   end
   return nil

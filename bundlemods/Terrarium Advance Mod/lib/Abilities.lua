@@ -222,7 +222,7 @@ end
 
 function A.dexOf(mon, def)
   if mon and mon.dex and tonumber(mon.dex) then return tonumber(mon.dex) end
-  return def and tonumber(def.dex or def.index or def.number) or nil
+  return def and tonumber(def.nationalDex or def.dex or def.index or def.number) or nil
 end
 
 A.data=AbilityData

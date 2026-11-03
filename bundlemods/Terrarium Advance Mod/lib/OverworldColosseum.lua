@@ -24,6 +24,13 @@
 --
 -- Accepted tags are National Dex numbers (1-721) or engine species strings.
 local V = ...
+-- "SPECIES_013" -> dex. Prism numbers species its own way, so go through
+-- lib/PrismNationalDex.lua rather than reading the digits directly.
+local function speciesConst(s, pattern)
+  local P = V.PrismNationalDex or (V.mod and V.mod.exports and V.mod.exports.prismNationalDex)
+  if P and type(P.speciesConst) == "function" then return P.speciesConst(s, pattern) end
+  return type(s) == "string" and s:match(pattern) or nil
+end
 
 local ColosseumDex = nil  -- Load lazily
 local ColosseumMon = V.require("ColosseumMon")
@@ -189,13 +196,13 @@ local function speciesDex(v)
       -- the species id itself (Gen 5 keys data.pokemon by id, not number)
       local def = data.pokemon[v]
       if type(def) == "table" then
-        local n = dexNumber(def.dex or def.nationalDex)
+        local n = dexNumber(def.nationalDex or def.dex)
         if n then return n end
       end
       -- Try exact match first
       for dex, mon in pairs(data.pokemon) do
         if type(mon) == "table" and type(mon.name) == "string" and mon.name:upper() == v:upper() then
-          local dexNum = dexNumber(mon.dex or mon.nationalDex) or dexNumber(dex)
+          local dexNum = dexNumber(mon.nationalDex or mon.dex) or dexNumber(dex)
           if dexNum then return dexNum end
         end
       end
@@ -302,7 +309,7 @@ function OverworldColosseum.tag(entity, speciesOrDex)
 
   -- Handle engine species constants like SPECIES_249, SPECIES_094, etc.
   if type(speciesOrDex) == "string" then
-    local match = speciesOrDex:match("^SPECIES_(%d+)$")
+    local match = speciesConst(speciesOrDex, "^SPECIES_(%d+)$")
     if match then
       local dex = tonumber(match)
       if dex and dex >= 1 and dex <= NATIONAL_DEX_MAX then
@@ -537,7 +544,7 @@ function OverworldColosseum.resolveDex(entity)
       local spriteSpecies = entity.sprite.species
       -- Handle engine species constants
       if type(spriteSpecies) == "string" then
-        local match = spriteSpecies:match("^SPECIES_(%d+)$")
+        local match = speciesConst(spriteSpecies, "^SPECIES_(%d+)$")
         if match then
           local dex = tonumber(match)
           if dex and dex >= 1 and dex <= NATIONAL_DEX_MAX then

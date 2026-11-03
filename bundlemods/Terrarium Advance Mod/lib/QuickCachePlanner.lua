@@ -49,7 +49,7 @@ function P.rank(game,save,checkpoint)
   local resolved,defs={},{}
   for id,def in pairs(tableOrEmpty(data.pokemon))do
     if type(def)=='table' then
-      local n=num(def.dex or def.index or def.number)
+      local n=num(def.nationalDex or def.dex or def.index or def.number)
       if n and n%1==0 and n>=1 and n<=CATALOG_MAX then
         resolved[tostring(id):upper()]=n;defs[n]=def
         if def.id then resolved[tostring(def.id):upper()]=n end

@@ -231,7 +231,7 @@ local function dexOf(species)
   local poke = data and data.pokemon
   if not poke then return nil end
   local def = poke[species] or (asNumber and poke[asNumber])
-  return def and (tonumber(def.dex) or tonumber(def.nationalDex) or asNumber) or nil
+  return def and (tonumber(def.nationalDex or def.dex) or asNumber) or nil
 end
 
 -- Whether this side is showing a TRAINER rather than a Pokemon.
