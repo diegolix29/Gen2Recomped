@@ -880,7 +880,8 @@ function Stadium.install()
       local mon = side and session[side]
       if mon and mon.rig then
         local okDef, def = pcall(self.moveDef, self, moveInst)
-        local index = okDef and def and def.index or nil
+        -- national move number: `index` on Gen 1-3 records, `id` on Gen 4/5
+        local index = okDef and def and (tonumber(def.index) or tonumber(def.id)) or nil
         -- `def` is StadiumMon:attack(moveIndex)'s surplus argument (Lua
         -- drops it silently); a ColosseumBattleMon uses it to look up the
         -- retail-accurate per-move animation instead of a generic swing

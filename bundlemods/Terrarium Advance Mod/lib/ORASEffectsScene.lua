@@ -456,7 +456,11 @@ function S.install()
       pcall(function()
         if not Effects().active() then return end
         local okDef, def = pcall(self.moveDef, self, moveInst)
-        local index = okDef and def and tonumber(def.index) or nil
+        -- the national move number: Gen 1-3 records key moves by name and
+        -- carry it as `index`; Gen 4/5 records are keyed by it and carry
+        -- only `id` (without this no ORAS effect ever started there)
+        local index = okDef and def and (tonumber(def.index) or tonumber(def.id)) or nil
+        if not index and type(moveInst) == "table" then index = tonumber(moveInst.id) end
         if index then S.start(self, user, index) end
       end)
       return innerMove(self, user, target, moveInst, isCalled)
