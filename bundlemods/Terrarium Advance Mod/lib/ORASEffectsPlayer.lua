@@ -502,6 +502,27 @@ local function roleName(r) return r == 0 and "attacker" or (r == 1 and "defender
 -- effect basis (X right, Y up, Z toward the target). Returns toWorld(x, y, z)
 -- for effect-space cm, and the unit; nil when the side has no position.
 Player.AIM_AXIS = "+z"
+
+-- ORAS lays effects out for its own stage: Flamethrower's target-side stream
+-- (636) starts 430 cm in front of the target, at the attacker's mouth there.
+-- 3D-BTL battlers stand closer or further (233 cm / 467 cm in the user's
+-- F12s), so particle positions along the shot are scaled by the real gap over
+-- this one; without it the stream started behind a close attacker.
+Player.ORAS_GAP = 430
+Player.MAX_QUAD_CM = 1500
+local function gapScale(run)
+  local host = run.host
+  local okU, unit = pcall(host.unit)
+  unit = okU and tonumber(unit) or nil
+  local a, d = bodyPoint(host, "attacker", "center"), bodyPoint(host, "defender", "center")
+  if not (unit and unit > 0 and a and d) then return 1 end
+  local dx, dz = d[1] - a[1], d[3] - a[3]
+  local k = math.sqrt(dx * dx + dz * dz) / unit / Player.ORAS_GAP
+  k = math.max(0.35, math.min(1.6, k))
+  run.gapK = k
+  return k
+end
+
 local function placement(run, l)
   local host = run.host
   local anchor = bodyPoint(host, l.role, l.slot)
@@ -555,9 +576,11 @@ local function placement(run, l)
   local Rx, Ry, Rz, Ux, Uy, Uz, Fx, Fy, Fz = rx_, 0, rz_, 0, 1, 0, fx_, 0, fz_
   -- aimed (0x32 / 0x46): forward from the anchor at another body point,
   -- tilted too -- a beam from the attacker's mouth into the target
+  local aimed = false
   if l.aim then
     local dest = bodyPoint(host, roleName(l.aim[1]) or l.role, POINT_SLOT[l.aim[2] or -1] or "center")
     if dest then
+      aimed = true
       local dx, dy, dz = dest[1] - ax, dest[2] - ay, dest[3] - az
       local dl = math.sqrt(dx * dx + dy * dy + dz * dz)
       if dl > 1e-6 then
@@ -585,9 +608,12 @@ local function placement(run, l)
       end
     end
   end
-  -- the slot's own turn (0x35, degrees), keyed like the scale
+  -- the slot's own turn (0x35, degrees), keyed like the scale.  An aimed
+  -- slot looks at its aim point and ignores it: beam moves (Hyper Beam,
+  -- Psybeam, Aurora Beam, Tri Attack, Horn Drill...) spawn half their beam
+  -- copies with a 180 deg Y turn, which otherwise fired them backwards
   local qx, qy, qz
-  if l.rots then
+  if l.rots and not aimed then
     local age = l.age + (run.acc or 0)
     local x, y, z = 0, 0, 0
     for _, k in ipairs(l.rots) do
@@ -606,12 +632,21 @@ local function placement(run, l)
     return ax + (Rx * x + Ux * y + Fx * z) * unit, ay + (Ry * x + Uy * y + Fy * z) * unit,
            az + (Rz * x + Uz * y + Fz * z) * unit
   end
-  return toWorld, unit, ay
+  -- particle positions only: the along-the-shot part fitted to this battle's
+  -- gap (see gapScale); quad shapes and effect models keep toWorld
+  local k = gapScale(run)
+  local function toWorldPos(x, y, z)
+    if qx then x, y, z = rotate(qx, qy, qz, x, y, z) end
+    z = z * k
+    return ax + (Rx * x + Ux * y + Fx * z) * unit, ay + (Ry * x + Uy * y + Fy * z) * unit,
+           az + (Rz * x + Uz * y + Fz * z) * unit
+  end
+  return toWorld, unit, ay, toWorldPos
 end
 
 -- one live particle file of one run
 local function drawLive(g, run, l, project)
-  local toWorld, unit = placement(run, l)
+  local toWorld, unit, _, toWorldPos = placement(run, l)
   if not toWorld then return end
   local function scr(x, y, z)
     local ok, sx, sy = pcall(project, x, y, z)
@@ -628,12 +663,21 @@ local function drawLive(g, run, l, project)
     -- effect scale: positions and quad sizes alike
     local q = q0
     local rw, rh = q.w * grow, q.h * grow   -- unscaled: oriented quads scale after their turn
+    -- stage-sized quads (Hyper Beam's 40 m speed-line backdrop, built for
+    -- ORAS's own camera shot) are left out, as stage-sized effect models are
+    local big = math.max(q.w, q.h) * math.max(ksx, ksy, ksz) > Player.MAX_QUAD_CM
     q.x, q.y, q.z = q.x * ksx, q.y * ksy, q.z * ksz
     q.w, q.h = q.w * ksx * grow, q.h * ksy * grow
     local key = q.texture and textures[q.texture]
     local img = key and image(key)
-    if img and q.a > 0.004 then
-      local wx, wy, wz = toWorld(q.x, q.y, q.z)
+    if img and q.a > 0.004 and not big then
+      local wx, wy, wz = toWorldPos(q.x, q.y, q.z)
+      -- shape points: the gap-fitted centre plus their unscaled offset
+      local bx, by, bz = toWorld(q.x, q.y, q.z)
+      local function shifted(x, y, z)
+        local sx_, sy_, sz_ = toWorld(x, y, z)
+        return wx + sx_ - bx, wy + sy_ - by, wz + sz_ - bz
+      end
       local cx, cy = scr(wx, wy, wz)
       if cx then
         local hw, hh = q.w * 0.5, q.h * 0.5
@@ -659,7 +703,7 @@ local function drawLive(g, run, l, project)
             { ox - ux + vx, oy - uy + vy, oz - uz + vz, 0, 0 },
           }
           for i, c in ipairs(corners) do
-            local sx, sy = scr(toWorld(c[1], c[2], c[3]))
+            local sx, sy = scr(shifted(c[1], c[2], c[3]))
             if not sx then p = nil; break end
             p[i] = { sx, sy, c[4], c[5] }
           end
@@ -674,7 +718,7 @@ local function drawLive(g, run, l, project)
               local vlen = q.vx and math.sqrt(q.vx * q.vx + q.vy * q.vy + q.vz * q.vz) or 0
               if q.orient == "upright" and vlen > 1e-4 then
                 -- a moving streak (bolts, lines, splashes): along its motion
-                local vx, vy, vz = toWorld(q.x + q.vx / vlen, q.y + q.vy / vlen, q.z + q.vz / vlen)
+                local vx, vy, vz = shifted(q.x + q.vx / vlen, q.y + q.vy / vlen, q.z + q.vz / vlen)
                 local tx, ty = scr(vx, vy, vz)
                 local dx, dy = (tx or cx) - cx, (ty or cy) - cy
                 local dl = math.sqrt(dx * dx + dy * dy)
@@ -686,7 +730,7 @@ local function drawLive(g, run, l, project)
                 ex, ey = upx / ppu, upy / ppu
                 local a = q.axis
                 if a and (math.abs(a[1]) > 1e-3 or math.abs(a[3]) > 1e-3) then
-                  local tx, ty = scr(toWorld(q.x + a[1], q.y + a[2], q.z + a[3]))
+                  local tx, ty = scr(shifted(q.x + a[1], q.y + a[2], q.z + a[3]))
                   local dx, dy = (tx or cx) - cx, (ty or cy) - cy
                   local dl = math.sqrt(dx * dx + dy * dy)
                   if dl > 1e-6 then ex, ey = dx / dl, dy / dl end
@@ -743,6 +787,7 @@ function Player.report(out)
   for _, run in ipairs(active) do
     out[#out + 1] = ("  run move %d (%s): frame %d, lands at %s, live files %d, drawn %d by %s"):format(
       run.move, run.space, run.frame, tostring(run.hitFrame), #run.live, run.drawn or 0, tostring(run.drawnBy))
+    out[#out + 1] = ("    gap: x%.2f of ORAS's %d cm (particle positions along the shot)"):format(run.gapK or 1, Player.ORAS_GAP)
     if run.stageEnd then
       out[#out + 1] = ("    stage: %d records, runs to frame %d, last pose %s"):format(
         #(run.entry.stage or {}), run.stageEnd, tostring(run.stageNote))

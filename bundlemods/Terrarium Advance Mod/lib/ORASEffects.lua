@@ -27,10 +27,11 @@ local E = { ID = "oras_fx", LABEL = "ORAS EFFECTS" }
 
 E.ROOT = "oras/movefx"
 E.INDEX = E.ROOT .. "/index.lua"
-E.STAMP = "oras-fx=13"   -- 2: per-effect scale (0x34) and side (0x2F); 3: body point + offset, hit cue (0x0C);
+E.STAMP = "oras-fx=14"   -- 2: per-effect scale (0x34) and side (0x2F); 3: body point + offset, hit cue (0x0C);
                         -- 5: stage records (actor moves / scale, stage tint, camera); 6: body motion kind (0x0D);
                         -- 7: move sounds; 8: sound placement (0x68) for pan; 9: effect models (0x3F); 10: model sprays (0x7B); 11: model motions (0x50); 12: aim 0x32/0x46, slot turn 0x35;
-                        -- 13: particle UV coordinator + mirrored wrap (round glows)
+                        -- 13: particle UV coordinator + mirrored wrap (round glows);
+                        -- 14: exact integer flags (fixed / cone launch, drag)
 E.SETTING = E.ROOT .. "/battle.txt"
 E.IMPORT_ID = "pokemon_oras"
 
@@ -51,7 +52,10 @@ local function literal(v)
   local t = type(v)
   if t == "number" then
     if v ~= v or v == math.huge or v == -math.huge then return "0" end
-    if v == math.floor(v) and math.abs(v) < 1e9 then return ("%d"):format(v) end
+    -- whole numbers exactly: CGFX flags 0x80000000 / 0x40000000 (fixed and
+    -- cone launch directions, drag) were written as %.6g (2.14748e+09), so
+    -- they never matched and those particles stood still
+    if v == math.floor(v) and math.abs(v) < 2 ^ 53 then return ("%.0f"):format(v) end
     return ("%.6g"):format(v)
   elseif t == "string" then return ("%q"):format(v)
   elseif t == "boolean" then return v and "true" or "false"
@@ -154,12 +158,15 @@ function E.cycleSize(dir)
 end
 
 -- move cameras (op 0x17) in 3D-BTL: ON / OFF (oras/movefx/camera.txt, default
--- ON), and their zoom as a percentage of ORAS's own framing
--- (oras/movefx/zoom.txt, default 50: the subject half the size ORAS shows
--- it; 100 = ORAS).  Applied by ORASEffectsScene.camera.
+-- ON), and their zoom (oras/movefx/zoom_v2.txt, default 100).  100% is a
+-- quarter of ORAS's own framing (E.ZOOM_BASE: the subject a quarter the size
+-- ORAS shows it -- ORAS's close shots crowd the 3D-BTL screen); 200% = half,
+-- 400% = ORAS.  zoom.txt held the old scale (100 = ORAS) and is ignored.
+-- Applied by ORASEffectsScene.camera via E.cameraFraming().
 E.CAMERA_FILE = E.ROOT .. "/camera.txt"
-E.ZOOM_FILE = E.ROOT .. "/zoom.txt"
-E.ZOOM_MIN, E.ZOOM_MAX, E.ZOOM_STEP, E.ZOOM_DEFAULT = 25, 200, 25, 50
+E.ZOOM_FILE = E.ROOT .. "/zoom_v2.txt"
+E.ZOOM_MIN, E.ZOOM_MAX, E.ZOOM_STEP, E.ZOOM_DEFAULT = 50, 400, 25, 100
+E.ZOOM_BASE = 0.25
 local cameraValue, zoomValue
 function E.cameraEnabled()
   if cameraValue == nil then
@@ -180,6 +187,8 @@ function E.cameraZoom()
   end
   return zoomValue
 end
+-- the subject's size against ORAS's own framing (1 = ORAS)
+function E.cameraFraming() return E.cameraZoom() / 100 * E.ZOOM_BASE end
 -- dir -1 (left) / +1 (right, A); wraps at the ends so A alone reaches every value
 function E.stepZoom(dir)
   local v = E.cameraZoom() + ((tonumber(dir) or 1) < 0 and -E.ZOOM_STEP or E.ZOOM_STEP)

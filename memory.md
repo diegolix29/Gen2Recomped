@@ -315,3 +315,15 @@ Confirmed in game 2026-11-01: Pidgey shows 2 wings and Growlithe stays upright a
 - Verified offline (lovec, in-memory rebake from the dump, software raster): Flamethrower flash is a round glow, line along the shot, no squares; Hydro Pump jet joins both Pokemon; Ember unchanged. Hyper Beam not re-checked.
 - User step: ORAS EFFECTS (stamp 13; ORAS FX PACK repacks itself if packed). Check Flamethrower, Hydro Pump, Hyper Beam, and that glows look round; ORAS FX SIZE now starts at X1.5.
 
+## 2026-11-03 — Flamethrower stream behind the attacker (gap fit); ORAS CAM ZOOM rescale (uncommitted, untested in game)
+- User screenshot after stamp 13: line now along the shot, but a second streak ran behind Mew. F12s: gap Mew -> target 34.6 world / unit 0.1488 = 233 cm (Hyper Beam fight: 48.4 / 0.1037 = 467 cm). Flamethrower's 636 (target side, frames 40-95, continues 634's mouth stream) starts 430 cm in front of the target: ORAS's gap. At 233 it sat ~200 cm behind Mew.
+- Fix: particle centres along the shot scaled by real gap / 430 (Player.ORAS_GAP, gapScale, toWorldPos; shapes unscaled; models unscaled). Verified offline at 233 cm: stream stays between the two, hand-off continuous. No rebake needed.
+- ORAS CAM ZOOM: 100% = old 25% (E.ZOOM_BASE 0.25), steps 50..400, new zoom_v2.txt.
+- Hyper Beam: user says it looks as off as Flamethrower did; screenshot pending. Its main bar (664, 'upright') is still the undecoded part (see stamp-12 entry).
+
+## 2026-11-03 — Hyper Beam vertical bar + screen-wide bands; fixed-direction velocities never worked (stamp 14, uncommitted, untested in game)
+- User screenshot (Dragonair vs Pidgey): a vertical white bar mid-field and bright horizontal bands across the screen. Bands = ew063_at_wind_line (upright, h ~3950, 800 behind the attacker x scale 3: ORAS camera backdrop) -> new Player.MAX_QUAD_CM 1500 guard. Bar = ew063_df_ca_beamhit01_bar parked at z 600: its velocity initializer flag 0x80000000 was baked as 2.14748e+09 (literal() %.6g for >= 1e9) so the sim never matched it -- every fixed-direction / cone launch and drag in every move was lost. literal() now writes integers exactly; stamp 14.
+- Then half the beam pointed backwards: aimed slots with a 180 deg Y slot turn (Hyper Beam 2 of 4 copies; Psybeam, Aurora Beam, Tri Attack, Horn Drill...). Aimed slots now ignore 0x35.
+- Verified offline (in-memory bake, raster, target at 467 cm): Hyper Beam one beam attacker -> target, nothing behind; Flamethrower stream flows forward from the mouth (233 cm); Hydro Pump jet unchanged. Not seen: blackthd (multiply blend; raster cannot show it).
+- User step: ORAS EFFECTS again (stamp 14), restart, check Flamethrower / Hyper Beam / Hydro Pump and a few beam moves (Psybeam, Aurora Beam, Ice Beam).
+
