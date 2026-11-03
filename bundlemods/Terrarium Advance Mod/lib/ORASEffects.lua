@@ -75,9 +75,38 @@ local function literal(v)
 end
 E._literal = literal
 
+-- ------------------------------------------------------------- archive
+
+-- ORAS FX PACK packs oras/movefx/<folder>/* into cbe_cache_archive/orasfx
+-- (lib/CacheArchive.lua kind "orasfx"); index.lua and the row settings stay
+-- loose.  Loaded like ORASModels does when nothing else has loaded it.
+local function archive()
+  local A = mod and mod.exports and mod.exports.cacheArchive
+  if A then return A end
+  local okS, src = pcall(function() return mod:read("lib/CacheArchive.lua") end)
+  local chunk = okS and type(src) == "string" and load(src, "@lib/CacheArchive.lua")
+  if not chunk then return nil end
+  local okW, WorkBudget = pcall(V.require, "WorkBudget")
+  local okA, arch = pcall(chunk, { mod = mod, WorkBudget = okW and WorkBudget or nil })
+  if not (okA and type(arch) == "table") then return nil end
+  if mod.exports then mod.exports.cacheArchive = arch end
+  return arch
+end
+
+-- one baked file: loose first (a fresh bake), else from the packed unit
+local function readFile(path)
+  local ok, bytes = pcall(mod.cache.read, mod.cache, path)
+  if ok and type(bytes) == "string" then return bytes end
+  local A = archive()
+  if not (A and A.readEntry) then return nil end
+  local okA, packed = pcall(A.readEntry, path)
+  return okA and type(packed) == "string" and packed or nil
+end
+E.readFile = readFile
+
 local function readLua(path)
-  local ok, src = pcall(mod.cache.read, mod.cache, path)
-  if not (ok and type(src) == "string") then return nil end
+  local src = readFile(path)
+  if type(src) ~= "string" then return nil end
   local chunk = (loadstring or load)(src, "@" .. path)
   if not chunk then return nil end
   if setfenv then setfenv(chunk, {}) end
@@ -678,6 +707,73 @@ local function bake(onProgress)
   return nMoves, #members - failed, nTex, failed
 end
 
+-- ------------------------------------------------------------------- pack
+
+local packJob = nil   -- { A, started, startedAt, fresh }
+local PACK_BUDGET_MS = 12
+
+-- fresh: the bake just wrote every file loose again, so the old units are
+-- dropped first (they would keep members the new bake left out)
+local function startPack(fresh)
+  local A = archive()
+  if not (A and A.beginPack) then
+    log("warn", "ORAS FX PACK: cache packing unavailable (lib/CacheArchive.lua did not load); effects stay loose")
+    return false
+  end
+  packJob = { A = A, started = false, startedAt = now(), fresh = fresh }
+  return true
+end
+E.startPack = startPack
+
+-- status() lists the archive folders: the row asks every frame
+local packStatusMemo, packStatusAt, packStatusStale = nil, -1, false
+function E.packStatus()
+  local t = now()
+  if packStatusMemo and not packJob and not packStatusStale and t - packStatusAt < 1 then return packStatusMemo end
+  packStatusStale = false
+  local A = archive()
+  local okS, s = pcall(function() return A and A.status and A.status() or nil end)
+  s = okS and s or nil
+  packStatusMemo = s and { packed = s.orasfxPacked, entries = s.orasfxEntries, original = s.orasfxOriginalLabel,
+                           archive = s.orasfxArchiveLabel } or {}
+  packStatusAt = t
+  return packStatusMemo
+end
+
+local function pumpPack()
+  local A = packJob.A
+  if not packJob.started then
+    -- another pack job (ORAS MODELS, Colosseum auto-pack) holds the archive:
+    -- drive it to its end, then start ours
+    if A.running and A.running() then A.pump(PACK_BUDGET_MS); return end
+    if packJob.fresh and A.wipeKind then A.wipeKind("orasfx") end
+    local ok, why = A.beginPack("orasfx")
+    if not ok then
+      packJob = nil
+      E.packError = tostring(why)
+      log("warn", "ORAS FX PACK: packing could not start: %s", tostring(why))
+      return
+    end
+    packJob.started = true
+    log("info", "ORAS FX PACK: packing the ORAS effects in the background")
+    return
+  end
+  local state, err = A.pump(PACK_BUDGET_MS)
+  if state == "working" then return end
+  local seconds = now() - packJob.startedAt
+  packJob = nil
+  packStatusStale = true
+  if state == "error" then
+    E.packError = tostring(err)
+    log("warn", "ORAS FX PACK: packing failed (loose files kept): %s", tostring(err))
+    return
+  end
+  E.packError = nil
+  local st = E.packStatus()
+  log("info", "ORAS FX PACK: packed in %.0fs -- %s of effects in %s (cbe_cache_archive/orasfx)",
+      seconds, tostring(st.original), tostring(st.archive))
+end
+
 function E.running() return job ~= nil end
 
 function E.startBuild()
@@ -709,6 +805,7 @@ function E.pump()
     E._f12 = down
     RD.frame()
   end)
+  if packJob then return pumpPack() end
   if not job then return end
   job.frameStart = now()
   local ok, nMoves, nFx, nTex, failed = coroutine.resume(job.co)
@@ -724,6 +821,8 @@ function E.pump()
     E.status = { state = "done" }
     log("info", "ORAS EFFECTS: %d moves, %d particle files, %d textures baked in %.1fs (%d unreadable)",
         nMoves or 0, nFx or 0, nTex or 0, seconds, failed or 0)
+    -- once the player has packed, a new bake is packed right after it
+    if E.packStatus().packed then startPack(true) end
   end
 end
 
@@ -750,6 +849,37 @@ function E.row()
         return true
       end
       E.startBuild()
+      return true
+    end,
+  }
+end
+
+-- ORAS FX PACK: the row under ORAS EFFECTS.  Packs the baked effects
+-- (particles, textures, models, motions, sounds) into cbe_cache_archive/orasfx,
+-- one file per folder; pressing it again packs whatever is loose.
+function E.packRow()
+  return {
+    id = "oras_fx_pack",
+    label = "ORAS FX PACK",
+    value = function()
+      if packJob then
+        local A = packJob.A
+        local label = A and A.stage and A.stage()
+        return packJob.started and tostring(label or "PACKING"):gsub("^PACK ORASFX ", "") or "WAITING"
+      end
+      if job then return "AFTER BUILD" end
+      if E.packError then return "ERROR" end
+      local st = E.packStatus()
+      if st.packed then return "PACKED " .. tostring(st.archive or "") end
+      return E.built() and "LOOSE FILES" or "BUILD FIRST"
+    end,
+    step = function()
+      if job or packJob then return true end
+      if not E.built() then
+        log("info", "ORAS FX PACK: build the effects first (ORAS EFFECTS)")
+        return true
+      end
+      startPack(false)
       return true
     end,
   }

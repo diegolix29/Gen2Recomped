@@ -90,8 +90,7 @@ local function image(key)
   local img = images[key]
   if img ~= nil then return img or nil end
   img = false
-  local mod = V.mod
-  local ok, bytes = pcall(mod.cache.read, mod.cache, Effects().ROOT .. "/tex/" .. key .. ".png")
+  local ok, bytes = pcall(Effects().readFile, Effects().ROOT .. "/tex/" .. key .. ".png")
   if ok and type(bytes) == "string" and love and love.graphics then
     local okI, data = pcall(function()
       return love.image.newImageData(love.filesystem.newFileData(bytes, key .. ".png"))
@@ -228,8 +227,7 @@ local function soundFor(k)
   local d = soundData[k]
   if d ~= nil then return d or nil end
   d = false
-  local mod = V.mod
-  local ok, bytes = pcall(mod.cache.read, mod.cache, ("%s/snd/%d.wav"):format(Effects().ROOT, k))
+  local ok, bytes = pcall(Effects().readFile, ("%s/snd/%d.wav"):format(Effects().ROOT, k))
   if ok and type(bytes) == "string" and love and love.sound then
     local okD, sd = pcall(function()
       return love.sound.newSoundData(love.filesystem.newFileData(bytes, k .. ".wav"))

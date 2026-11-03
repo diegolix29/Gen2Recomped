@@ -43,14 +43,21 @@ local VERSION=1
 local ORAS_DIR=ARCHIVE_ROOT.."/oras"
 local INDEX_ORAS="cache/archive_v1/oras.lua"
 local MARKER_ORAS="build/cache_archive_oras_v1.complete"
+-- ORAS move effects (lib/ORASEffects.lua bake): oras/movefx/<folder>/...,
+-- one unit per folder (fx, tex, models, uv, motions, snd); index.lua and the
+-- row settings directly under oras/movefx stay loose
+local ORASFX_DIR=ARCHIVE_ROOT.."/orasfx"
+local INDEX_ORASFX="cache/archive_v1/orasfx.lua"
+local MARKER_ORASFX="build/cache_archive_orasfx_v1.complete"
 
 -- per kind: loose prefix, unit folder, index, done marker
 local KINDS={
   pokemon={prefix="cache/pokemon/",dir=POKEMON_DIR,index=INDEX_POKEMON,marker=MARKER_POKEMON},
   movefx={prefix="cache/movefx/",dir=MOVEFX_DIR,index=INDEX_MOVEFX,marker=MARKER_MOVEFX},
   oras={prefix="oras/pokemon/",dir=ORAS_DIR,index=INDEX_ORAS,marker=MARKER_ORAS},
+  orasfx={prefix="oras/movefx/",dir=ORASFX_DIR,index=INDEX_ORASFX,marker=MARKER_ORASFX},
 }
-local KIND_LIST={"pokemon","movefx","oras"}
+local KIND_LIST={"pokemon","movefx","oras","orasfx"}
 A.KINDS=KINDS
 
 local job=nil
@@ -247,6 +254,8 @@ local function pinnedLoose(path)
   if path=="oras/pokemon/index.lua" then return true end
   local oname=path:match("^oras/pokemon/%d+/([^/]+)$")
   if oname=="rev.txt" or oname=="q16.txt" or oname=="ssc.txt" or oname=="model_cache.lua" or oname=="metadata_v1.lua" then return true end
+  -- ORAS effects: the bake's index (stamp = "is it built") and the row settings
+  if path:match("^oras/movefx/[^/]+$") then return true end
   return false
 end
 
@@ -255,12 +264,16 @@ local function kindFor(path)
   if startsWith(path,"cache/pokemon/") then return "pokemon" end
   if startsWith(path,"cache/movefx/") then return "movefx" end
   if startsWith(path,"oras/pokemon/") then return "oras" end
+  if startsWith(path,"oras/movefx/") then return "orasfx" end
   return nil
 end
 
 local function unitKey(kind,path)
   if kind=="oras" then
     return path:match("^oras/pokemon/(%d+)/") or "_meta"
+  end
+  if kind=="orasfx" then
+    return path:match("^oras/movefx/([^/]+)/") or "_meta"
   end
   if kind=="pokemon" then
     local dex,rest=path:match("^cache/pokemon/(%d+)/(.*)$")
@@ -414,7 +427,7 @@ local function queueFor(kind)
     if #queue>0 then return queue end
     A.lastListing.method=method.." (unusable, manifest walk)"
   end
-  if kind=="oras" then
+  if kind=="oras" or kind=="orasfx" then
     -- no manifest to walk: the store listing is the only source
   elseif kind=="pokemon" then
     for _,path in ipairs(pokemonManifestPaths()) do add(path) end
@@ -633,17 +646,20 @@ function A.status()
   local p=readIndex("pokemon")
   local m=readIndex("movefx")
   local o=readIndex("oras")
+  local x=readIndex("orasfx")
   local pBytes=archiveBytesOnDisk("pokemon")
   local mBytes=archiveBytesOnDisk("movefx")
   local oBytes=archiveBytesOnDisk("oras")
+  local xBytes=archiveBytesOnDisk("orasfx")
   -- totals are the Colosseum caches (the PACK CACHE menu); ORAS has its own
   -- fields below (ORAS MODELS reports them)
   local original=(p.originalBytes or 0)+(m.originalBytes or 0)
   local packed=pBytes+mBytes
-  local pCount,mCount,oCount=0,0,0
+  local pCount,mCount,oCount,xCount=0,0,0,0
   for _ in pairs(p.entries) do pCount=pCount+1 end
   for _ in pairs(m.entries) do mCount=mCount+1 end
   for _ in pairs(o.entries) do oCount=oCount+1 end
+  for _ in pairs(x.entries) do xCount=xCount+1 end
   local pokemonPacked=looseExists(MARKER_POKEMON)
   local movefxPacked=looseExists(MARKER_MOVEFX)
   local orasPacked=looseExists(MARKER_ORAS)
@@ -661,6 +677,10 @@ function A.status()
     orasEntries=oCount,
     orasArchiveLabel=prettyBytes(oBytes),
     orasOriginalLabel=prettyBytes(o.originalBytes or 0),
+    orasfxPacked=looseExists(MARKER_ORASFX) and true or false,
+    orasfxEntries=xCount,
+    orasfxArchiveLabel=prettyBytes(xBytes),
+    orasfxOriginalLabel=prettyBytes(x.originalBytes or 0),
     originalBytes=original,
     archiveBytes=packed,
     savedBytes=math.max(0,original-packed),
@@ -844,6 +864,7 @@ local function packBody(scope)
   if scope=="all" or scope=="pokemon" then packKind("pokemon") end
   if scope=="all" or scope=="movefx" then packKind("movefx") end
   if scope=="oras" then packKind("oras") end
+  if scope=="orasfx" then packKind("orasfx") end
   return true
 end
 
@@ -854,7 +875,8 @@ function A.beginPack(scope)
   scope=scope or "all"
   local label=scope=="pokemon" and "PACKING POKEMON CACHE"
     or (scope=="movefx" and "PACKING MOVEFX CACHE")
-    or (scope=="oras" and "PACKING ORAS MODELS" or "PACKING POKEMON + MOVEFX")
+    or (scope=="oras" and "PACKING ORAS MODELS")
+    or (scope=="orasfx" and "PACKING ORAS EFFECTS" or "PACKING POKEMON + MOVEFX")
   A.lastError=nil
   local co=WorkBudget.new(function()
     local ok,err=xpcall(function() packBody(scope) end,debug.traceback)
@@ -879,7 +901,7 @@ end
 ----------------------------------------------------------------------
 A.autoPack=true
 local AUTO_SETTLE=20
-local dirty={pokemon={},movefx={},oras={}}
+local dirty={pokemon={},movefx={},oras={},orasfx={}}
 local function now()
   if love and love.timer and love.timer.getTime then return love.timer.getTime() end
   return os.clock()
@@ -1147,6 +1169,9 @@ function A.repairLostEntries(force)
         if kind=="oras" then
           -- ORAS MODELS rebuilds a species whose stamp is gone
           looseDelete(("oras/pokemon/%s/rev.txt"):format(tostring(key)))
+        elseif kind=="orasfx" then
+          -- no index = not built: ORAS EFFECTS bakes everything again
+          looseDelete("oras/movefx/index.lua")
         elseif kind=="pokemon" then
           local dex,variant=tostring(key):match("^(%d+)/(%a+)$")
           if dex then looseDelete(("cache/pokemon/%s%s/rev.txt"):format(dex,variant=="shiny" and "/shiny" or "")) end
@@ -1166,6 +1191,19 @@ function A.repairLostEntries(force)
   if dropped>0 then looseDelete("build/hard_cache_registry_v1.lua") end
   looseWrite(REPAIR_MARKER,("dropped=%d\nlost=%d\n"):format(dropped,lost))
   return dropped,lost
+end
+
+-- Drops one kind's units, index and marker (the loose files are untouched).
+-- ORAS EFFECTS calls it after a bake on a packed install: the bake has just
+-- written every file loose again, so the old units only hold stale copies.
+function A.wipeKind(kind)
+  if not KINDS[kind] or job then return false end
+  closeUnit(nil)
+  rmrf(KINDS[kind].dir)
+  looseDelete(KINDS[kind].index);looseDelete(KINDS[kind].marker)
+  indexMemo[kind]=nil
+  dirty[kind]={}
+  return true
 end
 
 function A.wipe()
