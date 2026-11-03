@@ -27,8 +27,9 @@ local E = { ID = "oras_fx", LABEL = "ORAS EFFECTS" }
 
 E.ROOT = "oras/movefx"
 E.INDEX = E.ROOT .. "/index.lua"
-E.STAMP = "oras-fx=7"   -- 2: per-effect scale (0x34) and side (0x2F); 3: body point + offset, hit cue (0x0C);
-                        -- 5: stage records (actor moves / scale, stage tint, camera); 6: body motion kind (0x0D)
+E.STAMP = "oras-fx=9"   -- 2: per-effect scale (0x34) and side (0x2F); 3: body point + offset, hit cue (0x0C);
+                        -- 5: stage records (actor moves / scale, stage tint, camera); 6: body motion kind (0x0D);
+                        -- 7: move sounds; 8: sound placement (0x68) for pan; 9: effect models (0x3F)
 E.SETTING = E.ROOT .. "/battle.txt"
 E.IMPORT_ID = "pokemon_oras"
 
@@ -329,6 +330,32 @@ local function stageRecord(S, r)
   return base
 end
 
+-- Where a sound cue sits (0x68 on the cue's slot, same layout as 0x2F: u32
+-- who 0 attacker / 1 target / 2 between, u32 body point, vec3 offset, u32
+-- easing). The last instant 0x68 of that slot up to the cue's frame places
+-- it; a timed one starting on the cue's frame flies it there (Ember's
+-- fireball 25-35). Adds cue[4] = who, cue[5] = { f0, f1, who } (frames
+-- from the cue). Only the side is kept: the player pans by screen side.
+local function soundPlace(S, recs, i, cue)
+  local slot, s = recs[i].target, recs[i].start
+  local who, travel
+  for j, q in ipairs(recs) do
+    if q.start > s then break end
+    if q.op == 0x68 and q.target == slot and #q.args >= 4 then
+      local w = S.u32(q.args, 1)
+      if w <= 2 then
+        if q.finish <= q.start then
+          if travel == nil then who = w end
+        elseif q.start == s and j > i and travel == nil then
+          travel = { 0, q.finish - q.start, w }
+        end
+      end
+    end
+  end
+  cue[4], cue[5] = who, travel
+  return cue
+end
+
 local function bake(onProgress)
   local R = V.require("N3DSRom")
   local G = V.require("GARC")
@@ -338,9 +365,13 @@ local function bake(onProgress)
   local rom = assert(R.open(mod, E.IMPORT_ID))
   local seqG = assert(G.open(rom, assert(rom:file(S.GARC_PATH), "dump has no " .. S.GARC_PATH)))
   local fxG = assert(G.open(rom, assert(rom:file(P.GARC_PATH), "dump has no " .. P.GARC_PATH)))
+  local EM = V.require("ORASEffectModels")
+  local mf = rom:file(EM.GARC_PATH)
+  local mG = mf and G.open(rom, mf)
 
   -- 1. timelines
   local moves, wanted, firstTarget, wantedSound = {}, {}, {}, {}
+  local wantedModel, wantedUV = {}, {}
   for move = 1, S.MAX_MOVE do
     local seq = S.parse(seqG:member(S.memberForMove(move)) or "")
     if seq then
@@ -349,7 +380,7 @@ local function bake(onProgress)
       -- attach state per slot from 0x2F (effects) and 0x68 (sounds; side only)
       local attach = {}
       local hit, motion
-      local stage, sounds = {}, {}
+      local stage, sounds, models = {}, {}, {}
       local function readAttach(q)
         return { role = S.u32(q.args, 1), point = S.u32(q.args, 5),
                  off = { S.f32(q.args, 9), S.f32(q.args, 13), S.f32(q.args, 17) } }
@@ -373,9 +404,44 @@ local function bake(onProgress)
           if math.floor(id / 65536) == 13 then
             local vol = S.u32(r.args, 9)
             if vol > 127 then vol = 127 end
-            sounds[#sounds + 1] = { r.start, id % 65536, vol }
+            sounds[#sounds + 1] = soundPlace(S, recs, i, { r.start, id % 65536, vol })
             wantedSound[id % 65536] = true
           end
+        end
+        -- effect models (lib/ORASEffectModels.lua): 0x3F shows one, the
+        -- same slot's 0x43 / 0x49 / 0x47 / 0x52 / 0x89 place, size, turn and
+        -- scroll it
+        if r.op == 0x3F and #r.args >= 4 and mG and S.u32(r.args, 1) < mG.count then
+          local item = { r.start, r.finish, r.target, S.u32(r.args, 1) }
+          for j = i + 1, #recs do
+            local q = recs[j]
+            if q.start > r.finish then break end
+            if q.target == r.target then
+              if q.op == 0x3F then break end
+              local f0, f1 = q.start - r.start, q.finish - r.start
+              if q.op == 0x43 and #q.args >= 24 then
+                local a = readAttach(q)
+                if item.role == nil and f0 == 0 and f1 == 0 then
+                  item.role, item.point, item.off = a.role, a.point, a.off
+                else
+                  item.travel = item.travel or {}
+                  item.travel[#item.travel + 1] = { f0, f1, a.role, a.point, a.off, S.u32(q.args, 21) }
+                end
+              elseif q.op == 0x49 and #q.args >= 12 then
+                item.scale = item.scale or {}
+                item.scale[#item.scale + 1] = { f0, f1, S.f32(q.args, 1), S.f32(q.args, 5), S.f32(q.args, 9) }
+              elseif q.op == 0x47 and #q.args >= 12 then
+                item.rot = item.rot or {}
+                item.rot[#item.rot + 1] = { f0, f1, S.f32(q.args, 1), S.f32(q.args, 5), S.f32(q.args, 9) }
+              elseif (q.op == 0x52 or q.op == 0x89) and #q.args >= 4 and item.uv == nil then
+                local um = S.u32(q.args, 1)
+                if um < mG.count then item.uv = { f0, um }; wantedUV[um] = true end
+              end
+            end
+          end
+          if item.role == nil and attach[r.target] then item.role = attach[r.target].role end
+          models[#models + 1] = item
+          wantedModel[item[4]] = true
         end
         if r.op == 0x2B and #r.args >= 4 then
           local m = S.u32(r.args, 1)
@@ -419,9 +485,10 @@ local function bake(onProgress)
           end
         end
       end
-      if #list > 0 or #stage > 0 or motion or #sounds > 0 then
+      if #list > 0 or #stage > 0 or motion or #sounds > 0 or #models > 0 then
         moves[move] = { frames = seq.frames, fx = list, hit = hit, stage = #stage > 0 and stage or nil,
-                        motion = motion, sounds = #sounds > 0 and sounds or nil }
+                        motion = motion, sounds = #sounds > 0 and sounds or nil,
+                        models = #models > 0 and models or nil }
       end
     end
     if move % 25 == 0 then job.done = move; checkpoint() end
@@ -460,6 +527,59 @@ local function bake(onProgress)
     if onProgress and i % 100 == 0 then onProgress(i, #members) end
     checkpoint()
   end
+
+  -- 2b. effect models and their texture scrolls (lib/ORASEffectModels.lua)
+  local modelList, modelsBaked, modelsFailed = {}, {}, 0
+  for m in pairs(wantedModel) do modelList[#modelList + 1] = m end
+  table.sort(modelList)
+  job.stage, job.done, job.total = "models", 0, #modelList
+  local function writeTexture(name, w, h, img)
+    local key = ("%s_%dx%d"):format(name, w, h)
+    if not written[key] then
+      local okP, png = pcall(function() return img:encode("png"):getString() end)
+      if not okP then return nil end
+      mod.cache:write(E.ROOT .. "/tex/" .. key .. ".png", png)
+      written[key] = true
+    end
+    return key
+  end
+  for i, m in ipairs(modelList) do
+    local okB, data, why = pcall(EM.bakeModel, mG:member(m) or "", writeTexture)
+    if okB and data then
+      mod.cache:write(("%s/models/%d.lua"):format(E.ROOT, m), "return " .. literal(data) .. "\n")
+      modelsBaked[m] = true
+    else
+      modelsFailed = modelsFailed + 1
+      log("warn", "ORAS EFFECTS: model %d skipped (%s)", m, tostring(okB and why or data))
+    end
+    job.done = i
+    checkpoint()
+  end
+  local uvBaked = {}
+  for um in pairs(wantedUV) do
+    local okU, uv = pcall(EM.bakeUV, mG:member(um) or "")
+    if okU and uv then
+      mod.cache:write(("%s/uv/%d.lua"):format(E.ROOT, um), "return " .. literal(uv) .. "\n")
+      uvBaked[um] = true
+    end
+    checkpoint()
+  end
+  -- drop items whose model did not bake, and scrolls that did not
+  for _, entry in pairs(moves) do
+    if entry.models then
+      local keep = {}
+      for _, it in ipairs(entry.models) do
+        if modelsBaked[it[4]] then
+          if it.uv and not uvBaked[it.uv[2]] then it.uv = nil end
+          keep[#keep + 1] = it
+        end
+      end
+      entry.models = #keep > 0 and keep or nil
+    end
+  end
+  local nModels = 0
+  for _ in pairs(modelsBaked) do nModels = nModels + 1 end
+  log("info", "ORAS EFFECTS: %d effect models baked (%d left out, see warnings)", nModels, modelsFailed)
 
   -- 3. sounds: each battle sound the timelines use, rendered from the dump's
   -- sound archive (lib/ORASSound.lua) to snd/<k>.wav (16 kHz mono)

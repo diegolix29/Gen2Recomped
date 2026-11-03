@@ -305,10 +305,11 @@ end
 -- u' = u*m11 + v*m21 + m41, v' = u*m12 + v*m22 + m42.
 
 function H3D.uvTransform(d, at)
-  local kind = d:byte(at + 2)
-  local sx, sy = F(d, at + 4), F(d, at + 8)
-  local rot = F(d, at + 12)
-  local tx, ty = F(d, at + 16), F(d, at + 20)
+  return H3D.uvMatrix(d:byte(at + 2), F(d, at + 4), F(d, at + 8), F(d, at + 12), F(d, at + 16), F(d, at + 20))
+end
+
+-- the same matrix from its parts (ORAS effect models animate tx / ty)
+function H3D.uvMatrix(kind, sx, sy, rot, tx, ty)
   local ca, sa = math.cos(rot), math.sin(rot)
   local t = { m11 = sx * ca, m12 = sy * sa, m21 = sx * -sa, m22 = sy * ca,
               kind = kind, sx = sx, sy = sy, rot = rot, tx = tx, ty = ty }

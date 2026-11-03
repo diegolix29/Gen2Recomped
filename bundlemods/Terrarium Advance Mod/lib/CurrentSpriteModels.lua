@@ -1613,6 +1613,7 @@ local function startOrasMoveFx(context,side,moveId)
       return vnorm({b[1]-a[1],0,b[3]-a[3]})
     end,
     unit=orasUnit,
+    attackerSide=side,
   }
   local ok,id=pcall(player.start,tonumber(moveId),host,"csm")
   return ok and id or false

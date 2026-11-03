@@ -58,6 +58,25 @@ local function loadFx(m)
   return f or nil
 end
 
+local modelMemo, uvMemo = {}, {}
+local function loadModel(m)
+  local d = modelMemo[m]
+  if d == nil then
+    d = Effects().readLua(("%s/models/%d.lua"):format(Effects().ROOT, m)) or false
+    modelMemo[m] = d
+  end
+  return d or nil
+end
+local function loadUV(m)
+  local d = uvMemo[m]
+  if d == nil then
+    d = Effects().readLua(("%s/uv/%d.lua"):format(Effects().ROOT, m)) or false
+    uvMemo[m] = d
+  end
+  return d or nil
+end
+local function Models() return V.require("ORASEffectModels") end
+
 local function image(key)
   local img = images[key]
   if img ~= nil then return img or nil end
@@ -99,6 +118,10 @@ function Player.start(moveId, host, space)
   local run = { id = serial, move = tonumber(moveId), host = host, entry = entry, space = space or "csm",
                 frame = -1, acc = 0, next = 1, live = {} }
   table.sort(entry.fx, function(a, b) return a[1] < b[1] end)
+  if entry.models then
+    table.sort(entry.models, function(a, b) return a[1] < b[1] end)
+    run.models, run.nextModel = {}, 1
+  end
   local Stage = V.require("ORASStage")
   if Stage.has(entry) then run.stageEnd = Stage.length(entry) end
   -- sound cues, in frame order; the run lives until the last one has played
@@ -122,8 +145,9 @@ function Player.start(moveId, host, space)
     or (sounds > 0 and ("%d sound cues OFF (%s)"):format(sounds,
       (E.index() or {}).sounds ~= true and "not baked" or "ORAS FX SOUND is OFF"))
     or "no sounds"
-  Player.note("move %d (%s): started, %d particle files, %d stage records, %s, lands at frame %s",
-    run.move, run.space, #entry.fx, entry.stage and #entry.stage or 0, soundNote, tostring(run.hitFrame))
+  Player.note("move %d (%s): started, %d particle files, %d models, %d stage records, %s, lands at frame %s",
+    run.move, run.space, #entry.fx, entry.models and #entry.models or 0,
+    entry.stage and #entry.stage or 0, soundNote, tostring(run.hitFrame))
   return run.id
 end
 
@@ -182,8 +206,7 @@ Player.SOUND_BASE = 0.8
 local function sfxScale()
   local okG, Game = pcall(require, "src.core.Game")
   local opts = okG and Game and Game.save and Game.save.options
-  local level = opts and opts.sfxVol
-  if level == nil then level = 7 end
+  local level = tonumber(opts and opts.sfxVol) or 7
   return math.max(0, math.min(7, level)) / 7
 end
 
@@ -203,7 +226,16 @@ local function soundFor(k)
   return d or nil
 end
 
-function Player.playSound(k, vol)
+-- Pan: -1 left .. 1 right; a mono source sits on a circle around the
+-- listener (distance 1, so the engine's distance model leaves it at full
+-- volume), PAN_ANGLE degrees off centre at the screen's edge.
+Player.PAN_ANGLE = 70
+local function placeSource(src, pan)
+  local a = math.rad(math.max(-1, math.min(1, pan or 0)) * Player.PAN_ANGLE)
+  pcall(src.setPosition, src, math.sin(a), 0, -math.cos(a))
+end
+
+function Player.playSound(k, vol, pan)
   if not (love and love.audio) then return false end
   local okL, level = pcall(function() return Effects().soundLevel() end)
   level = okL and tonumber(level) or 100
@@ -217,15 +249,37 @@ function Player.playSound(k, vol)
   -- Mono sources are placed in 3D, and lib/SpatialAudio.lua moves the
   -- listener to the player's map cell (world pixels, silent past 160): a
   -- source left at the origin was never heard. Glue it to the listener.
+  -- Relative positions are in the listener's own frame (+x right, -z ahead).
   pcall(src.setRelative, src, true)
-  pcall(src.setPosition, src, 0, 0, 0)
+  pcall(src.setAttenuationDistances, src, 1, 1000)
+  placeSource(src, pan)
   pcall(src.play, src)
   playing[#playing + 1] = src
   for i = #playing, 1, -1 do
     local okP, live = pcall(playing[i].isPlaying, playing[i])
     if not (okP and live) and playing[i] ~= src then table.remove(playing, i) end
   end
-  return true
+  return src
+end
+
+-- Screen side of a cue's owner (0x68 who: 0 attacker, 1 target, 2 between):
+-- where the last draw saw that Pokemon (run.screenX), else the player's
+-- Pokemon on the left and the foe on the right.
+Player.DEFAULT_PAN = 0.5
+local function panOf(run, who)
+  if who == nil or who == 2 then
+    local a, d = run.screenX and run.screenX.attacker, run.screenX and run.screenX.defender
+    if who == 2 and a and d then return (a + d) / 2 end
+    return 0
+  end
+  local role = who == 0 and "attacker" or "defender"
+  local x = run.screenX and run.screenX[role]
+  if x then return x end
+  local side = run.host and run.host.attackerSide
+  if side ~= "player" and side ~= "enemy" then return 0 end
+  local attackerLeft = side == "player"
+  local left = (role == "attacker") == attackerLeft
+  return left and -Player.DEFAULT_PAN or Player.DEFAULT_PAN
 end
 
 -- an ORAS move with sounds is playing now (the cartridge's own move sound
@@ -254,14 +308,55 @@ local function stepRun(run)
     local list = run.entry.sounds
     while run.nextSound <= #list and list[run.nextSound][1] <= run.frame do
       local cue = list[run.nextSound]
-      pcall(Player.playSound, cue[2], cue[3])
+      local ok, src = pcall(Player.playSound, cue[2], cue[3], panOf(run, cue[4]))
+      -- a timed 0x68: the sound flies to the other side over that span
+      local tr = cue[5]
+      if ok and src and type(tr) == "table" and (tonumber(tr[2]) or 0) > 0 then
+        run.slides = run.slides or {}
+        run.slides[#run.slides + 1] = { src = src, f0 = run.frame + tr[1], f1 = run.frame + tr[2],
+                                         from = cue[4], to = tr[3] }
+      end
       run.nextSound = run.nextSound + 1
+    end
+    for i = #(run.slides or {}), 1, -1 do
+      local sl = run.slides[i]
+      local t = (run.frame - sl.f0) / math.max(1, sl.f1 - sl.f0)
+      t = math.max(0, math.min(1, t))
+      local p0, p1 = panOf(run, sl.from), panOf(run, sl.to)
+      placeSource(sl.src, p0 + (p1 - p0) * t)
+      if t >= 1 then table.remove(run.slides, i) end
     end
   end
   local list = run.entry.fx
   while run.next <= #list and list[run.next][1] <= run.frame do
     spawn(run, list[run.next])
     run.next = run.next + 1
+  end
+  -- effect models: shown from their record's start to its end
+  local mlist = run.entry.models
+  if mlist then
+    while run.nextModel <= #mlist and mlist[run.nextModel][1] <= run.frame do
+      local it = mlist[run.nextModel]
+      local data = loadModel(it[4])
+      if data then
+        local role = (it.role == 0 and "attacker") or (it.role == 1 and "defender")
+          or (tostring(data.name):find("_at_") and "attacker") or "defender"
+        run.models[#run.models + 1] = {
+          item = it, data = data, uv = it.uv and loadUV(it.uv[2]) or nil, age = 0,
+          stopAt = math.max(1, it[2] - it[1] + 1), role = role,
+          slot = POINT_SLOT[it.point or -1] or (role == "attacker" and "mouth" or "center"),
+          off = it.off, travel = it.travel,
+        }
+      else
+        Player.note("move %d: effect model %d not baked", run.move, it[4])
+      end
+      run.nextModel = run.nextModel + 1
+    end
+    for i = #run.models, 1, -1 do
+      local lm = run.models[i]
+      lm.age = lm.age + 1
+      if lm.age >= lm.stopAt then table.remove(run.models, i) end
+    end
   end
   local S = Sim()
   for i = #run.live, 1, -1 do
@@ -280,6 +375,7 @@ local function stepRun(run)
   -- actor moves / camera / stage tint (lib/ORASStage.lua) run to the
   -- timeline's end even when the particles are already gone
   if run.stageEnd and run.frame < run.stageEnd then return true end
+  if mlist and (run.nextModel <= #mlist or #run.models > 0) then return true end
   return run.next <= #list or #run.live > 0
 end
 
@@ -360,8 +456,11 @@ end
 
 local function roleName(r) return r == 0 and "attacker" or (r == 1 and "defender" or nil) end
 
--- one live particle file of one run
-local function drawLive(g, run, l, project)
+-- Where a live effect (particle file or model) sits now: its anchor (body
+-- point + offset, moved along its flights), the world units per cm and the
+-- effect basis (X right, Y up, Z toward the target). Returns toWorld(x, y, z)
+-- for effect-space cm, and the unit; nil when the side has no position.
+local function placement(run, l)
   local host = run.host
   local anchor = bodyPoint(host, l.role, l.slot)
   if not anchor then
@@ -410,6 +509,13 @@ local function drawLive(g, run, l, project)
   local function toWorld(x, y, z)
     return ax + (rx_ * x + fx_ * z) * unit, ay + y * unit, az + (rz_ * x + fz_ * z) * unit
   end
+  return toWorld, unit
+end
+
+-- one live particle file of one run
+local function drawLive(g, run, l, project)
+  local toWorld, unit = placement(run, l)
+  if not toWorld then return end
   local function scr(x, y, z)
     local ok, sx, sy = pcall(project, x, y, z)
     if ok and sx and sy then return sx, sy end
@@ -519,8 +625,20 @@ function Player.report(out)
       out[#out + 1] = ("    stage: %d records, runs to frame %d, last pose %s"):format(
         #(run.entry.stage or {}), run.stageEnd, tostring(run.stageNote))
       out[#out + 1] = ("    camera: %s"):format(tostring(run.camNote or "none (battle camera)"))
+      if run.entry.models then
+        local parts = {}
+        for _, lm in ipairs(run.models or {}) do
+          parts[#parts + 1] = ("%d %s age %d tris %s"):format(lm.item[4], lm.role, lm.age, tostring(lm.tris or "-"))
+        end
+        out[#out + 1] = ("    models: %d in timeline, %d shown, live: %s"):format(#run.entry.models,
+          (run.nextModel or 1) - 1, #parts > 0 and table.concat(parts, "; ") or "none")
+      end
       if run.soundsOn then
-        out[#out + 1] = ("    sounds: %d cues, %d played"):format(#run.entry.sounds, run.nextSound - 1)
+        local sx = run.screenX or {}
+        out[#out + 1] = ("    sounds: %d cues, %d played; pan attacker %s target %s (%s)"):format(
+          #run.entry.sounds, run.nextSound - 1, tostring(sx.attacker and ("%.2f"):format(sx.attacker) or "-"),
+          tostring(sx.defender and ("%.2f"):format(sx.defender) or "-"),
+          run.screenX and "seen on screen" or ("by side, attacker " .. tostring(run.host and run.host.attackerSide)))
       end
     end
     for _, l in ipairs(run.live) do
@@ -537,6 +655,25 @@ function Player.report(out)
 end
 
 -- returns true when something was drawn
+-- where each side stands on screen (-1 left .. 1 right), for sound pan
+local function noteScreenX(g, run, project)
+  local w
+  local cv = g.getCanvas and g.getCanvas()
+  if type(cv) == "table" and cv[1] then cv = cv[1] end
+  if cv and cv.getWidth then w = cv:getWidth() else w = g.getWidth() end
+  if not (w and w > 0) then return end
+  for _, role in ipairs({ "attacker", "defender" }) do
+    local p = bodyPoint(run.host, role, "center")
+    if p then
+      local sx = project(p[1], p[2], p[3])
+      if tonumber(sx) then
+        run.screenX = run.screenX or {}
+        run.screenX[role] = math.max(-1, math.min(1, sx / w * 2 - 1))
+      end
+    end
+  end
+end
+
 function Player.draw(project, space)
   space = space or "csm"
   if not Player.busy(space) then return false end
@@ -555,7 +692,16 @@ function Player.draw(project, space)
     -- offer to draw the same run
     if run.space == space and run.drawTick ~= tick then
       run.drawTick = tick
+      if run.soundsOn then pcall(noteScreenX, g, run, project) end
       run.drawnBy = Player.drawingVia or space
+      for _, lm in ipairs(run.models or {}) do
+        local toWorld = placement(run, lm)
+        if toWorld then
+          local ok, n = pcall(Models().draw, g, lm, lm.age + (run.acc or 0), toWorld, project, image)
+          if not ok then Player.lastError = tostring(n)
+          else drew = true; lm.tris = n end
+        end
+      end
       for _, l in ipairs(run.live) do
       local ok, err = pcall(drawLive, g, run, l, project)
       if not ok then Player.lastError = tostring(err) else drew = true end

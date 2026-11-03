@@ -429,7 +429,8 @@ function S.draw(canvas, pw, ph, vp)
     local cy = vp[5] * x + vp[6] * y + vp[7] * z + vp[8]
     local cw = vp[13] * x + vp[14] * y + vp[15] * z + vp[16]
     if cw <= 1e-6 then return nil end
-    return (cx / cw * 0.5 + 0.5) * pw, (cy / cw * 0.5 + 0.5) * ph
+    -- third value: view depth, for sorting effect model triangles
+    return (cx / cw * 0.5 + 0.5) * pw, (cy / cw * 0.5 + 0.5) * ph, cw
   end
   local P = Player()
   local okC, prev = pcall(g.getCanvas)
