@@ -27,9 +27,9 @@ local E = { ID = "oras_fx", LABEL = "ORAS EFFECTS" }
 
 E.ROOT = "oras/movefx"
 E.INDEX = E.ROOT .. "/index.lua"
-E.STAMP = "oras-fx=9"   -- 2: per-effect scale (0x34) and side (0x2F); 3: body point + offset, hit cue (0x0C);
+E.STAMP = "oras-fx=12"   -- 2: per-effect scale (0x34) and side (0x2F); 3: body point + offset, hit cue (0x0C);
                         -- 5: stage records (actor moves / scale, stage tint, camera); 6: body motion kind (0x0D);
-                        -- 7: move sounds; 8: sound placement (0x68) for pan; 9: effect models (0x3F)
+                        -- 7: move sounds; 8: sound placement (0x68) for pan; 9: effect models (0x3F); 10: model sprays (0x7B); 11: model motions (0x50); 12: aim 0x32/0x46, slot turn 0x35
 E.SETTING = E.ROOT .. "/battle.txt"
 E.IMPORT_ID = "pokemon_oras"
 
@@ -371,7 +371,7 @@ local function bake(onProgress)
 
   -- 1. timelines
   local moves, wanted, firstTarget, wantedSound = {}, {}, {}, {}
-  local wantedModel, wantedUV = {}, {}
+  local wantedModel, wantedUV, wantedMotion = {}, {}, {}
   for move = 1, S.MAX_MOVE do
     local seq = S.parse(seqG:member(S.memberForMove(move)) or "")
     if seq then
@@ -380,7 +380,7 @@ local function bake(onProgress)
       -- attach state per slot from 0x2F (effects) and 0x68 (sounds; side only)
       local attach = {}
       local hit, motion
-      local stage, sounds, models = {}, {}, {}
+      local stage, sounds, models, sprays = {}, {}, {}, {}
       local function readAttach(q)
         return { role = S.u32(q.args, 1), point = S.u32(q.args, 5),
                  off = { S.f32(q.args, 9), S.f32(q.args, 13), S.f32(q.args, 17) } }
@@ -427,12 +427,24 @@ local function bake(onProgress)
                   item.travel = item.travel or {}
                   item.travel[#item.travel + 1] = { f0, f1, a.role, a.point, a.off, S.u32(q.args, 21) }
                 end
+              elseif q.op == 0x46 and #q.args >= 36 and item.role == nil and f0 == 0 then
+                -- the model version of 0x32: at one body point, aimed at another
+                item.role, item.point = S.u32(q.args, 1), S.u32(q.args, 5)
+                item.aim = { S.u32(q.args, 9), S.u32(q.args, 13) }
+                item.off = { S.f32(q.args, 17), S.f32(q.args, 21), S.f32(q.args, 25) }
               elseif q.op == 0x49 and #q.args >= 12 then
                 item.scale = item.scale or {}
                 item.scale[#item.scale + 1] = { f0, f1, S.f32(q.args, 1), S.f32(q.args, 5), S.f32(q.args, 9) }
               elseif q.op == 0x47 and #q.args >= 12 then
                 item.rot = item.rot or {}
                 item.rot[#item.rot + 1] = { f0, f1, S.f32(q.args, 1), S.f32(q.args, 5), S.f32(q.args, 9) }
+              elseif q.op == 0x50 and #q.args >= 12 and item.motion == nil then
+                -- the model's own motion (bones), from this frame
+                local mm = S.u32(q.args, 1)
+                if mm < mG.count then
+                  item.motion = { f0, mm, S.u32(q.args, 9) }
+                  wantedMotion[mm .. "_" .. item[4]] = { mm, item[4] }
+                end
               elseif (q.op == 0x52 or q.op == 0x89) and #q.args >= 4 and item.uv == nil then
                 local um = S.u32(q.args, 1)
                 if um < mG.count then item.uv = { f0, um }; wantedUV[um] = true end
@@ -442,6 +454,17 @@ local function bake(onProgress)
           if item.role == nil and attach[r.target] then item.role = attach[r.target].role end
           models[#models + 1] = item
           wantedModel[item[4]] = true
+        end
+        -- model sprays (0x7B and its setup records), lib/ORASEffectModels.lua
+        if r.op == 0x7B and mG and #r.args >= 4 and S.u32(r.args, 1) < mG.count then
+          local sp = EM.readSpray(S, recs, i, readAttach)
+          if sp then
+            if sp.role == nil and attach[r.target] then sp.role = attach[r.target].role end
+            if sp.uv and sp.uv[2] >= mG.count then sp.uv = nil end
+            if sp.uv then wantedUV[sp.uv[2]] = true end
+            sprays[#sprays + 1] = sp
+            wantedModel[sp[4]] = true
+          end
         end
         if r.op == 0x2B and #r.args >= 4 then
           local m = S.u32(r.args, 1)
@@ -471,6 +494,19 @@ local function bake(onProgress)
                   item.scale = item.scale or {}
                   item.scale[#item.scale + 1] = { q.start - r.start,
                     S.f32(q.args, 1), S.f32(q.args, 5), S.f32(q.args, 9) }
+                elseif q.op == 0x32 and #q.args >= 36 and item.role == nil and q.start == r.start then
+                  -- placed at one body point, aimed at another (u32 who, point,
+                  -- aim who, aim point, vec3 offset cm, ...): Hyper Beam's bars
+                  -- from the attacker's mouth into the target
+                  item.role, item.point = S.u32(q.args, 1), S.u32(q.args, 5)
+                  item.aim = { S.u32(q.args, 9), S.u32(q.args, 13) }
+                  item.off = { S.f32(q.args, 17), S.f32(q.args, 21), S.f32(q.args, 25) }
+                elseif q.op == 0x35 and #q.args >= 12 then
+                  -- the slot turned (vec3 degrees): Hydro Pump's jet sits on
+                  -- the target turned 180 to face the attacker
+                  item.rot = item.rot or {}
+                  item.rot[#item.rot + 1] = { q.start - r.start, q.finish - r.start,
+                    S.f32(q.args, 1), S.f32(q.args, 5), S.f32(q.args, 9) }
                 end
               end
             end
@@ -485,10 +521,11 @@ local function bake(onProgress)
           end
         end
       end
-      if #list > 0 or #stage > 0 or motion or #sounds > 0 or #models > 0 then
+      if #list > 0 or #stage > 0 or motion or #sounds > 0 or #models > 0 or #sprays > 0 then
         moves[move] = { frames = seq.frames, fx = list, hit = hit, stage = #stage > 0 and stage or nil,
                         motion = motion, sounds = #sounds > 0 and sounds or nil,
-                        models = #models > 0 and models or nil }
+                        models = #models > 0 and models or nil,
+                        sprays = #sprays > 0 and sprays or nil }
       end
     end
     if move % 25 == 0 then job.done = move; checkpoint() end
@@ -566,17 +603,40 @@ local function bake(onProgress)
   end
   -- drop items whose model did not bake, and scrolls that did not
   for _, entry in pairs(moves) do
-    if entry.models then
-      local keep = {}
-      for _, it in ipairs(entry.models) do
-        if modelsBaked[it[4]] then
-          if it.uv and not uvBaked[it.uv[2]] then it.uv = nil end
-          keep[#keep + 1] = it
+    for _, field in ipairs({ "models", "sprays" }) do
+      if entry[field] then
+        local keep = {}
+        for _, it in ipairs(entry[field]) do
+          if modelsBaked[it[4]] then
+            if it.uv and not uvBaked[it.uv[2]] then it.uv = nil end
+            keep[#keep + 1] = it
+          end
         end
+        entry[field] = #keep > 0 and keep or nil
       end
-      entry.models = #keep > 0 and keep or nil
     end
   end
+  -- model motions (0x50): bone matrices per frame, per (motion, model)
+  local motionBaked, nMotions = {}, 0
+  for key, pair in pairs(wantedMotion) do
+    if modelsBaked[pair[2]] then
+      local okM, mo, why = pcall(EM.bakeMotion, mG:member(pair[2]) or "", mG:member(pair[1]) or "")
+      if okM and mo then
+        mod.cache:write(("%s/motions/%s.lua"):format(E.ROOT, key), "return " .. literal(mo) .. "\n")
+        motionBaked[key] = true
+        nMotions = nMotions + 1
+      else
+        log("warn", "ORAS EFFECTS: motion %d on model %d skipped (%s)", pair[1], pair[2], tostring(okM and why or mo))
+      end
+    end
+    checkpoint()
+  end
+  for _, entry in pairs(moves) do
+    for _, it in ipairs(entry.models or {}) do
+      if it.motion and not motionBaked[it.motion[2] .. "_" .. it[4]] then it.motion = nil end
+    end
+  end
+  log("info", "ORAS EFFECTS: %d model motions baked", nMotions)
   local nModels = 0
   for _ in pairs(modelsBaked) do nModels = nModels + 1 end
   log("info", "ORAS EFFECTS: %d effect models baked (%d left out, see warnings)", nModels, modelsFailed)

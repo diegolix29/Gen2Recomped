@@ -202,6 +202,10 @@ local function newParticle(e, em, b, rand)
   local rot = em.rotate
   p.x, p.y, p.z = rotXYZ(rot, p.x, p.y, p.z)
   p.vx, p.vy, p.vz = rotXYZ(rot, p.vx, p.vy, p.vz)
+  -- the emitter's own up: upright quads that do not move stand along it
+  -- (Hyper Beam's wind streaks and Hydro Pump's water lines lie along the
+  -- beam because their emitters are turned 90 deg on X)
+  p.ax, p.ay, p.az = rotXYZ(rot, 0, 1, 0)
   p.x, p.y, p.z = p.x + t[1], p.y + t[2], p.z + t[3]
   return p
 end
@@ -300,7 +304,7 @@ function Sim.quads(e)
     local u0 = (frame % cols) * su
     local v0 = math.floor(frame / cols) * sv
     out[#out + 1] = {
-      x = p.x, y = p.y, z = p.z, vx = p.vx, vy = p.vy, vz = p.vz,
+      x = p.x, y = p.y, z = p.z, vx = p.vx, vy = p.vy, vz = p.vz, axis = { p.ax, p.ay, p.az },
       w = p.sx * p.lsx, h = p.sy * p.lsy,
       rot = { p.rx, p.ry, p.rz }, orient = b.orient, pivot = b.pivot,
       r = p.r, g = p.g, b = p.bl, a = math.max(0, math.min(1, p.a)),

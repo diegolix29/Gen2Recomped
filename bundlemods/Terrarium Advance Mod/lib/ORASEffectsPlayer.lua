@@ -75,6 +75,15 @@ local function loadUV(m)
   end
   return d or nil
 end
+local motionMemo = {}
+local function loadMotion(key)
+  local d = motionMemo[key]
+  if d == nil then
+    d = Effects().readLua(("%s/motions/%s.lua"):format(Effects().ROOT, key)) or false
+    motionMemo[key] = d
+  end
+  return d or nil
+end
 local function Models() return V.require("ORASEffectModels") end
 
 local function image(key)
@@ -122,6 +131,10 @@ function Player.start(moveId, host, space)
     table.sort(entry.models, function(a, b) return a[1] < b[1] end)
     run.models, run.nextModel = {}, 1
   end
+  if entry.sprays then
+    table.sort(entry.sprays, function(a, b) return a[1] < b[1] end)
+    run.sprays, run.nextSpray = {}, 1
+  end
   local Stage = V.require("ORASStage")
   if Stage.has(entry) then run.stageEnd = Stage.length(entry) end
   -- sound cues, in frame order; the run lives until the last one has played
@@ -145,8 +158,8 @@ function Player.start(moveId, host, space)
     or (sounds > 0 and ("%d sound cues OFF (%s)"):format(sounds,
       (E.index() or {}).sounds ~= true and "not baked" or "ORAS FX SOUND is OFF"))
     or "no sounds"
-  Player.note("move %d (%s): started, %d particle files, %d models, %d stage records, %s, lands at frame %s",
-    run.move, run.space, #entry.fx, entry.models and #entry.models or 0,
+  Player.note("move %d (%s): started, %d particle files, %d models, %d sprays, %d stage records, %s, lands at frame %s",
+    run.move, run.space, #entry.fx, entry.models and #entry.models or 0, entry.sprays and #entry.sprays or 0,
     entry.stage and #entry.stage or 0, soundNote, tostring(run.hitFrame))
   return run.id
 end
@@ -188,6 +201,7 @@ local function spawn(run, rec)
     sim = Sim().new(fx, { seed = run.id * 977 + m }),
     stopAt = math.max(1, e - s + 1), age = 0,
     scales = rec.scale, off = rec.off, travel = rec.travel, point = rec.point,
+    aim = rec.aim, rots = rec.rot,
   }
 end
 
@@ -343,9 +357,10 @@ local function stepRun(run)
           or (tostring(data.name):find("_at_") and "attacker") or "defender"
         run.models[#run.models + 1] = {
           item = it, data = data, uv = it.uv and loadUV(it.uv[2]) or nil, age = 0,
+          motion = it.motion and loadMotion(it.motion[2] .. "_" .. it[4]) or nil,
           stopAt = math.max(1, it[2] - it[1] + 1), role = role,
           slot = POINT_SLOT[it.point or -1] or (role == "attacker" and "mouth" or "center"),
-          off = it.off, travel = it.travel,
+          off = it.off, travel = it.travel, aim = it.aim,
         }
       else
         Player.note("move %d: effect model %d not baked", run.move, it[4])
@@ -372,10 +387,35 @@ local function stepRun(run)
     if l.age >= l.stopAt then S.stopEmitting(l.sim) end
     if S.done(l.sim) or l.age > 600 then table.remove(run.live, i) end
   end
+  -- model sprays (0x7B): copies launched, falling and bouncing
+  local slist = run.entry.sprays
+  if slist then
+    local EM = Models()
+    while run.nextSpray <= #slist and slist[run.nextSpray][1] <= run.frame do
+      local it = slist[run.nextSpray]
+      local data = loadModel(it[4])
+      if data then
+        local sp = EM.newSpray(it, data, it.uv and loadUV(it.uv[2]) or nil, run.id * 7919 + run.nextSpray)
+        sp.role = (it.role == 0 and "attacker") or (it.role == 1 and "defender")
+          or (tostring(data.name):find("_at_") and "attacker") or "defender"
+        sp.slot = POINT_SLOT[it.point or -1] or "center"
+        sp.off = it.off
+        run.sprays[#run.sprays + 1] = sp
+      else
+        Player.note("move %d: spray model %d not baked", run.move, it[4])
+      end
+      run.nextSpray = run.nextSpray + 1
+    end
+    for i = #run.sprays, 1, -1 do
+      local sp = run.sprays[i]
+      if not EM.stepSpray(sp, sp.floorY) then table.remove(run.sprays, i) end
+    end
+  end
   -- actor moves / camera / stage tint (lib/ORASStage.lua) run to the
   -- timeline's end even when the particles are already gone
   if run.stageEnd and run.frame < run.stageEnd then return true end
   if mlist and (run.nextModel <= #mlist or #run.models > 0) then return true end
+  if slist and (run.nextSpray <= #slist or #run.sprays > 0) then return true end
   return run.next <= #list or #run.live > 0
 end
 
@@ -460,6 +500,7 @@ local function roleName(r) return r == 0 and "attacker" or (r == 1 and "defender
 -- point + offset, moved along its flights), the world units per cm and the
 -- effect basis (X right, Y up, Z toward the target). Returns toWorld(x, y, z)
 -- for effect-space cm, and the unit; nil when the side has no position.
+Player.AIM_AXIS = "+z"
 local function placement(run, l)
   local host = run.host
   local anchor = bodyPoint(host, l.role, l.slot)
@@ -476,8 +517,11 @@ local function placement(run, l)
   l.lastAnchor, l.lastUnit = anchor, unit
   local okF, fwd = pcall(host.forward)
   fwd = okF and type(fwd) == "table" and fwd or { 0, 0, 1 }
-  -- effect basis: X right, Y up, Z forward (toward the target)
+  -- effect basis: X right, Y up, Z forward -- toward the OTHER side, as ORAS
+  -- attaches effects to that Pokemon's own body (and as its cameras' side
+  -- frames): an effect on the target faces the attacker
   local fx_, fz_ = fwd[1] or 0, fwd[3] or 1
+  if l.role == "defender" then fx_, fz_ = -fx_, -fz_ end
   local fl = math.sqrt(fx_ * fx_ + fz_ * fz_)
   if fl < 1e-6 then fx_, fz_, fl = 0, 1, 1 end
   fx_, fz_ = fx_ / fl, fz_ / fl
@@ -506,10 +550,62 @@ local function placement(run, l)
       end
     end
   end
-  local function toWorld(x, y, z)
-    return ax + (rx_ * x + fx_ * z) * unit, ay + y * unit, az + (rz_ * x + fz_ * z) * unit
+  -- basis: right R, up U, forward F (default: level, toward the target)
+  local Rx, Ry, Rz, Ux, Uy, Uz, Fx, Fy, Fz = rx_, 0, rz_, 0, 1, 0, fx_, 0, fz_
+  -- aimed (0x32 / 0x46): forward from the anchor at another body point,
+  -- tilted too -- a beam from the attacker's mouth into the target
+  if l.aim then
+    local dest = bodyPoint(host, roleName(l.aim[1]) or l.role, POINT_SLOT[l.aim[2] or -1] or "center")
+    if dest then
+      local dx, dy, dz = dest[1] - ax, dest[2] - ay, dest[3] - az
+      local dl = math.sqrt(dx * dx + dy * dy + dz * dz)
+      if dl > 1e-6 then
+        local ax_, ay_, az_ = dx / dl, dy / dl, dz / dl
+        -- which local axis ORAS points at the aim point (Player.AIM_AXIS)
+        local mode = Player.AIM_AXIS
+        local sgn = (mode == "-z" or mode == "-y") and -1 or 1
+        local d1, d2, d3 = ax_ * sgn, ay_ * sgn, az_ * sgn
+        if mode == "+y" or mode == "-y" then
+          -- local up along the aim; forward stays level, turned to fit
+          Ux, Uy, Uz = d1, d2, d3
+          local hl = math.sqrt(d1 * d1 + d3 * d3)
+          if hl > 1e-6 then
+            Rx, Ry, Rz = d3 / hl, 0, -d1 / hl
+            Fx, Fy, Fz = Ry * Uz - Rz * Uy, Rz * Ux - Rx * Uz, Rx * Uy - Ry * Ux
+          end
+        else
+          Fx, Fy, Fz = d1, d2, d3
+          local hl = math.sqrt(Fx * Fx + Fz * Fz)
+          if hl > 1e-6 then
+            Rx, Ry, Rz = Fz / hl, 0, -Fx / hl            -- right = up x forward
+            Ux, Uy, Uz = Fy * Rz - Fz * Ry, Fz * Rx - Fx * Rz, Fx * Ry - Fy * Rx   -- up = forward x right
+          end
+        end
+      end
+    end
   end
-  return toWorld, unit
+  -- the slot's own turn (0x35, degrees), keyed like the scale
+  local qx, qy, qz
+  if l.rots then
+    local age = l.age + (run.acc or 0)
+    local x, y, z = 0, 0, 0
+    for _, k in ipairs(l.rots) do
+      if age < k[1] then break end
+      local span = k[2] - k[1]
+      if span <= 0 or age >= k[2] then x, y, z = k[3], k[4], k[5]
+      else
+        local u = (age - k[1]) / span
+        x, y, z = x + (k[3] - x) * u, y + (k[4] - y) * u, z + (k[5] - z) * u
+      end
+    end
+    if x ~= 0 or y ~= 0 or z ~= 0 then qx, qy, qz = math.rad(x), math.rad(y), math.rad(z) end
+  end
+  local function toWorld(x, y, z)
+    if qx then x, y, z = rotate(qx, qy, qz, x, y, z) end
+    return ax + (Rx * x + Ux * y + Fx * z) * unit, ay + (Ry * x + Uy * y + Fy * z) * unit,
+           az + (Rz * x + Uz * y + Fz * z) * unit
+  end
+  return toWorld, unit, ay
 end
 
 -- one live particle file of one run
@@ -576,8 +672,17 @@ local function drawLive(g, run, l, project)
                 if dl > 1e-6 then ex, ey = dx / dl, dy / dl else ex, ey = upx / ppu, upy / ppu end
                 rx, ry = -ey, ex
               elseif q.orient == "upright" then
-                ex, ey = upx / ppu, upy / ppu           -- screen up
-                rx, ry = -ey, ex                        -- screen right
+                -- still: along the emitter's own up (screen up when that
+                -- points at the camera)
+                ex, ey = upx / ppu, upy / ppu
+                local a = q.axis
+                if a and (math.abs(a[1]) > 1e-3 or math.abs(a[3]) > 1e-3) then
+                  local tx, ty = scr(toWorld(q.x + a[1], q.y + a[2], q.z + a[3]))
+                  local dx, dy = (tx or cx) - cx, (ty or cy) - cy
+                  local dl = math.sqrt(dx * dx + dy * dy)
+                  if dl > 1e-6 then ex, ey = dx / dl, dy / dl end
+                end
+                rx, ry = -ey, ex
               else
                 local c, s = math.cos(q.rot[3]), math.sin(q.rot[3])
                 rx, ry = c, s                           -- screen right, rotated
@@ -628,10 +733,20 @@ function Player.report(out)
       if run.entry.models then
         local parts = {}
         for _, lm in ipairs(run.models or {}) do
-          parts[#parts + 1] = ("%d %s age %d tris %s"):format(lm.item[4], lm.role, lm.age, tostring(lm.tris or "-"))
+          parts[#parts + 1] = ("%d %s age %d tris %s%s"):format(lm.item[4], lm.role, lm.age, tostring(lm.tris or "-"),
+            lm.item.motion and (" motion %d%s"):format(lm.item.motion[2], lm.motion and "" or " (not loaded)") or "")
         end
         out[#out + 1] = ("    models: %d in timeline, %d shown, live: %s"):format(#run.entry.models,
           (run.nextModel or 1) - 1, #parts > 0 and table.concat(parts, "; ") or "none")
+      end
+      if run.entry.sprays then
+        local parts = {}
+        for _, sp in ipairs(run.sprays or {}) do
+          parts[#parts + 1] = ("%d %s age %d copies %d tris %s floor %s"):format(sp.item[4], sp.role, sp.age,
+            #sp.copies, tostring(sp.tris or "-"), sp.floorY and ("%.0f"):format(sp.floorY) or "-")
+        end
+        out[#out + 1] = ("    sprays: %d in timeline, %d started, live: %s"):format(#run.entry.sprays,
+          (run.nextSpray or 1) - 1, #parts > 0 and table.concat(parts, "; ") or "none")
       end
       if run.soundsOn then
         local sx = run.screenX or {}
@@ -700,6 +815,17 @@ function Player.draw(project, space)
           local ok, n = pcall(Models().draw, g, lm, lm.age + (run.acc or 0), toWorld, project, image)
           if not ok then Player.lastError = tostring(n)
           else drew = true; lm.tris = n end
+        end
+      end
+      for _, sp in ipairs(run.sprays or {}) do
+        local toWorld, unit, ay = placement(run, sp)
+        if toWorld then
+          -- the ground under that side, in the spray's cm (for bounces)
+          local feet = bodyPoint(run.host, sp.role, "origin")
+          if feet and unit and unit > 0 then sp.floorY = (feet[2] - ay) / unit end
+          local ok, n = pcall(Models().drawSpray, g, sp, toWorld, project, image)
+          if not ok then Player.lastError = tostring(n)
+          else drew = true; sp.tris = n end
         end
       end
       for _, l in ipairs(run.live) do

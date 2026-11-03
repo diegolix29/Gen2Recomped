@@ -12,6 +12,8 @@
 --   0x47  rotation vec3 in degrees (+ u32); a timed one turns to it
 --   0x52 / 0x89  texture scroll: u32 member of a BCH holding a material
 --         animation (texture 0 translation) for the model's material
+--   0x50  motion: u32 member (a GF motion pack, lib/GF1Motion.lua, bones by
+--         name), u32 ?, u32 loop; starts at its record's frame
 --
 -- Bake output (mod cache oras/movefx/):
 --   models/<m>.lua  { name, meshes = { { tex, blend, wrapU, wrapV, mat,
@@ -19,9 +21,11 @@
 --                     v = { x, y, z, u, v, [r, g, b, a] ... }, idx = {...} } } }
 --                   positions in cm, bind pose (rigid bones applied), raw UVs
 --   uv/<m>.lua      { frames, mats = { [material] = { x = curve|n, y = curve|n } } }
+--   motions/<motion>_<model>.lua  { frames, bones = { [bone] = 12 floats per frame } }
+--                   (0x50; mesh.bone[vertex] names the bone each vertex follows)
 --   tex/<key>.png   shared with the particles
 --
--- Not done yet: model emitters (0x7B), model motions (0x50), stage-sized
+-- Not done yet: stage-sized
 -- models (MAX_SPAN, skipped at bake), material
 -- constant colours / fades, depth against the Pokemon.
 
@@ -92,7 +96,7 @@ function M.bakeModel(raw, writeTexture)
     return keys[name] or nil
   end
   local out = { name = models[1].name, meshes = {} }
-  for _, model in ipairs(models) do
+  for modelIndex, model in ipairs(models) do
     local mats = {}
     for i, mt in ipairs(model.materials) do
       local regs = fragmentRegs(d, h, mt.paramsAt)
@@ -111,7 +115,22 @@ function M.bakeModel(raw, writeTexture)
         local bind = H.bindPose(model, mesh)
         local colors = mesh.vertices[1] and mesh.vertices[1].color ~= nil
         local v, idx = {}, {}
+        -- the bone each vertex follows (first model only: 0x50 motions pose
+        -- it); smooth vertices take their heaviest bone
+        local skin = modelIndex == 1 and #model.bones > 1 and H.skinning(model, mesh) or nil
+        local vbone = skin and {} or nil
         for i, b in ipairs(bind) do
+          if vbone then
+            local rec = skin[i] or {}
+            local bone = rec.rigid
+            if not bone and rec.bones then
+              local best = -1
+              for k, w in ipairs(rec.weights or {}) do
+                if w > best and rec.bones[k] then best, bone = w, rec.bones[k] end
+              end
+            end
+            vbone[i] = bone or 1
+          end
           local raw0 = mesh.vertices[i].uv0 or { 0, 0 }
           local p = b.position
           v[#v + 1], v[#v + 2], v[#v + 3] = p[1], p[2], p[3]
@@ -127,7 +146,7 @@ function M.bakeModel(raw, writeTexture)
         if #idx >= 3 then
           out.meshes[#out.meshes + 1] = {
             tex = mat.tex, blend = mat.blend, cutout = mat.cutout, wrapU = mat.wrapU, wrapV = mat.wrapV,
-            mat = mat.mat, uvt = mat.uvt, colors = colors or nil, v = v, idx = idx,
+            mat = mat.mat, uvt = mat.uvt, colors = colors or nil, v = v, idx = idx, bone = vbone,
           }
         end
       end
@@ -176,6 +195,101 @@ function M.bakeUV(raw)
   if next(out.mats) == nil then return nil end
   return out
 end
+
+-- A 0x50 motion (GF motion pack, lib/GF1Motion.lua) on one model -> per
+-- frame skin matrices (world * inverse bind, 3x4 row-major) of the bones it
+-- moves: { frames, bones = { [model bone] = { 12 per frame ... } } }, or nil.
+M.MOTION_EPS = 1e-4
+function M.bakeMotion(rawModel, rawMotion)
+  local B, H, GF = V.require("BCH"), H3D(), V.require("GF1Motion")
+  local h = B.header(rawModel)
+  if not h then return nil, "model is not BCH" end
+  local d = B.relocate(rawModel, h)
+  local model = H.models(d, h)[1]
+  if not model then return nil, "no model" end
+  local okP, skeleton, motions = pcall(GF.readPack, rawMotion)
+  if not okP then return nil, "motion pack: " .. tostring(skeleton) end
+  local motion
+  for i = 0, 15 do if motions[i] then motion = motions[i]; break end end
+  if not motion then return nil, "pack has no motion" end
+  local names = {}
+  for i, b in ipairs(skeleton) do names[i] = b.name end
+  local pose = H.poser(model, GF.sample, names)
+  local frames = math.max(1, motion.frames)
+  -- size guard: posed vertices against the bind pose. Constrict's vine
+  -- (model 430: a 0.01-scaled root over x100 joints whose root scale the
+  -- motion grows to 1) comes out 36x too big -- a rig not understood yet,
+  -- so it stays in its bind pose rather than fill the screen.
+  local verts = {}
+  for _, mesh in ipairs(model.meshes) do
+    local bind, skinRec = H.bindPose(model, mesh), H.skinning(model, mesh)
+    for i, b in ipairs(bind) do
+      local rec = skinRec[i] or {}
+      local bone = rec.rigid
+      if not bone and rec.bones then
+        local best = -1
+        for k, w in ipairs(rec.weights or {}) do if w > best and rec.bones[k] then best, bone = w, rec.bones[k] end end
+      end
+      verts[#verts + 1] = { b.position[1], b.position[2], b.position[3], bone or 1 }
+    end
+  end
+  local function span(skin)
+    local lo, hi = { math.huge, math.huge, math.huge }, { -math.huge, -math.huge, -math.huge }
+    for _, q in ipairs(verts) do
+      local x, y, z = q[1], q[2], q[3]
+      local m = skin and skin[q[4]]
+      if m then x, y, z = m[1] * x + m[2] * y + m[3] * z + m[4], m[5] * x + m[6] * y + m[7] * z + m[8],
+                          m[9] * x + m[10] * y + m[11] * z + m[12] end
+      lo[1], lo[2], lo[3] = math.min(lo[1], x), math.min(lo[2], y), math.min(lo[3], z)
+      hi[1], hi[2], hi[3] = math.max(hi[1], x), math.max(hi[2], y), math.max(hi[3], z)
+    end
+    return math.max(hi[1] - lo[1], hi[2] - lo[2], hi[3] - lo[3])
+  end
+  local bindSpan = span(nil)
+  local tracks, moving = {}, {}
+  for f = 0, frames do
+    local skin = pose(motion, f)
+    local s = span(skin)
+    if s > bindSpan * 4 + 100 then
+      return nil, ("posed size %.0f cm at frame %d against %.0f cm at rest"):format(s, f, bindSpan)
+    end
+    for b, m in ipairs(skin) do
+      local t = tracks[b] or {}
+      tracks[b] = t
+      local row = { m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11], m[12] }
+      local id = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0 }
+      for k = 1, 12 do
+        t[#t + 1] = row[k]
+        local tol = (k == 4 or k == 8 or k == 12) and 0.05 or M.MOTION_EPS
+        if math.abs(row[k] - id[k]) > tol then moving[b] = true end
+      end
+    end
+  end
+  local out = { frames = frames, bones = {} }
+  for b in pairs(moving) do out.bones[b] = tracks[b] end
+  if next(out.bones) == nil then return nil, "motion moves nothing" end
+  return out
+end
+
+-- skin matrix of bone `b` at frame f (lerped between baked frames)
+local function motionMatrix(mo, b, f)
+  local t = mo.bones[b]
+  if not t then return nil end
+  local n = mo.frames
+  if f <= 0 then f = 0 elseif f >= n then f = n end
+  local i = math.floor(f)
+  local u = f - i
+  local a = i * 12
+  if u < 1e-4 or i >= n then
+    return t[a + 1], t[a + 2], t[a + 3], t[a + 4], t[a + 5], t[a + 6],
+           t[a + 7], t[a + 8], t[a + 9], t[a + 10], t[a + 11], t[a + 12]
+  end
+  local c = a + 12
+  local r = {}
+  for k = 1, 12 do r[k] = t[a + k] + (t[c + k] - t[a + k]) * u end
+  return unpack(r)
+end
+M.motionMatrix = motionMatrix
 
 -- ------------------------------------------------------------- per frame
 
@@ -240,6 +354,25 @@ M.rotate = rotate
 function M.draw(g, lm, age, toWorld, project, image)
   local sx, sy, sz, rx, ry, rz = M.pose(lm.item, age)
   local uvAge = lm.item.uv and (age - lm.item.uv[1]) or nil
+  -- 0x50 motion: from its record's frame, looped when its flag says so,
+  -- else held on the last frame (before it starts: the bind pose)
+  local mo, mf = lm.motion, nil
+  local mi = lm.item.motion
+  if mo and mi and age >= mi[1] then
+    mf = age - mi[1]
+    if mi[3] == 1 and mo.frames > 0 then mf = mf % mo.frames end
+  end
+  return M.drawPosed(g, lm, { sx, sy, sz, rx, ry, rz, 0, 0, 0, mf and mo or nil, mf }, uvAge,
+    toWorld, project, image)
+end
+
+-- One copy of lm.data at pose = { sx, sy, sz, rx, ry, rz (radians), tx, ty,
+-- tz (effect cm) }; uvAge = frames into its texture scroll (or nil). The love
+-- meshes are cached on lm and reused copy after copy.
+function M.drawPosed(g, lm, pose, uvAge, toWorld, project, image)
+  local sx, sy, sz, rx, ry, rz = pose[1], pose[2], pose[3], pose[4], pose[5], pose[6]
+  local tx, ty, tz = pose[7] or 0, pose[8] or 0, pose[9] or 0
+  local mo, mf = pose[10], pose[11]
   local drawn = 0
   lm.meshes = lm.meshes or {}
   for mi, mesh in ipairs(lm.data.meshes) do
@@ -250,10 +383,25 @@ function M.draw(g, lm, age, toWorld, project, image)
       local verts, depth, ok = {}, {}, true
       local t = M.uvMatrix(mesh, lm.uv, uvAge and math.max(0, uvAge) or nil)
       local v = mesh.v
+      -- this frame's bone matrices (0x50 motion), one per bone used
+      local mats
+      if mo and mf and mesh.bone then
+        mats = {}
+        for _, bone in ipairs(mesh.bone) do
+          if mats[bone] == nil then mats[bone] = { motionMatrix(mo, bone, mf) } end
+        end
+      end
       for i = 0, n - 1 do
         local b = i * stride
-        local x, y, z = rotate(rx, ry, rz, v[b + 1] * sx, v[b + 2] * sy, v[b + 3] * sz)
-        local okP, px, py, pd = pcall(project, toWorld(x, y, z))
+        local x0, y0, z0 = v[b + 1], v[b + 2], v[b + 3]
+        local m = mats and mats[mesh.bone[i + 1]]
+        if m and m[1] then
+          x0, y0, z0 = m[1] * x0 + m[2] * y0 + m[3] * z0 + m[4],
+                       m[5] * x0 + m[6] * y0 + m[7] * z0 + m[8],
+                       m[9] * x0 + m[10] * y0 + m[11] * z0 + m[12]
+        end
+        local x, y, z = rotate(rx, ry, rz, x0 * sx, y0 * sy, z0 * sz)
+        local okP, px, py, pd = pcall(project, toWorld(x + tx, y + ty, z + tz))
         if not (okP and px and py) then ok = false; break end
         local u0, v0 = v[b + 4], v[b + 5]
         local u, w = u0, v0
@@ -295,6 +443,226 @@ function M.draw(g, lm, age, toWorld, project, image)
         end
       end
     end
+  end
+  return drawn
+end
+
+-- ----------------------------------------------------------------- sprays
+--
+-- 0x7B: many copies of one model, each a little rigid body (Pay Day's coin
+-- burst, Ice Punch's shards, Earthquake's falling rocks, Spikes).
+--   0x7B  u32 member, u32 ?, u32 count per burst, u32 burst interval (0 =
+--         once), u32 ?, u32 100, u32 life frames, u32 shape (0 point,
+--         1 sphere, 2 cylinder / disc, 3 box), u32 ?, vec3 shape size cm,
+--         s32 arc start deg, s32 arc end deg, u32 chance %, 3 x u32 flags
+-- and on the same slot, same frame (the spray's setup):
+--   0x7E  attach (who, point, offset cm, easing), as 0x2F / 0x43
+--   0x7C  vec3 extra emitter offset cm (+ u32)
+--   0x85  start size: vec3 min, vec3 max (random between)
+--   0x86  start rotation deg: vec3 min, vec3 max
+--   0x83  launch: vec3 direction, s32 spread deg, f32 speed cm/frame, f32 drag
+--   0x84  gravity: u32 ?, vec3 direction (zero = down), u32 on, f32 cm/frame^2
+--   0x87  size over life: 5 x (s32 frame, vec3), frame -1 = unused
+--   0x88  extra rotation over life deg: 5 x (s32 frame, vec3)
+--   0x8B  floor: u32 ?, u32 on, u32 ?, u32 ?, f32 ground friction (kept speed)
+--   0x89  texture scroll: u32 member, u32 ?
+
+local function s32(S, a, p)
+  local v = S.u32(a, p)
+  return v >= 0x80000000 and v - 4294967296 or v
+end
+
+local function vec(S, a, p) return { S.f32(a, p), S.f32(a, p + 4), S.f32(a, p + 8) } end
+
+local function lifeKeys(S, a)
+  local keys = {}
+  for k = 0, 4 do
+    local p = 1 + k * 16
+    if #a < p + 15 then break end
+    local f = s32(S, a, p)
+    if f < 0 then break end
+    keys[#keys + 1] = { f, S.f32(a, p + 4), S.f32(a, p + 8), S.f32(a, p + 12) }
+  end
+  return #keys > 0 and keys or nil
+end
+
+-- the spray starting at recs[i] (op 0x7B) -> baked item, or nil
+function M.readSpray(S, recs, i, readAttach)
+  local r = recs[i]
+  local a = r.args
+  if #a < 76 then return nil end
+  local it = { r.start, r.finish, r.target, S.u32(a, 1),
+    count = S.u32(a, 9), every = S.u32(a, 13), life = math.max(1, S.u32(a, 25)),
+    shape = S.u32(a, 29), size = vec(S, a, 37), arc = { s32(S, a, 49), s32(S, a, 53) },
+    chance = S.u32(a, 57) }
+  for j = i + 1, #recs do
+    local q = recs[j]
+    if q.start ~= r.start then break end
+    if q.target == r.target then
+      if q.op == 0x7B or q.op == 0x3F then break end
+      local b, n = q.args, #q.args
+      if q.op == 0x7E and n >= 20 then
+        local at = readAttach(q)
+        it.role, it.point, it.off = at.role, at.point, at.off
+      elseif q.op == 0x7C and n >= 12 then it.shift = vec(S, b, 1)
+      elseif q.op == 0x85 and n >= 24 then it.size0 = { vec(S, b, 1), vec(S, b, 13) }
+      elseif q.op == 0x86 and n >= 24 then it.rot0 = { vec(S, b, 1), vec(S, b, 13) }
+      elseif q.op == 0x83 and n >= 24 then
+        it.launch = { vec(S, b, 1), s32(S, b, 13), S.f32(b, 17), S.f32(b, 21) }
+      elseif q.op == 0x84 and n >= 24 and S.u32(b, 17) == 1 then
+        -- u32 on; a zero direction = straight down (Pay Day's coins)
+        local d, k = vec(S, b, 5), S.f32(b, 21)
+        if d[1] == 0 and d[2] == 0 and d[3] == 0 then d = { 0, -1, 0 } end
+        it.gravity = { d[1] * k, d[2] * k, d[3] * k }
+      elseif q.op == 0x87 then it.sizeKeys = lifeKeys(S, b)
+      elseif q.op == 0x88 then it.spinKeys = lifeKeys(S, b)
+      elseif q.op == 0x8B and n >= 20 and S.u32(b, 5) == 1 then it.bounce = S.f32(b, 17)
+      elseif (q.op == 0x89 or q.op == 0x52) and n >= 4 and it.uv == nil then it.uv = { 0, S.u32(b, 1) }
+      end
+    end
+  end
+  for _, x in ipairs({ it.size[1], it.size[2], it.size[3], it.arc[1], it.arc[2] }) do
+    if x ~= x or math.abs(x) > 1e5 then return nil end
+  end
+  return it
+end
+
+-- life keys -> value at `age` (linear between keys, held past the ends)
+local function atKeys(keys, age, x, y, z)
+  if not keys then return x, y, z end
+  if age <= keys[1][1] then return keys[1][2], keys[1][3], keys[1][4] end
+  for k = 1, #keys - 1 do
+    local p, q = keys[k], keys[k + 1]
+    if age <= q[1] then
+      local u = (age - p[1]) / math.max(1e-6, q[1] - p[1])
+      return p[2] + (q[2] - p[2]) * u, p[3] + (q[3] - p[3]) * u, p[4] + (q[4] - p[4]) * u
+    end
+  end
+  local l = keys[#keys]
+  return l[2], l[3], l[4]
+end
+
+M.MAX_COPIES = 64   -- live copies per spray (Earthquake asks for 40 a frame)
+
+-- A running spray: sp = { item, data, uv, age, rng, copies = {} }, stepped
+-- once per timeline frame; floorY = the ground in effect cm (or nil).
+function M.newSpray(item, data, uv, seed)
+  local state = seed or 1
+  local function rnd()
+    state = (state * 1103515245 + 12345) % 2147483648
+    return state / 2147483648
+  end
+  return { item = item, data = data, uv = uv, age = 0, rnd = rnd, copies = {} }
+end
+
+local function range(rnd, pair, i, default)
+  if not pair then return default end
+  local lo, hi = pair[1][i], pair[2][i]
+  return lo + (hi - lo) * rnd()
+end
+
+local function spawnCopy(sp)
+  local it, rnd = sp.item, sp.rnd
+  -- spawn point from the shape
+  local sx, sy, sz = it.size[1], it.size[2], it.size[3]
+  local x, y, z = 0, 0, 0
+  if it.shape == 1 then          -- sphere
+    local u, v, w = rnd() * 2 - 1, rnd() * 2 - 1, rnd() * 2 - 1
+    local l = math.sqrt(u * u + v * v + w * w)
+    if l > 1e-6 then
+      local r = rnd() ^ (1 / 3) / l
+      x, y, z = u * r * sx, v * r * sy, w * r * sz
+    end
+  elseif it.shape == 2 then      -- cylinder / disc, inside the arc
+    local a0, a1 = math.rad(it.arc[1] or 0), math.rad(it.arc[2] or 360)
+    local ang = a0 + (a1 - a0) * rnd()
+    local r = math.sqrt(rnd())
+    x, z = math.cos(ang) * r * sx, math.sin(ang) * r * sz
+    y = (rnd() - 0.5) * sy
+  elseif it.shape == 3 then      -- box
+    x, y, z = (rnd() - 0.5) * sx, (rnd() - 0.5) * sy, (rnd() - 0.5) * sz
+  end
+  if it.shift then x, y, z = x + it.shift[1], y + it.shift[2], z + it.shift[3] end
+  -- launch: direction tipped by up to `spread` degrees, any way round
+  local vx, vy, vz, drag = 0, 0, 0, 1
+  if it.launch then
+    local d, spread, speed = it.launch[1], it.launch[2] or 0, it.launch[3] or 0
+    drag = it.launch[4] or 1
+    local dl = math.sqrt(d[1] * d[1] + d[2] * d[2] + d[3] * d[3])
+    local dx, dy, dz = 0, 1, 0
+    if dl > 1e-6 then dx, dy, dz = d[1] / dl, d[2] / dl, d[3] / dl end
+    if spread > 0 then
+      -- a perpendicular pair to the direction
+      local px, py, pz = 1, 0, 0
+      if math.abs(dx) > 0.9 then px, py, pz = 0, 1, 0 end
+      local ax, ay, az = dy * pz - dz * py, dz * px - dx * pz, dx * py - dy * px
+      local al = math.sqrt(ax * ax + ay * ay + az * az)
+      ax, ay, az = ax / al, ay / al, az / al
+      local bx, by, bz = dy * az - dz * ay, dz * ax - dx * az, dx * ay - dy * ax
+      local tilt, turn = math.rad(spread) * rnd(), rnd() * 2 * math.pi
+      local ct, st = math.cos(tilt), math.sin(tilt)
+      local cu, su = math.cos(turn), math.sin(turn)
+      dx = dx * ct + (ax * cu + bx * su) * st
+      dy = dy * ct + (ay * cu + by * su) * st
+      dz = dz * ct + (az * cu + bz * su) * st
+    end
+    vx, vy, vz = dx * speed, dy * speed, dz * speed
+  end
+  local c = {
+    x = x, y = y, z = z, vx = vx, vy = vy, vz = vz, drag = drag, age = 0,
+    s = { range(rnd, it.size0, 1, 1), range(rnd, it.size0, 2, 1), range(rnd, it.size0, 3, 1) },
+    r = { range(rnd, it.rot0, 1, 0), range(rnd, it.rot0, 2, 0), range(rnd, it.rot0, 3, 0) },
+  }
+  sp.copies[#sp.copies + 1] = c
+end
+
+-- one timeline frame
+function M.stepSpray(sp, floorY)
+  local it = sp.item
+  local span = it[2] - it[1]
+  if sp.age <= span then
+    local every = it.every or 0
+    if (every <= 0 and sp.age == 0) or (every > 0 and sp.age % every == 0) then
+      for _ = 1, it.count or 0 do
+        if #sp.copies >= M.MAX_COPIES then break end
+        if (it.chance or 100) >= 100 or sp.rnd() * 100 < it.chance then spawnCopy(sp) end
+      end
+    end
+  end
+  local g = it.gravity
+  for i = #sp.copies, 1, -1 do
+    local c = sp.copies[i]
+    c.age = c.age + 1
+    if c.age > it.life then table.remove(sp.copies, i) else
+      c.vx, c.vy, c.vz = c.vx * c.drag, c.vy * c.drag, c.vz * c.drag
+      if g then c.vx, c.vy, c.vz = c.vx + g[1], c.vy + g[2], c.vz + g[3] end
+      c.x, c.y, c.z = c.x + c.vx, c.y + c.vy, c.z + c.vz
+      -- the floor: a copy lands (stops falling) and keeps that fraction of
+      -- its sliding speed each frame on the ground. Spikes' drag 1.1 times
+      -- 0.9 here settles them; a bounce would fling them back up for ever.
+      if it.bounce and floorY and c.y <= floorY then
+        c.y = floorY
+        if c.vy < 0 then c.vy = 0 end
+        c.vx, c.vz = c.vx * it.bounce, c.vz * it.bounce
+      end
+    end
+  end
+  sp.age = sp.age + 1
+  return sp.age <= span or #sp.copies > 0
+end
+
+-- draws every live copy; returns the triangle count
+function M.drawSpray(g, sp, toWorld, project, image)
+  local it = sp.item
+  local uvAge = it.uv and (sp.age - it.uv[1]) or nil
+  local drawn = 0
+  local d2r = math.pi / 180
+  for _, c in ipairs(sp.copies) do
+    local kx, ky, kz = atKeys(it.sizeKeys, c.age, 1, 1, 1)
+    local ex, ey, ez = atKeys(it.spinKeys, c.age, 0, 0, 0)
+    local pose = { c.s[1] * kx, c.s[2] * ky, c.s[3] * kz,
+      (c.r[1] + ex) * d2r, (c.r[2] + ey) * d2r, (c.r[3] + ez) * d2r, c.x, c.y, c.z }
+    drawn = drawn + M.drawPosed(g, sp, pose, uvAge, toWorld, project, image)
   end
   return drawn
 end

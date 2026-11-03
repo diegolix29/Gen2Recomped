@@ -282,3 +282,19 @@ Confirmed in game 2026-11-01: Pidgey shows 2 wings and Growlithe stays upright a
 - New lib/ORASEffectModels.lua (bake + pose + draw), bake in ORASEffects (stamp oras-fx=9), spawn/age/draw in ORASEffectsPlayer (placement() factored out of drawLive), H3D.uvMatrix split out of uvTransform, ORASEffectsScene projection returns depth as 3rd value. Details in context.md 'Effect models'.
 - Verified offline (lovec, real dump, stubbed graphics + own software rasterizer to PNG): bake 4 s, 133 models; Pay Day coin flies attacker -> target, Scratch's three claw arcs sweep the target then clear (UV scroll, clamp wrap), Vice Grip pincers hinge 130 cm above the target with tips biting down (0.1 -> 2.5 grow). Earthquake's 20 m floor painted over everything -> stage-sized models skipped.
 - User step: press ORAS EFFECTS (stamp 9), then try Pay Day / Scratch / Vice Grip / Ember (pan) in COLOSSEUM A and a 3D-BTL rung.
+
+## 2026-11-03 — ORAS model sprays 0x7B (uncommitted, untested in game)
+- User: sound pan and single effect models look ok in game.
+- Sprays decoded and played (context.md 'Model sprays'). Verified offline (lovec, real dump, software raster PNGs): Pay Day coins burst up from the target, fall and settle; Ice Punch shards scatter; Rock Throw rock drops from 2 m and lands; Earthquake rocks fall from 4 m; Spikes thrown up then cover the ground round the target. Bake 4 s, 149 models.
+- User step: press ORAS EFFECTS (stamp 10).
+
+## 2026-11-03 — ORAS model motions 0x50 (uncommitted, untested in game)
+- User: sprays look ok in game.
+- 0x50 motions decoded and played (context.md 'Model motions'). Verified offline (lovec, real dump, raster PNGs): Vice Grip pincers snap shut on the hit, Gear Grind gears turn, Crunch teeth move. Constrict's vine motion skipped by the size guard (blows up 36x).
+- User step: press ORAS EFFECTS (stamp 11).
+
+## 2026-11-03 — Hydro Pump / Hyper Beam show no beam (partly fixed, untested in game)
+- User F12s: Hydro Pump (56) drew 49 particles at the target's eye point, no jet; Hyper Beam (63) put its four beam-bar files (664) at the TARGET's centre: they have no 0x2F, only 0x32, so the bake fell back to slot 1 = target.
+- Added (stamp oras-fx=12): 0x32 (particles) / 0x46 (models) = u32 who, point, aim who, aim point, vec3 offset, u32, u32: placed at one body point and aimed at another (Player.AIM_AXIS '+z', l.aim); 0x35 = slot turn vec3 degrees (+u32), keyed like 0x34 (l.rots, applied inside toWorld); still 'upright' quads now stand along their emitter's rotated up (Sim quad.axis) instead of screen up (flames unchanged: unrotated emitters); effect frames are per side -- an effect on the target has Z toward the attacker, as ORAS attaches to that Pokemon's body and as the 0x17 camera side frames (Vice Grip now closes right over the target, Scratch's claws on the attacker-facing side).
+- NOT solved: Hyper Beam's main bar (664 ew063_at_beam_bar: upright, point emitter at z -200, no rotation/velocity, pivot bottom, h 67) stays vertical under every aim axis tried (+z/-z/+y/-y rendered offline; none joins 664 at the attacker with 668 at the target). Orientation objects carry no axis (beam bar = flames, 0x20000000). Next idea: how ORAS stretches a beam between two points (0x32's last two u32, scale-over-life on Z, or a beam set type).
+- User step: press ORAS EFFECTS (stamp 12) and check that ordinary target-side effects still look right (frame flip).
