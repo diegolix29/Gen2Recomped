@@ -327,3 +327,10 @@ Confirmed in game 2026-11-01: Pidgey shows 2 wings and Growlithe stays upright a
 - Verified offline (in-memory bake, raster, target at 467 cm): Hyper Beam one beam attacker -> target, nothing behind; Flamethrower stream flows forward from the mouth (233 cm); Hydro Pump jet unchanged. Not seen: blackthd (multiply blend; raster cannot show it).
 - User step: ORAS EFFECTS again (stamp 14), restart, check Flamethrower / Hyper Beam / Hydro Pump and a few beam moves (Psybeam, Aurora Beam, Ice Beam).
 
+## 2026-11-03 — STATUS (end of day): where ORAS effects stand, what to test, next step
+- Committed by the user up to ORAS FX PACK. Uncommitted: stamp 13/14 work and the gap / zoom changes (ORASParticles, ORASEffects, ORASParticleSim, ORASEffectsPlayer, ORASEffectsScene, context.md, memory.md).
+- User test list: press ORAS EFFECTS (stamp oras-fx=14; repacks itself if packed), restart. Check Flamethrower (stream flows mouth -> target, no streak behind), Hyper Beam (one beam, no vertical bar, no screen-wide bands, dark 'black thunder' at the end), Hydro Pump, Bubble Beam, Psybeam / Aurora Beam / Ice Beam, glows round (no squares), ORAS FX SIZE starts X1.5, ORAS CAM ZOOM starts 100% (= old 25%). Many moves may change: fixed / cone launches and drag never worked before stamp 14. F12 on anything odd ('gap: xK' line per run now).
+- Offline harness (session 63da4401 scratchpad ft/): lovec with identity oras_ft_check; main.lua loads lib files with V.require and exposes Player._active; probe_render2.lua bakes in memory from the dump (writes never reach the install; reads of oras/movefx go to the memory bake) and renders strips with a software rasterizer (add/alpha only, mirrored wrap supported).
+- NEXT (user's order): 1. arenas (GARC a/1/5/2) -- not started; 2. pack the arenas; 3. ORAS player/trainer 3D characters in battle; 4. 3D-BTL ladder (2D-3D A/B, 3D-3D A/B, OFF).
+- Later the same day (user): effects are too wide to test all at once, so the stamp 13/14 in-game test is PENDING (the user F12s issues as they meet them). Moved on to ARENAS (a/1/5/2) -- current step, not started yet.
+
