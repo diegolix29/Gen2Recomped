@@ -259,11 +259,24 @@ end
 
 -- Both axes go through here, so the "nothing while BACK SPRITES holds the
 -- composition" rule and the two stops live in one place each.
+-- The orbit has no stops any more (user, 2026-11-03: full 360 in every 3D
+-- battle): one unit of orbit is still orbitRange, so the drag / stick / mouse
+-- speeds feel the same, and BattleCam.update wraps it after a full turn.
+-- The pitch keeps its two stops.
 local function setAxis(key, goal)
   if not BattleCam.steerable then return false end
   local was = BattleCam[key]
-  BattleCam[key] = math.max(0, math.min(1, goal))
+  if key == "orbitGoal" then BattleCam[key] = goal
+  else BattleCam[key] = math.max(0, math.min(1, goal)) end
   return BattleCam[key] ~= was
+end
+
+-- orbit units in one full turn on the live rig
+local function orbitTurn()
+  local R = BattleCam.RIGS[BattleCam.rigLive] or BattleCam.RIGS[BattleCam.DEFAULT_RIG]
+  local range = math.max(0, math.pi / 2 - math.atan2(R.side, R.back))
+  if range < 1e-3 then return nil end
+  return 2 * math.pi / range
 end
 
 -- A drag, in fractions of the screen's width (orbit) or height (pitch).
@@ -366,8 +379,10 @@ function BattleCam.spread(arena)
                           math.sqrt((R.side - R.lookX) ^ 2 + R.back ^ 2))
   local home = axisSpan(beta, elev)
   if home < 1e-6 then return 1 end
-  return axisSpan(beta + BattleCam.orbit * BattleCam.orbitRange(arena),
-                  elev + BattleCam.pitch * BattleCam.PITCH_RANGE) / home
+  -- floored at 1: with the orbit free, a shot down the arena's axis (from
+  -- behind either Pokemon) would otherwise close the lens in on the pair
+  return math.max(1, axisSpan(beta + BattleCam.orbit * BattleCam.orbitRange(arena),
+                  elev + BattleCam.pitch * BattleCam.PITCH_RANGE) / home)
 end
 
 -- ------- HOW FAR OUT THE ZOOM HAS TO REACH
@@ -469,6 +484,17 @@ function BattleCam.update(dt)
   -- which is what keeps a flick of the stick from being a cut
   BattleCam.orbit = chase(BattleCam.orbit, BattleCam.orbitGoal, dt,
                           BattleCam.ORBIT_TIME)
+  -- a full turn is the same shot: wrap the live angle and its goal together
+  -- so the ease never spins back the long way
+  local turn = orbitTurn()
+  if turn then
+    local half = turn / 2
+    if BattleCam.orbit > half then
+      BattleCam.orbit, BattleCam.orbitGoal = BattleCam.orbit - turn, BattleCam.orbitGoal - turn
+    elseif BattleCam.orbit < -half then
+      BattleCam.orbit, BattleCam.orbitGoal = BattleCam.orbit + turn, BattleCam.orbitGoal + turn
+    end
+  end
   BattleCam.pitch = chase(BattleCam.pitch, BattleCam.pitchGoal, dt,
                           BattleCam.PITCH_TIME)
   -- THE STEER IS SESSION STATE AND SURVIVES A BATTLE ENDING (reset() only
@@ -564,6 +590,10 @@ function BattleCam.rig(arena, groundY, canonical)
       eye[2] = focus[2] + r * math.sin(a)
     end
   end
+
+  -- a stage with scenery of its own (ORAS ARENA) keeps the eye out of its
+  -- trees and walls; the lens below follows the shorter distance
+  if arena and arena.clampEye then pcall(arena.clampEye, arena, eye, focus, groundY, fixed) end
 
   local ex = eye[1] - focus[1]
   local ey = eye[2] - focus[2]

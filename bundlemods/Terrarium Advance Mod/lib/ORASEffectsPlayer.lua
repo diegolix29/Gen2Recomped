@@ -109,6 +109,22 @@ function Player.has(moveId)
   return idx ~= nil and idx.moves[tonumber(moveId) or -1] ~= nil
 end
 
+-- Particle files left out of a move.  Flamethrower (53): ORAS hands the
+-- mouth stream (634, frames 20-41) to two streams placed on the target and
+-- aimed back at the attacker (635 / 636, frames 40-95); in our battles that
+-- second stream fires out past the attacker, so only the mouth stream plays.
+Player.DROP_FILES = { [53] = { [635] = true, [636] = true } }
+
+local function dropFiles(moveId, entry)
+  local drop = Player.DROP_FILES[moveId]
+  if not drop or entry.dropped then return end
+  local kept = {}
+  for _, r in ipairs(entry.fx) do
+    if not drop[r[4]] then kept[#kept + 1] = r end
+  end
+  entry.fx, entry.dropped = kept, true
+end
+
 function Player.start(moveId, host, space)
   local E = Effects()
   if not E.active() then
@@ -122,6 +138,7 @@ function Player.start(moveId, host, space)
     Player.note("move %s (%s): no ORAS effect for this move", tostring(moveId), tostring(space))
     return false
   end
+  dropFiles(tonumber(moveId), entry)
   serial = serial + 1
   local run = { id = serial, move = tonumber(moveId), host = host, entry = entry, space = space or "csm",
                 frame = -1, acc = 0, next = 1, live = {} }

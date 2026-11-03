@@ -61,6 +61,7 @@ function S.arena(state, battle)
   arena._oras = env
   arena._orasStage = stage
   arena.cam = "orasArena"
+  arena.clampEye = S.clampEye
   return arena
 end
 
@@ -155,6 +156,145 @@ local function piece(name)
   end
   meshes[name] = list
   return list or nil
+end
+
+-- ------------------------------------------------------------ clearance
+--
+-- How far out from the arena's middle the stage is open, so the battle
+-- camera never sits inside a tree or a wall when the player orbits it.
+-- Per stage: for each bearing (BINS) and each height band (BAND cm), the
+-- nearest stage geometry (vertices plus points sampled over each triangle,
+-- so a big wall quad counts between its corners). ORAS cm, stage frame.
+
+S.CLEAR_BINS = 72
+S.CLEAR_BAND = 100        -- cm per height band
+S.CLEAR_BANDS = 40        -- 0 .. 40 m
+S.CLEAR_MIN_R = 300       -- closer than this is the fight itself (bases at 215)
+S.CLEAR_MARGIN = 120      -- cm kept between the eye and the nearest scenery
+S.CLEAR_HALF = 150        -- cm above / below the eye that must be clear
+S.EYE_MIN = 18            -- world px: the eye never pulls closer than this to the focus
+S.CLEAR_THIN = 30         -- cm: triangles thinner than this do not block
+S.CLEAR_FLOOR = 50        -- cm: lower than this is ground, not scenery
+
+local clearMemo = {}
+
+local function binOf(x, z)
+  local a = math.atan2(z, x)
+  return math.floor((a + math.pi) / (2 * math.pi) * S.CLEAR_BINS) % S.CLEAR_BINS + 1
+end
+
+local function clearance(name)
+  local c = clearMemo[name]
+  if c ~= nil then return c or nil end
+  c = false
+  local m = model(name)
+  if m and m.meshes then
+    c = {}
+    for b = 1, S.CLEAR_BINS do
+      local row = {}
+      for h = 1, S.CLEAR_BANDS do row[h] = math.huge end
+      c[b] = row
+    end
+    local function add(x, y, z)
+      if y < S.CLEAR_FLOOR then return end       -- the ground, flowers, puddles
+      local h = math.floor(y / S.CLEAR_BAND) + 1
+      if h < 1 or h > S.CLEAR_BANDS then return end
+      local r = math.sqrt(x * x + z * z)
+      if r < S.CLEAR_MIN_R then return end
+      local row = c[binOf(x, z)]
+      if r < row[h] then row[h] = r end
+    end
+    for _, ms in ipairs(m.meshes) do
+      -- additive pieces are light shafts and glows, not something to hit
+      if ms.blend ~= "add" then
+        local v, idx = ms.v, ms.idx
+        local function P(i) local o = (i - 1) * 9; return v[o + 1], v[o + 2], v[o + 3] end
+        if not idx then for i = 1, #v / 9 do add(P(i)) end end
+        for t = 1, (idx and #idx or 0) - 2, 3 do
+          local ax, ay, az = P(idx[t])
+          local bx, by, bz = P(idx[t + 1])
+          local cx, cy, cz = P(idx[t + 2])
+          local ux, uy, uz = bx - ax, by - ay, bz - az
+          local wx, wy, wz = cx - ax, cy - ay, cz - az
+          local nx, ny, nz = uy * wz - uz * wy, uz * wx - ux * wz, ux * wy - uy * wx
+          local area2 = math.sqrt(nx * nx + ny * ny + nz * nz)
+          local e = math.max(math.sqrt(ux * ux + uy * uy + uz * uz), math.sqrt(wx * wx + wy * wy + wz * wz),
+                             math.sqrt((cx - bx) ^ 2 + (cy - by) ^ 2 + (cz - bz) ^ 2))
+          -- thin strips (light lines, ropes, ribbons: kusa's 16 cm 'ef2'
+          -- lines run from the middle out to 7 m) are nothing to hit
+          local thin = e > 1e-6 and area2 / e < S.CLEAR_THIN
+          local n = thin and -1 or math.min(24, math.max(1, math.ceil(e / 80)))
+          for i = 0, n do
+            for j = 0, n - i do
+              local u, w = i / n, j / n
+              local k = 1 - u - w
+              add(ax * k + bx * u + cx * w, ay * k + by * u + cy * w, az * k + bz * u + cz * w)
+            end
+          end
+        end
+      end
+    end
+  end
+  clearMemo[name] = c
+  return c or nil
+end
+S._clearance = clearance
+
+-- open radius (cm) at a stage-frame point, over the bearing's neighbours and
+-- the bands around height y
+local function openAt(c, x, y, z)
+  local b = binOf(x, z)
+  local lo = math.max(1, math.floor((y - S.CLEAR_HALF) / S.CLEAR_BAND) + 1)
+  local hi = math.min(S.CLEAR_BANDS, math.floor((y + S.CLEAR_HALF) / S.CLEAR_BAND) + 1)
+  local r = math.huge
+  for d = -1, 1 do
+    local row = c[(b - 1 + d) % S.CLEAR_BINS + 1]
+    for h = lo, hi do if row[h] < r then r = row[h] end end
+  end
+  return r
+end
+
+-- BattleCam.rig hook (arena.clampEye): slide the eye in toward the focus
+-- until it is clear of the stage's trees / walls / rocks at its bearing.
+S.PULL_TIME = 0.12        -- seconds the pull eases over (the map is in 5 degree steps)
+local pullNow, pullClock = 1, nil
+
+local function clock()
+  return (love and love.timer and love.timer.getTime and love.timer.getTime()) or os.clock()
+end
+
+function S.clampEye(arena, eye, focus, groundY, fixed)
+  local stage = arena and arena._orasStage
+  local c = stage and clearance(stage.g)
+  if not c then return end
+  local K, mx, mz = S.K, arena.mid[1], arena.mid[2]
+  groundY = groundY or 0
+  local function blocked(wx, wy, wz)
+    local x, y, z = -(wx - mx) / K, (wy - groundY) / K, -(wz - mz) / K
+    return math.sqrt(x * x + z * z) > openAt(c, x, y, z) - S.CLEAR_MARGIN
+  end
+  local vx, vy, vz = eye[1] - focus[1], eye[2] - focus[2], eye[3] - focus[3]
+  local d = math.sqrt(vx * vx + vy * vy + vz * vz)
+  if d < 1e-6 then return end
+  local t = 1
+  if blocked(eye[1], eye[2], eye[3]) then
+    local tMin = math.min(1, S.EYE_MIN / d)
+    t = tMin
+    for i = 1, 32 do
+      local tt = 1 - (1 - tMin) * i / 32
+      if not blocked(focus[1] + vx * tt, focus[2] + vy * tt, focus[3] + vz * tt) then t = tt; break end
+    end
+  end
+  -- the live shot eases between steps; a fixed / canonical ask gets the answer
+  if not fixed then
+    local now = clock()
+    local dt = pullClock and math.max(0, math.min(0.25, now - pullClock)) or 1
+    pullClock = now
+    pullNow = pullNow + (t - pullNow) * math.min(1, dt / S.PULL_TIME)
+    t = pullNow
+  end
+  if t >= 1 then return end
+  eye[1], eye[2], eye[3] = focus[1] + vx * t, focus[2] + vy * t, focus[3] + vz * t
 end
 
 -- --------------------------------------------------------------- shader
