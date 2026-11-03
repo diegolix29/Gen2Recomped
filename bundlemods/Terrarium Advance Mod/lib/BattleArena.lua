@@ -806,4 +806,23 @@ function BattleArena.search(map, fromX, fromY, surfing, wantClear)
   return nil
 end
 
+-- The drawn-height grid (trees and buildings included) for cameras that move
+-- mid-battle (lib/ORASEffectsScene.lua move cameras): built once per map.
+local gridMemo = setmetatable({}, { __mode = "k" })
+function BattleArena.drawnGrid(map)
+  if not map then return nil end
+  local g = gridMemo[map]
+  if g == nil then
+    local ok, v = pcall(stageGrid, map)
+    g = ok and v or false
+    gridMemo[map] = g
+  end
+  return g or nil
+end
+-- What is drawn at world (wx, wz), in world pixels; off the map counts as
+-- the border trees (32)
+function BattleArena.drawnHeight(g, wx, wz)
+  return heightAt(g, wx, wz)
+end
+
 return BattleArena

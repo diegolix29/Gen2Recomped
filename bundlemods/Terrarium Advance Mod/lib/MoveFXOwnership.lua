@@ -191,6 +191,8 @@ function O:ownsNativeAudio(battle)
   local b=prepare(battle)
   if self.active.battle and b and not matches(self.active.battle,b) then return false end
   local audio=V and V.WazaAudioRuntime
+  -- BATTLE SOUNDS = ORIGINAL: the game's own move sounds play
+  if audio and type(audio.originalSounds)=="function" and audio.originalSounds() then return false end
   local readyFn=audio and (audio.readyForSpec or audio.prewarmSpec)
   if type(readyFn)~="function" then return false end
   local ok,complete=pcall(readyFn,self.active.spec)

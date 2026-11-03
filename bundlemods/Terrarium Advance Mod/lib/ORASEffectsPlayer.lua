@@ -117,8 +117,13 @@ function Player.start(moveId, host, space)
   end
   active[#active + 1] = run
   while #active > MAX_ACTIVE do table.remove(active, 1) end
-  Player.note("move %d (%s): started, %d particle files, %d stage records, lands at frame %s",
-    run.move, run.space, #entry.fx, entry.stage and #entry.stage or 0, tostring(run.hitFrame))
+  local sounds = entry.sounds and #entry.sounds or 0
+  local soundNote = run.soundsOn and ("%d sound cues"):format(sounds)
+    or (sounds > 0 and ("%d sound cues OFF (%s)"):format(sounds,
+      (E.index() or {}).sounds ~= true and "not baked" or "ORAS FX SOUND is OFF"))
+    or "no sounds"
+  Player.note("move %d (%s): started, %d particle files, %d stage records, %s, lands at frame %s",
+    run.move, run.space, #entry.fx, entry.stage and #entry.stage or 0, soundNote, tostring(run.hitFrame))
   return run.id
 end
 
@@ -205,10 +210,15 @@ function Player.playSound(k, vol)
   local gain = (vol or 127) / 127 * level / 100 * sfxScale() * Player.SOUND_BASE
   if gain <= 0.001 then return false end
   local sd = soundFor(k)
-  if not sd then return false end
+  if not sd then Player.note("sound %s: snd/%s.wav could not be loaded", tostring(k), tostring(k)); return false end
   local ok, src = pcall(love.audio.newSource, sd, "static")
-  if not (ok and src) then return false end
+  if not (ok and src) then Player.note("sound %s: no audio source (%s)", tostring(k), tostring(src)); return false end
   pcall(src.setVolume, src, math.min(1, gain))
+  -- Mono sources are placed in 3D, and lib/SpatialAudio.lua moves the
+  -- listener to the player's map cell (world pixels, silent past 160): a
+  -- source left at the origin was never heard. Glue it to the listener.
+  pcall(src.setRelative, src, true)
+  pcall(src.setPosition, src, 0, 0, 0)
   pcall(src.play, src)
   playing[#playing + 1] = src
   for i = #playing, 1, -1 do
@@ -220,16 +230,27 @@ end
 
 -- an ORAS move with sounds is playing now (the cartridge's own move sound
 -- stays quiet meanwhile, lib/ORASEffectsScene.lua)
+-- Stays on for a short grace after the run, so late sound rows of the same
+-- move (Colosseum's own timeline can run a little longer) stay quiet too.
+Player.SOUND_GRACE = 1.5
+local soundHoldUntil = 0
+local function clock()
+  return (love and love.timer and love.timer.getTime and love.timer.getTime()) or os.clock()
+end
 function Player.soundBusy()
   for _, run in ipairs(active) do
     if run.soundsOn then return true end
   end
-  return false
+  return clock() < soundHoldUntil
 end
+-- Colosseum's move sound player (lib/WazaAudioRuntime.lua) asks this through
+-- mod.exports, so ORAS never needs the Colosseum runtime to be loaded
+if V and V.mod and V.mod.exports then V.mod.exports.orasSoundBusy = Player.soundBusy end
 
 local function stepRun(run)
   run.frame = run.frame + 1
   if run.soundsOn then
+    soundHoldUntil = clock() + Player.SOUND_GRACE
     local list = run.entry.sounds
     while run.nextSound <= #list and list[run.nextSound][1] <= run.frame do
       local cue = list[run.nextSound]

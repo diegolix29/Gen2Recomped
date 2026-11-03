@@ -15,8 +15,23 @@ local taggedRows=setmetatable({},{__mode="k"})
 local scope=nil
 local Sound,Music
 local volume=0.8
+-- Battle settings live in save.terrariumBattle (BattleSettings); the Gen3
+-- menu still writes save.colosseumBattle.
+local function battlePrefs()
+ local s=gameRef and gameRef.save
+ if not s then return nil end
+ if type(s.terrariumBattle)=="table" then return s.terrariumBattle end
+ return type(s.colosseumBattle)=="table" and s.colosseumBattle or nil
+end
+-- OPTIONS -> COLOSSEUM SFX (0..100, default 100), read on every play
+local function colosseumLevel()
+ local p=battlePrefs()
+ local v=tonumber(p and p.colosseumSfxVolume)
+ if v==nil then return 1 end
+ return math.max(0,math.min(100,v))/100
+end
 local function cueVolume(id)
- return volume*((id=="exp" or id=="expEnd") and .75 or 1)
+ return volume*colosseumLevel()*((id=="exp" or id=="expEnd") and .75 or 1)
 end
 local totals={level=0,exp=0,victory=0,fallback=0,preloads=0}
 local errors={}
@@ -33,7 +48,7 @@ local function playing(src)return call(src,"isPlaying")==true end
 local function stop(src)call(src,"stop")end
 local function duration(src)return tonumber(call(src,"getDuration")) or 0 end
 local function enabled()
- local p=gameRef and gameRef.save and gameRef.save.colosseumBattle
+ local p=battlePrefs()
  return not (p and p.battleSoundsEnabled==false)
 end
 local function liveBattle()
@@ -277,7 +292,7 @@ function A.install(mod)
     src=jingle("level");if src then ownLevel(src)end
    elseif name=="Sfx_ExpBar" then src=startExp();if src then owned[name]=src end
    elseif name=="Sfx_HitEndOfExpBar" and sources.expEnd then
-    stopExp();stop(sources.expEnd)
+    stopExp();stop(sources.expEnd);call(sources.expEnd,"setVolume",cueVolume("expEnd"))
     local ok,r=pcall(sources.expEnd.play,sources.expEnd)
     if ok and r~=false then src=sources.expEnd;owned[name]=src end
    end

@@ -20,7 +20,7 @@ local function prefs(game)
       realtimeBattle=false,realtimeZoom=1.0,
       playerModel="red",enemyTrainerModel="auto",rivalModel="leaf",
       doubleBattlesEnabled=true,abilitiesEnabled=true,freeLookEnabled=true,
-      autoProgressEnabled=true,bossIntroEnabled=false,battleSoundsEnabled=true,
+      autoProgressEnabled=true,bossIntroEnabled=false,battleSoundsEnabled=true,colosseumSfxVolume=100,
       wildSpawnMode="mixed",
       wildEncountersEnabled=true,trainerEncountersEnabled=true,gymEncountersEnabled=true,eliteFourEncountersEnabled=true,
       actorScaleMultiplier=1.0,
@@ -50,6 +50,10 @@ local function prefs(game)
   -- Migrate older boolean trainer settings into the current model selectors.
   if p.battleSoundsEnabled==nil then p.battleSoundsEnabled=true end
   p.battleSoundsEnabled=p.battleSoundsEnabled==true
+  -- COLOSSEUM SFX: Colosseum move + battle cue volume, 0..100 in steps of 25
+  p.colosseumSfxVolume=tonumber(p.colosseumSfxVolume) or 100
+  if p.colosseumSfxVolume~=0 and p.colosseumSfxVolume~=25 and p.colosseumSfxVolume~=50
+    and p.colosseumSfxVolume~=75 and p.colosseumSfxVolume~=100 then p.colosseumSfxVolume=100 end
   if p.bossIntroEnabled==nil then p.bossIntroEnabled=false end
   p.bossIntroEnabled=p.bossIntroEnabled==true
   if p.doubleBattlesEnabled==nil then p.doubleBattlesEnabled=true end
@@ -163,6 +167,7 @@ local function openBattleMenu(game,returnId,returnParent)
   local autoProgressToggle={keepOpen=true}
   local freeLookToggle={keepOpen=true}
   local soundsToggle={keepOpen=true}
+  local sfxVolumeRow={keepOpen=true}
   local wildSpawnRow={keepOpen=true}
   local wildEncountersToggle={keepOpen=true}
   local trainerEncountersToggle={keepOpen=true}
@@ -189,6 +194,8 @@ local function openBattleMenu(game,returnId,returnParent)
     freeLookToggle.label="FREE LOOK CAMERA  "..(p.freeLookEnabled~=false and "ON" or "OFF")
     autoProgressToggle.label="AUTO BATTLE FLOW  "..(p.autoProgressEnabled~=false and "ON" or "OFF")
     soundsToggle.label="BATTLE SOUNDS  "..(p.battleSoundsEnabled and "COLOSSEUM" or "ORIGINAL")
+    local sfxV=tonumber(p.colosseumSfxVolume) or 100
+    sfxVolumeRow.label="COLOSSEUM SFX  "..(sfxV<=0 and "OFF" or (tostring(sfxV).."%"))
     local aq=AudioFidelity and AudioFidelity.status(modRef) or {}
     audioQualityRow.label="AUDIO FIDELITY  "..(aq.pending and "UPDATE QUEUED" or "CACHE OPTIONS")
     bossIntroToggle.label="BOSS INTRO  "..(p.bossIntroEnabled and "ON" or "OFF")
@@ -285,6 +292,13 @@ local function openBattleMenu(game,returnId,returnParent)
   freeLookToggle.onSelect=function()p.freeLookEnabled=not p.freeLookEnabled;refresh()end
   autoProgressToggle.onSelect=function() p.autoProgressEnabled=not p.autoProgressEnabled;refresh() end
   soundsToggle.onSelect=function() p.battleSoundsEnabled=not p.battleSoundsEnabled;refresh() end
+  sfxVolumeRow.onSelect=function()
+    local steps={0,25,50,75,100}
+    local cur=tonumber(p.colosseumSfxVolume) or 100
+    local nextV=steps[1]
+    for i,v in ipairs(steps) do if v==cur then nextV=steps[i%#steps+1];break end end
+    p.colosseumSfxVolume=nextV;refresh()
+  end
   bossIntroToggle.onSelect=function()
     p.bossIntroEnabled=not p.bossIntroEnabled;refresh()
   end
@@ -614,7 +628,7 @@ local function openBattleMenu(game,returnId,returnParent)
   refresh()
   -- Trainer presentation is intentionally three independent ownership rows:
   -- player Red, ordinary/special enemy trainers, and the Kanto rival substitute.
-  local mainRows={environmentToggle,cameraToggle,pokemonModelsToggle,hdSheetsToggle,realtimeToggle,realtimeZoomRow,doublesToggle,abilitiesToggle,wildSpawnRow,wildSpawnStatusRow,wildEncountersToggle,trainerEncountersToggle,gymEncountersToggle,eliteFourEncountersToggle,autoProgressToggle,freeLookToggle,bossIntroToggle,musicRow,soundsToggle,audioQualityRow,arenaRow,playerTrainerRow,enemyTrainerRow,rivalRow,actorScaleRow,hardCacheRow,packCacheRow,cacheRow,back}
+  local mainRows={environmentToggle,cameraToggle,pokemonModelsToggle,hdSheetsToggle,realtimeToggle,realtimeZoomRow,doublesToggle,abilitiesToggle,wildSpawnRow,wildSpawnStatusRow,wildEncountersToggle,trainerEncountersToggle,gymEncountersToggle,eliteFourEncountersToggle,autoProgressToggle,freeLookToggle,bossIntroToggle,musicRow,soundsToggle,sfxVolumeRow,audioQualityRow,arenaRow,playerTrainerRow,enemyTrainerRow,rivalRow,actorScaleRow,hardCacheRow,packCacheRow,cacheRow,back}
   menu=Menu.new(game,mainRows,{tx=1,ty=2,tw=24,maxVisible=12,onCancel=function() reopen(game,returnId,returnParent) end})
   menu.screenId="TerrariumBattleSettings"
   if BattleMenuUI and BattleMenuUI.mark then
@@ -724,7 +738,7 @@ function S.status(game)
   return {
     installed=installed,arenasEnabled=p.arenasEnabled,cameraEnabled=p.cameraEnabled,pokemonModelsEnabled=p.pokemonModelsEnabled,
     realtimeBattle=p.realtimeBattle,realtimeZoom=p.realtimeZoom,
-    battleSoundsEnabled=p.battleSoundsEnabled,freeLookEnabled=p.freeLookEnabled,autoProgressEnabled=p.autoProgressEnabled,bossIntroEnabled=p.bossIntroEnabled,doubleBattlesEnabled=p.doubleBattlesEnabled,
+    battleSoundsEnabled=p.battleSoundsEnabled,colosseumSfxVolume=p.colosseumSfxVolume,freeLookEnabled=p.freeLookEnabled,autoProgressEnabled=p.autoProgressEnabled,bossIntroEnabled=p.bossIntroEnabled,doubleBattlesEnabled=p.doubleBattlesEnabled,
     abilitiesEnabled=p.abilitiesEnabled,wildSpawnMode=p.wildSpawnMode,wildSpawnRuntime=S.wildSpawnStatus(),
     wildEncountersEnabled=p.wildEncountersEnabled,trainerEncountersEnabled=p.trainerEncountersEnabled,gymEncountersEnabled=p.gymEncountersEnabled,eliteFourEncountersEnabled=p.eliteFourEncountersEnabled,
     music=p.music,musicLabel=Music and Music.themeLabel and Music.themeLabel(game,p.music),

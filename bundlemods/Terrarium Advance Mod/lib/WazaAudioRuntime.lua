@@ -18,6 +18,31 @@ local function presentationGain(inst,entry)
    ((entry and entry.phase=="open") or (spec.phaseSelection and spec.phaseSelection.attack=="open")))
  return release and .85 or 1
 end
+-- OPTIONS (battle settings): BATTLE SOUNDS COLOSSEUM/ORIGINAL and COLOSSEUM SFX
+-- 0..100 (default 100). Settings live in save.terrariumBattle (BattleSettings);
+-- the Gen3 menu still writes save.colosseumBattle.
+local function battlePrefs()
+ local game=V and V.mod and V.mod.game
+ local s=game and game.save
+ if not s then return nil end
+ if type(s.terrariumBattle)=="table" then return s.terrariumBattle end
+ return type(s.colosseumBattle)=="table" and s.colosseumBattle or nil
+end
+-- BATTLE SOUNDS = ORIGINAL: Colosseum move sounds stay off and the game's own
+-- move sounds play (MoveFXOwnership.ownsNativeAudio asks this)
+function A.originalSounds()
+ local p=battlePrefs()
+ return p~=nil and p.battleSoundsEnabled==false
+end
+-- COLOSSEUM SFX x the game's SFX row (save.options.sfxVol 0..7), 0..1
+function A.level()
+ local p=battlePrefs()
+ local v=tonumber(p and p.colosseumSfxVolume) or 100
+ local game=V and V.mod and V.mod.game
+ local opts=game and game.save and game.save.options
+ local sfx=tonumber(opts and opts.sfxVol) or 7
+ return math.max(0,math.min(100,v))/100*math.max(0,math.min(7,sfx))/7
+end
 local loadSource
 local function record(row)
   A.events[#A.events+1]=row
@@ -110,6 +135,26 @@ function A:start(ctx,inst,entry)
   local id=tonumber(entry and entry.soundId)
   if id==nil then return false end
   local k=key(inst,entry)
+  -- An ORAS move with its own sounds is playing (lib/ORASEffectsPlayer.lua):
+  -- claim the row and stay quiet so the two sound sets do not layer.
+  local exports=V and V.mod and V.mod.exports
+  local orasBusy=exports and exports.orasSoundBusy
+  if type(orasBusy)=="function" then
+    local okB,busy=pcall(orasBusy)
+    if okB and busy==true then
+      A.orasMuted=(A.orasMuted or 0)+1
+      record({event="oras-muted",serial=inst and inst.serial,frame=inst and inst.frame,soundId=id})
+      return true
+    end
+  end
+  -- BATTLE SOUNDS = ORIGINAL: leave the row unclaimed (the game's own move
+  -- sound plays); COLOSSEUM SFX OFF: claim it and stay quiet
+  if A.originalSounds() then return false end
+  local level=A.level()
+  if level<=0.001 then
+    record({event="muted",serial=inst and inst.serial,frame=inst and inst.frame,soundId=id})
+    return true
+  end
   -- All-or-native audio ownership: never layer one successfully rendered
   -- GameSound over the GB/GBC animation when another source sound required by
   -- the same move is missing/unloadable. Either the complete authored source
@@ -123,7 +168,7 @@ function A:start(ctx,inst,entry)
     local ok,v=pcall(template.clone,template);if ok then src=v end
   end
   src=src or template
-  local gain=presentationGain(inst,entry)
+  local gain=presentationGain(inst,entry)*level
   -- Reset absolute playback gain on every use. clone-less hosts may reuse the
   -- template, so multiplying its current volume would compound across battles.
   if src and type(src.setVolume)=="function" then pcall(src.setVolume,src,gain) end

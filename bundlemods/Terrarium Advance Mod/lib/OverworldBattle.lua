@@ -957,7 +957,7 @@ function OverworldBattle.arenaInfo()
   if not (session and session.arena and not session.broken) then return nil end
   local host = session.arena.map or (session.state and session.state.map)
   if not host then return nil end
-  return session.arena, BattleScene.groundY(host, session.arena)
+  return session.arena, BattleScene.groundY(host, session.arena), host
 end
 
 -- The foe's rendered pic texture, for the capture mode's ring. The mark

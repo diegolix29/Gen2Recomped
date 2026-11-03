@@ -30,9 +30,71 @@ local function Player() return V.require("ORASEffectsPlayer") end
 local function staged()
   local okO, OB = pcall(V.require, "OverworldBattle")
   if not okO or not OB then return nil end
-  local okA, arena, groundY = pcall(OB.arenaInfo)
-  if okA and arena then return arena, groundY or 0 end
+  local okA, arena, groundY, map = pcall(OB.arenaInfo)
+  if okA and arena then return arena, groundY or 0, map end
   return nil
+end
+
+-- ------------------------------------------------------- camera vs the world
+--
+-- ORAS move cameras were authored for an empty stage; here the fight stands
+-- on the map, and a shot from behind a Pokemon (Tail Whip) can put the eye
+-- inside a tree or a building.  The drawn-height grid (lib/BattleArena.lua,
+-- trees and buildings included) answers what stands where.
+local SIGHT_STEP = 4         -- world pixels along the sightline
+local SIGHT_EPS = 1.5        -- slack, so a flush kerb is not an obstacle
+local SIGHT_MARGIN = 6       -- the eye stops this far short of what blocks it
+local SIGHT_MIN = 24         -- shortest pulled-in shot before lifting instead
+local SIGHT_LIFT_MAX = 96    -- highest lift tried, in world pixels
+local function sightGrid(map)
+  if not map then return nil end
+  local okB, BA = pcall(V.require, "BattleArena")
+  if not (okB and BA and BA.drawnGrid and BA.drawnHeight) then return nil end
+  local okG, g = pcall(BA.drawnGrid, map)
+  if not (okG and g) then return nil end
+  return function(x, z) return BA.drawnHeight(g, x, z) end
+end
+-- how far from `look` toward `eye` (0..1) the line stays clear; 1 = all of it
+local function clearTo(heightAt, look, eye)
+  local dx, dy, dz = eye[1] - look[1], eye[2] - look[2], eye[3] - look[3]
+  local len = math.sqrt(dx * dx + dy * dy + dz * dz)
+  if len <= 1 then return 1, len end
+  local steps = math.ceil(len / SIGHT_STEP)
+  -- start past the subject's own cell: it stands there
+  for i = 2, steps do
+    local t = i / steps
+    if heightAt(look[1] + dx * t, look[3] + dz * t) > look[2] + dy * t + SIGHT_EPS then
+      return (i - 1) / steps, len
+    end
+  end
+  return 1, len
+end
+-- Move the eye so nothing drawn stands between it and its subject: pull it
+-- in short of the obstacle (same angle), or, when that leaves too little
+-- room, lift it over.  Returns the pull factor (1 = untouched) and a note.
+local function keepClear(map, c)
+  local heightAt = sightGrid(map)
+  if not heightAt then return 1, nil end
+  local look, eye = c.look, c.eye
+  local s, len = clearTo(heightAt, look, eye)
+  if s >= 1 then return 1, nil end
+  local keepLen = s * len - SIGHT_MARGIN
+  if keepLen >= math.max(SIGHT_MIN, 0.35 * len) then
+    local k = keepLen / len
+    for i = 1, 3 do eye[i] = look[i] + (eye[i] - look[i]) * k end
+    return k, ("pulled in x%.2f (blocked)"):format(k)
+  end
+  -- lift: swing the eye up over what blocks it, same distance out
+  for lift = 8, SIGHT_LIFT_MAX, 8 do
+    local up = { eye[1], eye[2] + lift, eye[3] }
+    if clearTo(heightAt, look, up) >= 1 then
+      eye[2] = up[2]
+      return 1, ("lifted %d (blocked)"):format(lift)
+    end
+  end
+  -- nothing clear (a wall right behind the subject): no ORAS shot; the
+  -- battle's own camera, which the arena search proved clear, is used
+  return nil, "blocked right behind the subject: battle camera kept"
 end
 
 local function monOf(side)
@@ -232,7 +294,7 @@ function S.camera(cam)
     run.camNote = "off (ORAS CAMERA)"
     return false
   end
-  local arena, groundY = staged()
+  local arena, groundY, map = staged()
   if not arena then return false end
   local okU, u = pcall(run.host.unit)
   u = okU and tonumber(u) or nil
@@ -314,8 +376,30 @@ function S.camera(cam)
   end
   -- never under the ground (Fly's low shots, a sunk arena floor)
   c.eye[2] = math.max(c.eye[2], (groundY or 0) + 2)
-  run.camNote = ("eye (%.1f, %.1f, %.1f) look (%.1f, %.1f, %.1f) weight %.2f pulled in x%.2f"):format(
-    c.eye[1], c.eye[2], c.eye[3], c.look[1], c.look[2], c.look[3], c.weight, t)
+  -- never inside or behind a tree / building / the border wood
+  -- (once refused, the whole move keeps the battle camera: no flicking
+  -- between the two shots while the eye moves)
+  if run.camRefused then
+    run.camNote = "battle camera (ORAS shot blocked by the world)"
+    return false
+  end
+  local okK, k, blockNote = pcall(keepClear, map, c)
+  if okK and blockNote and not run.camBlockNoted then
+    run.camBlockNoted = true
+    pcall(Player().note, "move %s camera: %s", tostring(run.move), blockNote)
+  elseif not okK and not run.camBlockNoted then
+    run.camBlockNoted = true
+    pcall(Player().note, "move %s camera: world check failed (%s)", tostring(run.move), tostring(k))
+  end
+  if okK and k == nil then
+    run.camRefused = true
+    run.camNote = "battle camera (ORAS shot blocked by the world)"
+    return false
+  end
+  if okK and tonumber(k) then t = t * k end
+  run.camNote = ("eye (%.1f, %.1f, %.1f) look (%.1f, %.1f, %.1f) weight %.2f pulled in x%.2f%s"):format(
+    c.eye[1], c.eye[2], c.eye[3], c.look[1], c.look[2], c.look[3], c.weight, t,
+    okK and blockNote and (", " .. blockNote) or "")
   cam.eye, cam.focus = c.eye, c.look
   -- ORAS frames every move with an 11.3 degree lens (op 0x63, all moves),
   -- opened up when the eye was pulled in
