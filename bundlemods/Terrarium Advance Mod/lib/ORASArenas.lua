@@ -17,13 +17,19 @@
 --
 -- Materials are tex0 x vertex colour x a combiner constant (stage 0 then
 -- stage 1), alpha tested; the bake keeps that (lib/ORASEffectModels.lua
--- bakeModel with opts.const). Not decoded yet: material animations (water
--- scroll), fragment lighting (some sand / water floors come out bluish).
+-- bakeModel with opts.const). A pack's other files carry its material
+-- animations (file 2 for a stage: the water, the drifting leaf shadows, the
+-- light; bases also file 5): texture 0 translation (target 21) and rotation
+-- (20), looping. Meshes they animate keep their RAW uvs plus the material's
+-- uvt; ORASArenaStage applies the animated matrix per frame (stamp 2).
+-- Not decoded yet: fragment lighting (some sand / water floors come out bluish).
 --
 -- BUILD (row "ORAS ARENAS") into mod cache oras/arenas/:
 --   index.lua        { stamp, stages = { [env] = { g =, f =, o = } }, list = { env, ... } }
---   models/<name>.lua  { name, top, meshes = { { tex, blend, cutout, wrapU, wrapV,
---                      v = { x, y, z, u, v, r, g, b, a, ... } (cm, final UVs), idx } } }
+--   models/<name>.lua  { name, top, uv = { [material] = { frames, x, y, r } } or nil,
+--                      meshes = { { tex, blend, cutout, wrapU, wrapV, mat, anim, uvt,
+--                      v = { x, y, z, u, v, r, g, b, a, ... } (cm, final UVs; raw
+--                      PICA uvs when anim), idx } } }
 --   tex/<key>.png
 -- PLAY (row "ORAS ARENA": OFF / AUTO / one stage, oras/arenas/choice.txt).
 
@@ -34,7 +40,7 @@ local A = { ID = "oras_arenas", LABEL = "ORAS ARENAS" }
 
 A.ROOT = "oras/arenas"
 A.INDEX = A.ROOT .. "/index.lua"
-A.STAMP = "oras-arena=1"
+A.STAMP = "oras-arena=2"   -- 2: material animations (texture scroll / rotation)
 A.CHOICE = A.ROOT .. "/choice.txt"
 A.GARC_PATH = "a/1/3/6"
 A.IMPORT_ID = "pokemon_oras"
@@ -197,22 +203,128 @@ local function surfing(map)
   return p and p.surfing and true or false
 end
 
+-- ------- Gen 4 / Gen 5 native maps
+--
+-- Their map ids (Z123, C01R0201) and the shared Gen4 tileset say nothing, and
+-- Map.isOutdoor reads every one of them as indoors, so before this every
+-- fight there that was not on water got the indoor room (heya). What they DO
+-- carry:
+--   Gen 4: the map header's battle background byte (Gen4Battle.backgroundFor)
+--          and the terrain of the tile under the player (Gen4Battle.terrainFor,
+--          the cartridge's CalcTerrain), the same pair Platinum picks its own
+--          battle backdrop from.
+--   Gen 5: the tile behaviour under the player (Gen5FieldRules: grass, sand,
+--          cave floor, water), the place name (def.label: "Pinwheel Forest")
+--          and the zone's Fly permission (outdoors; caves and buildings deny it).
+
+local GEN4_BACKGROUND = {
+  plain = "kusa", water = "sea", city = "city", forest = "mori", mountain = "yama", snow = "do_t",
+  indoors_1 = "heya", indoors_2 = "heya", indoors_3 = "heya",
+  cave_1 = "do_i", cave_2 = "do_i", cave_3 = "do_m",
+  aaron = "4aku", bertha = "4dor", flint = "4gst", lucian = "4ice", cynthia = "cham",
+  distortion_world = "deo",
+  battle_tower = "vs1", battle_factory = "fact", battle_arcade = "vs2", battle_castle = "vs3", battle_hall = "vs1",
+}
+-- tile terrains that beat the map's background (Platinum asks the tile first)
+local GEN4_TERRAIN = {
+  sand = "hama", ice = "do_t", snow = "do_t", great_marsh = "mizu", cave = "do_i", water = "sea",
+}
+
+local function gameRef()
+  local ok, Game = pcall(require, "src.core.Game")
+  return ok and Game or nil
+end
+
+-- name keywords that are only a fallback (anything more specific wins first)
+local GENERIC = { city = true, town = true, route = true }
+
+local function nameRule(id, have, generic)
+  for _, rule in ipairs(BY_NAME) do
+    if (GENERIC[rule[1]] or false) == generic and id:find(rule[1], 1, true) and have(rule[2]) then
+      return rule[2]
+    end
+  end
+  return nil
+end
+
+-- Gen 4: (stage, why) or nil. `plain` false: only a tile terrain or a
+-- background that says something (indoors, cave, city, forest ...); true:
+-- the plain background too (after the name keywords had their turn).
+local function gen4Pick(map, have, plain)
+  local def = map and map.def
+  if not def or def.gen5 then return nil end
+  if def.battleBackground == nil and not (def.generation == 4) then return nil end
+  local okB, B = pcall(require, "src.battle.Gen4Battle")
+  if not (okB and B and B.backgroundFor) then return nil end
+  local game = gameRef()
+  local okT, terrain = pcall(B.terrainFor, game)
+  local okG, bg = pcall(B.backgroundFor, game)
+  terrain, bg = okT and terrain or nil, okG and bg or nil
+  local pick = have(GEN4_TERRAIN[terrain or ""] or "")
+  if pick then return pick, "gen4 terrain " .. tostring(terrain) end
+  if (bg or "plain") == "plain" and not plain then return nil end
+  pick = have(GEN4_BACKGROUND[bg or "plain"] or "")
+  if pick then return pick, "gen4 background " .. tostring(bg or "plain") end
+  return nil
+end
+
+-- Gen 5: (stage, why) or nil
+local function gen5Pick(map, have, id)
+  local def = map and map.def
+  if not (def and def.gen5) then return nil end
+  local okR, R = pcall(require, "src.world.Gen5FieldRules")
+  local game = gameRef()
+  local p = game and game.overworld and game.overworld.player
+  local b = nil
+  if okR and R and p then
+    local okb, v = pcall(R.behaviour, map, p.cellX or p.x, p.cellY or p.y)
+    b = okb and v or nil
+  end
+  if b then
+    if okR and R.CAVE_FLOOR[b] then return have("do_i"), "gen5 cave floor" end
+    if b == 0x0C or b == 0x23 then return have("saba"), "gen5 sand" end
+    if okR and (R.WATER_ENCOUNTER[b] or b == 0x02) then return have("sea"), "gen5 water" end
+  end
+  local pick = nameRule(id, have, false)
+  if pick then return pick, "gen5 name" end
+  local okF, Fly = pcall(require, "src.world.Gen5Fly")
+  local outdoor = okF and Fly and Fly.allowed(def) or false
+  if outdoor then
+    if okR and b and R.GRASS[b] then return have("kusa"), "gen5 grass" end
+    return nameRule(id, have, true) or have("kusa"), "gen5 outdoors (fly allowed)"
+  end
+  return have("heya"), "gen5 indoors (no fly)"
+end
+
+A.lastPickWhy = nil
+
 -- the stage AUTO picks for this map / battle (always one that was built)
 function A.autoPick(map, battle)
   local stages = (A.index() or {}).stages or {}
   local function have(env) return stages[env] and env or nil end
+  local function done(pick, why) A.lastPickWhy = why; return pick end
   local pick = have(BY_CLASS[classKey(battle)] or "")
-  if pick then return pick end
-  if surfing(map) then pick = have("sea") if pick then return pick end end
+  if pick then return done(pick, "trainer class " .. classKey(battle)) end
+  if surfing(map) then pick = have("sea") if pick then return done(pick, "surfing") end end
   local def = map and map.def
-  local id = (tostring(map and map.id or "") .. " " .. tostring(def and def.tileset or "")):lower()
-  for _, rule in ipairs(BY_NAME) do
-    if id:find(rule[1], 1, true) and have(rule[2]) then return rule[2] end
-  end
-  if id:find("gym", 1, true) and have("gym5") then return "gym5" end
+  local id = (tostring(map and map.id or "") .. " " .. tostring(def and def.tileset or "") .. " "
+              .. tostring(def and (def.label or def.name) or "")):lower():gsub("[%s%-%.]+", "_")
+  local why
+  pick, why = gen5Pick(map, have, id)
+  if pick then return done(pick, why) end
+  pick, why = gen4Pick(map, have, false)
+  if pick then return done(pick, why) end
+  pick = nameRule(id, have, false)
+  if pick then return done(pick, "name " .. id) end
+  pick = nameRule(id, have, true)
+  if pick then return done(pick, "name " .. id) end
+  pick, why = gen4Pick(map, have, true)
+  if pick then return done(pick, why) end
+  if id:find("gym", 1, true) and have("gym5") then return done("gym5", "name gym") end
   local outdoor = true
   pcall(function() outdoor = require("src.world.Map").isOutdoor(def) and true or false end)
-  return have(outdoor and "kusa" or "heya") or have("kusa") or (A.index() and A.index().list[1])
+  return done(have(outdoor and "kusa" or "heya") or have("kusa") or (A.index() and A.index().list[1]),
+              outdoor and "outdoors" or "indoors")
 end
 
 -- the stage for this fight, or nil when the row is OFF / nothing is built
@@ -239,25 +351,70 @@ local function u32(s, p)
   return a + b * 256 + c * 65536 + d * 16777216
 end
 
--- the BCH inside one member (a "BG" pack's first file)
-local function memberBCH(d)
-  if type(d) ~= "string" then return nil end
+-- every BCH of a member, in pack order (a plain BCH is a pack of one)
+local function packFiles(d)
+  local out = {}
+  if type(d) ~= "string" then return out end
   if d:sub(1, 2) == "BG" and #d >= 12 then
-    local a, b = u32(d, 5), u32(d, 9)
-    if b > a and b <= #d then d = d:sub(a + 1, b) end
+    local n = d:byte(3) + d:byte(4) * 256
+    for k = 0, n - 1 do
+      local a, b = u32(d, 5 + k * 4), u32(d, 9 + k * 4)
+      local f = (b > a and b <= #d) and d:sub(a + 1, b) or ""
+      out[#out + 1] = f:sub(1, 4) == "BCH\0" and f or false
+    end
+  elseif d:sub(1, 4) == "BCH\0" then
+    out[1] = d
   end
-  return d:sub(1, 4) == "BCH\0" and d or nil
+  return out
 end
+
+-- the looping material animations in a pack's other files:
+-- { [material] = { frames, x, y, r } } (curves or constants), or nil
+local function packUV(files)
+  local B, H = V.require("BCH"), V.require("H3D")
+  local mats, any = {}, false
+  for k = 2, #files do
+    local f = files[k]
+    if f then
+      local okA, anims = pcall(function()
+        local h = B.header(f)
+        return H.materialAnimations(B.relocate(f, h), h)
+      end)
+      for _, a in ipairs(okA and anims or {}) do
+        for _, el in ipairs(a.elements) do
+          local m = el.material
+          if m and el.target == H.TARGET.texCoord0Trans and (el.x ~= nil or el.y ~= nil) then
+            mats[m] = mats[m] or {}
+            mats[m].x, mats[m].y = el.x, el.y
+            mats[m].frames = math.max(mats[m].frames or 0, tonumber(a.frames) or 0)
+            any = true
+          elseif m and el.target == H.TARGET.texCoord0Rot and el.v ~= nil then
+            mats[m] = mats[m] or {}
+            mats[m].r = el.v
+            mats[m].frames = math.max(mats[m].frames or 0, tonumber(a.frames) or 0)
+            any = true
+          end
+        end
+      end
+    end
+  end
+  return any and mats or nil
+end
+A._packFiles, A._packUV = packFiles, packUV
 
 -- baked compact model -> the runtime layout: colours always present, the
 -- texture matrix applied and v flipped for LOVE (PICA's v runs bottom-up)
-local function finish(m)
+local function finish(m, uvMats)
   local H3D = V.require("H3D")
   local top = -math.huge
   local out = { name = m.name, meshes = {} }
+  local used = {}
   for _, ms in ipairs(m.meshes) do
     local st = ms.colors and 9 or 5
-    local t = ms.uvt and H3D.uvMatrix(ms.uvt[1], ms.uvt[2], ms.uvt[3], ms.uvt[4], ms.uvt[5], ms.uvt[6]) or nil
+    -- animated: raw uvs, the stage shader applies the live matrix
+    local anim = uvMats and ms.mat and ms.uvt and uvMats[ms.mat] and true or nil
+    if anim then used[ms.mat] = uvMats[ms.mat] end
+    local t = (not anim) and ms.uvt and H3D.uvMatrix(ms.uvt[1], ms.uvt[2], ms.uvt[3], ms.uvt[4], ms.uvt[5], ms.uvt[6]) or nil
     local v = {}
     for i = 0, #ms.v / st - 1 do
       local o = i * st
@@ -266,7 +423,8 @@ local function finish(m)
       local uv = { ms.v[o + 4], ms.v[o + 5] }
       if t then uv = H3D.applyUV(t, uv) end
       v[#v + 1], v[#v + 2], v[#v + 3] = x, y, z
-      v[#v + 1], v[#v + 2] = uv[1], 1 - uv[2]
+      if anim then v[#v + 1], v[#v + 2] = uv[1], uv[2]
+      else v[#v + 1], v[#v + 2] = uv[1], 1 - uv[2] end
       if ms.colors then
         for k = 6, 9 do v[#v + 1] = ms.v[o + k] end
       else
@@ -276,8 +434,10 @@ local function finish(m)
     out.meshes[#out.meshes + 1] = {
       tex = ms.tex, blend = ms.blend, cutout = ms.cutout, wrapU = ms.wrapU, wrapV = ms.wrapV,
       kc = ms.kc, mat = ms.mat, v = v, idx = ms.idx, colors = true,
+      anim = anim, uvt = anim and ms.uvt or nil,
     }
   end
+  if next(used) then out.uv = used end
   out.top = top > -math.huge and top or 0
   return out
 end
@@ -296,7 +456,8 @@ local function bake()
   local written, pieces, failed = {}, {}, 0
   for i = 0, g.count - 1 do
     local okM, raw = pcall(g.member, g, i)
-    local bch = okM and memberBCH(raw)
+    local files = okM and packFiles(raw) or {}
+    local bch = files[1] or nil
     if bch then
       local function writeTexture(name, w, h, img)
         local key = ("%d_%s_%dx%d"):format(i, name, w, h)
@@ -311,7 +472,9 @@ local function bake()
       local okB, m, whyB = pcall(EM.bakeModel, bch, writeTexture, { raw = true, maxSpan = math.huge, const = true })
       local name = okB and m and m.name
       if name and name:match("^btl_[GFO]_") then
-        mod.cache:write(("%s/models/%s.lua"):format(A.ROOT, name), "return " .. literal(finish(m)) .. "\n")
+        local okU, uv = pcall(packUV, files)
+        mod.cache:write(("%s/models/%s.lua"):format(A.ROOT, name),
+                        "return " .. literal(finish(m, okU and uv or nil)) .. "\n")
         pieces[name] = true
       elseif not okB then
         failed = failed + 1

@@ -609,7 +609,8 @@ end
 -- u8 (2 = vector2), then a flags word and one word per axis: a curve
 -- pointer, or the value itself when constant.
 
-H3D.TARGET = { texCoord0Trans = 21, texCoord1Trans = 24, texCoord2Trans = 27 }
+H3D.TARGET = { texCoord0Scale = 19, texCoord0Rot = 20, texCoord0Trans = 21,
+               texCoord1Trans = 24, texCoord2Trans = 27 }
 
 local function u24(d, at) local a, b, c = d:byte(at + 1, at + 3); return a + b * 256 + c * 65536 end
 local function s12(v) return v >= 2048 and v - 4096 or v end
@@ -699,6 +700,14 @@ function H3D.materialAnimations(d, h)
           elseif not absent and (W(d, at) or 0) > 0 then v = readCurve(d, W(d, at)) end
           el[axis == 0 and "x" or "y"] = v
         end
+      elseif prim == 0 then
+        -- one float (texture rotation, target 20): the same flag bits as an
+        -- axis of the vector above, value or curve at +12
+        local flags = W(d, e + 8)
+        local constant = flags % 2 == 1
+        local absent = math.floor(flags / 256) % 2 == 1
+        if constant then el.v = F(d, e + 12)
+        elseif not absent and (W(d, e + 12) or 0) > 0 then el.v = readCurve(d, W(d, e + 12)) end
       end
       anim.elements[#anim.elements + 1] = el
     end

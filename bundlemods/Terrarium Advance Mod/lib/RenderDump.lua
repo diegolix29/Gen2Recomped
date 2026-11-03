@@ -163,6 +163,14 @@ function D.request(A)
     out[#out + 1] = ("3D-BTL staged: %s, rung: %s"):format(
       tostring(okO and OB and OB.arenaInfo and OB.arenaInfo() ~= nil),
       tostring(okS and St and St.mode and St.mode() or "none"))
+    pcall(function()
+      local Ar = V.require("ORASArenas")
+      if Ar.active() then
+        local info = okO and OB.arenaInfo and OB.arenaInfo()
+        out[#out + 1] = ("ORAS ARENA: row %s, stage %s, auto picked because: %s"):format(
+          tostring(Ar.choice()), tostring(type(info) == "table" and info._oras or "-"), tostring(Ar.lastPickWhy))
+      end
+    end)
     V.require("ORASEffectsPlayer").report(out)
   end)
   out[#out + 1] = ""

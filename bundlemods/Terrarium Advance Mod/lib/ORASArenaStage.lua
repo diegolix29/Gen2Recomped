@@ -26,6 +26,10 @@ local S = {}
 S.ORAS_GAP = 430                 -- cm between the two Pokemon in ORAS
 S.CELL_GAP = 48                  -- world px between the arena's two cells
 S.K = S.CELL_GAP / S.ORAS_GAP
+-- The bases (btl_O) are a flat disc at y 0 -- the floor's own height -- with
+-- their shadow ring 1.1 cm under it, so both fought the floor for depth (the
+-- flickering wedges). Raised this many cm, both sit clear above the floor.
+S.BASE_LIFT = 3
 
 -- The camera. Inside every stage's ring of trees / buildings (~9-11 m out),
 -- behind and right of the player's Pokemon like ORAS's own singles shot.
@@ -147,6 +151,8 @@ local function piece(name)
           local blend = ms.blend or "alpha"
           list[#list + 1] = {
             mesh = mesh, blend = blend, cutout = ms.cutout or 0, kc = ms.kc or { 1, 1, 1, 1 },
+            -- a material animation (raw uvs + the material's texture matrix)
+            uvt = ms.anim and ms.uvt or nil, uv = ms.anim and m.uv and m.uv[ms.mat] or nil,
             -- opaque first, then blended ones, additive last
             pass = blend == "opaque" and 1 or (blend == "add" and 3 or 2),
           }
@@ -304,12 +310,15 @@ uniform mat4 vp;
 uniform mat4 model;
 uniform vec4 kc;
 uniform float cutout;
+uniform vec4 uvA;
+uniform vec2 uvB;
 #ifdef VERTEX
 vec4 position(mat4 t, vec4 p) { return vp * model * p; }
 #endif
 #ifdef PIXEL
 vec4 effect(vec4 color, Image tex, vec2 uv, vec2 sc) {
-  vec4 c = Texel(tex, uv) * color * kc;
+  vec2 t = vec2(uv.x * uvA.x + uv.y * uvA.z + uvB.x, uv.x * uvA.y + uv.y * uvA.w + uvB.y);
+  vec4 c = Texel(tex, t) * color * kc;
   if (c.a <= cutout + 0.004) discard;
   return c;
 }
@@ -338,13 +347,38 @@ local function stageMatrix(arena, groundY, ox, oz, lift)
                   Mat4.scale(-K, K, -K))
 end
 
-local function drawList(sh, list, matrix, pass)
+-- Material animations: ORAS runs them at 30 fps and loops them.
+S.ANIM_FPS = 30
+local IDENT_A, IDENT_B = { 1, 0, 0, 1 }, { 0, 0 }
+
+-- the live texture matrix of an animated mesh, as the shader's uvA / uvB
+-- (PICA matrix, then v flipped for LOVE, which the bake left undone)
+local function animUV(it, now)
+  local t, a = it.uvt, it.uv
+  local H = V.require("H3D")
+  local f = 0
+  if (a.frames or 0) > 0 then f = (now * S.ANIM_FPS) % a.frames end
+  local rot = tonumber(H.sampleCurve(a.r, f)) or t[4]
+  local tx = tonumber(H.sampleCurve(a.x, f)) or t[5]
+  local ty = tonumber(H.sampleCurve(a.y, f)) or t[6]
+  local m = H.uvMatrix(t[1], t[2], t[3], rot, tx, ty)
+  return { m.m11, -m.m12, m.m21, -m.m22 }, { m.m41, 1 - m.m42 }
+end
+
+local function drawList(sh, list, matrix, pass, now)
   local g = love.graphics
   pcall(sh.send, sh, "model", "row", matrix)
   for _, it in ipairs(list) do
     if it.pass == pass then
       pcall(sh.send, sh, "kc", it.kc)
       pcall(sh.send, sh, "cutout", it.cutout)
+      local ua, ub = IDENT_A, IDENT_B
+      if it.uvt and it.uv then
+        local ok, a, b = pcall(animUV, it, now)
+        if ok then ua, ub = a, b end
+      end
+      pcall(sh.send, sh, "uvA", ua)
+      pcall(sh.send, sh, "uvB", ub)
       if it.blend == "add" then g.setBlendMode("add", "alphamultiply")
       else g.setBlendMode("alpha", "alphamultiply") end
       g.draw(it.mesh)
@@ -379,15 +413,17 @@ function S.draw(arena, groundY)
       for _, side in ipairs({ "player", "enemy" }) do
         local c = arena[side]
         if c then
-          bases[#bases + 1] = stageMatrix(arena, groundY, c[1] - arena.mid[1], c[2] - arena.mid[2], -top * S.K)
+          bases[#bases + 1] = stageMatrix(arena, groundY, c[1] - arena.mid[1], c[2] - arena.mid[2],
+                                          (S.BASE_LIFT - top) * S.K)
         end
       end
     end
+    local now = clock()
     for pass = 1, 3 do
       g.setDepthMode("lequal", pass == 1)
-      if F then drawList(sh, F, mStage, pass) end
-      drawList(sh, G, mStage, pass)
-      for _, mb in ipairs(bases) do drawList(sh, O, mb, pass) end
+      if F then drawList(sh, F, mStage, pass, now) end
+      drawList(sh, G, mStage, pass, now)
+      for _, mb in ipairs(bases) do drawList(sh, O, mb, pass, now) end
     end
   end)
   g.setBlendMode("alpha", "alphamultiply")
