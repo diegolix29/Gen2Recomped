@@ -2698,14 +2698,14 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
       if row and not rowExists(row.id) then table.insert(out, row) end
     end
   end
-  -- ORAS ARENAS (bake the battle stages) and ORAS ARENA (OFF / AUTO / one
-  -- stage), under the effect rows (lib/ORASArenas.lua)
-  local okOrasArena, orasArenaRow, orasArenaChoiceRow = pcall(function()
+  -- ORAS ARENAS (bake the battle stages), ORAS ARENA (OFF / AUTO / one
+  -- stage) and ORAS ARENA PACK, under the effect rows (lib/ORASArenas.lua)
+  local okOrasArena, orasArenaRow, orasArenaChoiceRow, orasArenaPackRow = pcall(function()
     local A = V.require("ORASArenas")
-    return A.row(), A.choiceRow()
+    return A.row(), A.choiceRow(), A.packRow()
   end)
   if okOrasArena then
-    for _, row in ipairs({ orasArenaRow, orasArenaChoiceRow }) do
+    for _, row in ipairs({ orasArenaRow, orasArenaChoiceRow, orasArenaPackRow }) do
       if row and not rowExists(row.id) then table.insert(out, row) end
     end
   end

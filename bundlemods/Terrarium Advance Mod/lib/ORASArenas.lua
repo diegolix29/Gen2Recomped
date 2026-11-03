@@ -58,9 +58,37 @@ end
 
 local function Effects() return V.require("ORASEffects") end
 
+-- ORAS ARENA PACK packs oras/arenas/<folder>/* (models, tex) into
+-- cbe_cache_archive/orasarena (lib/CacheArchive.lua kind "orasarena");
+-- index.lua and choice.txt stay loose.  Loaded as ORASEffects does when
+-- nothing else has loaded it.
+local function archive()
+  local Ar = mod and mod.exports and mod.exports.cacheArchive
+  if Ar then return Ar end
+  local okS, src = pcall(function() return mod:read("lib/CacheArchive.lua") end)
+  local chunk = okS and type(src) == "string" and load(src, "@lib/CacheArchive.lua")
+  if not chunk then return nil end
+  local okW, WorkBudget = pcall(V.require, "WorkBudget")
+  local okA, arch = pcall(chunk, { mod = mod, WorkBudget = okW and WorkBudget or nil })
+  if not (okA and type(arch) == "table") then return nil end
+  if mod.exports then mod.exports.cacheArchive = arch end
+  return arch
+end
+
+-- one baked file: loose first (a fresh bake), else from the packed unit
+local function readFile(path)
+  local ok, bytes = pcall(mod.cache.read, mod.cache, path)
+  if ok and type(bytes) == "string" then return bytes end
+  local Ar = archive()
+  if not (Ar and Ar.readEntry) then return nil end
+  local okA, packed = pcall(Ar.readEntry, path)
+  return okA and type(packed) == "string" and packed or nil
+end
+A.readFile = readFile
+
 local function readLua(path)
-  local ok, src = pcall(mod.cache.read, mod.cache, path)
-  if not (ok and type(src) == "string") then return nil end
+  local src = readFile(path)
+  if type(src) ~= "string" then return nil end
   local chunk = (loadstring or load)(src, "@" .. path)
   if not chunk then return nil end
   if setfenv then setfenv(chunk, {}) end
@@ -69,10 +97,6 @@ local function readLua(path)
 end
 A.readLua = readLua
 
-function A.readFile(path)
-  local ok, bytes = pcall(mod.cache.read, mod.cache, path)
-  return ok and type(bytes) == "string" and bytes or nil
-end
 
 -- ------------------------------------------------------------------ names
 
@@ -507,6 +531,75 @@ end
 
 function A.running() return job ~= nil end
 
+-- -------------------------------------------------------------------- pack
+
+local packJob = nil   -- { Ar, started, startedAt, fresh }
+local PACK_BUDGET_MS = 12
+
+-- fresh: the bake just wrote every file loose again, so the old units are
+-- dropped first (they would keep members the new bake left out)
+local function startPack(fresh)
+  local Ar = archive()
+  if not (Ar and Ar.beginPack) then
+    log("warn", "ORAS ARENA PACK: cache packing unavailable (lib/CacheArchive.lua did not load); stages stay loose")
+    return false
+  end
+  packJob = { Ar = Ar, started = false, startedAt = now(), fresh = fresh }
+  return true
+end
+A.startPack = startPack
+
+-- status() lists the archive folders: the row asks every frame
+local packStatusMemo, packStatusAt, packStatusStale = nil, -1, false
+function A.packStatus()
+  local t = now()
+  if packStatusMemo and not packJob and not packStatusStale and t - packStatusAt < 1 then return packStatusMemo end
+  packStatusStale = false
+  local Ar = archive()
+  local okS, s = pcall(function() return Ar and Ar.status and Ar.status() or nil end)
+  s = okS and s or nil
+  packStatusMemo = s and { packed = s.orasarenaPacked, entries = s.orasarenaEntries,
+                           original = s.orasarenaOriginalLabel, archive = s.orasarenaArchiveLabel } or {}
+  packStatusAt = t
+  return packStatusMemo
+end
+
+local function pumpPack()
+  local Ar = packJob.Ar
+  if not packJob.started then
+    -- another pack job (ORAS MODELS / FX PACK, Colosseum auto-pack) holds the
+    -- archive: drive it to its end, then start ours
+    if Ar.running and Ar.running() then Ar.pump(PACK_BUDGET_MS); return end
+    if packJob.fresh and Ar.wipeKind then Ar.wipeKind("orasarena") end
+    local ok, why = Ar.beginPack("orasarena")
+    if not ok then
+      packJob = nil
+      A.packError = tostring(why)
+      log("warn", "ORAS ARENA PACK: packing could not start: %s", tostring(why))
+      return
+    end
+    packJob.started = true
+    log("info", "ORAS ARENA PACK: packing the battle stages in the background")
+    return
+  end
+  local state, err = Ar.pump(PACK_BUDGET_MS)
+  if state == "working" then return end
+  local seconds = now() - packJob.startedAt
+  packJob = nil
+  packStatusStale = true
+  -- meshes / images reload from the units (the loose files are gone)
+  pcall(function() V.require("ORASArenaStage").invalidate() end)
+  if state == "error" then
+    A.packError = tostring(err)
+    log("warn", "ORAS ARENA PACK: packing failed (loose files kept): %s", tostring(err))
+    return
+  end
+  A.packError = nil
+  local st = A.packStatus()
+  log("info", "ORAS ARENA PACK: packed in %.0fs -- %s of stages in %s (cbe_cache_archive/orasarena)",
+      seconds, tostring(st.original), tostring(st.archive))
+end
+
 function A.startBuild()
   if job then return false end
   job = { done = 0, total = 158, startedAt = now(), frameStart = now() }
@@ -518,6 +611,7 @@ end
 
 -- once a frame (main.lua)
 function A.pump()
+  if packJob then return pumpPack() end
   if not job then return end
   job.frameStart = now()
   local ok, nStages, nTex, failed = coroutine.resume(job.co)
@@ -532,6 +626,8 @@ function A.pump()
         nStages or 0, nTex or 0, now() - job.startedAt, failed or 0)
     job = nil
     A.status = { state = "done" }
+    -- once the player has packed, a new bake is packed right after it
+    if A.packStatus().packed then startPack(true) end
   end
 end
 
@@ -548,7 +644,7 @@ function A.row()
       return A.imported() and "BUILD" or "NO DUMP"
     end,
     step = function()
-      if job then return true end
+      if job or packJob then return true end
       if not A.imported() then
         log("info", "ORAS ARENAS: import a decrypted Omega Ruby / Alpha Sapphire .3ds from the MODS panel first")
         return true
@@ -579,6 +675,37 @@ function A.choiceRow()
         return true
       end
       A.step(dir)
+      return true
+    end,
+  }
+end
+
+-- ORAS ARENA PACK: the row under ORAS ARENA.  Packs the baked stages
+-- (models, textures) into cbe_cache_archive/orasarena, one file per folder;
+-- pressing it again packs whatever is loose.
+function A.packRow()
+  return {
+    id = "oras_arena_pack",
+    label = "ORAS ARENA PACK",
+    value = function()
+      if packJob then
+        local Ar = packJob.Ar
+        local label = Ar and Ar.stage and Ar.stage()
+        return packJob.started and tostring(label or "PACKING"):gsub("^PACK ORASARENA ", "") or "WAITING"
+      end
+      if job then return "AFTER BUILD" end
+      if A.packError then return "ERROR" end
+      local st = A.packStatus()
+      if st.packed then return "PACKED " .. tostring(st.archive or "") end
+      return A.built() and "LOOSE FILES" or "BUILD FIRST"
+    end,
+    step = function()
+      if job or packJob then return true end
+      if not A.built() then
+        log("info", "ORAS ARENA PACK: build the stages first (ORAS ARENAS)")
+        return true
+      end
+      startPack(false)
       return true
     end,
   }
