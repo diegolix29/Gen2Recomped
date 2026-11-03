@@ -27,7 +27,7 @@ local E = { ID = "oras_fx", LABEL = "ORAS EFFECTS" }
 
 E.ROOT = "oras/movefx"
 E.INDEX = E.ROOT .. "/index.lua"
-E.STAMP = "oras-fx=6"   -- 2: per-effect scale (0x34) and side (0x2F); 3: body point + offset, hit cue (0x0C);
+E.STAMP = "oras-fx=7"   -- 2: per-effect scale (0x34) and side (0x2F); 3: body point + offset, hit cue (0x0C);
                         -- 5: stage records (actor moves / scale, stage tint, camera); 6: body motion kind (0x0D)
 E.SETTING = E.ROOT .. "/battle.txt"
 E.IMPORT_ID = "pokemon_oras"
@@ -149,6 +149,36 @@ function E.stepZoom(dir)
   if v > E.ZOOM_MAX then v = E.ZOOM_MIN elseif v < E.ZOOM_MIN then v = E.ZOOM_MAX end
   zoomValue = v
   pcall(mod.cache.write, mod.cache, E.ZOOM_FILE, tostring(v) .. "\n")
+end
+
+-- move sounds (rendered by the bake, played by ORASEffectsPlayer): a level
+-- 0 (OFF) / 25 / 50 / 75 / 100 % on top of the game's own SFX volume
+-- (oras/movefx/sound.txt, default 100).  While they play, the cartridge's own
+-- move sound is not played (lib/ORASEffectsScene.lua).
+E.SOUND_FILE = E.ROOT .. "/sound.txt"
+E.SOUND_LEVELS = { 0, 25, 50, 75, 100 }
+local soundValue
+function E.soundLevel()
+  if soundValue == nil then
+    local ok, s = pcall(mod.cache.read, mod.cache, E.SOUND_FILE)
+    local v = ok and tonumber(type(s) == "string" and s:match("%d+")) or nil
+    soundValue = (v and v >= 0 and v <= 100) and v or 100
+  end
+  return soundValue
+end
+function E.stepSound(dir)
+  local cur, list = E.soundLevel(), E.SOUND_LEVELS
+  local at = 1
+  for i, v in ipairs(list) do if v == cur then at = i end end
+  at = at + (((tonumber(dir) or 1) < 0) and -1 or 1)
+  if at > #list then at = 1 elseif at < 1 then at = #list end
+  soundValue = list[at]
+  pcall(mod.cache.write, mod.cache, E.SOUND_FILE, tostring(soundValue) .. "\n")
+end
+-- sounds were baked and are switched on
+function E.soundsActive()
+  local idx = E.index()
+  return E.active() and idx ~= nil and idx.sounds == true and E.soundLevel() > 0
 end
 
 function E.setBattleEnabled(on)
@@ -310,7 +340,7 @@ local function bake(onProgress)
   local fxG = assert(G.open(rom, assert(rom:file(P.GARC_PATH), "dump has no " .. P.GARC_PATH)))
 
   -- 1. timelines
-  local moves, wanted, firstTarget = {}, {}, {}
+  local moves, wanted, firstTarget, wantedSound = {}, {}, {}, {}
   for move = 1, S.MAX_MOVE do
     local seq = S.parse(seqG:member(S.memberForMove(move)) or "")
     if seq then
@@ -319,7 +349,7 @@ local function bake(onProgress)
       -- attach state per slot from 0x2F (effects) and 0x68 (sounds; side only)
       local attach = {}
       local hit, motion
-      local stage = {}
+      local stage, sounds = {}, {}
       local function readAttach(q)
         return { role = S.u32(q.args, 1), point = S.u32(q.args, 5),
                  off = { S.f32(q.args, 9), S.f32(q.args, 13), S.f32(q.args, 17) } }
@@ -336,6 +366,17 @@ local function bake(onProgress)
         if r.op == 0x0D and motion == nil and #r.args >= 8 and S.u32(r.args, 1) == 0 then motion = S.u32(r.args, 5) end
         local st = stageRecord(S, r)
         if st then stage[#stage + 1] = st end
+        -- sound cues (0x64 / 0x5D: u32 id = 0x000D0000 + k, u32 -1, u32
+        -- volume 0..127): played by ORASEffectsPlayer, rendered below
+        if (r.op == 0x64 or r.op == 0x5D) and #r.args >= 12 then
+          local id = S.u32(r.args, 1)
+          if math.floor(id / 65536) == 13 then
+            local vol = S.u32(r.args, 9)
+            if vol > 127 then vol = 127 end
+            sounds[#sounds + 1] = { r.start, id % 65536, vol }
+            wantedSound[id % 65536] = true
+          end
+        end
         if r.op == 0x2B and #r.args >= 4 then
           local m = S.u32(r.args, 1)
           if m < fxG.count then
@@ -378,8 +419,9 @@ local function bake(onProgress)
           end
         end
       end
-      if #list > 0 or #stage > 0 or motion then
-        moves[move] = { frames = seq.frames, fx = list, hit = hit, stage = #stage > 0 and stage or nil, motion = motion }
+      if #list > 0 or #stage > 0 or motion or #sounds > 0 then
+        moves[move] = { frames = seq.frames, fx = list, hit = hit, stage = #stage > 0 and stage or nil,
+                        motion = motion, sounds = #sounds > 0 and sounds or nil }
       end
     end
     if move % 25 == 0 then job.done = move; checkpoint() end
@@ -419,10 +461,39 @@ local function bake(onProgress)
     checkpoint()
   end
 
+  -- 3. sounds: each battle sound the timelines use, rendered from the dump's
+  -- sound archive (lib/ORASSound.lua) to snd/<k>.wav (16 kHz mono)
+  local soundList = {}
+  for k in pairs(wantedSound) do soundList[#soundList + 1] = k end
+  table.sort(soundList)
+  job.stage, job.done, job.total = "snd", 0, #soundList
+  local okSnd, Snd = pcall(V.require, "ORASSound")
+  local sf = okSnd and rom:file(Snd.PATH)
+  local archive = sf and Snd.open(function(off, len) return rom:readFile(sf, off, len) end)
+  local soundsBaked, soundsFailed = 0, 0
+  if archive and archive.battleChecked then
+    for i, k in ipairs(soundList) do
+      local snd = archive.sounds[Snd.BATTLE_BASE + k]
+      local okR, buf = pcall(Snd.render, archive, snd)
+      if okR and buf and #buf > 1 then
+        mod.cache:write(("%s/snd/%d.wav"):format(E.ROOT, k), Snd.wav(buf))
+        soundsBaked = soundsBaked + 1
+      else
+        soundsFailed = soundsFailed + 1
+      end
+      job.done = i
+      checkpoint()
+    end
+  else
+    log("warn", "ORAS EFFECTS: sound archive not readable -- move sounds skipped")
+  end
+  log("info", "ORAS EFFECTS: %d move sounds rendered (%d failed)", soundsBaked, soundsFailed)
+
   local nMoves, nTex = 0, 0
   for _ in pairs(moves) do nMoves = nMoves + 1 end
   for _ in pairs(written) do nTex = nTex + 1 end
-  mod.cache:write(E.INDEX, "return " .. literal({ stamp = E.STAMP, moves = moves, members = roles }) .. "\n")
+  mod.cache:write(E.INDEX, "return " .. literal({ stamp = E.STAMP, moves = moves, members = roles,
+    sounds = soundsBaked > 0 or nil }) .. "\n")
   indexMemo = nil
   return nMoves, #members - failed, nTex, failed
 end
@@ -485,6 +556,7 @@ function E.row()
     value = function()
       if job then
         return job.stage == "moves" and ("MOVES %d/%d"):format(job.done, job.total)
+          or job.stage == "snd" and ("SOUNDS %d/%d"):format(job.done, job.total)
           or ("BUILDING %d/%d"):format(job.done, job.total)
       end
       if E.status and E.status.state == "error" then return "ERROR" end
@@ -509,6 +581,20 @@ function E.sizeRow()
     label = "ORAS FX SIZE",
     value = function() return "X" .. tostring(E.particleSize()) end,
     step = function() E.cycleSize(); return true end,
+  }
+end
+
+function E.soundRow()
+  return {
+    id = "oras_fx_sound",
+    label = "ORAS FX SOUND",
+    value = function()
+      local idx = E.index()
+      if idx and not idx.sounds then return "BUILD AGAIN" end
+      local v = E.soundLevel()
+      return v == 0 and "OFF" or (tostring(v) .. "%")
+    end,
+    step = function(_, dir) E.stepSound(dir); return true end,
   }
 end
 

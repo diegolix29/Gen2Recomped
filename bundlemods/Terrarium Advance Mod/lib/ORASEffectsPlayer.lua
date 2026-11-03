@@ -101,6 +101,13 @@ function Player.start(moveId, host, space)
   table.sort(entry.fx, function(a, b) return a[1] < b[1] end)
   local Stage = V.require("ORASStage")
   if Stage.has(entry) then run.stageEnd = Stage.length(entry) end
+  -- sound cues, in frame order; the run lives until the last one has played
+  if entry.sounds and E.soundsActive and E.soundsActive() then
+    table.sort(entry.sounds, function(a, b) return a[1] < b[1] end)
+    run.soundsOn, run.nextSound = true, 1
+    local last = entry.sounds[#entry.sounds][1]
+    run.stageEnd = math.max(run.stageEnd or 0, last + 1)
+  end
   -- the move lands at the timeline's damage cue (0x0C), else when its first
   -- target-side effect starts
   run.hitFrame = entry.hit
@@ -155,8 +162,81 @@ local function spawn(run, rec)
   }
 end
 
+-- -------------------------------------------------------------------- sound
+--
+-- A move's sound cues (entry.sounds = { {frame, k, volume 0..127} }) play the
+-- WAVs the bake rendered (oras/movefx/snd/<k>.wav).  Volume: the cue's own,
+-- times OPTIONS -> ORAS FX SOUND, times the game's SFX row (save.options.sfxVol
+-- 0..7, read every play, as the engine's own sounds do) and the engine's 0.8
+-- base.
+
+local soundData = {}       -- k -> love SoundData (or false)
+local playing = {}         -- live sources, so they are not collected mid-play
+Player.SOUND_BASE = 0.8
+
+local function sfxScale()
+  local okG, Game = pcall(require, "src.core.Game")
+  local opts = okG and Game and Game.save and Game.save.options
+  local level = opts and opts.sfxVol
+  if level == nil then level = 7 end
+  return math.max(0, math.min(7, level)) / 7
+end
+
+local function soundFor(k)
+  local d = soundData[k]
+  if d ~= nil then return d or nil end
+  d = false
+  local mod = V.mod
+  local ok, bytes = pcall(mod.cache.read, mod.cache, ("%s/snd/%d.wav"):format(Effects().ROOT, k))
+  if ok and type(bytes) == "string" and love and love.sound then
+    local okD, sd = pcall(function()
+      return love.sound.newSoundData(love.filesystem.newFileData(bytes, k .. ".wav"))
+    end)
+    if okD and sd then d = sd end
+  end
+  soundData[k] = d
+  return d or nil
+end
+
+function Player.playSound(k, vol)
+  if not (love and love.audio) then return false end
+  local okL, level = pcall(function() return Effects().soundLevel() end)
+  level = okL and tonumber(level) or 100
+  local gain = (vol or 127) / 127 * level / 100 * sfxScale() * Player.SOUND_BASE
+  if gain <= 0.001 then return false end
+  local sd = soundFor(k)
+  if not sd then return false end
+  local ok, src = pcall(love.audio.newSource, sd, "static")
+  if not (ok and src) then return false end
+  pcall(src.setVolume, src, math.min(1, gain))
+  pcall(src.play, src)
+  playing[#playing + 1] = src
+  for i = #playing, 1, -1 do
+    local okP, live = pcall(playing[i].isPlaying, playing[i])
+    if not (okP and live) and playing[i] ~= src then table.remove(playing, i) end
+  end
+  return true
+end
+
+-- an ORAS move with sounds is playing now (the cartridge's own move sound
+-- stays quiet meanwhile, lib/ORASEffectsScene.lua)
+function Player.soundBusy()
+  for _, run in ipairs(active) do
+    if run.soundsOn then return true end
+  end
+  return false
+end
+
 local function stepRun(run)
   run.frame = run.frame + 1
+  if run.soundsOn then
+    local list = run.entry.sounds
+    while run.nextSound <= #list and list[run.nextSound][1] <= run.frame do
+      local cue = list[run.nextSound]
+      pcall(Player.playSound, cue[2], cue[3])
+      run.nextSound = run.nextSound + 1
+    end
+  end
   local list = run.entry.fx
   while run.next <= #list and list[run.next][1] <= run.frame do
     spawn(run, list[run.next])
@@ -418,6 +498,9 @@ function Player.report(out)
       out[#out + 1] = ("    stage: %d records, runs to frame %d, last pose %s"):format(
         #(run.entry.stage or {}), run.stageEnd, tostring(run.stageNote))
       out[#out + 1] = ("    camera: %s"):format(tostring(run.camNote or "none (battle camera)"))
+      if run.soundsOn then
+        out[#out + 1] = ("    sounds: %d cues, %d played"):format(#run.entry.sounds, run.nextSound - 1)
+      end
     end
     for _, l in ipairs(run.live) do
       local a = l.lastAnchor

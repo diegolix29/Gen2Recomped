@@ -385,6 +385,40 @@ function S.install()
       return innerAnim(self, ...)
     end
   end
+  -- the cartridge's own move sound would play over the ORAS one: quiet while
+  -- an ORAS move with sounds runs (OPTIONS -> ORAS FX SOUND above OFF).
+  -- Gen 1 rows (BattleState:playAnimSound), Gen 2 (Gen2AnimPlayer:playSound)
+  -- and the no-animation fallback (Sound.playMove).
+  local function oursNow()
+    local ok, busy = pcall(function() return Player().soundBusy() end)
+    return ok and busy == true
+  end
+  local innerAnimSound = BattleState.playAnimSound
+  if type(innerAnimSound) == "function" then
+    function BattleState:playAnimSound(...)
+      if oursNow() then return end
+      return innerAnimSound(self, ...)
+    end
+  end
+  local okG2, Gen2AnimPlayer = pcall(require, "src.battle.Gen2AnimPlayer")
+  if okG2 and type(Gen2AnimPlayer) == "table" and type(Gen2AnimPlayer.playSound) == "function"
+      and not Gen2AnimPlayer.orasSoundHook then
+    local inner2 = Gen2AnimPlayer.playSound
+    function Gen2AnimPlayer:playSound(...)
+      if oursNow() then return end
+      return inner2(self, ...)
+    end
+    Gen2AnimPlayer.orasSoundHook = true
+  end
+  local okS, Sound = pcall(require, "src.core.Sound")
+  if okS and type(Sound) == "table" and type(Sound.playMove) == "function" and not Sound.orasSoundHook then
+    local innerMoveSound = Sound.playMove
+    function Sound.playMove(...)
+      if oursNow() then return end
+      return innerMoveSound(...)
+    end
+    Sound.orasSoundHook = true
+  end
   BattleState.orasEffectsSceneHook = true
 end
 

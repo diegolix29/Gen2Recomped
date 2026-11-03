@@ -2672,13 +2672,13 @@ mod.hooks:wrap("ui.options.rows", function(next, game, rows)
   -- ORAS EFFECTS (bake the move effects from the dump) and ORAS FX IN BATTLE
   -- (play them), under the ORAS model rows (lib/ORASEffects.lua)
   -- then ORAS CAMERA (move cameras on / off) and ORAS CAM ZOOM (percent)
-  local okOrasFx, orasFxRow, orasFxBattleRow, orasFxSizeRow, orasCamRow, orasZoomRow = pcall(function()
+  local okOrasFx, orasFxRow, orasFxBattleRow, orasFxSizeRow, orasSoundRow, orasCamRow, orasZoomRow = pcall(function()
     local E = V.require("ORASEffects")
-    return E.row(), E.battleRow(), E.sizeRow(), E.cameraRow(), E.zoomRow()
+    return E.row(), E.battleRow(), E.sizeRow(), E.soundRow(), E.cameraRow(), E.zoomRow()
   end)
   if okOrasFx then
-    local rows = { orasFxRow, orasFxBattleRow, orasFxSizeRow, orasCamRow, orasZoomRow }
-    for i = 1, 5 do
+    local rows = { orasFxRow, orasFxBattleRow, orasFxSizeRow, orasSoundRow, orasCamRow, orasZoomRow }
+    for i = 1, 6 do
       local row = rows[i]
       if row and not rowExists(row.id) then table.insert(out, row) end
     end

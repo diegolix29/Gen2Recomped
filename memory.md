@@ -251,3 +251,7 @@ Confirmed in game 2026-11-01: Pidgey shows 2 wings and Growlithe stays upright a
 - Attacks: Haunter's ORAS pack has one physical (8) and one special (12) motion only. Colosseum's per-move slot picked the bank for ORAS models; now the ORAS timeline's own motion kind (op 0x0D) does (Lick physical; Thunderbolt / Hypnosis / Night Shade / Double Team special; punches, kicks, beams to B/C/D/B banks where a species has them).
 - User steps: ORAS EFFECTS (stamp 6), then ORAS MODELS (rebuilds 255 of 721 species: 253 with scaled parent bones, 93 + 94 for the mask; the check itself ~20 s offline), then ORAS PACK if packed.
 
+## 2026-11-02 — ORAS move sounds (uncommitted, untested in game)
+- lib/ORASSound.lua: CSAR reader + CSEQ/CBNK/CWAV renderer; ids 0xD0000 + k -> sound 769 + k (exact size match, 617 battle sounds). Gotchas found offline: sequence args are big-endian (open-track offsets, random ranges); length-0 notes play the whole sample (130 sounds were silent until that). All 520 used sounds render and are audible; 7 forever-loops capped at 4 s.
+- Bake (ORAS EFFECTS, stamp 7) writes oras/movefx/snd/<k>.wav (16 kHz mono, 26 MB); ORASEffectsPlayer plays cues at their frames; new row ORAS FX SOUND (OFF/25/50/75/100%); the cartridge move sound is muted while an ORAS move with sounds runs. Verified offline (real dump): Double Team cues f9 k246 + k247, WAV loads in love.sound, mute on during the run and off after, OFF level plays nothing. Not listened to: the user tests by ear.
+
