@@ -429,6 +429,27 @@ local function safeResolveSprite(spriteService, opts)
   return nil
 end
 
+-- The 3D rider: with a player model loaded (ORAS / Colosseum character,
+-- Pokemon Player, custom model) the flying Pokemon is handed to PlayerModel
+-- as a MOUNT and the model rides it, instead of the model being swapped for
+-- the Pokemon and the rider drawn as the 2D walking sprite.
+local function playerModelModule()
+  local ok, PM = pcall(V.require, "PlayerModel")
+  return ok and PM or nil
+end
+
+local function modelMountActive()
+  local PM = playerModelModule()
+  return PM and PM.mountActive and PM.mountActive() or false
+end
+
+local function clearModelMount()
+  local PM = playerModelModule()
+  if PM and PM.clearMount and PM.mountActive and PM.mountActive() then
+    pcall(PM.clearMount)
+  end
+end
+
 local function startFlight(game, mon)
   if flying() then return end
   -- every takeoff is a plain FREEFLY (rider shown) until beginAutopilot
@@ -453,7 +474,32 @@ local function startFlight(game, mon)
   
   -- Convert the flying Pokemon's species to dex number and set Pokemon Player
   local flyingPokemonDex = nil
-  if species then
+  clearModelMount()
+  local riderPM = playerModelModule()
+  local keepRider = riderPM and riderPM.loaded and riderPM.loaded()
+                    and riderPM.setMount and true or false
+  if species and keepRider then
+    -- a player model is loaded: it stays, and rides the Pokemon (no state to
+    -- save / restore -- PlayerModel's own model is never touched)
+    local dex = type(species) == "number" and species
+      or (type(species) == "string" and tonumber(speciesConst(species, "^SPECIES_(%d+)$")))
+    if not dex and ColosseumDexNames then
+      for d, name in pairs(ColosseumDexNames) do
+        if name == species then dex = d; break end
+      end
+    end
+    if not dex then
+      local def = Game.data.pokemon and Game.data.pokemon[species]
+      dex = def and def.number
+    end
+    local okM, set = pcall(riderPM.setMount, dex)
+    if okM and set then
+      V.mod.log:info("FreeFly: %s (dex %s) carries the player's own 3D model", tostring(species), tostring(dex))
+    else
+      V.mod.log:info("FreeFly: no 3D model for %s (dex %s); 3D rider without a 3D mount", tostring(species), tostring(dex))
+    end
+  end
+  if species and not keepRider then
     -- Save the current Pokemon Player setting before changing it
     local okInstall, PlayerModelInstall = pcall(V.require, "PlayerModelInstall")
     V.mod.log:info("PlayerModelInstall available for save: %s", tostring(okInstall))
@@ -1744,8 +1790,10 @@ local function dropRider(ow)
 end
 
 local function syncRider(ow, p)
-  -- FULL FLY: no rider at all, so make sure no ghost is left in the list
-  if state.fullFly then
+  -- FULL FLY: no rider at all, so make sure no ghost is left in the list.
+  -- A 3D rider (the player's own model seated on PlayerModel's mount) needs
+  -- no 2D ghost either.
+  if state.fullFly or modelMountActive() then
     dropRider(ow)
     return
   end
@@ -2269,6 +2317,7 @@ function FreeFly.init()
         end
         dropRider(ow)
         showFollowers(ow)
+        clearModelMount()
         return
       end
       p.freeFlying = true
@@ -3205,7 +3254,7 @@ function FreeFly.init()
         -- rider lives. This hands it the rider as a separate billboard.
         -- nil on FULL FLY, when not airborne, or for any other character.
         Host4.flightRider = function(mapX, mapY)
-          if state.fullFly then return nil end
+          if state.fullFly or modelMountActive() then return nil end
           local ow = Game.overworld
           local pl = ow and ow.player
           local lift = pl and pl.freeFlyAlt

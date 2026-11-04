@@ -72,6 +72,13 @@ local orasStillFor = 0        -- seconds the player has not been moving
 local orasLastX, orasLastY = nil, nil  -- last drawn position (movement is read from it)
 local orasIndexRetryAt = 0    -- next time a missing character may re-read the index
 local orasWarned = {}         -- banks that failed to load, logged once each
+
+-- FREEFLY mount (lib/FreeFly.lua): while set, draw() puts this Pokemon under
+-- the player at the drawn height and seats the player's own model (ORAS /
+-- Colosseum character, Pokemon Player, custom model) on its back, standing
+-- still.  { dex, colosseum = true } or { dex, rig, model, t }.  nil = not
+-- riding.  See PlayerModel.setMount.
+local mount = nil
 local orasFidgetIn = 5        -- seconds of standing until the next idleB fidget
 
 -- A Colosseum trainer/character model standing in for the player sprite
@@ -669,7 +676,8 @@ local function driveOrasCharacter(dt, px, py)
   orasLastX, orasLastY = px, py
   local okG, Game = pcall(require, "src.core.Game")
   local pl = okG and Game and Game.overworld and Game.overworld.player
-  local moving = speed > 0.01 or (pl and pl.moving == true)
+  -- riding a FREEFLY mount: the rider stands still whatever the flight does
+  local moving = (not mount) and (speed > 0.01 or (pl and pl.moving == true))
   if moving then orasStillFor = 0 else orasStillFor = orasStillFor + dt end
   local want = "idle"
   if moving then
@@ -1000,6 +1008,96 @@ local function yawForDraw(px, py, facing, kind, b, FirstPerson)
   return 0
 end
 
+-- ------- FREEFLY mount
+--
+-- FreeFly used to swap the player model for the flying Pokemon at takeoff,
+-- leaving the rider a 2D sprite.  With a player model loaded it now calls
+-- setMount instead: the model stays, the Pokemon is drawn under it here, and
+-- the model rides on the Pokemon's back.  Same source order as loadStadium:
+-- the Colosseum actor path (which also serves ORAS-built species), then
+-- Stadium 2, then Stadium.
+function PlayerModel.setMount(dex)
+  dex = tonumber(dex)
+  if not dex then PlayerModel.clearMount(); return false end
+  if mount and mount.dex == dex then return true end
+  PlayerModel.clearMount()
+  if ColosseumMon.available(dex, "normal") then
+    mount = { dex = dex, colosseum = true }
+    return true
+  end
+  local model
+  if Stadium2Pack.available() then model = Stadium2Pack.load(dex, false) end
+  if not model then model = StadiumPack.load(dex, false) end
+  if not model and not Stadium2Pack.available() then model = Stadium2Pack.load(dex, false) end
+  if model and not model.staticPose then
+    local rig = StadiumRig.new(model)
+    if rig then
+      rig:pose(1, 0, true)
+      mount = { dex = dex, rig = rig, model = model, t = 0 }
+      return true
+    end
+  end
+  return false
+end
+
+function PlayerModel.clearMount()
+  if mount and mount.rig then pcall(mount.rig.release, mount.rig) end
+  mount = nil
+end
+
+function PlayerModel.mountActive()
+  return mount ~= nil
+end
+
+-- Draw the mount at (px, py, y) facing world bearing `bearing`; returns the
+-- height of its back (world units) for the rider, or nil when it could not
+-- draw this frame.
+local MOUNT_SEAT = 0.2   -- of the mount's height: on its back, not its head
+local function drawMount(px, py, y, bearing)
+  local g4 = gen4WorldFactor()
+  local fx, fz = math.sin(bearing), math.cos(bearing)
+  if mount.colosseum then
+    ColosseumMon.update(mount.dex, "normal", 1 / 60)
+    local tempM = ColosseumMon.matrix(mount.dex, "normal", 0, 0, 0, fx, fz)
+    if not tempM then return nil end
+    local m = Mat4.translate(px + 8, y, py + 8)
+    if g4 ~= 1 then m = Mat4.mul(m, Mat4.scale(g4, g4, g4)) end
+    m = Mat4.mul(m, tempM)
+    if not ColosseumMon.draw(mount.dex, "normal", m) then return nil end
+    local actor = ColosseumMon.actor(mount.dex, "normal")
+    local h = actor and (tonumber(actor.height) or 0) * (tonumber(actor.worldScale) or 1) or 0
+    if not (h > 0) then h = StadiumMon.REF_HEIGHT end
+    return h * g4 * MOUNT_SEAT
+  end
+  local rig, model = mount.rig, mount.model
+  local dt = 1 / 60
+  mount.t = mount.t + dt
+  rig:pose(1, mount.t * 30, true)
+  rig:anchor(0.75, dt)
+  rig:textures(nil)
+  local scale = StadiumMon.scaleFor(model) * g4
+  local m = Mat4.translate(px + 8, y, py + 8)
+  m = Mat4.mul(m, Mat4.rotateY(bearing))
+  m = Mat4.mul(m, Mat4.scale(scale, scale, scale))
+  local lift = StadiumMon.liftFor(model)
+  if lift ~= 0 then m = Mat4.mul(m, Mat4.translate(0, -lift, 0)) end
+  rig:skin(bearing)
+  rig:draw(m)
+  return StadiumMon.worldHeightFor(model) * g4 * MOUNT_SEAT
+end
+
+-- The player's world bearing for the mount: the free-walk body (held while
+-- standing), Gen 4 third/first's modelYaw, else the compass facing.
+local FACING_BEARING = { down = 0, right = math.pi / 2, up = math.pi, left = -math.pi / 2 }
+local function mountBearing(facing, gen4Cam, Cam, FirstPerson, b)
+  if gen4Cam and Cam and Cam.modelYaw then return Cam.modelYaw() or 0 end
+  if b > 0 and FirstPerson.bodyYaw ~= nil then return FirstPerson.bodyYaw end
+  local okG, Game = pcall(require, "src.core.Game")
+  local pl = okG and Game and Game.overworld and Game.overworld.player
+  local f = (pl and pl.facing) or facing
+  return FACING_BEARING[type(f) == "string" and string.lower(f) or ""] or 0
+end
+
 -- Draw the player model at the given position with the given transform.
 -- This integrates with the existing Voxel3D pipeline.
 --- `mirror` is the sprite step-flip flag (see stepFlip in movement.lua /
@@ -1025,6 +1123,13 @@ function PlayerModel.draw(px, py, y, facing, mirror)
   if b > 0 then
     -- keeps the held bearing on the boom (see FirstPerson.bodyBearing)
     facing = FirstPerson.pointBody(0, 0, facing)
+  end
+
+  -- FREEFLY: the flying Pokemon under the player, the model on its back
+  if mount then
+    local okM, seat = pcall(drawMount, px, py, y,
+                            mountBearing(facing, gen4Cam, Cam, FirstPerson, b))
+    if okM and seat then y = y + seat + 4 end
   end
   
   -- Handle a Colosseum-sourced model (Gen III dex, or any dex with no
@@ -1197,6 +1302,7 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     local Game = require("src.core.Game")
     local isMoving = Game.input:isDown("up") or Game.input:isDown("down")
                     or Game.input:isDown("left") or Game.input:isDown("right")
+    if mount then isMoving = false end   -- seated on a FREEFLY mount
 
     -- Detect whether a manual (cosmetic, in-place) hop is currently
     -- playing, by reading the exact same fields off the exact same player
