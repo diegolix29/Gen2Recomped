@@ -31,7 +31,7 @@
 
 ## Current State / Open Work
 - Branch name suggests Gen 5 (Black/White) fixes; recent commits are about Emerald voxels and load lag / perf settings.
-- ORAS (Terrarium Advance Mod), 2026-11-03: models, effects, arenas confirmed; arena packing done. Step 4 (ORAS trainers): ORAS TRAINERS bake (263 characters) + ORAS PLAYER (overworld player, walk / run / fidget, Gen 4/5 load fix) written, uncommitted, user testing in game. Phase 3 (trainers in battle) starts only when the user says so. Details in the ORAS sections below and memory.md.
+- ORAS (Terrarium Advance Mod), 2026-11-03: models, effects, arenas confirmed; arena packing done. Step 4 (ORAS trainers): ORAS TRAINERS bake (263 characters) + ORAS PLAYER (overworld player, walk / run / fidget, Gen 4/5 load fix) written, uncommitted, user testing in game. Before phase 3: fix Brendan walk legs, keep last facing when stopped + A interacts in the player facing (both DONE, untested in game; memory.md "Before phase 3"). Phase 3 (trainers in battle) starts only when the user says so. Details in the ORAS sections below and memory.md.
 
 ## Colosseum cache packing (lib/CacheArchive.lua, PACK CACHE menu)
 - Units: <save>/cbe_cache_archive/{pokemon,movefx}/<key>.cbeu (zlib per file), index cache/archive_v1/<kind>.lua, readEntry reads one entry straight from its unit (no loose copy). Auto-pack: species/moves written by the extractor or GeneratedAssets.write are packed in the background (A.tick from BattleRuntime, 20 s settle). Must be loaded BEFORE BuildPipeline.run (main.lua creates it early). Identity files that code reads via mod.cache directly stay loose (pinnedLoose): manifests, movefx index/coverage, per-species model_cache.lua / rev.txt / extract.txt.

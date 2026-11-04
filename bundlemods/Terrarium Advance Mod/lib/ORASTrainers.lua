@@ -13,9 +13,11 @@
 --          Slots: 0 stand (1 frame), 93 fidget (36: a hand to the cap / hip;
 --          every field rig has it, baked as idleB and played now and then by
 --          PlayerModel), 2 walk (14), 4 run (16), 5 jump,
---          8 / 9 / 12 bike.  Nodes sw_parts01-05 (dive goggles, snorkel,
---          rod, ...) and bicycle are switch parts the game shows only for
---          those moves: never drawn here.  Texture unit 0 is a projection
+--          8 / 9 / 12 bike.  Only the player pair has switch parts
+--          (sw_parts01-05): 01 the Mega bracelet and 02 the shoes, drawn from
+--          the body texture, are the outfit; 03-05 (goggles, snorkel,
+--          flippers) carry their own *_sw_parts texture and are dive gear,
+--          never drawn here.  Texture unit 0 is a projection
 --          dummy; the character's own texture sits in unit 1 (on uv0).
 --   BATTLE a/1/3/3: five members per character: +0 model BCH (bt0001_00 =
 --          Serena, bt0002, ..., rsbt00NN the ORAS cast; bt0110 is a 3-bone
@@ -38,7 +40,8 @@ local mod = V and V.mod
 local T = { ID = "oras_trainers", LABEL = "ORAS TRAINERS" }
 T.ROOT = "oras/trainers"
 T.INDEX = T.ROOT .. "/index.lua"
-T.STAMP = "oras-trainer=3\n"   -- 2: field heights scaled to real size (FIELD_SCALE); 3: field idleB = slot 93
+T.STAMP = "oras-trainer=5\n"   -- 2: field heights scaled (FIELD_SCALE); 3: field idleB = slot 93; 4: shoes / bracelet kept; 5: leg IK
+T.LEG_IK = { { "LThigh", "LLeg", "LFoot" }, { "RThigh", "RLeg", "RFoot" } }
 T.IMPORT_ID = "pokemon_oras"
 T.FIELD_GARC = "a/0/2/1"
 T.BATTLE_GARC = "a/1/3/3"
@@ -115,19 +118,25 @@ end
 local function skipTexture(n)
   return n == nil or n == "" or n == "projection_dummy" or n:find("^Bchara_hlight") ~= nil
 end
--- switch parts shown only for one move (dive gear, rod, ...).  The bike is
--- kept: only the riding variants (rstr0050 / rstr0051) carry one.
-local function hiddenNode(name)
+-- dive gear: a switch part drawn from its own sw_parts texture.  The switch
+-- parts drawn from the body texture (shoes, bracelet) are kept -- hiding
+-- every sw_parts node left Brendan and May walking on bare stumps.  The bike
+-- is kept too: only the riding variants (rstr0050 / rstr0051) carry one.
+local function hiddenNode(name, tex)
   name = tostring(name or "")
-  return name:find("^sw_parts") ~= nil
+  if name:find("^sw_parts") == nil then return false end
+  for k = 1, 3 do
+    if tex and tex[k] and tostring(tex[k]):find("sw_parts", 1, true) then return true end
+  end
+  return false
 end
 T._hiddenNode = hiddenNode
 
 -- the mesh-selection rule bakeActor asks for: the first real texture unit
 function T.selectFor(model)
   return function(mesh, mat)
-    if hiddenNode(model.nodeNames and model.nodeNames[mesh.nodeIndex]) then return nil end
     local tex = mat.textures or {}
+    if hiddenNode(model.nodeNames and model.nodeNames[mesh.nodeIndex], tex) then return nil end
     for k = 1, 3 do
       if not skipTexture(tex[k]) then
         local unit = mat.units and mat.units[k] or {}
@@ -223,7 +232,10 @@ function T.buildOne(cache, src, field, battle)
   end
   local names = {}
   for i, b in ipairs(skeleton or {}) do names[i] = b.name end
-  local pose = H.poser(model, function(curve, f) return GF1.sample(curve, f) end, names)
+  -- field motions place each foot as a model-space IK target and leave the
+  -- knee to the game (H3D.poser opts.legIK)
+  local pose = H.poser(model, function(curve, f) return GF1.sample(curve, f) end, names,
+    src.kind == "field" and { legIK = T.LEG_IK } or nil)
   local actions = src.kind == "field" and T.FIELD_ACTIONS or T.BATTLE_ACTIONS
   local dir = ("%s/%s"):format(T.ROOT, src.id)
   local summary, why = C.bakeActor({ cache = cache }, {

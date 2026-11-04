@@ -791,7 +791,11 @@ function OverworldColosseum.draw(p)
     local okFirstPerson, FirstPerson = pcall(V.require, "FirstPerson")
     if okFirstPerson and FirstPerson then
       local b = FirstPerson.cardBlend()
-      if b > 0 then
+      if b > 0 and p.isPlayer and FirstPerson.bodyYaw ~= nil then
+        -- the player's free-walk body bearing: its travel, and the LAST
+        -- travel while standing (never swings round to the camera)
+        fx, fz = math.sin(FirstPerson.bodyYaw), math.cos(FirstPerson.bodyYaw)
+      elseif b > 0 then
         local cameraYaw = FirstPerson.cardYaw(p.px or 0, p.py or 0)
         local face = type(renderFacing) == "string" and string.lower(renderFacing) or renderFacing
         local yaw = 0

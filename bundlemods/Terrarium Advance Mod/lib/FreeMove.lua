@@ -343,14 +343,18 @@ function FreeMove.tick(state)
 
   -- the head is the facing: what A talks to, what the sun's card shows,
   -- which way a bonk points. (A body that is WALKING may turn along its
-  -- travel instead -- see below, once there is a travel to turn along; a
-  -- standing one always faces where the camera looks, which is what makes
-  -- A predictable.) pointBody rather than compassFacing, so the card also
+  -- travel instead -- see below, once there is a travel to turn along.)
+  -- pointBody rather than compassFacing, so the card also
   -- gets the CONTINUOUS bearing behind that compass point.
   --
   -- On gen4hostworld this is Gen4ActorCam (Gen4View yaw), not the voxel
   -- FirstPerson rig -- that rig is never the camera on Platinum.
-  p.facing = Look.pointBody(0, 0)
+  --
+  -- Standing on the boom (3RD) keeps the last walked bearing (p.facing seeds
+  -- it after a grid move): the character no longer swings to the camera when
+  -- it stops, and A talks to what the BODY faces. In the head (1ST) the body
+  -- is still the look.
+  p.facing = Look.pointBody(0, 0, p.facing)
 
   -- HORDE MODE takes both of these away for as long as it runs: there is
   -- no pausing (START), and nobody stops to read a sign with the horde

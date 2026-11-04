@@ -118,15 +118,23 @@ local function facingOf(a)
   return c > 0 and "down" or "up"
 end
 
-function Cam.bodyBearing(wx, wz)
-  if Cam.mode() == "third" and wx and wz and (wx ~= 0 or wz ~= 0) then
-    return math.atan2(wx, wz)
+-- Third person: walking turns the body along its travel; standing KEEPS the
+-- last bearing (never swings back to the camera), so A talks along the way
+-- the body faces. `facing` (optional compass) seeds it when nothing has been
+-- recorded yet. First person: the body is the look.
+function Cam.bodyBearing(wx, wz, facing)
+  if Cam.mode() == "third" then
+    if wx and wz and (wx ~= 0 or wz ~= 0) then
+      return math.atan2(wx, wz)
+    end
+    if Cam.bodyYaw ~= nil then return Cam.bodyYaw end
+    if facing then return Cam.worldYaw(facing) end
   end
   return Cam.lookBearing()
 end
 
-function Cam.pointBody(wx, wz)
-  Cam.bodyYaw = Cam.bodyBearing(wx, wz)
+function Cam.pointBody(wx, wz, facing)
+  Cam.bodyYaw = Cam.bodyBearing(wx, wz, facing)
   return facingOf(Cam.bodyYaw)
 end
 

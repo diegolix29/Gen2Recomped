@@ -414,3 +414,10 @@ User steps after: press ORAS ARENA PACK, restart, fight on a few stages (kusa, s
 - Offline: rebake 263 in 13 s; base banks still, idleB / walk / run present; battle models' base = slot 0 idle loop (2.5 s). Not testable offline: walk / run in game, the Gen 4 / 5 draw.
 - NEXT: user tests; then phase 3 (battle: idle / throw / command on every 3D-BTL rung; Emerald direct names, random named gym / E4 elsewhere, NPC by trainer class).
 - STATUS 2026-11-03 night: waiting on the user's in-game test of ORAS TRAINERS (press again, stamp 3) + ORAS PLAYER on Gen 1-5. Do NOT start phase 3 until the user says so.
+
+## 2026-11-03 — Before phase 3 (user's list, in this order)
+1. ORAS PLAYER Brendan (rstr0002): legs misplaced while walking (user pressed F12 while walking).
+2. Player models / sprites (ORAS characters, player Pokemon, sprites) turn to face the camera when the player stops; user wants that OFF: standing keeps the last movement direction.
+3. A-button interaction must use the player's facing; today it only works when the CAMERA faces the thing.
+- 2 + 3 DONE 2026-11-03 (untested in game): FirstPerson.bodyBearing / Gen4ActorCam.bodyBearing on the boom (3RD) now keep the last bodyYaw while standing (seeded from p.facing after a grid move) instead of the camera look; FreeMove passes p.facing (A uses that facing). 1ST unchanged (body = look). PlayerModel.yawForDraw uses FirstPerson.bodyYaw (towardCam = bearing, awayCam = bearing + pi) on every voxel branch; OverworldColosseum / OverworldStadium player-as-Pokemon use sin/cos(bodyYaw). Followers untouched (own facing). Gold's GoldCameraControls already held the bearing.
+Then phase 3 (battle trainers), when the user says so.

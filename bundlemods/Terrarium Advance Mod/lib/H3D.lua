@@ -486,13 +486,125 @@ end
 
 -- poser(motion, frame) -> skin[boneIndex] (world * inverse bind), world[boneIndex]
 -- (1-based bone indices, as model.bones)
-function H3D.poser(model, sample, skeletonNames)
+-- ---------------------------------------------------------- leg IK
+--
+-- ORAS field characters (lib/ORASTrainers.lua) animate each FOOT by position
+-- -- an IK target -- and leave the knee (LLeg / RLeg) unanimated: the game
+-- bends the knee itself.  Posed straight, the foot landed where the leg
+-- could not reach and the leg and shoe twisted (Brendan's "legs in the wrong
+-- place").  opts.legIK = { { thigh, leg, foot }, ... } (bone names) turns on
+-- a two-bone solve for motions that move the foot but not the knee: the
+-- thigh and leg are turned so the leg reaches the foot's animated position,
+-- the knee bending toward +Z (the way the models face); the foot keeps its
+-- animated world transform.
+local function vsub(a, b) return { a[1] - b[1], a[2] - b[2], a[3] - b[3] } end
+local function vdot(a, b) return a[1] * b[1] + a[2] * b[2] + a[3] * b[3] end
+local function vcross(a, b) return { a[2] * b[3] - a[3] * b[2], a[3] * b[1] - a[1] * b[3], a[1] * b[2] - a[2] * b[1] } end
+local function vlen(a) return math.sqrt(vdot(a, a)) end
+local function vnorm(a) local l = vlen(a); if l < 1e-9 then return nil end; return { a[1] / l, a[2] / l, a[3] / l } end
+local function posOf(m) return { m[4], m[8], m[12] } end
+-- the rotation (4x4) taking unit direction a to unit direction b, about `pivot`
+local function rotateBetween(a, b, pivot)
+  local c = vdot(a, b)
+  local axis = vcross(a, b)
+  local s = vlen(axis)
+  if s < 1e-7 then return nil end
+  local k = { axis[1] / s, axis[2] / s, axis[3] / s }
+  local t = 1 - c
+  local x, y, z = k[1], k[2], k[3]
+  local r = {
+    t * x * x + c,     t * x * y - s * z, t * x * z + s * y,
+    t * x * y + s * z, t * y * y + c,     t * y * z - s * x,
+    t * x * z - s * y, t * y * z + s * x, t * z * z + c,
+  }
+  local px, py, pz = pivot[1], pivot[2], pivot[3]
+  -- T(p) * R * T(-p)
+  return {
+    r[1], r[2], r[3], px - (r[1] * px + r[2] * py + r[3] * pz),
+    r[4], r[5], r[6], py - (r[4] * px + r[5] * py + r[6] * pz),
+    r[7], r[8], r[9], pz - (r[7] * px + r[8] * py + r[9] * pz),
+    0, 0, 0, 1,
+  }
+end
+-- solve one chain in `world` (thigh, leg, foot: 1-based model bone indices)
+local function solveLeg(world, ti, li, fi, l1, l2)
+  local hip = posOf(world[ti])
+  local footW = world[fi]
+  local target = posOf(footW)
+  local toT = vsub(target, hip)
+  local d = vlen(toT)
+  if d < 1e-6 then return end
+  local u = { toT[1] / d, toT[2] / d, toT[3] / d }
+  d = math.max(math.abs(l1 - l2) + 1e-4, math.min(l1 + l2 - 1e-4, d))
+  local a = (l1 * l1 - l2 * l2 + d * d) / (2 * d)
+  local h = math.sqrt(math.max(0, l1 * l1 - a * a))
+  -- bend toward +Z, made perpendicular to the hip -> foot line
+  local fwd = { 0, 0, 1 }
+  local v = vnorm(vsub(fwd, { u[1] * vdot(fwd, u), u[2] * vdot(fwd, u), u[3] * vdot(fwd, u) }))
+  if not v then v = { 0, -1, 0 } end
+  local knee = { hip[1] + u[1] * a + v[1] * h, hip[2] + u[2] * a + v[2] * h, hip[3] + u[3] * a + v[3] * h }
+  -- thigh: its bone axis (hip -> its knee) onto hip -> knee
+  local fkKnee = posOf(world[li])
+  local from, to = vnorm(vsub(fkKnee, hip)), vnorm(vsub(knee, hip))
+  if from and to then
+    local q = rotateBetween(from, to, hip)
+    if q then world[ti] = matMul(q, world[ti]); world[li] = matMul(q, world[li]) end
+  end
+  -- leg: knee -> where its child now sits, onto knee -> the foot target
+  local kneeNow = posOf(world[li])
+  local legAxis = vnorm({ world[li][1], world[li][5], world[li][9] })   -- the leg's local +X
+  local want = vnorm(vsub(target, kneeNow))
+  if legAxis and want then
+    local q = rotateBetween(legAxis, want, kneeNow)
+    if q then world[li] = matMul(q, world[li]) end
+  end
+  world[fi] = footW
+end
+
+function H3D.poser(model, sample, skeletonNames, opts)
   local gfIndex = {}
   for i, name in ipairs(skeletonNames or {}) do gfIndex[name] = i - 1 end
   local inverseBind = {}
   for i, bone in ipairs(model.bones) do inverseBind[i] = H3D.affineInverse(bone.world) end
+  -- leg chains: model bone indices and bone lengths
+  local chains = {}
+  local byName = {}
+  for i, bone in ipairs(model.bones) do byName[bone.name] = i end
+  for _, names in ipairs(opts and opts.legIK or {}) do
+    local ti, li, fi = byName[names[1]], byName[names[2]], byName[names[3]]
+    if ti and li and fi and gfIndex[names[2]] and gfIndex[names[3]] then
+      local lb, fb = model.bones[li], model.bones[fi]
+      chains[#chains + 1] = { ti = ti, li = li, fi = fi, gl = gfIndex[names[2]], gf = gfIndex[names[3]],
+                              l1 = vlen(lb.translation), l2 = vlen(fb.translation) }
+    end
+  end
+  -- does this motion move the foot by position but leave the knee alone?
+  local ikMemo = setmetatable({}, { __mode = "k" })
+  local function wantsIK(motion, ch)
+    local memo = ikMemo[motion]
+    if not memo then memo = {}; ikMemo[motion] = memo end
+    if memo[ch] == nil then
+      local curves = motion.curves
+      local knee = false
+      for c = 3, 5 do if curves[ch.gl * 9 + c] and curves[ch.gl * 9 + c].kind ~= "const" then knee = true end end
+      local foot = false
+      for c = 0, 2 do if curves[ch.gf * 9 + c] then foot = true end end
+      memo[ch] = foot and not knee
+    end
+    return memo[ch]
+  end
+  local originIndex = byName["Origin"]
   return function(motion, frame)
     local world, skin, scales = {}, {}, {}
+    local locals = #chains > 0 and {} or nil
+    -- feet solved by IK this frame: their animated transform is a MODEL-space
+    -- target (relative to Origin), not relative to the leg
+    local ikFoot
+    if motion and #chains > 0 then
+      for _, ch in ipairs(chains) do
+        if wantsIK(motion, ch) then ikFoot = ikFoot or {}; ikFoot[ch.fi] = true end
+      end
+    end
     for i, bone in ipairs(model.bones) do
       local localM = bone.localMatrix
       scales[i] = bone.scale
@@ -519,9 +631,42 @@ function H3D.poser(model, sample, skeletonNames)
         end
       end
       local parent = bone.parent >= 0 and world[bone.parent + 1]
-      if parent then localM = H3D.compensate(bone, localM, scales[bone.parent + 1]) end
-      world[i] = parent and matMul(parent, localM) or localM
-      skin[i] = matMul(world[i], inverseBind[i])
+      if ikFoot and ikFoot[i] then
+        local root = originIndex and originIndex < i and world[originIndex] or nil
+        world[i] = root and matMul(root, localM) or localM
+      else
+        if parent then localM = H3D.compensate(bone, localM, scales[bone.parent + 1]) end
+        world[i] = parent and matMul(parent, localM) or localM
+      end
+      if locals then locals[i] = localM end
+      if #chains == 0 then skin[i] = matMul(world[i], inverseBind[i]) end
+    end
+    if #chains > 0 then
+      if ikFoot then
+        for _, ch in ipairs(chains) do
+          if ikFoot[ch.fi] then
+            solveLeg(world, ch.ti, ch.li, ch.fi, ch.l1, ch.l2)
+            -- the foot's ROTATION is relative to the (now bent) leg; only its
+            -- position is the model-space target
+            local fl, target = locals[ch.fi], posOf(world[ch.fi])
+            local fw = matMul(world[ch.li], { fl[1], fl[2], fl[3], 0, fl[5], fl[6], fl[7], 0, fl[9], fl[10], fl[11], 0, 0, 0, 0, 1 })
+            fw[4], fw[8], fw[12] = target[1], target[2], target[3]
+            world[ch.fi] = fw
+            -- everything under the foot (toes) follows it
+            local under = { [ch.fi] = true }
+            for j = ch.fi + 1, #model.bones do
+              local pj = model.bones[j].parent + 1
+              if under[pj] then
+                under[j] = true
+                world[j] = matMul(world[pj], locals[j])
+              end
+            end
+          end
+        end
+      end
+      -- (only the thigh and leg matrices change; the foot and everything
+      -- under it keep their animated world transforms)
+      for i = 1, #model.bones do skin[i] = matMul(world[i], inverseBind[i]) end
     end
     return skin, world
   end

@@ -976,6 +976,14 @@ local function yawForDraw(px, py, facing, kind, b, FirstPerson)
   if not (b and b > 0 and FirstPerson) then
     return (Cam and Cam.worldYaw(facing)) or 0
   end
+  -- The free walk's continuous body bearing (FreeMove: the travel while
+  -- walking, the LAST travel while standing -- never the camera). "towardCam"
+  -- meshes face +Z at identity, "awayCam" ones face -Z.
+  if FirstPerson.bodyYaw ~= nil then
+    local a = FirstPerson.bodyYaw
+    if kind == "awayCam" then a = a + math.pi end
+    return a * b
+  end
   local cameraYaw = FirstPerson.cardYaw(px + 8, py + 8)
   facing = type(facing) == "string" and string.lower(facing) or facing
   if kind == "awayCam" then
@@ -1015,7 +1023,8 @@ function PlayerModel.draw(px, py, y, facing, mirror)
   local gen4Cam = Cam and Cam.freeRoam and Cam.freeRoam()
   local b = (not gen4Cam) and FirstPerson.cardBlend() or 0
   if b > 0 then
-    facing = FirstPerson.pointBody(0, 0)
+    -- keeps the held bearing on the boom (see FirstPerson.bodyBearing)
+    facing = FirstPerson.pointBody(0, 0, facing)
   end
   
   -- Handle a Colosseum-sourced model (Gen III dex, or any dex with no
@@ -1058,6 +1067,12 @@ function PlayerModel.draw(px, py, y, facing, mirror)
         m = Mat4.mul(m, Mat4.rotateY(yaw))
       end
       fx, fz = ColosseumMon.towardFor(facing)
+    elseif FirstPerson.bodyYaw ~= nil then
+      -- free walk: body bearing, walking or standing (yawForDraw above)
+      if yaw ~= 0 then
+        m = Mat4.mul(m, Mat4.rotateY(yaw))
+      end
+      fx, fz = ColosseumMon.towardFor("up")
     elseif isMoving then
       local moveDirection = facing
       if Game.input:isDown("up") then
@@ -1235,7 +1250,7 @@ function PlayerModel.draw(px, py, y, facing, mirror)
     
     -- Apply rotation based on facing direction (same as Pokemon models)
     local yaw = yawForDraw(px, py, facing, "awayCam", b, FirstPerson)
-    if (not gen4Cam) and b > 0 then
+    if (not gen4Cam) and b > 0 and FirstPerson.bodyYaw == nil then
       if isMoving then
         local moveDirection = facing
         if Game.input:isDown("up") then

@@ -947,7 +947,10 @@ local function prepareOneColosseum(p, dex, dt)
     local okFirstPerson, FirstPerson = pcall(V.require, "FirstPerson")
     if okFirstPerson and FirstPerson then
       local okBlend, b = pcall(FirstPerson.cardBlend)
-      if okBlend and b and b > 0 then
+      if okBlend and b and b > 0 and p.isPlayer and FirstPerson.bodyYaw ~= nil then
+        -- the player's free-walk body bearing (held while standing)
+        fx, fz = math.sin(FirstPerson.bodyYaw), math.cos(FirstPerson.bodyYaw)
+      elseif okBlend and b and b > 0 then
         local okYaw, cameraYaw = pcall(FirstPerson.cardYaw, p.px or 0, p.py or 0)
         cameraYaw = okYaw and cameraYaw or 0
         local face = type(renderFacing) == "string" and string.lower(renderFacing) or renderFacing
@@ -1062,7 +1065,10 @@ local function prepareOne(p, dex, dt)
     local okFirstPerson, FirstPerson = pcall(V.require, "FirstPerson")
     if okFirstPerson and FirstPerson then
       local b = FirstPerson.cardBlend()
-      if b > 0 then
+      if b > 0 and p.isPlayer and FirstPerson.bodyYaw ~= nil then
+        -- the player's free-walk body bearing (held while standing)
+        fx, fz = math.sin(FirstPerson.bodyYaw), math.cos(FirstPerson.bodyYaw)
+      elseif b > 0 then
         useCameraRotation = true
         cameraYaw = FirstPerson.cardYaw(p.px or 0, p.py or 0)
         local face = type(renderFacing) == "string" and string.lower(renderFacing) or renderFacing

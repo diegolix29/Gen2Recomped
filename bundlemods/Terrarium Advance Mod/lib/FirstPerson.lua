@@ -292,19 +292,27 @@ end
 -- the body is the head: you face what you look at. On the boom you can see
 -- yourself, and a character sliding sideways while facing the lens reads as
 -- a bug rather than as a strafe -- so a walking body turns to face its own
--- travel, and a standing one comes back round to the camera's bearing,
--- which is the one A talks along.
-function FirstPerson.bodyBearing(wx, wz)
-  if ThirdPerson.extended() and wx and wz and (wx ~= 0 or wz ~= 0) then
-    return math.atan2(wx, wz)
+-- travel, and a standing one KEEPS the bearing it last walked along (the
+-- user's call, 2026-11-03: stopping must not swing the character round to
+-- face the camera, and A talks along the way the body faces, not the lens).
+-- `facing` (optional) is the engine's compass facing, used when no bearing
+-- has been recorded yet (first tick after a grid move / warp / rung pick).
+function FirstPerson.bodyBearing(wx, wz, facing)
+  if ThirdPerson.extended() then
+    if wx and wz and (wx ~= 0 or wz ~= 0) then
+      return math.atan2(wx, wz)
+    end
+    if FirstPerson.bodyYaw ~= nil then return FirstPerson.bodyYaw end
+    local a = facing and FACING_ANGLE[string.lower(tostring(facing))]
+    if a then return a end
   end
   return FirstPerson.yaw
 end
 
 -- The same answer as one of the four facings, which is what the grid game
 -- (and the sprite sheet) reasons in.
-function FirstPerson.bodyFacing(wx, wz)
-  return facingOf(FirstPerson.bodyBearing(wx, wz))
+function FirstPerson.bodyFacing(wx, wz, facing)
+  return facingOf(FirstPerson.bodyBearing(wx, wz, facing))
 end
 
 -- ------- the body's live bearing
@@ -328,11 +336,11 @@ end
 -- of turning comes close to spending.
 FirstPerson.bodyYaw = nil
 
--- Point the body along the direction it is walking (or, standing, along
--- the camera): records the continuous bearing and hands back the compass
--- facing the caller wants for p.facing.
-function FirstPerson.pointBody(wx, wz)
-  FirstPerson.bodyYaw = FirstPerson.bodyBearing(wx, wz)
+-- Point the body along the direction it is walking (or, standing on the
+-- boom, the way it last walked; in the head, along the camera): records the
+-- continuous bearing and hands back the compass facing for p.facing.
+function FirstPerson.pointBody(wx, wz, facing)
+  FirstPerson.bodyYaw = FirstPerson.bodyBearing(wx, wz, facing)
   return facingOf(FirstPerson.bodyYaw)
 end
 
