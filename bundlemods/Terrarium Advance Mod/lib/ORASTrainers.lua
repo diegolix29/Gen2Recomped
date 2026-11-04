@@ -41,7 +41,7 @@ local T = { ID = "oras_trainers", LABEL = "ORAS TRAINERS" }
 T.ROOT = "oras/trainers"
 T.INDEX = T.ROOT .. "/index.lua"
 T.STAMP = "oras-trainer=7\n"   -- 2: field heights scaled (FIELD_SCALE); 3: field idleB = slot 93; 4: shoes / bracelet kept; 5: leg IK; 6: battle idle slot 5, FK feet not IK'd; 7: point layered over idle.  New characters bake on the next press without a bump.
-T.WALKER_STAMP = T.STAMP .. "walker=2\n"   -- the walkers alone: 2 = bind-offset retarget (T.walkFit)
+T.WALKER_STAMP = T.STAMP .. "walker=3\n"   -- the walkers alone: 2 = bind-offset retarget (T.walkFit); 3 = Spine3 at bind
 function T.stampOf(kind) return kind == "walker" and T.WALKER_STAMP or T.STAMP end
 T.LEG_IK = { { "LThigh", "LLeg", "LFoot" }, { "RThigh", "RLeg", "RFoot" } }
 T.IMPORT_ID = "pokemon_oras"
@@ -122,6 +122,10 @@ end
 -- are more than WALKER_MAX_BIND apart keeps the battle still frame; Waist
 -- moves by its offset from its bind; sideways (X) by the hip-width ratio.
 T.WALKER_MAX_BIND = 0.6
+-- battle-only bones left at their bind instead of the still frame: the still
+-- frame is the battle stance, its Spine3 turned to the foe (shoulders 27-39
+-- deg round), which twisted the walking trunk (in game 2026-11-04)
+T.WALKER_AT_BIND = { Spine3 = true }
 function T.walkFit(battleModel, fieldModel)
   local fb, bb = {}, {}
   for _, b in ipairs(fieldModel and fieldModel.bones or {}) do fb[b.name] = b end
@@ -172,7 +176,7 @@ local function retarget(m, fieldNames, battleNames, base, fit)
   end
   for k, v in pairs(base and base.curves or {}) do
     local j = math.floor(k / 9) + 1
-    if not driven[j] then curves[k] = v end
+    if not driven[j] and not T.WALKER_AT_BIND[battleNames[j]] then curves[k] = v end
   end
   local out = {}
   for k, v in pairs(m) do out[k] = v end
