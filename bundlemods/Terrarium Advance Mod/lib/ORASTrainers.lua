@@ -10,7 +10,9 @@
 --          part 1 = its motion pack.  rstr0001 / rstr0002 are the ORAS player
 --          pair, rstr0003-0053 named characters, rstr0101-0225 the trainer
 --          classes / townsfolk (23-bone rig), tr00NN the XY-era cast.
---          Slots: 0 stand (1 frame), 2 walk (14), 4 run (16), 5 jump,
+--          Slots: 0 stand (1 frame), 93 fidget (36: a hand to the cap / hip;
+--          every field rig has it, baked as idleB and played now and then by
+--          PlayerModel), 2 walk (14), 4 run (16), 5 jump,
 --          8 / 9 / 12 bike.  Nodes sw_parts01-05 (dive goggles, snorkel,
 --          rod, ...) and bicycle are switch parts the game shows only for
 --          those moves: never drawn here.  Texture unit 0 is a projection
@@ -36,7 +38,7 @@ local mod = V and V.mod
 local T = { ID = "oras_trainers", LABEL = "ORAS TRAINERS" }
 T.ROOT = "oras/trainers"
 T.INDEX = T.ROOT .. "/index.lua"
-T.STAMP = "oras-trainer=2\n"   -- 2: field heights scaled to real size (FIELD_SCALE)
+T.STAMP = "oras-trainer=3\n"   -- 2: field heights scaled to real size (FIELD_SCALE); 3: field idleB = slot 93
 T.IMPORT_ID = "pokemon_oras"
 T.FIELD_GARC = "a/0/2/1"
 T.BATTLE_GARC = "a/1/3/3"
@@ -49,6 +51,7 @@ T.FIELD_SCALE = 4.3
 -- action banks (PokemonActors one-shots); the base bank is slot 0
 T.FIELD_ACTIONS = {
   { name = "walk", slot = 2 }, { name = "run", slot = 4 }, { name = "jump", slot = 5 },
+  { name = "idleB", slot = 93 },
 }
 T.BATTLE_ACTIONS = {
   { name = "throw", slot = 1 }, { name = "command", slot = 2 },

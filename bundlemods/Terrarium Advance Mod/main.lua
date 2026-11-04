@@ -671,6 +671,14 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     pcall(function()
       V.require("ORASTrainers").pump()
     end)
+    -- The installed player model, loaded here too: the voxel mode's update
+    -- (which also does this) stands down on Gen 4 / 5's own 3D world, so a
+    -- player model picked in another game never loaded there.
+    pcall(function()
+      if not PlayerModel.loaded() and PlayerModelInstall.installed() then
+        PlayerModel.loadInstalled()
+      end
+    end)
     -- The horde, on the same always-running tick and for the same reason:
     -- it owns no pass of the frame, it is a MODE over the overworld, and
     -- it has to keep thinking while a warp's wipe covers the screen (the

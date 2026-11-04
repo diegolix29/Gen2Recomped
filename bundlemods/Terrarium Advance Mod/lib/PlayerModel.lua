@@ -69,6 +69,10 @@ local currentColosseumDex = nil
 local orasCharacterId = nil
 local orasBank = nil          -- the bank playing: "idle" / "walk" / "run"
 local orasStillFor = 0        -- seconds the player has not been moving
+local orasLastX, orasLastY = nil, nil  -- last drawn position (movement is read from it)
+local orasIndexRetryAt = 0    -- next time a missing character may re-read the index
+local orasWarned = {}         -- banks that failed to load, logged once each
+local orasFidgetIn = 5        -- seconds of standing until the next idleB fidget
 
 -- A Colosseum trainer/character model standing in for the player sprite
 -- (see PlayerModel.loadColosseumCharacter / lib/ColosseumTrainer.lua).
@@ -617,8 +621,12 @@ function PlayerModel.loadORASCharacter(id)
   if not id or id == "" then return false, "no character id" end
   local Dex = V.require("ColosseumDex")
   local n = Dex and Dex.trainerDex and Dex.trainerDex(id)
-  if not n and Dex and Dex.loadOrasTrainers then
-    pcall(Dex.loadOrasTrainers, V.mod)   -- built after this copy first read the index
+  -- built after this copy first read the index: read it again, at most every
+  -- few seconds (main.lua retries the installed model every frame)
+  local now = (love and love.timer and love.timer.getTime()) or os.clock()
+  if not n and Dex and Dex.loadOrasTrainers and now >= orasIndexRetryAt then
+    orasIndexRetryAt = now + 3
+    pcall(Dex.loadOrasTrainers, V.mod)
     n = Dex.trainerDex(id)
   end
   if not n then return false, "ORAS character not built: " .. tostring(id) end
@@ -630,39 +638,72 @@ function PlayerModel.loadORASCharacter(id)
   currentColosseumDex = n
   colosseumVariant = "normal"
   orasCharacterId, orasBank, orasStillFor = id, nil, 0
+  orasLastX, orasLastY = nil, nil
   currentFilename = "oras_character_" .. id
   return true
 end
 
 function PlayerModel.getOrasCharacterId() return orasCharacterId end
 
--- Stand / walk / run for the ORAS character from the overworld player's own
--- state (src/world/Player.lua: moving, running).  `moving` drops for a frame
--- between two steps, so the bank only goes back to standing after a short
--- still spell -- otherwise every step restarted the walk cycle.
-local ORAS_STILL_HOLD = 0.12
-local function driveOrasCharacter(dt)
+-- Stand / walk / run for the ORAS character.  Movement is read from where
+-- the figure is drawn (px, py), frame to frame: that works on the grid, in
+-- free roam and on Gen 4 / 5's own world alike, where Player.moving is not
+-- always what moves the body.  Running is Player.running, or a step faster
+-- than walking.  Between two grid steps the position can hold for a frame,
+-- so the bank only goes back to standing after a short still spell --
+-- otherwise every step restarted the walk cycle.
+local ORAS_STILL_HOLD = 0.15
+local ORAS_RUN_SPEED = 1.5      -- world px per frame; walking is 1
+local function driveOrasCharacter(dt, px, py)
   local actor = ColosseumMon.actor and ColosseumMon.actor(currentColosseumDex, colosseumVariant)
   if not actor then return nil end
   local token = Voxel3D.vp
   if token ~= nil and rawget(actor, "__owFrameToken") == token then return actor end
   actor.__owFrameToken = token
+  local speed = 0
+  if orasLastX and px and py then
+    local dx, dy = px - orasLastX, py - orasLastY
+    speed = math.sqrt(dx * dx + dy * dy)
+    if speed > 24 then speed = 0 end   -- a warp / teleport, not a step
+  end
+  orasLastX, orasLastY = px, py
   local okG, Game = pcall(require, "src.core.Game")
   local pl = okG and Game and Game.overworld and Game.overworld.player
-  local moving = pl and pl.moving == true
+  local moving = speed > 0.01 or (pl and pl.moving == true)
   if moving then orasStillFor = 0 else orasStillFor = orasStillFor + dt end
   local want = "idle"
-  if moving or orasStillFor < ORAS_STILL_HOLD then
-    if orasBank == "idle" and not moving then want = "idle"
-    else want = (pl and pl.running) and "run" or "walk" end
+  if moving then
+    want = ((pl and pl.running) or speed > ORAS_RUN_SPEED) and "run" or "walk"
+  elseif orasBank and orasBank ~= "idle" and orasStillFor < ORAS_STILL_HOLD then
+    want = orasBank   -- between two steps: keep the cycle going
   end
   if want ~= orasBank then
     actor.action, actor.actionAge = nil, 0
     local ok = actor:selectNativeSlot(want)
     if not ok and want == "run" then ok = actor:selectNativeSlot("walk") end
-    if not ok and want ~= "idle" then actor:selectNativeSlot("idle") end
+    if not ok and want ~= "idle" then
+      if not orasWarned[want] then
+        orasWarned[want] = true
+        local l = V.mod and V.mod.log
+        if l and l.warn then
+          pcall(l.warn, l, "ORAS PLAYER: %s has no usable %s bank (scene actions: %s)", tostring(orasCharacterId), want,
+            tostring(actor.scene and actor.scene.actionSpecs and next(actor.scene.actionSpecs) or "none"))
+        end
+      end
+      actor:selectNativeSlot("idle")
+    end
     actor:transition("idle")
     orasBank = want
+    orasFidgetIn = 4 + math.random() * 4
+  end
+  -- standing: now and then the character's own fidget (field slot 93, baked
+  -- as idleB); Actor:update returns it to standing when it ends
+  if want == "idle" and not actor.action then
+    orasFidgetIn = orasFidgetIn - dt
+    if orasFidgetIn <= 0 then
+      orasFidgetIn = 5 + math.random() * 5
+      if actor.startOrasExtra then pcall(actor.startOrasExtra, actor, "idleB") end
+    end
   end
   -- the figure height the Colosseum characters use (16 cache units tall)
   local h = tonumber(actor.height) or 0
@@ -985,7 +1026,7 @@ function PlayerModel.draw(px, py, y, facing, mirror)
   if usingColosseum and currentColosseumDex then
     local dt = 1 / 60  -- Assume 60 FPS, same assumption the Stadium branch makes
     if orasCharacterId then
-      driveOrasCharacter(dt)
+      driveOrasCharacter(dt, px, py)
     else
       ColosseumMon.update(currentColosseumDex, colosseumVariant, dt)
     end

@@ -405,3 +405,12 @@ User steps after: press ORAS ARENA PACK, restart, fight on a few stages (kusa, s
 - Offline verified: rebake (263, 10.8 s), heights, action manifests / pages, dex routing (Pokemon unchanged, maxDex unchanged), row cycling + marker. Not verifiable offline: the GPU scene load, walk / run in game, size next to the map.
 - User's plan for phase 3 (2026-11-03): the principal characters (player variants, Wally, Zinnia, Birch, Steven, gym leaders, E4, Magma / Aqua leaders + admins + grunts, Lisia, Aarune, Mr. Stone, Stern, Briney, Lanette, ...) replace their own trainers DIRECTLY in Gen 3 Emerald; in the other games gym leaders and Elite Four get a RANDOM one of those; every other trainer gets an NPC model paired by its trainer class name.
 - User is testing phase 2 in game.
+
+## 2026-11-03 — ORAS PLAYER: no animation; never shown on Gen 4 / 5 (fixed, untested in game)
+- User test: the characters show on Gen 1-3 but never animate; on Gen 4 / 5 they do not show at all.
+- Gen 4 / 5: the installed player model was loaded only from the voxel mode's update (main.lua), and that mode's available() is false on Gen 4 / 5's own 3D world (Gen4Bridge.isNativeWorld), so a model picked in another game never loaded. Now also loaded on the always-running tick next to the ORAS pumps. loadORASCharacter re-reads the trainer index at most every 3 s (that tick retries every frame).
+- Animation: movement is now read from the drawn position frame to frame (plus Player.moving / .running); walk / run held through the still frame between two steps; a bank that cannot load is logged once ("ORAS PLAYER: <id> has no usable <bank> bank").
+- Field idle: slot 0 is one still frame (so standing never moves); slot 93 (36 frames) is a fidget (hand to cap / hip), baked as idleB and played every 5-10 s of standing (driveOrasCharacter -> Actor:startOrasExtra). Stamp oras-trainer=3: press ORAS TRAINERS again.
+- Offline: rebake 263 in 13 s; base banks still, idleB / walk / run present; battle models' base = slot 0 idle loop (2.5 s). Not testable offline: walk / run in game, the Gen 4 / 5 draw.
+- NEXT: user tests; then phase 3 (battle: idle / throw / command on every 3D-BTL rung; Emerald direct names, random named gym / E4 elsewhere, NPC by trainer class).
+- STATUS 2026-11-03 night: waiting on the user's in-game test of ORAS TRAINERS (press again, stamp 3) + ORAS PLAYER on Gen 1-5. Do NOT start phase 3 until the user says so.
