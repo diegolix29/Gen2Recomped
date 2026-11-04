@@ -355,7 +355,10 @@ local function sideEntry(battle, side)
       if side == "player" then id = B.playerModel(game, have) else id = B.foeModel(battle, have) end
     end
     local n = id and numberOf(id)
-    e = n and { id = id, n = n, side = side } or false
+    local kind
+    local idx = n and Trainers().index()
+    for _, x in ipairs(idx and idx.list or {}) do if x.id == id then kind = x.kind; break end end
+    e = n and { id = id, n = n, side = side, field = kind == "field" } or false
     cast[side] = e
     if e then log("info", "ORAS BTL TRAINERS: %s side = %s (%s)", side, id, tostring(Trainers().label(id))) end
   end
@@ -387,6 +390,16 @@ local function advance(e, actor, height)
   local h = tonumber(actor.height) or 0
   if h > 0.01 then actor.worldScale = height / h end
   pcall(actor.update, actor, math.min(math.max(dt, 0), 0.1))
+  -- field models (the generic NPCs: no battle model) stand on ONE frame; the
+  -- only motion they own besides walking is idle B (slot 93, a 36-frame look
+  -- around), so in battle it plays back to back with a short pause
+  if e.field and actor.action == nil and actor.state == "idle" and actor.startOrasExtra then
+    e.idleWait = (e.idleWait or 0.4) - dt
+    if e.idleWait <= 0 then
+      e.idleWait = 0.2 + math.random() * 0.8
+      pcall(actor.startOrasExtra, actor, "idleB")
+    end
+  end
   if B._watch then pcall(B._watch, e, actor) end
   return true
 end
@@ -414,7 +427,9 @@ end
 local function watch(e, actor)
   local key = tostring(actor.action) .. "/" .. tostring(actor.requestedNativeSlot) .. "/" .. tostring(actor.state)
   if e.lastKey ~= key then
-    if e.lastKey then note(e.side or "?", "seen " .. e.lastKey .. " -> " .. key) end
+    -- the field models' looping idle B is expected; it would flood the trace
+    local quiet = e.field and (key:find("idleB", 1, true) or tostring(e.lastKey):find("idleB", 1, true))
+    if e.lastKey and not quiet then note(e.side or "?", "seen " .. e.lastKey .. " -> " .. key) end
     e.lastKey = key
   else
     local c, last = tonumber(actor.clipClock), e.lastClip
