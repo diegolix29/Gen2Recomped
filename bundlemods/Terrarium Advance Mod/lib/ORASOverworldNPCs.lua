@@ -394,6 +394,33 @@ end
 
 local FACING_BEARING = { down = 0, right = math.pi / 2, up = math.pi, left = -math.pi / 2 }
 
+-- WHO GETS A MODEL THIS FRAME.  The cap used to go to the first
+-- N.MAX_PER_FRAME NPCs in draw order; with more in range (a town seam keeps
+-- several maps resident) that order changes frame to frame and the NPCs at
+-- the cut swapped between model and sprite every frame (F12 2026-11-04:
+-- "drawn last frame 16").  Now: at the start of a frame the nearest
+-- candidates of the LAST frame are chosen (members get a small distance
+-- bonus so two at the same range do not trade places), and only they draw.
+N.HYSTERESIS = 2 * 16       -- px a member may drift past the radius
+N.STICKY = 0.8              -- a member's distance counts this much when ranking
+local candidates = setmetatable({}, { __mode = "k" })   -- entity -> d2, this frame
+local chosen = setmetatable({}, { __mode = "k" })       -- entity -> true, this frame's set
+local chosenCount, extraThisFrame = 0, 0
+
+local function newFrame(vp)
+  frameToken, drawnThisFrame, extraThisFrame = vp, 0, 0
+  local list = {}
+  for e, d2 in pairs(candidates) do
+    list[#list + 1] = { e = e, k = chosen[e] and d2 * N.STICKY or d2 }
+  end
+  table.sort(list, function(a, b) return a.k < b.k end)
+  local nextSet = setmetatable({}, { __mode = "k" })
+  chosenCount = math.min(#list, N.MAX_PER_FRAME)
+  for i = 1, chosenCount do nextSet[list[i].e] = true end
+  chosen = nextSet
+  candidates = setmetatable({}, { __mode = "k" })
+end
+
 -- draw entity `e` at (px, py, y) facing world `facing`; true when drawn
 local function drawAt(e, px, py, y, facing, gen4)
   if not N.enabled() then return false end
@@ -403,16 +430,26 @@ local function drawAt(e, px, py, y, facing, gen4)
   local Voxel3D, Mat4 = V.require("Voxel3D"), V.require("Mat4")
   local vp = Voxel3D.vp
   if not vp then return false end
-  if frameToken ~= vp then frameToken, drawnThisFrame = vp, 0 end
-  if drawnThisFrame >= N.MAX_PER_FRAME then return false end
+  if frameToken ~= vp then newFrame(vp) end
   -- radius in MAP pixels on both sides: the drawn position carries the
   -- ground's world offset on Gen 4 / 5 (Gen4WorldHost adds offsetX / Y), the
   -- player's px does not -- comparing the two put every NPC out of range
   local qx, qy = playerXY()
   local ex, ey = tonumber(e.px), tonumber(e.py)
+  local d2 = 0
   if qx and ex and ey then
     local dx, dy = ex - qx, ey - qy
-    if dx * dx + dy * dy > N.RADIUS * N.RADIUS then return false end
+    d2 = dx * dx + dy * dy
+  end
+  -- a member keeps its model a little past the radius (no flicker at the edge)
+  local r = N.RADIUS + (chosen[e] and N.HYSTERESIS or 0)
+  if d2 > r * r then return false end
+  candidates[e] = d2
+  -- the nearest N.MAX_PER_FRAME, picked once a frame from last frame's
+  -- candidates; an NPC that was not a candidate then gets a spare slot only
+  if not chosen[e] then
+    if chosenCount + extraThisFrame >= N.MAX_PER_FRAME then return false end
+    extraThisFrame = extraThisFrame + 1
   end
   local actor = actorOf(en)
   if not actor then return false end
@@ -470,13 +507,18 @@ end
 function N.reset()
   entries = setmetatable({}, { __mode = "k" })
   drewLast = setmetatable({}, { __mode = "k" })
+  candidates = setmetatable({}, { __mode = "k" })
+  chosen = setmetatable({}, { __mode = "k" })
+  chosenCount, extraThisFrame = 0, 0
   haveMemo, haveAt = nil, -1
 end
 
 -- F12 (RenderDump): who is cast as whom
 function N.report(out)
   out[#out + 1] = ""
-  out[#out + 1] = ("ORAS NPCS: enabled %s, drawn last frame %d"):format(tostring(N.enabled()), drawnThisFrame)
+  out[#out + 1] = ("ORAS NPCS: enabled %s, drawn last frame %d, chosen %d (cap %d), in range %d"):format(
+    tostring(N.enabled()), drawnThisFrame, chosenCount, N.MAX_PER_FRAME,
+    (function() local c = 0; for _ in pairs(candidates) do c = c + 1 end; return c end)())
   local n = 0
   for e, en in pairs(entries) do
     if en and n < 40 then
