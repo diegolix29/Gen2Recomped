@@ -197,9 +197,64 @@ local function hookFrameProfile()
   end
 end
 
+-- SAMPLING PROFILER (2026-11-04). The phone's hitches were ~200 ms of
+-- "g4 drawFree" with nothing timed inside it, so a hitch frame is now also
+-- sampled: jit.profile every PROFILE_MS, each sample's Lua stack (leaf first,
+-- PROFILE_DEPTH frames) and VM state (N/I = Lua, C = a C function such as a
+-- love.graphics call into the driver, G = garbage collector, J = JIT). Kept
+-- only for a frame over HITCH_MS; works with the JIT off (Android).
+P.PROFILE = true
+P.PROFILE_MS = 1
+P.PROFILE_DEPTH = 5
+local okProf, jprof = pcall(require, "jit.profile")
+if not (okProf and type(jprof) == "table" and jprof.start) then jprof = nil end
+local profOn, profStacks, profVm, profN = false, {}, {}, 0
+local function shortStack(s)
+  -- "C:/.../lib/Gen4Ground.lua:2700" -> "Gen4Ground:2700"
+  return (s:gsub("[^%s<]*[/\\]", ""):gsub("%.lua:", ":"):gsub("%s*<%s*$", ""))
+end
+local function profSample(thread, samples, vmstate)
+  profN = profN + samples
+  profVm[vmstate] = (profVm[vmstate] or 0) + samples
+  local s = jprof.dumpstack(thread, "l < ", P.PROFILE_DEPTH or 5)
+  profStacks[s] = (profStacks[s] or 0) + samples
+end
+local function profileSet(on)
+  if not jprof then return end
+  on = on and P.PROFILE ~= false
+  if on == profOn then return end
+  profOn = on
+  if on then
+    pcall(jprof.start, "li" .. tostring(P.PROFILE_MS or 1), profSample)
+  else
+    pcall(jprof.stop)
+  end
+end
+local function profileTake(keep)
+  local result
+  if keep and profN > 0 then
+    local list = {}
+    for s, n in pairs(profStacks) do list[#list + 1] = { s, n } end
+    table.sort(list, function(a, b) return a[2] > b[2] end)
+    local vm = {}
+    for _, k in ipairs({ "G", "C", "I", "N", "J" }) do
+      if profVm[k] then vm[#vm + 1] = string.format("%s %d%%", k, math.floor(profVm[k] * 100 / profN + 0.5)) end
+    end
+    result = { n = profN, vm = table.concat(vm, " "), top = {} }
+    for i = 1, math.min(3, #list) do
+      result.top[i] = { shortStack(list[i][1]), math.floor(list[i][2] * 100 / profN + 0.5) }
+    end
+  end
+  profStacks, profVm, profN = {}, {}, 0
+  return result
+end
+P.profileSet = profileSet
+
 local function hitchFrame(now)
   local heap = collectgarbage("count") / 1024
-  if hLastAt and (now - hLastAt) * 1000 > P.HITCH_MS then
+  local isHitch = hLastAt and (now - hLastAt) * 1000 > P.HITCH_MS
+  local prof = profileTake(isHitch)
+  if isHitch then
     local parts, upd, drw = {}, nil, nil
     for name, dt in pairs(hcur) do
       -- the whole-frame brackets contain everything else: kept apart, they
@@ -213,7 +268,7 @@ local function hitchFrame(now)
     table.sort(parts, function(a, b) return a[2] > b[2] end)
     for i = #parts, 6, -1 do parts[i] = nil end
     P.lastHitch = { t = now, ms = (now - hLastAt) * 1000, update = upd, draw = drw,
-                    heapMB = heap - (hLastHeap or heap), parts = parts }
+                    heapMB = heap - (hLastHeap or heap), parts = parts, prof = prof }
     P.hitches = P.hitches + 1
   end
   hLastAt, hLastHeap = now, heap
@@ -365,6 +420,13 @@ local function lines()
       out[#out + 1] = string.format("last hitch %.0fs ago: %.0f ms (%d so far)%s%s",
         clock() - h.t, h.ms, P.hitches or 0, split, heap)
       out[#out + 1] = "  in: " .. (#parts > 0 and table.concat(parts, "  ") or "(nothing measured: GPU / present)")
+      local pr = h.prof
+      if pr then
+        out[#out + 1] = string.format("  sampled %d ms: %s  (G = GC, C = C/driver call, I/N = Lua)", pr.n, pr.vm)
+        for i, t in ipairs(pr.top) do
+          out[#out + 1] = string.format("  #%d %d%%  %s", i, t[2], t[1])
+        end
+      end
     end
   end
   if #passShown > 0 then
@@ -428,6 +490,7 @@ function P.frame(drawSeconds)
     if B then B.profile = on; B.passStats = {} end
     if on then hookFrameProfile() end
     if B then B.passHook = on and function(name, dt) hdeposit("fx " .. name, dt) end or nil end
+    profileSet(on)
     hLastAt = nil
   end
   if not on then return end
