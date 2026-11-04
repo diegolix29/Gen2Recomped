@@ -3263,25 +3263,10 @@ function P:event(context,name,payload)
       return true
     end
     if actor and type(actor.hit)=="function" then
-      -- an ORAS physical attack has not reached its contact pose yet: the
-      -- reaction (and its damage FX, via onStarted) waits for it
-      local holdFor=0
-      local attackerActor=attacker and P.stadiumActors[attacker] and P.stadiumActors[attacker].actor
-      if attackerActor and attackerActor~=actor and type(attackerActor.orasContactWait)=="function" then
-        local okWait,wait=pcall(attackerActor.orasContactWait,attackerActor)
-        if okWait then holdFor=tonumber(wait) or 0 end
-      end
-      -- an ORAS move effect is playing: the hit lands when its first
-      -- target-side effect starts (Ember's fire reaches the target ~1 s in)
-      if attacker and P.orasFxAttacker==attacker and orasPlayerModule then
-        local okFx,wait=pcall(orasPlayerModule.hitWait)
-        if okFx and tonumber(wait) then holdFor=tonumber(wait) end
-        pcall(orasPlayerModule.note,"hit on %s held %.2fs for the ORAS effect",tostring(side),holdFor)
-      elseif orasPlayerModule then
-        pcall(orasPlayerModule.note,"hit on %s: no ORAS effect running for %s (held %.2fs for contact)",tostring(side),tostring(attacker),holdFor)
-      end
+      -- the reaction plays when the engine's hit arrives (no ORAS hold: a
+      -- held hit stalled the battle)
       pcall(actor.hit,actor,payload,{nativeSlot=damageSlot,
-        sourceSequenceKind=damageSequenceKind,onStarted=bindStartedDamage,holdFor=holdFor})
+        sourceSequenceKind=damageSequenceKind,onStarted=bindStartedDamage})
     else bindStartedDamage(nil,true) end
   elseif semantic=="battle.fainted" then
     side=(S and S.payload and S.payload(context,payload,{"battler","side"})) or (payload and payload.side)

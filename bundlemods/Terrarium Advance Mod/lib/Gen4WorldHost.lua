@@ -518,6 +518,9 @@ local function wantFieldActor(e, state)
     local ok, PM = pcall(V.require, "PlayerModel")
     if ok and PM and PM.loaded and PM.loaded() then return true end
   end
+  -- an ORAS character (lib/ORASOverworldNPCs.lua, row ORAS NPCS)
+  local okO, Oras = pcall(V.require, "ORASOverworldNPCs")
+  if okO and Oras and Oras.wants and Oras.wants(e, state and e == state.player) then return true end
   -- Platinum's walkers as smooth 3D bodies built from their own sheet
   -- (lib/Gen4NpcModels.lua). Asked last: everything above has its own path.
   local okN, Npc = pcall(V.require, "Gen4NpcModels")
@@ -712,6 +715,11 @@ local function drawFieldActors(state, ground)
         local scale = mdl.scale or 4.0
         m = Mat4.mul(m, Mat4.scale(scale, scale, scale))
         drew = pcall(Voxel3D.draw, mdl.mesh, mdl.texture, m)
+      end
+      -- an ORAS character (row ORAS NPCS); the NPC body / sprite otherwise
+      if not drew and not playerTried and not p.isPlayer then
+        local okO, rO = pcall(function() return V.require("ORASOverworldNPCs").drawGen4(p) end)
+        drew = okO and rO == true
       end
       -- An NPC body: only when its mesh is built; until then (or on any
       -- failure) the flat sprite keeps drawing, so nobody vanishes.

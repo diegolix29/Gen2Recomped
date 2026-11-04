@@ -186,17 +186,6 @@ function Player.busy(space)
   return false
 end
 
--- Seconds until the newest move's first target-side effect starts (its
--- impact), for holding the target's hit reaction; nil when the move has no
--- target-side effect or it has already started.
-Player.HIT_WAIT_MAX = 4
-function Player.hitWait()
-  local run = active[#active]
-  if not (run and run.hitFrame) then return nil end
-  local left = (run.hitFrame - (run.frame + run.acc)) / FPS
-  if left <= 0 then return nil end
-  return math.min(left, Player.HIT_WAIT_MAX)
-end
 function Player.stopAll() active = {} end
 
 -- ORAS body points (0x2F) -> our body-map slots.  0 feet (Thunder's sky

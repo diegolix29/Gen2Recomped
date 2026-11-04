@@ -328,6 +328,98 @@ function B.foeModel(battle, have)
     or pickFrom(B.NPC[girl and "adult_f" or "adult_m"], key, have)
 end
 
+-- ------------------------------------------- overworld people (ORAS NPCS)
+--
+-- B.personModel(text, key, have): a FIELD model (it walks) for an overworld
+-- person named `text` (words, e.g. "COOLTRAINER F", "OLD MAN", "ROXANNE"),
+-- or nil when the name is not a person (a Pokemon, a ball, a sign...):
+-- lib/ORASOverworldNPCs.lua keeps those as they are.  Same pools and the
+-- same stable hash as the battle casting; no battle models (no walk).
+
+-- words that make a name a person when nothing more specific matched
+local PERSON_WORDS = { "BOY", "GIRL", "MAN", "WOMAN", "KID", "LADY", "GRANNY", "GRAMPS",
+  "GRANDPA", "GRANDMA", "TEACHER", "BABY", "OFFICER", "POLICEMAN", "POLICE", "WORKER",
+  "COOK", "CHEF", "CLERK", "RECEPTIONIST", "MOM", "MOTHER", "DAD", "FATHER", "GUIDE",
+  "CAPTAIN", "ARTIST", "DELIVERYMAN", "CASHIER", "SHOPM", "SHOPW", "PHARMACIST", "GURU",
+  "TOURIST", "BUTLER", "PROF", "PROFESSOR", "BARD", "ROUGHNECK", "SKIER", "IDOL",
+  "CLOWN", "RANCHER", "COWGIRL", "JOGGER", "BREEDER", "COLLECTOR", "SOCIALITE",
+  "GENTLEMAN", "FAT", "BALDING", "ATTENDANT", "EMPLOYEE", "BIKER", "ROCKER", "DUDE",
+  "CAMERAMAN", "REPORTER", "STUDENT", "OLD", "MIDDLE", "PERSON", "YOUNG", "LITTLE",
+  "TWIN", "PLAYER", "HERO", "HEROINE", "RIVAL", "DIRECTOR", "GAMBLER", "SAGE",
+  "MONK", "PRIEST", "TRAINER", "GUY", "NPC", "DOCTOR", "MAID", "WAITER", "WAITRESS", "NURSE", "SCIENTIST" }
+-- named people in the other games (a random principal, like their bosses)
+local NAMED_PEOPLE = { "OAK", "ELM", "ROWAN", "BILL", "FUJI", "DAISY", "CELIO",
+  "SILVER", "ETHAN", "KRIS", "LYRA", "GOLD", "BARRY", "LUCAS", "DAWN", "LOOKER",
+  "CYRUS", "MARS", "SATURN", "JUPITER", "CHARON", "ROARK", "GARDENIA", "WAKE",
+  "MAYLENE", "FANTINA", "CANDICE", "BYRON", "VOLKNER", "AARON", "BERTHA", "FLINT",
+  "LUCIAN", "CYNTHIA", "RILEY", "CHERYL", "MARLEY", "BUCK", "MIRA", "PALMER",
+  "THORTON", "DAHLIA", "DARACH", "ARGENTA", "CAITLIN", "SCOTT", "ANABEL", "TUCKER",
+  "GRETA", "SPENSER", "NOLAND", "LUCY", "BRANDON", "JUAN", "TEALA", "LANETTE",
+  "BRINEY", "STONE", "KIRI", "KURT", "CAL", "COPYCAT" }
+local PERSON_FEMALE = { "TEACHER", "RECEPTIONIST", "MOM", "MOTHER", "GRANNY", "GRANDMA",
+  "WOMAN", "LADY", "CASHIER F", "SHOPW", "COWGIRL", "NURSE", "MAID", "WAITRESS",
+  "DAISY", "LYRA", "KRIS", "DAWN", "MARS", "GARDENIA", "MAYLENE", "FANTINA", "CANDICE",
+  "BERTHA", "CYNTHIA", "CHERYL", "MARLEY", "MIRA", "DAHLIA", "ARGENTA", "CAITLIN",
+  "ANABEL", "GRETA", "LUCY", "TEALA", "LANETTE", "KIRI", "HEROINE" }
+-- never a person, whatever else the name says (Gen 1's SPRITE_OLD_AMBER)
+B.PROP_WORDS = { "AMBER", "FOSSIL", "BALL", "POKE BALL", "BOULDER", "ROCK", "TREE",
+  "SIGN", "SIGNPOST", "SIGNBOARD", "BOOK", "PAPER", "CLIPBOARD", "POKEDEX", "DOLL",
+  "STATUE", "MAILBOX", "BERRY", "TRUCK", "BOAT", "CAR", "BOX", "BAG", "DOOR", "VENT",
+  "MONSTER", "FAIRY", "BIRD", "SHADOW", "SHARDS", "PAINTING", "BOLLARD", "SNOWBALL",
+  "STILL", "UNDERWATER", "BIKE", "MACH", "ACRO", "SURFING", "SURF", "FISHING",
+  "FIELD MOVE", "SITTING", "LYING", "PRAM", "GROUP", "TROPHY", "VIRTUAL", "FAMICOM",
+  "N64", "SNES", "CONSOLE", "PC", "TV",
+  -- the player's own sheets in cutscenes, and Pokemon walkers
+  "PLAYER", "HERO", "HEROINE", "MON", "FOLLOWER" }
+local PERSON_OLD = { "GRANNY", "GRAMPS", "GRANDPA", "GRANDMA", "OLD", "GURU", "FUJI",
+  "BALDING" }
+local PERSON_KID = { "BABY", "LITTLE", "KID", "TWIN", "TUBER" }
+
+function B.personModel(text, key, have)
+  have = have or built()
+  if not have then return nil end
+  local w = words(text)
+  local t = table.concat(w, " ")
+  key = tostring(key or t)
+  if hasPhrase(t, B.PROP_WORDS) then return nil end
+  local girl = hasWord(w, FEMALE_WORDS) or hasPhrase(t, PERSON_FEMALE)
+  -- a principal character by name, as itself (field model)
+  for _, x in ipairs(w) do
+    local id = B.BY_NAME[x]
+    if id and have[id] then return id end
+  end
+  -- grunts
+  if hasPhrase(t, TEAM_WORDS) and not hasPhrase(t, { "LEADER", "BOSS", "ADMIN" }) then
+    -- Hoenn's own teams keep their own uniform
+    local list = girl and B.GRUNTS_F or B.GRUNTS_M
+    if hasPhrase(t, { "MAGMA" }) then list = girl and { "rstr0030" } or { "rstr0029" }
+    elseif hasPhrase(t, { "AQUA" }) then list = girl and { "rstr0035" } or { "rstr0034" } end
+    local id = pickFrom(list, key, have) or pickFrom(girl and B.GRUNTS_F or B.GRUNTS_M, key, have)
+    if id then return id end
+  end
+  -- leaders, Elite Four, champions and other named people: a random principal
+  local named = hasPhrase(t, BOSS_NAMES) or hasPhrase(t, NAMED_PEOPLE)
+  for _, x in ipairs(w) do if GIRL_NAMES[x] then named, girl = true, true end end
+  if named or hasPhrase(t, { "LEADER", "ELITE", "CHAMPION" }) then
+    local id = pickFrom(girl and B.PRINCIPALS_F or B.PRINCIPALS_M, key, have)
+    if id then return id end
+  end
+  -- the class keywords (SWIMMER, HIKER, LASS ...)
+  for _, row in ipairs(B.CLASS_KEYWORDS) do
+    if hasPhrase(t, row[1]) then
+      local id = pickFrom(girl and (row[3] or row[2]) or row[2], key, have)
+      if id then return id end
+    end
+  end
+  -- anyone else who is a person: by age and gender
+  if not hasPhrase(t, PERSON_WORDS) then return nil end
+  local age = ((hasWord(w, KID_WORDS) or hasPhrase(t, PERSON_KID)) and "kid")
+    or ((hasWord(w, OLD_WORDS) or hasPhrase(t, PERSON_OLD)) and "old")
+    or (hasWord(w, YOUNG_WORDS) and "young") or "adult"
+  return pickFrom(B.NPC[age .. (girl and "_f" or "_m")], key, have)
+    or pickFrom(B.NPC[girl and "adult_f" or "adult_m"], key, have)
+end
+
 -- ------------------------------------------------------------- the actors
 
 local cast = { battle = nil, player = nil, enemy = nil }   -- per side: { id, n, drew, wasCard, cmd }

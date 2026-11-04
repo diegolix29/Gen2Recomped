@@ -174,6 +174,7 @@ function D.request(A)
     V.require("ORASEffectsPlayer").report(out)
   end)
   pcall(function() V.require("ORASBattleTrainers").report(out) end)
+  pcall(function() V.require("ORASOverworldNPCs").report(out) end)
   pcall(function()
     local perf = V.mod and V.mod.exports and V.mod.exports.modernUiPerf
     if perf then out[#out + 1] = ""; perf.report(out) end

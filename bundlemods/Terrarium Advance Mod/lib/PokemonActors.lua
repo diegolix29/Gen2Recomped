@@ -1226,90 +1226,6 @@ function Actor:wazaTimingPoints()
   return out
 end
 
--- ORAS hit sync.  ORAS motions carry no contact timing (PKX timing points are
--- Colosseum-only), so a physical attack's contact is measured from its cached
--- joints: the pose where the body core (spine, neck, head, jaw, hands --
--- not tails or feelers, which whip around on their own) reaches furthest
--- forward (+Z, the way ORAS models face).  A small lunge, or a peak at the
--- very start or end, falls back to ORAS_CONTACT_DEFAULT of the clip.
-local ORAS_CONTACT_DEFAULT=0.45
-local ORAS_CONTACT_MIN,ORAS_CONTACT_MAX=0.15,0.85
-local ORAS_CONTACT_MIN_LUNGE=0.08   -- of the model's height
-local ORAS_HIT_HOLD_MAX=1.2          -- seconds a hit may wait for contact
-local ORAS_CORE_BONE={Waist=true,Hips=true,Neck=true,Head=true,HeadA=true,Jaw=true,
-  LHand=true,RHand=true,LForeArm=true,RForeArm=true,UpperBeak=true,LowerBeak=true}
-
-local function orasCoreJoints(scene)
-  if scene.orasCoreJoints~=nil then return scene.orasCoreJoints or nil end
-  local out={}
-  for i,name in pairs(type(scene.boneNames)=="table" and scene.boneNames or {}) do
-    if type(i)=="number" and type(name)=="string"
-        and (ORAS_CORE_BONE[name] or name:match("^Spine%w*$") or name:match("^Neck%d+$")) then
-      out[#out+1]=i
-    end
-  end
-  scene.orasCoreJoints=#out>0 and out or false
-  return #out>0 and out or nil
-end
-
--- contact as a fraction of the clip (0..1); memoized on the bank
-local function orasContactPhase(scene,bank)
-  if bank._orasContact then return bank._orasContact end
-  local core=orasCoreJoints(scene)
-  local phase=ORAS_CONTACT_DEFAULT
-  if core and type(bank.pages)=="table" and #bank.pages>0 then
-    local function reach(joints)
-      local best
-      for _,i in ipairs(core) do
-        local j=joints and joints[i]
-        local z=j and tonumber(j[3])
-        if z and (not best or z>best) then best=z end
-      end
-      return best
-    end
-    local rest,peak,peakPhase
-    for _,page in ipairs(bank.pages) do
-      local p0,p1=tonumber(page.startPhase) or 0,tonumber(page.endPhase) or 1
-      local slots=math.max(1,tonumber(page.morphFrames) or 12)
-      for k=0,slots do
-        local joints=(k==0) and page.jointPositions or (page.jointFrames and page.jointFrames[k])
-        local z=reach(joints)
-        if z then
-          rest=rest or z
-          if not peak or z>peak then peak,peakPhase=z,p0+(p1-p0)*k/slots end
-        end
-      end
-    end
-    -- cache units, like the joints (nativeHeight is centimetres)
-    local b=scene.bounds
-    local height=b and b.max and b.min and (tonumber(b.max[2]) or 0)-(tonumber(b.min[2]) or 0) or 0
-    if height<=1e-3 then height=16 end
-    if peak and rest and peak-rest>=height*ORAS_CONTACT_MIN_LUNGE
-        and peakPhase>=ORAS_CONTACT_MIN and peakPhase<=ORAS_CONTACT_MAX then
-      phase=peakPhase
-    end
-  end
-  bank._orasContact=phase
-  return phase
-end
-
-A._orasContactPhase=orasContactPhase   -- offline tests
-
--- Seconds until this attacker's current ORAS physical attack makes contact
--- (0 when it is not one, or contact has passed).  CurrentSpriteModels holds
--- the target's hit reaction this long (Actor:hit opts.holdFor).
-function Actor:orasContactWait()
-  local sc=self.scene
-  if not (sc and sc.source=="ORAS" and self.action=="attack" and self.nativeAction) then return 0 end
-  if not tostring(self.requestedNativeSlot or ""):match("^physical") then return 0 end
-  local duration=tonumber(self.nativeDuration) or 0
-  if duration<=0 then return 0 end
-  local at=orasContactPhase(sc,self.nativeAction)*duration
-  local wait=at-(tonumber(self.clipClock) or 0)
-  if wait<=0 then return 0 end
-  return math.min(wait,ORAS_HIT_HOLD_MAX)
-end
-
 local ATTACK_DURATION=0.85
 local HIT_DURATION=0.46
 local FAINT_DURATION=0.95
@@ -1402,22 +1318,6 @@ function Actor:update(dt)
       if (self.clipClock or 0)>=loop*self._idleLoops then
         self._idleLoops=nil
         self:startOrasExtra("idleB")
-      end
-    end
-  end
-  -- a hit held for the attacker's contact frame (Actor:hit opts.holdFor)
-  if self.heldHit then
-    local h=self.heldHit
-    h.left=h.left-step
-    if h.left<=0 or self.state=="faint" or self.state=="recall" or self.state=="removal" then
-      self.heldHit=nil
-      if self.state~="faint" and self.state~="recall" and self.state~="removal" then
-        if self.hitAge then
-          self.pendingHits=self.pendingHits or {}
-          table.insert(self.pendingHits,1,{__cbeQueuedHit=true,payload=h.payload,opts=h.opts})
-        else
-          self:beginHit(h.payload,h.opts)
-        end
       end
     end
   end
@@ -2316,13 +2216,7 @@ function Actor:hit(payload,opts)
   -- Queue a genuine next strike and play it after the current Damage clip. This
   -- gives multi-hit moves one complete authored reaction per impact and keeps a
   -- lethal final strike ordered ahead of Faint.
-  -- ORAS attacker not at its contact frame yet (Actor:orasContactWait): wait
-  local hold=tonumber(opts.holdFor) or 0
-  if hold>0 and not self.hitAge and not self.heldHit then
-    self.heldHit={payload=payload,opts=opts,left=hold}
-    return true,"held"
-  end
-  if self.hitAge or self.heldHit then
+  if self.hitAge then
     self.pendingHits=self.pendingHits or {}
     if #self.pendingHits<5 then
       self.pendingHits[#self.pendingHits+1]={__cbeQueuedHit=true,payload=payload,opts=opts}
@@ -2374,13 +2268,13 @@ function Actor:faint(disposition)
   -- Do not let a lethal damage result skip the actual take-damage animation.
   -- Gen1/Gen2 can publish the faint semantic as soon as HP reaches zero while
   -- the visible damage beat is still in progress. Remember the KO and begin it
-  -- immediately after the hurt bank completes (or a held hit has played).
-  if self.hitAge or self.heldHit then
+  -- immediately after the hurt bank completes.
+  if self.hitAge then
     self.pendingFaint=disposition or "collapse"
     return true
   end
   self.pendingFaint=nil
-  self.pendingHits=nil;self.heldHit=nil
+  self.pendingHits=nil
   self.pendingAttack=nil;self.pendingRecall=nil
   self.action=nil;self.actionAge=0
   self.hitAge=nil
@@ -2393,14 +2287,14 @@ function Actor:faint(disposition)
 end
 function Actor:recall(reason)
   if self.state=="faint" or self.state=="removal" then return false end
-  if self.hitAge or self.heldHit then
+  if self.hitAge then
     self.pendingRecall=reason or "switch"
     return true
   end
   self.action=nil;self.actionAge=0
   self.hitAge=nil
   self.faintAge=nil
-  self.pendingFaint=nil;self.pendingHits=nil;self.heldHit=nil;self.pendingAttack=nil;self.pendingRecall=nil
+  self.pendingFaint=nil;self.pendingHits=nil;self.pendingAttack=nil;self.pendingRecall=nil
   self.recallAge=0
   self.recallScale=nil
   self.recallReason=reason or "switch"

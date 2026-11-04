@@ -1079,7 +1079,19 @@ local function npcBodyDraw(p)
   return NpcModels.drawClassic(p, npcTexture(p), billboardPull()) == true
 end
 
+-- an ORAS character first (lib/ORASOverworldNPCs.lua, row ORAS NPCS)
+local function orasNpcDraw(p)
+  return V.require("ORASOverworldNPCs").drawVoxel(p) == true
+end
+local function orasNpcOwns(p)
+  return V.require("ORASOverworldNPCs").ownsVoxel(p) == true
+end
+
 local function tryNpcBody(p, hdDef)
+  if not (hdDef or p.hdDef) then
+    local okO, drew = pcall(orasNpcDraw, p)
+    if okO and drew then return true end
+  end
   if not NpcModels or hdDef or p.hdDef then return false end
   local ok, drew = pcall(npcBodyDraw, p)
   return ok and drew == true
@@ -1093,6 +1105,11 @@ local function npcBodyCast(p)
 end
 
 local function castNpcBody(p, hdDef)
+  -- an ORAS character drew this one: no flat card shadow
+  if not (hdDef or p.hdDef) then
+    local okO, owns = pcall(orasNpcOwns, p)
+    if okO and owns then return true end
+  end
   if not NpcModels or hdDef or p.hdDef then return false end
   local ok, drew = pcall(npcBodyCast, p)
   return ok and drew == true
