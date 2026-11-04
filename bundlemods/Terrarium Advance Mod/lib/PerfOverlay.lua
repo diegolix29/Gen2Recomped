@@ -315,6 +315,16 @@ local function lines()
   out[#out + 1] = string.format("last 10s: %d frames > 33 ms, %d > 50 ms", w10.over33, w10.over50)
   out[#out + 1] = string.format("draw %s ms   update+wait %s ms   lua %.0f MB",
     fmt(w1.draw), fmt(math.max(0, w1.avg * 1000 - w1.draw)), collectgarbage("count") / 1024)
+  -- the Gen 4/5 GC pacer: heap left after the last full cycle (the live set),
+  -- unpaid allocation, and its time this frame
+  do
+    local B = bridge()
+    local g = B and B.gcStats
+    if g and g.baseMB and g.baseMB > 0 then
+      out[#out] = out[#out] .. string.format("  (live ~%.0f MB, debt %.0f MB, gc %.1f ms, %d cycles%s)",
+        g.baseMB, (g.debtKB or 0) / 1024, g.ms or 0, g.cycles or 0, g.valve and ", STOCK GC" or "")
+    end
+  end
   if gpu then
     out[#out + 1] = string.format("gpu: %d draws  %d canvas sw  %d shader  tex %.0f MB (%d canvases, %d images)",
       gpu.drawcalls or 0, gpu.canvasswitches or 0, gpu.shaderswitches or 0,

@@ -436,9 +436,37 @@ if not GCS then
     end
   end
 end
+-- PAY AS YOU GO (2026-11-04). A fixed time budget alone could not keep up on a
+-- phone: 2 ms a frame at 13 fps is ~26 ms of collection a second, far less
+-- than the world's garbage needs, and with the automatic collector stopped
+-- the heap climbed to 1.7 GB (desktop sits near 300 MB). Memory pressure then
+-- made every frame slower, which shrank the budget further. So on top of the
+-- time budget the pacer now pays the KB allocated since its last run
+-- (collectgarbage("step", kb) does the work the automatic collector would
+-- have done for that much allocation), up to GC_MAX seconds a frame, and
+-- carries what is left. If the heap still runs past GC_CEILING times its
+-- post-cycle size, the pacer lets go and the stock collector runs until a
+-- cycle finishes (the safety valve: the heap can never balloon again).
+Bridge.GC_MAX = isPhone() and 0.010 or 0.006
+Bridge.GC_CHUNK_KB = 64
+Bridge.GC_CEILING = 2.0
+Bridge.gcStats = { baseMB = 0, debtKB = 0, ms = 0, valve = false, cycles = 0 }
+local gcDebt, gcLastHeap, gcValve, gcValveLow, gcValveAt = 0, nil, false, 0, 0
+-- the smallest post-cycle heap seen: the live set. The valve compares with this,
+-- not gcBase, because garbage made during a long paced cycle survives it and
+-- inflates gcBase (offline: 1.8 GB "after gc" over a 150 MB live set)
+local gcLive
 local rawCollect = GCS.raw
+local function cycleDone()
+  gcBase = rawCollect("count")
+  gcRestUntil = gcBase * (Bridge.GC_REST or 1.25)
+  gcDebt = 0
+  if not gcLive or gcBase < gcLive then gcLive = gcBase end
+  Bridge.gcStats.cycles = Bridge.gcStats.cycles + 1
+end
 local function paceGc()
   local budget = Bridge.GC_BUDGET
+  local stats = Bridge.gcStats
   if not budget or budget <= 0 then
     if GCS.owned then GCS.owned = false; rawCollect("restart") end
     return
@@ -446,25 +474,70 @@ local function paceGc()
   local own = Bridge.GC_OWN ~= false
   local heap = rawCollect("count")
   gcBase = gcBase or heap
+  gcLive = gcLive or heap
+  -- the safety valve: hand the collector back while the heap is far ahead,
+  -- take it again once a cycle has brought it down
+  if gcValve then
+    if heap < gcValveLow then gcValveLow = heap end
+    -- back in charge once the heap is near its old size, or once the stock
+    -- collector has bottomed out (a cycle swept) and allocation climbs again;
+    -- that low point is the new live size
+    local bottomed = gcClock() - gcValveAt > 3 and heap > gcValveLow * 1.05
+    if heap <= gcLive * 1.25 or heap < 65536 or bottomed then
+      gcValve = false
+      if bottomed then
+        gcBase, gcRestUntil = gcValveLow, gcValveLow * (Bridge.GC_REST or 1.25)
+        gcLive = gcValveLow  -- may be higher than before: a bigger area loaded
+        stats.cycles = stats.cycles + 1
+      end
+      gcDebt, gcLastHeap = 0, heap
+    else
+      if GCS.owned then GCS.owned = false; rawCollect("restart") end
+      stats.valve, stats.baseMB, stats.debtKB, stats.ms = true, gcLive / 1024, 0, 0
+      return
+    end
+  elseif own and heap > gcLive * (Bridge.GC_CEILING or 2) and heap > 131072 then
+    gcValve, gcValveLow, gcValveAt = true, heap, gcClock()
+    GCS.owned = false
+    rawCollect("restart")
+    stats.valve = true
+    return
+  end
+  stats.valve = false
   if own then
     GCS.owned, GCS.pacedAt, GCS.release = true, gcClock(), Bridge.GC_RELEASE or 1
   end
+  local alloc = heap - (gcLastHeap or heap)
+  local t0 = gcClock()
   if heap >= gcRestUntil then
-    if heap > gcBase * 3 then budget = budget * 6
-    elseif heap > gcBase * 2 then budget = budget * 3 end
-    local t0 = gcClock()
-    repeat
-      if rawCollect("step", 0) then
-        gcBase = rawCollect("count")
-        gcRestUntil = gcBase * (Bridge.GC_REST or 1.25)
-        break
+    if alloc > 0 then gcDebt = gcDebt + alloc end
+    if heap > gcBase * 1.75 then budget = budget * 3 end
+    local cap = math.max(budget, Bridge.GC_MAX or budget)
+    local chunk = Bridge.GC_CHUNK_KB or 64
+    local finished = false
+    -- the allocation debt first, in chunks, until paid or out of time
+    while gcDebt > 0 and gcClock() - t0 < cap do
+      local n = math.min(chunk, math.ceil(gcDebt))
+      gcDebt = gcDebt - n
+      if rawCollect("step", n) then cycleDone(); finished = true; break end
+    end
+    -- then the base budget, so a cycle keeps moving on a quiet frame
+    if not finished then
+      while gcClock() - t0 < budget do
+        if rawCollect("step", 0) then cycleDone(); break end
       end
-    until gcClock() - t0 >= budget
+    end
+    -- never let a carried debt grow past the heap itself
+    if gcDebt > heap then gcDebt = heap end
     local hook = Bridge.passHook
     if hook then hook("gc pacer", gcClock() - t0) end
+  else
+    gcDebt = 0
   end
   if own then rawCollect("stop")
   elseif GCS.owned then GCS.owned = false; rawCollect("restart") end
+  gcLastHeap = rawCollect("count")
+  stats.baseMB, stats.debtKB, stats.ms = gcLive / 1024, gcDebt, (gcClock() - t0) * 1000
 end
 
 function Bridge.run(ground)
