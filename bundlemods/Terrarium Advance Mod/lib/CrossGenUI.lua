@@ -1431,7 +1431,30 @@ function CG.enabled()
   return true
 end
 
-local function hudAlive() return now() - CG.hudAt <= CG.LIVE_WINDOW end
+-- Alive by TIME alone flickered on phones (2026-11-04): one frame that took
+-- longer than LIVE_WINDOW -- a stutter, a hitch -- reached the next frame's
+-- native draw before this frame's HUD pass, read as "HUD gone", and let the
+-- cartridge screen draw for that frame.  Now it is also alive when the HUD
+-- has run since the last native draw it replaced (however long that frame
+-- took), and a second screen skipped in the SAME frame (a submenu over its
+-- parent, microseconds later) counts too.  A HUD that really stops running
+-- still hands the screen back within LIVE_WINDOW.
+CG.SAME_FRAME = 0.05
+local lastSkip = nil   -- { frame = CG.frame then, at = time }
+local function hudAlive()
+  local t = now()
+  if t - CG.hudAt <= CG.LIVE_WINDOW then return true end
+  if lastSkip and CG.hudAt >= 0 then
+    if CG.frame > lastSkip.frame then return true end
+    if CG.frame == lastSkip.frame and t - lastSkip.at <= CG.SAME_FRAME then return true end
+  end
+  return false
+end
+-- the time is the FIRST skip of a HUD frame: refreshed on every skip, a HUD
+-- that stopped would keep "same frame" alive forever
+local function noteSkip()
+  if not (lastSkip and lastSkip.frame == CG.frame) then lastSkip = { frame = CG.frame, at = now() } end
+end
 
 -- which renderer serves this exact state (by its class, not a parent's)
 local byClass = setmetatable({}, { __mode = "k" })
@@ -1468,6 +1491,7 @@ function CG.install()
         rawset(Class, "draw", function(self, ...)
           if CG.owns(self) then
             self.__terrariumCrossGenFrame = CG.frame
+            noteSkip()
             return
           end
           return own(self, ...)

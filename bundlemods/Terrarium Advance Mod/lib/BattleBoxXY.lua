@@ -246,7 +246,26 @@ function BattleBoxXY.covers(battle)
   if not BattleBoxXY.wants(battle) then return false end
   local at = rawget(battle, "__xyBoxDrawnAt")
   if type(at) ~= "number" then return false end
-  return (clockNow() - at) <= BattleBoxXY.LIVE_WINDOW
+  local t = clockNow()
+  if (t - at) <= BattleBoxXY.LIVE_WINDOW then
+    rawset(battle, "__xyCoverSeen", rawget(battle, "__xyBoxDraws"))
+    rawset(battle, "__xyCoverAt", t)
+    return true
+  end
+  -- A frame that took longer than LIVE_WINDOW (a stutter, a hitch) used to
+  -- age the stamp out before this frame's draw() could refresh it, and the
+  -- engine's own box drew for that frame: the flicker on phones
+  -- (2026-11-04).  Still covered when draw() has run since the last time
+  -- this said yes, or this is another call in that same frame.  A
+  -- replacement that really stops drawing still gives the box back.
+  local draws, seen = rawget(battle, "__xyBoxDraws") or 0, rawget(battle, "__xyCoverSeen")
+  if seen and draws > seen then
+    rawset(battle, "__xyCoverSeen", draws)
+    rawset(battle, "__xyCoverAt", t)
+    return true
+  end
+  local coverAt = rawget(battle, "__xyCoverAt")
+  return seen ~= nil and draws == seen and type(coverAt) == "number" and t - coverAt <= 0.05
 end
 
 local function setColor(c, a)
@@ -425,6 +444,7 @@ function BattleBoxXY.draw(battle, rect)
   end
   love.graphics.setColor(1, 1, 1, 1)
   rawset(battle, "__xyBoxDrawnAt", clockNow())   -- the engine's box may go quiet
+  rawset(battle, "__xyBoxDraws", (rawget(battle, "__xyBoxDraws") or 0) + 1)
   return true
 end
 

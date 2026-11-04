@@ -27640,8 +27640,47 @@ return function(mod)
     end
   end
 
+  -- per-frame ownership log (the low-FPS flicker): what was on top of the
+  -- state stack and whether this UI drew a screen for it.  Kept as runs
+  -- ("StartMenu drew x40, StartMenu none x1, ...") over the last ~240 frames.
+  local runs={}
+  local function keyOf(st)
+    if not st then return "none" end
+    local mt=getmetatable(st)
+    local name=st.__gen3uiGoldOverlayKind or (st.__gen3uiStart and "start")
+    if not name then
+      for _,cls in ipairs({{StartMenu,"StartMenu"},{Menu,"Menu"},{PartyMenu,"PartyMenu"},{BagMenu,"BagMenu"},
+          {ListMenu,"ListMenu"},{TextBox,"TextBox"},{ChoiceBox,"ChoiceBox"},{BoxMenu,"BoxMenu"},
+          {ShopMenu,"ShopMenu"},{NamingScreen,"NamingScreen"},{MoveLearnMenu,"MoveLearnMenu"}}) do
+        if mt==cls[1] then name=cls[2]; break end
+      end
+    end
+    return (name or "state")..("@%s"):format(tostring(st):match("0x%x+") or tostring(st):sub(-6))
+  end
+  local function noteFrame(game,drew)
+    local okT,top=pcall(topState,game)
+    local key=(okT and keyOf(top) or "?").." "..(drew and "drew" or "none")
+    local last=runs[#runs]
+    if last and last.key==key then last.n=last.n+1
+    else
+      runs[#runs+1]={key=key,n=1,t=clock()}
+      if #runs>60 then table.remove(runs,1) end
+    end
+  end
+  local baseReport=uiPerf.report
+  function uiPerf.report(out)
+    baseReport(out)
+    local now=clock()
+    out[#out+1]="MODERN UI FRAMES (oldest first; top state, whether this UI drew it, how many frames in a row):"
+    for _,r in ipairs(runs) do
+      out[#out+1]=("  %7.2fs ago  %-34s x%d"):format(now-r.t,r.key,r.n)
+    end
+  end
+
   mod.hooks:wrap("render.hud", timed("hud (menus/battle)",function(next,game,viewport)
-    return renderHudHook(mod,next,game,viewport)
+    local r=renderHudHook(mod,next,game,viewport)
+    pcall(noteFrame,game,r==true)
+    return r
   end), 10000)
 
   mod.hooks:wrap("render.hud", timed("location banner",GoldCompat.locationBannerHud), 10900)
