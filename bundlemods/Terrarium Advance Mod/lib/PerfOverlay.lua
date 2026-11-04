@@ -12,6 +12,13 @@
 --   * a THREE-FINGER TAP on a touch screen
 -- F3 and the tap flip it for this session on top of the row.
 --
+-- TWO VIEWS (2026-11-04). By default it is a plain readout -- FPS, frame
+-- times, hitch counts, draw time, Lua heap, draw calls, texture memory --
+-- that hooks nothing and refreshes its text 4 times a second. P.DETAIL = true
+-- (F4 on a keyboard) is the full diagnostic view described below, with the
+-- engine / FrameProfile / bridge timers and the jit.profile hitch sampler;
+-- those are installed only while it shows (the phone crashed with them on).
+--
 -- WHAT IT SHOWS
 --   frame    FPS, average frame time over the last second, the worst frame in
 --            the last 1 s and 10 s, and how many frames in the last 10 s went
@@ -31,7 +38,7 @@
 -- build hook only measure while the overlay is showing.
 
 local V = ...
-local P = { installed = false, forced = nil, visible = false }
+local P = { installed = false, forced = nil, visible = false, measuring = false }
 
 P.OPTION_KEY = "perfOverlay"
 P.RING = 600                  -- frames of history (10 s at 60 fps)
@@ -99,7 +106,7 @@ local function hookLogger()
     if type(inner) == "function" then
       Logger[level] = function(...)
         logN = logN + 1
-        if not P.visible then return inner(...) end
+        if not P.measuring then return inner(...) end
         local t0 = clock()
         inner(...)
         logMs = logMs + (clock() - t0) * 1000
@@ -142,7 +149,7 @@ end
 
 -- Gen4Budget.charge reports every effect mesh build here while visible.
 local function onCharge(kind, ms)
-  if not P.visible then return end
+  if not P.measuring then return end
   frameBuildMs, frameBuilds = frameBuildMs + ms, frameBuilds + 1
   kind = kind or "?"
   kindAcc[kind] = (kindAcc[kind] or 0) + ms
@@ -181,7 +188,7 @@ local function hookFrameProfile()
   if type(section) == "function" then
     FP.section = function(name)
       local inner = section(name)
-      if not P.visible then return inner end
+      if not P.measuring then return inner end
       local t0 = clock()
       return function()
         hdeposit(name, clock() - t0)
@@ -191,7 +198,7 @@ local function hookFrameProfile()
   end
   if type(add) == "function" then
     FP.add = function(name, seconds)
-      if P.visible and seconds and seconds > 0 then hdeposit(name, seconds) end
+      if P.measuring and seconds and seconds > 0 then hdeposit(name, seconds) end
       return add(name, seconds)
     end
   end
@@ -284,7 +291,7 @@ local function hookEngine()
     local inner = Ground[name]
     if type(inner) ~= "function" then return end
     Ground[name] = function(self, ...)
-      if not P.visible then return inner(self, ...) end
+      if not P.measuring then return inner(self, ...) end
       local t0 = clock()
       local a, b, c = inner(self, ...)
       local dt = clock() - t0
@@ -453,13 +460,45 @@ local function lines()
   return out
 end
 
+-- THE SIMPLE READOUT (the default since 2026-11-04): numbers the overlay can
+-- get without hooking anything -- frame times from its own ring, the draw
+-- bracket, the heap and love.graphics.getStats. The detail view (P.DETAIL)
+-- also wraps engine calls, FrameProfile and the bridge passes and runs the
+-- jit.profile sampler, and with it on the phone tended to crash after a few
+-- seconds.
+local function simpleLines()
+  local w1, w10 = window(1), window(10)
+  local fps = (love.timer and love.timer.getFPS) and love.timer.getFPS() or 0
+  local out = {}
+  out[#out + 1] = string.format("FPS %d   %s ms   worst %s ms (1s) / %s ms (10s)",
+    fps, fmt(w1.avg * 1000), fmt(w1.worst * 1000), fmt(w10.worst * 1000))
+  out[#out + 1] = string.format("hitches 10s: %d > 33 ms  %d > 50 ms", w10.over33, w10.over50)
+  out[#out + 1] = string.format("draw %s ms   other %s ms   lua %.0f MB",
+    fmt(w1.draw), fmt(math.max(0, w1.avg * 1000 - w1.draw)), collectgarbage("count") / 1024)
+  if gpu then
+    out[#out + 1] = string.format("gpu %d draws   tex %.0f MB",
+      gpu.drawcalls or 0, (gpu.texturememory or 0) / 1048576)
+  end
+  return out
+end
+
+-- the text is rebuilt TEXT_HZ times a second, not every frame
+P.TEXT_HZ = 4
+local cachedText, cachedAt, cachedDetail = nil, -math.huge, nil
+
 local function drawOverlay()
   local g = love.graphics
   local font = g.getFont()
   local w, h = g.getDimensions()
   -- readable on a phone: grow with the short side of the screen
   local s = math.max(1, math.floor(math.min(w, h) / 420))
-  local text = lines()
+  local now = clock()
+  local detail = P.DETAIL == true
+  if not cachedText or cachedDetail ~= detail or now - cachedAt >= 1 / (P.TEXT_HZ or 4) then
+    cachedText = detail and lines() or simpleLines()
+    cachedAt, cachedDetail = now, detail
+  end
+  local text = cachedText
   local lh = font:getHeight() + 2
   local width = 0
   for _, t in ipairs(text) do width = math.max(width, font:getWidth(t)) end
@@ -481,21 +520,36 @@ local function drawOverlay()
 end
 
 -- Called once per rendered frame, after the game has drawn.
+-- P.DETAIL = true (or F4 on a keyboard) brings back the full diagnostic view.
+P.DETAIL = false
+local detailOn = false   -- whether the detail hooks are live right now
+
 function P.frame(drawSeconds)
   local on = P.enabled()
   if on ~= P.visible then
     P.visible = on
-    if on then hookBudget(); hookEngine() end
+    hLastAt = nil
+  end
+  -- the measuring hooks only while the DETAIL view shows; P.measuring is what
+  -- the installed wrappers test, so they pass straight through otherwise
+  local wantDetail = on and P.DETAIL == true
+  if wantDetail ~= detailOn then
+    detailOn = wantDetail
+    P.measuring = wantDetail
+    if wantDetail then hookBudget(); hookEngine(); hookFrameProfile() end
     local B = bridge()
-    if B then B.profile = on; B.passStats = {} end
-    if on then hookFrameProfile() end
-    if B then B.passHook = on and function(name, dt) hdeposit("fx " .. name, dt) end or nil end
-    profileSet(on)
+    if B then
+      B.profile = wantDetail; B.passStats = {}
+      B.passHook = wantDetail and function(name, dt) hdeposit("fx " .. name, dt) end or nil
+    end
+    profileSet(wantDetail)
     hLastAt = nil
   end
   if not on then return end
-  passFrames = passFrames + 1
-  hitchFrame(clock())
+  if detailOn then
+    passFrames = passFrames + 1
+    hitchFrame(clock())
+  end
   local dt = (love.timer and love.timer.getDelta) and love.timer.getDelta() or 0
   push(dt, (drawSeconds or 0) * 1000)
   local g = love.graphics
@@ -503,7 +557,7 @@ function P.frame(drawSeconds)
     local ok, st = pcall(g.getStats)
     if ok then gpu = st end
   end
-  sampleSecond(clock())
+  if detailOn then sampleSecond(clock()) end
   local ok, err = pcall(drawOverlay)
   if not ok and not P.warned then
     P.warned = true
@@ -533,6 +587,7 @@ function P.install()
   if type(innerKey) == "function" then
     function Game:keypressed(key, ...)
       if key == "f3" then P.toggle(); return end
+      if key == "f4" and P.visible then P.DETAIL = not P.DETAIL; return end
       return innerKey(self, key, ...)
     end
   end
