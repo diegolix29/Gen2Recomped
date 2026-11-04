@@ -133,6 +133,38 @@ N.G3_KANTO = {
   [87] = "GIOVANNI", [88] = "MOM", [89] = "CELIO", [90] = "WOMAN", [91] = "GUIDE MAN",
 }
 
+-- Black / White: a/0/4/9 member (objDef.spriteName "bw_###") -> who it is,
+-- named from contact sheets of the extracted sheets (front frame).  Only
+-- people; the player's own sheets (6-11, 136-141, 152-157) are left out.
+N.BW = {
+  [12] = "CHEREN", [13] = "LITTLE BOY", [14] = "LITTLE GIRL", [15] = "YOUNGSTER",
+  [16] = "BOY", [17] = "BOY", [18] = "BOY", [19] = "LASS", [20] = "GIRL", [21] = "GIRL",
+  [22] = "LASS", [23] = "BOY", [24] = "MAN", [25] = "MAN", [26] = "MAN", [27] = "WOMAN",
+  [28] = "WOMAN", [29] = "MAN", [30] = "FAT MAN", [31] = "WOMAN", [32] = "WOMAN",
+  [33] = "OLD MAN", [34] = "OLD WOMAN", [35] = "BOY", [36] = "GIRL", [37] = "MAN",
+  [38] = "MAN", [39] = "YOUNGSTER", [40] = "PICNICKER", [41] = "COWGIRL", [42] = "MAN",
+  [43] = "COOLTRAINER M", [44] = "COOLTRAINER F", [45] = "OLD MAN", [46] = "WOMAN",
+  [47] = "WAITER", [48] = "MAID", [49] = "MAN", [50] = "OLD WOMAN", [51] = "BLACK BELT",
+  [52] = "BATTLE GIRL", [53] = "WOMAN", [54] = "BEAUTY", [55] = "DOCTOR", [56] = "NURSE",
+  [57] = "MAN", [58] = "WOMAN", [59] = "WORKER", [60] = "MAN", [61] = "GUITARIST",
+  [63] = "BOY", [64] = "CYCLIST M", [66] = "SAGE", [67] = "PSYCHIC F", [68] = "HIKER",
+  [69] = "WORKER", [70] = "COOK", [71] = "CHEF", [72] = "SKIER M", [73] = "RANGER M",
+  [74] = "OLD WOMAN", [75] = "DELIVERYMAN", [76] = "POLICEMAN", [77] = "MAN",
+  [78] = "SCIENTIST M", [79] = "SCIENTIST F", [80] = "YOUNGSTER", [81] = "GIRL",
+  [83] = "LADY", [84] = "WOMAN", [85] = "WOMAN", [86] = "GIRL", [87] = "GIRL",
+  [88] = "NINJA", [89] = "PARASOL LADY", [90] = "CILAN", [91] = "LENORA", [92] = "BURGH",
+  [93] = "ELESA", [94] = "CLAY", [95] = "SKYLA", [96] = "BRYCEN", [97] = "IRIS",
+  [98] = "SHAUNTAL", [99] = "GRIMSLEY", [100] = "MARSHAL", [101] = "CAITLIN",
+  [102] = "CHILI", [103] = "CRESS", [104] = "MAN", [105] = "GHETSIS", [106] = "ALDER",
+  [107] = "FENNEL", [108] = "MAN", [109] = "MAN", [110] = "JUNIPER", [111] = "MAN",
+  [112] = "CAPTAIN", [133] = "MAN", [135] = "BIANCA", [144] = "WOMAN", [146] = "GIRL",
+  [147] = "MAN", [148] = "WOMAN", [149] = "LITTLE BOY", [150] = "LITTLE GIRL",
+  [151] = "SAGE", [158] = "MAN", [159] = "MAN", [160] = "DRAYDEN", [162] = "PLASMA M",
+  [163] = "MAN", [164] = "WOMAN", [166] = "OLD MAN", [167] = "SAGE", [168] = "SAGE",
+  [169] = "SAGE", [170] = "SAGE", [171] = "SAGE", [180] = "WOMAN", [182] = "POLICEMAN",
+  [190] = "CYNTHIA",
+}
+
 local function gameVersion()
   local ok, GV = pcall(require, "src.core.GameVersion")
   local okG, v = pcall(function() return ok and GV.get() end)
@@ -175,7 +207,13 @@ function N.nameOf(e)
   local def = type(e) == "table" and e.def
   if type(def) ~= "table" then return nil end
   if type(def.spriteName) == "string" and def.spriteName ~= "" then
-    if def.spriteName:match("^bw_%d+$") or def.spriteName:match("^var_") then return nil end
+    local bw = tonumber(def.spriteName:match("^bw_(%d+)$"))
+    if bw then
+      local v = gameVersion()
+      if v ~= "black" and v ~= "white" then return nil end
+      return N.BW[bw]
+    end
+    if def.spriteName:match("^var_") then return nil end
     return normalize(def.spriteName)
   end
   local sp = type(def.sprite) == "string" and def.sprite or nil
