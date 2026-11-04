@@ -40,7 +40,7 @@ local mod = V and V.mod
 local T = { ID = "oras_trainers", LABEL = "ORAS TRAINERS" }
 T.ROOT = "oras/trainers"
 T.INDEX = T.ROOT .. "/index.lua"
-T.STAMP = "oras-trainer=6\n"   -- 2: field heights scaled (FIELD_SCALE); 3: field idleB = slot 93; 4: shoes / bracelet kept; 5: leg IK; 6: battle idle slot 5, FK feet not IK'd
+T.STAMP = "oras-trainer=7\n"   -- 2: field heights scaled (FIELD_SCALE); 3: field idleB = slot 93; 4: shoes / bracelet kept; 5: leg IK; 6: battle idle slot 5, FK feet not IK'd; 7: point layered over idle
 T.LEG_IK = { { "LThigh", "LLeg", "LFoot" }, { "RThigh", "RLeg", "RFoot" } }
 T.IMPORT_ID = "pokemon_oras"
 T.FIELD_GARC = "a/0/2/1"
@@ -61,6 +61,23 @@ T.FIELD_ACTIONS = {
 -- loop, 6 big throw, 14 hand to face, 15 celebrate.  Slot 0 was baked as the
 -- idle and looked like a win / hurt loop in battle.
 T.BATTLE_IDLE_SLOT = 5
+-- layer motions: the game plays these over another motion.  Slot 2 (point)
+-- moves only the right arm / Spine3 / hair and holds constant T-pose values
+-- on the rest; alone it was a T-pose with the head snapped back.  Baked as
+-- the base slot's curves with the layer's MOVING curves on top.
+T.BATTLE_LAYERS = { [2] = 5 }
+
+local function layered(base, top)
+  local curves = {}
+  for k, v in pairs(base.curves or {}) do curves[k] = v end
+  for k, v in pairs(top.curves or {}) do
+    if v.kind ~= "const" then curves[k] = v end
+  end
+  local out = {}
+  for k, v in pairs(top) do out[k] = v end
+  out.curves = curves
+  return out
+end
 T.BATTLE_ACTIONS = {
   { name = "throw", slot = 1 }, { name = "command", slot = 2 },
   { name = "throwB", slot = 6 }, { name = "idleB", slot = 3 },
@@ -235,6 +252,11 @@ function T.buildOne(cache, src, field, battle)
   if pack then
     local okP, sk, mo = pcall(GF1.readPack, pack)
     if okP then skeleton, motions = sk, mo or {} end
+  end
+  if src.kind == "battle" then
+    for top, under in pairs(T.BATTLE_LAYERS) do
+      if motions[top] and motions[under] then motions[top] = layered(motions[under], motions[top]) end
+    end
   end
   local names = {}
   for i, b in ipairs(skeleton or {}) do names[i] = b.name end
