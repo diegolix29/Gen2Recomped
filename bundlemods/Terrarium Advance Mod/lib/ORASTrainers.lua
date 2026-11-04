@@ -40,7 +40,9 @@ local mod = V and V.mod
 local T = { ID = "oras_trainers", LABEL = "ORAS TRAINERS" }
 T.ROOT = "oras/trainers"
 T.INDEX = T.ROOT .. "/index.lua"
-T.STAMP = "oras-trainer=7\n"   -- 2: field heights scaled (FIELD_SCALE); 3: field idleB = slot 93; 4: shoes / bracelet kept; 5: leg IK; 6: battle idle slot 5, FK feet not IK'd; 7: point layered over idle.  New characters (the walkers) bake on the next press without a bump.
+T.STAMP = "oras-trainer=7\n"   -- 2: field heights scaled (FIELD_SCALE); 3: field idleB = slot 93; 4: shoes / bracelet kept; 5: leg IK; 6: battle idle slot 5, FK feet not IK'd; 7: point layered over idle.  New characters bake on the next press without a bump.
+T.WALKER_STAMP = T.STAMP .. "walker=2\n"   -- the walkers alone: 2 = bind-offset retarget (T.walkFit)
+function T.stampOf(kind) return kind == "walker" and T.WALKER_STAMP or T.STAMP end
 T.LEG_IK = { { "LThigh", "LLeg", "LFoot" }, { "RThigh", "RLeg", "RFoot" } }
 T.IMPORT_ID = "pokemon_oras"
 T.FIELD_GARC = "a/0/2/1"
@@ -103,23 +105,67 @@ local function scaledCurve(cv, s)
   for i, k in ipairs(cv.keys) do keys[i] = { k[1], k[2] * s, k[3] and k[3] * s } end
   return { kind = cv.kind, keys = keys }
 end
+local function offsetCurve(cv, s, add)
+  if cv.kind == "const" then return { kind = "const", value = cv.value * s + add } end
+  local keys = {}
+  for i, k in ipairs(cv.keys) do keys[i] = { k[1], k[2] * s + add, k[3] and k[3] * s } end
+  return { kind = cv.kind, keys = keys }
+end
+-- How the field rig maps onto the battle one (2026-11-04, after the first
+-- in-game walk).  Copying the field values outright lost the battle rig's
+-- own posture where the binds differ (Neck -0.34, Head 0.22, shoulders /
+-- arms ~0.16 rad: a stiff upright back, May tilted), flipped Brendan's bag
+-- (Bag1 binds 2.7 rad apart), put the hips 4 units high (12.86 * 5.18 =
+-- 66.7 against 62.5: locked knees) and spread the feet 5.2x sideways where
+-- the hips are only 2.6x wider.  Now: rotations are the field motion's
+-- offset from the field bind, added to the battle bind; a bone whose binds
+-- are more than WALKER_MAX_BIND apart keeps the battle still frame; Waist
+-- moves by its offset from its bind; sideways (X) by the hip-width ratio.
+T.WALKER_MAX_BIND = 0.6
+function T.walkFit(battleModel, fieldModel)
+  local fb, bb = {}, {}
+  for _, b in ipairs(fieldModel and fieldModel.bones or {}) do fb[b.name] = b end
+  for _, b in ipairs(battleModel and battleModel.bones or {}) do bb[b.name] = b end
+  local s = T.legRatio(battleModel, fieldModel)
+  local sx = s
+  local tb, tf = bb.LThigh, fb.LThigh
+  if tb and tf and math.abs(tf.translation[2]) > 1e-3 then sx = math.abs(tb.translation[2] / tf.translation[2]) end
+  return { s = s, sx = sx, field = fb, battle = bb }
+end
 -- field motion m (curves on fieldNames) as a motion on battleNames
-local function retarget(m, fieldNames, battleNames, base, s)
+local function retarget(m, fieldNames, battleNames, base, fit)
   local at = {}
   for j, n in ipairs(battleNames) do at[n] = j end
   local curves, driven = {}, {}
   for i, n in ipairs(fieldNames) do
     local j = at[n]
-    if j then
+    local fbone, bbone = fit and fit.field[n], fit and fit.battle[n]
+    local d = { 0, 0, 0 }
+    local far = false
+    if fbone and bbone then
+      for c = 1, 3 do
+        d[c] = bbone.rotation[c] - fbone.rotation[c]
+        if math.abs(d[c]) > T.WALKER_MAX_BIND then far = true end
+      end
+    end
+    if j and not far then
       driven[j] = true
       for c = 3, 5 do
         local cv = m.curves[(i - 1) * 9 + c]
-        if cv then curves[(j - 1) * 9 + c] = cv end
+        if cv then curves[(j - 1) * 9 + c] = offsetCurve(cv, 1, d[c - 2]) end
       end
-      if s and T.WALKER_MOVED[n] then
+      if fit and T.WALKER_MOVED[n] then
+        local scale = { fit.sx, fit.s, fit.s }
         for c = 0, 2 do
           local cv = m.curves[(i - 1) * 9 + c]
-          if cv then curves[(j - 1) * 9 + c] = scaledCurve(cv, s) end
+          if cv then
+            local add = 0
+            -- Waist is parented: its own bind offset, then the field bob
+            if n == "Waist" and fbone and bbone then
+              add = bbone.translation[c + 1] - fbone.translation[c + 1] * scale[c + 1]
+            end
+            curves[(j - 1) * 9 + c] = offsetCurve(cv, scale[c + 1], add)
+          end
         end
       end
     end
@@ -350,12 +396,12 @@ function T.buildOne(cache, src, field, battle)
     if not (okF and fsk and fmo) then return nil, "field twin motions: " .. tostring(fsk) end
     local fnames = {}
     for i, b in ipairs(fsk) do fnames[i] = b.name end
-    local s = T.legRatio(model, (decodeModel(part(fs, 0))))
+    local fit = T.walkFit(model, (decodeModel(part(fs, 0))))
     local base = motions[T.WALKER_BASE_SLOT]
     local keep = { [T.BATTLE_IDLE_SLOT] = motions[T.BATTLE_IDLE_SLOT] }
     for _, a in ipairs(T.WALKER_ACTIONS) do
       local m = fmo[a.slot - T.WALKER_OFFSET]
-      if m then keep[a.slot] = retarget(m, fnames, names, base, s) end
+      if m then keep[a.slot] = retarget(m, fnames, names, base, fit) end
     end
     motions = keep
   end
@@ -369,7 +415,7 @@ function T.buildOne(cache, src, field, battle)
   local summary, why = C.bakeActor({ cache = cache }, {
     model = model, textures = textures, texData = d,
     motions = motions, pose = pose, select = T.selectFor(model),
-    actions = actions, idleSlot = src.kind == "field" and 0 or T.BATTLE_IDLE_SLOT, stamp = T.STAMP,
+    actions = actions, idleSlot = src.kind == "field" and 0 or T.BATTLE_IDLE_SLOT, stamp = T.stampOf(src.kind),
     dir = dir, attackAliases = false,
     meta = { trainer = src.kind, trainerId = src.id },
     nativeScale = src.kind == "field" and T.FIELD_SCALE or nil,
@@ -487,7 +533,7 @@ local function bake()
       local dir = T.ROOT .. "/" .. src.id
       local okRev, rev = pcall(mod.cache.read, mod.cache, dir .. "/rev.txt")
       local entry = { id = src.id, kind = src.kind, name = src.name, member = src.member }
-      if okRev and rev == T.STAMP then
+      if okRev and rev == T.stampOf(src.kind) then
         local okI, old = pcall(function() return T.index() end)
         local prev
         for _, e in ipairs(okI and old and old.list or {}) do if e.id == src.id then prev = e end end
