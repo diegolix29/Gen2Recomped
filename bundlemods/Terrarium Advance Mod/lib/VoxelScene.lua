@@ -1388,7 +1388,7 @@ local function drawCast(state, posed, me, atlasFor, yaw)
         PlayerModel.draw(p.px, p.py, p.gh + (p.lift or 0), facing, p.flip)
       elseif stadiumFollower3d then
         StadiumFollower.update(1 / 60)
-        StadiumFollower.draw(p.px, p.py, facing, p.gh)
+        StadiumFollower.draw(p.px, p.py, facing, p.gh, p.facing)
       elseif StadiumWilds.enabled() and StadiumWilds.isWildPokemon(p) then
         if not StadiumWilds.hasModel(p) then
           StadiumWilds.loadEntityModel(p)

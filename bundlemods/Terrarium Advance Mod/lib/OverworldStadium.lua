@@ -455,15 +455,16 @@ local function facingVector(facing)
   return 0, 1 -- down, nil, and unknown values use Stadium's native +Z
 end
 
--- Only the player's own Pokemon, followers and a ridden Sky Ride mount turn
--- with the camera; wild Pokemon and roamers keep their own world facing.
+-- Only the player's own Pokemon and a ridden Sky Ride mount follow the
+-- PLAYER's body bearing (its travel, held while standing -- never the camera).
+-- Followers, wild Pokemon and roamers keep their own world facing (followers
+-- used to turn with the camera -- the user's call, 2026-11-03: you could
+-- never see their faces).
 local function followsCamera(p)
   if not p then return false end
-  if p.isPlayer or p.isFollower then return true end
+  if p.isPlayer then return true end
   local e = p.entity
-  return type(e) == "table" and (e.isFollower == true or e.wildsFollower == true
-    or e.pikachuFollower == true or e.follower == true
-    or e._wildsFollowerSpecies ~= nil or e._stadiumSkyRideAnchorFacing ~= nil) or false
+  return type(e) == "table" and e._stadiumSkyRideAnchorFacing ~= nil or false
 end
 
 local function dtForFrame()
@@ -947,7 +948,7 @@ local function prepareOneColosseum(p, dex, dt)
     local okFirstPerson, FirstPerson = pcall(V.require, "FirstPerson")
     if okFirstPerson and FirstPerson then
       local okBlend, b = pcall(FirstPerson.cardBlend)
-      if okBlend and b and b > 0 and p.isPlayer and FirstPerson.bodyYaw ~= nil then
+      if okBlend and b and b > 0 and followsCamera(p) and FirstPerson.bodyYaw ~= nil then
         -- the player's free-walk body bearing (held while standing)
         fx, fz = math.sin(FirstPerson.bodyYaw), math.cos(FirstPerson.bodyYaw)
       elseif okBlend and b and b > 0 then
@@ -1065,7 +1066,7 @@ local function prepareOne(p, dex, dt)
     local okFirstPerson, FirstPerson = pcall(V.require, "FirstPerson")
     if okFirstPerson and FirstPerson then
       local b = FirstPerson.cardBlend()
-      if b > 0 and p.isPlayer and FirstPerson.bodyYaw ~= nil then
+      if b > 0 and followsCamera(p) and FirstPerson.bodyYaw ~= nil then
         -- the player's free-walk body bearing (held while standing)
         fx, fz = math.sin(FirstPerson.bodyYaw), math.cos(FirstPerson.bodyYaw)
       elseif b > 0 then

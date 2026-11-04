@@ -220,7 +220,7 @@ local function patchCastLoop(source)
         PlayerModel.draw(p.px, p.py, p.gh + (p.lift or 0), facing, p.flip)
       elseif stadiumFollower3d then
         StadiumFollower.update(1 / 60)
-        StadiumFollower.draw(p.px, p.py, facing, p.gh)
+        StadiumFollower.draw(p.px, p.py, facing, p.gh, p.facing)
       -- safeDraw never throws.  Returning false means this one entity uses
       -- Dramatic Shape's original 2D card for this frame.
       elseif not OverworldColosseum.safeDraw(p)

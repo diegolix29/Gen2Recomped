@@ -392,8 +392,19 @@ end
 -- Draw the follower at the given position
 -- x, y: world coordinates (pixel position)
 -- facing: direction the follower is facing ("up", "down", "left", "right")
-function StadiumFollower.draw(x, y, facing, yUp)
+-- worldFacing (optional): the follower's own WORLD compass facing. VoxelScene
+-- hands `facing` already turned into the viewer's frame (for 2D cards), so it
+-- passes the world one here too. In free roam (1ST / 3RD, Gen 4 third/first)
+-- the follower turns by its OWN travel and keeps it while standing -- never
+-- by the camera (the user's call, 2026-11-03: you could never see its face).
+local FACING_BEARING = { down = 0, right = math.pi / 2, up = math.pi, left = -math.pi / 2 }
+local function worldBearing(f)
+  return FACING_BEARING[type(f) == "string" and string.lower(f) or ""] or 0
+end
+
+function StadiumFollower.draw(x, y, facing, yUp, worldFacing)
   yUp = tonumber(yUp) or 0
+  local wf = worldFacing or facing
   
   -- Handle sprite fallback
   if usingSpriteFallback and currentSprite then
@@ -411,28 +422,12 @@ function StadiumFollower.draw(x, y, facing, yUp)
     local fx, fz
 
     -- In camera-relative modes, use camera facing vectors directly, not grid-based towardFor
-    if Cam and Cam.freeRoam and Cam.freeRoam() then
-      local yaw = Cam.modelYaw()
+    if (Cam and Cam.freeRoam and Cam.freeRoam()) or b > 0 then
+      -- free roam: the follower's own world facing (held while standing)
+      local yaw = worldBearing(wf)
       fx, fz = math.sin(yaw), math.cos(yaw)
     elseif Cam and Cam.active and Cam.active() then
       fx, fz = Cam.facingVector(facing)
-    elseif b > 0 then
-      local cameraYaw = FirstPerson.cardYaw(x, y)
-      local face = type(facing) == "string" and string.lower(facing) or facing
-      local yaw = 0
-      -- Use "awayCam" kind like PlayerModel for follower
-      if face == "down" then
-        yaw = (cameraYaw + math.pi) * b
-      elseif face == "up" then
-        yaw = cameraYaw * b
-      elseif face == "right" then
-        yaw = (cameraYaw - math.pi / 2) * b
-      elseif face == "left" then
-        yaw = (cameraYaw + math.pi / 2) * b
-      else
-        yaw = cameraYaw * b
-      end
-      fx, fz = math.sin(yaw), math.cos(yaw)
     else
       -- Only use grid-based towardFor when not in camera-relative mode
       fx, fz = ColosseumMon.towardFor(facing)
@@ -457,24 +452,12 @@ function StadiumFollower.draw(x, y, facing, yUp)
   -- Apply rotation based on facing direction (same as PlayerModel.yawForDraw)
   local yaw = 0
 
-  if Cam and Cam.freeRoam and Cam.freeRoam() then
-    yaw = Cam.modelYaw()
+  if (Cam and Cam.freeRoam and Cam.freeRoam()) or b > 0 then
+    -- free roam: the follower's own world facing (held while standing);
+    -- rotateY turns +Z onto this bearing, as the grid branch below does
+    yaw = worldBearing(wf)
   elseif Cam and Cam.active and Cam.active() then
     yaw = -Cam.worldYaw(facing)
-  elseif b > 0 then
-    local cameraYaw = FirstPerson.cardYaw(x, y)
-    local face = type(facing) == "string" and string.lower(facing) or facing
-    if face == "down" then
-      yaw = (cameraYaw + math.pi) * b
-    elseif face == "up" then
-      yaw = cameraYaw * b
-    elseif face == "right" then
-      yaw = (cameraYaw - math.pi / 2) * b
-    elseif face == "left" then
-      yaw = (cameraYaw + math.pi / 2) * b
-    else
-      yaw = cameraYaw * b
-    end
   else
     -- In other modes, rotate based on movement direction
     if facing == "right" then

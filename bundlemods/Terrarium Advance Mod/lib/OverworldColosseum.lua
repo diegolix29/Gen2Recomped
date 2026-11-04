@@ -768,13 +768,12 @@ function OverworldColosseum.draw(p)
   local renderFacing = p.facing or "down"
   local fx, fz
 
-  -- Only the player's own Pokemon and followers turn with the camera (the
-  -- same approach as PlayerModel); wild Pokemon and roamers keep their own
-  -- world facing whatever way the camera looks.
-  local e = p.entity
-  local followsCamera = p.isPlayer or p.isFollower or (type(e) == "table" and (
-    e.isFollower == true or e.wildsFollower == true or e.pikachuFollower == true
-    or e.follower == true or e._wildsFollowerSpecies ~= nil)) or false
+  -- Only the player's own Pokemon follows the player's body bearing (the
+  -- same approach as PlayerModel). Followers, wild Pokemon and roamers keep
+  -- their own world facing whatever way the camera looks (followers used to
+  -- turn with the camera too -- the user's call, 2026-11-03: you could never
+  -- see their faces).
+  local followsCamera = p.isPlayer or false
   local okCam, Cam = pcall(V.require, "Gen4ActorCam")
   if not followsCamera then
     if okCam and Cam and Cam.facingVector then
