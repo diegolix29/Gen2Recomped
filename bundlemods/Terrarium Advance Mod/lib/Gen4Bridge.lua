@@ -423,6 +423,15 @@ if not GCS then
   if type(GCS.raw) == "function" then
     local raw = GCS.raw
     _G.collectgarbage = function(opt, ...)
+      -- WHILE THE PACER OWNS IT, SOMEONE ELSE'S STEP IS A NO-OP (2026-11-04).
+      -- A "step" pays LuaJIT's whole internal debt, not the size asked for:
+      -- the engine's per-update step(1) (src/core/Game.lua) was a 148 ms hitch
+      -- on the phone profiler (Game:705 < Gen4Bridge wrapper). The pacer calls
+      -- the raw function, so this only ever swallows outside steps; "collect"
+      -- (fight start / end) still runs.
+      if opt == "step" and GCS.owned and gcClock() - GCS.pacedAt <= GCS.release then
+        return false
+      end
       local a, b = raw(opt, ...)
       if GCS.owned and opt ~= "count" and opt ~= "stop" then
         if gcClock() - GCS.pacedAt > GCS.release then

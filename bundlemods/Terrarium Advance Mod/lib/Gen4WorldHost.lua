@@ -235,10 +235,21 @@ local function rebuildGrass(state, ground)
   local now = love and love.timer and love.timer.getTime() or 0
   local cx = player and math.floor((player.px or 0) / 16) or 0
   local cy = player and math.floor((player.py or 0) / 16) or 0
-  local key = (map.id or "") .. ":" .. cx .. ":" .. cy
-  if grassCache.mapId == key and grassCache.mesh and (now - (grassCache.at or 0)) < 0.35 then
+  -- REBUILT ONLY AFTER A WALK, not per tile and not on a clock (2026-11-04).
+  -- The key used to be the player's cell with a 0.35 s expiry, so every step
+  -- and every 0.35 s standing still rebuilt every tuft within 12 cells -- the
+  -- 200-250 ms "g4 drawFree" hitches the phone profiler traced to
+  -- Grass3D:391 < Gen4WorldHost:265. Tall grass does not change, so the mesh
+  -- is kept until the player is GRASS_SLACK cells from where it was built
+  -- (the radius-12 build still covers the view), and a map with no grass
+  -- caches its nil instead of rescanning every frame.
+  local mapKey = tostring(map.id or "")
+  local slack = Host.GRASS_SLACK or 4
+  if grassCache.mapId == mapKey and grassCache.cx
+     and math.abs(cx - grassCache.cx) <= slack and math.abs(cy - grassCache.cy) <= slack then
     return grassCache.mesh
   end
+  local key = mapKey
   local instances = {}
   local radius = 12
   local x0 = math.max(0, cx - radius)
@@ -262,9 +273,16 @@ local function rebuildGrass(state, ground)
   end
   local mesh = nil
   if #instances > 0 then
-    mesh = Grass3D.meshFromInstances(instances)
+    -- the FFI builder (no table per vertex); same geometry at level 1, unrooted
+    if Grass3D.meshFromInstancesLod then
+      mesh = Grass3D.meshFromInstancesLod(instances, 1, false)
+    end
+    mesh = mesh or Grass3D.meshFromInstances(instances)
   end
+  local old = grassCache.mesh
+  if old and old ~= mesh and old.release then pcall(old.release, old) end
   grassCache.mapId, grassCache.mesh, grassCache.at = key, mesh, now
+  grassCache.cx, grassCache.cy = cx, cy
   return mesh
 end
 
@@ -451,6 +469,11 @@ function Host.overlayFx(state, ground, sw, sh, scale)
   end
   Voxel3D.vp = prevVp
   Host._drawGround = nil
+end
+
+function Host.bridgeOwnsGrass()
+  local ok, B = pcall(V.require, "Gen4Bridge")
+  return ok and type(B) == "table" and type(B.effects) == "table" and B.effects.grass ~= nil
 end
 
 function Host.effectsOn()
@@ -751,7 +774,11 @@ function Host.overlay3D(ground)
   local ow = game() and game().overworld
   if not (ground and ow) then return end
   Host._drawGround = ground
-  if Host.effectsOn() then
+  -- Gen4Grass (the bridge's "grass" pass) owns the native meadow: it plants
+  -- the same tuft per land, at each tuft's ground height, with LOD. This older
+  -- pass stamped a second copy at y = 0 and ran even with MESH FX OFF, so it
+  -- stands down whenever that pass is registered (on or off).
+  if Host.effectsOn() and not Host.bridgeOwnsGrass() then
     pcall(drawGrass, ow, ground)
   end
   -- NPC bodies are built here, a few ms a frame (never inside the draw)

@@ -1359,7 +1359,14 @@ function Actor:update(dt)
   -- frames and completely out of read-only Stats showrooms. One bank at most
   -- every 100 ms avoids a single giant startup spike while usually having the
   -- exact attack/damage/faint bank resident before the player uses it.
-  if not self.informationSurface and self.state=="idle"
+  -- NOT FOR OVERWORLD ACTORS ON ANDROID (2026-11-04). The follower, ORAS NPCs
+  -- and roaming wilds were warming battle banks while walking: each bank is a
+  -- whole OQ16 decode + upload in the frame, which on the phone (JIT off) was
+  -- a 2.8 s frame (RuntimeMeshCache:118 < PokemonActors:725) and then a crash.
+  -- Android battles warm through pumpBattlePrewarm instead.
+  local src=self.acquireSource
+  local overworldActor=ANDROID_RUNTIME and (src=="overworld" or src=="wilds")
+  if not self.informationSurface and not overworldActor and self.state=="idle"
       and (tonumber(self.spawnScale) or 0)>=0.999 and (tonumber(self.stateAge) or 0)>=0.18 then
     prewarmScene(self.scene)
   end
