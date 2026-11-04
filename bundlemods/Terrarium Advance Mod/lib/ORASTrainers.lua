@@ -40,7 +40,7 @@ local mod = V and V.mod
 local T = { ID = "oras_trainers", LABEL = "ORAS TRAINERS" }
 T.ROOT = "oras/trainers"
 T.INDEX = T.ROOT .. "/index.lua"
-T.STAMP = "oras-trainer=7\n"   -- 2: field heights scaled (FIELD_SCALE); 3: field idleB = slot 93; 4: shoes / bracelet kept; 5: leg IK; 6: battle idle slot 5, FK feet not IK'd; 7: point layered over idle
+T.STAMP = "oras-trainer=7\n"   -- 2: field heights scaled (FIELD_SCALE); 3: field idleB = slot 93; 4: shoes / bracelet kept; 5: leg IK; 6: battle idle slot 5, FK feet not IK'd; 7: point layered over idle.  New characters (the walkers) bake on the next press without a bump.
 T.LEG_IK = { { "LThigh", "LLeg", "LFoot" }, { "RThigh", "RLeg", "RFoot" } }
 T.IMPORT_ID = "pokemon_oras"
 T.FIELD_GARC = "a/0/2/1"
@@ -78,6 +78,63 @@ local function layered(base, top)
   out.curves = curves
   return out
 end
+-- WALKERS: a battle model baked for the overworld (kind "walker", id
+-- <battle id>w).  Battle packs have no walk, but rsbt0001 / rsbt0002 share
+-- their field twin's bone names and bind rotations, so the field motions'
+-- ROTATIONS drive them (rendered 2026-11-04).  Translations stay the battle
+-- bind's (field ones are chibi-sized).  Bones the field rig lacks (fingers,
+-- Spine3, Hair, the bag) hold the battle still frame (slot 4).
+T.WALKERS = { rsbt0002 = "rstr0002", rsbt0001 = "rstr0001" }
+T.WALKER_BASE_SLOT = 4
+T.WALKER_OFFSET = 1000   -- field slot s is baked as slot 1000 + s
+T.WALKER_ACTIONS = {
+  { name = "walk", slot = 1002 }, { name = "run", slot = 1004 }, { name = "jump", slot = 1005 },
+  { name = "idleB", slot = 1093 },
+}
+
+-- The field walk puts each FOOT by position (an IK target relative to Origin,
+-- H3D.poser opts.legIK) and moves the hips by Waist's translation; rotations
+-- alone left both legs kicked forward around the cycle's start.  Those
+-- translations come across scaled by the leg-length ratio (battle / field).
+T.WALKER_MOVED = { Waist = true, LFoot = true, RFoot = true }
+local function scaledCurve(cv, s)
+  if cv.kind == "const" then return { kind = "const", value = cv.value * s } end
+  local keys = {}
+  for i, k in ipairs(cv.keys) do keys[i] = { k[1], k[2] * s, k[3] and k[3] * s } end
+  return { kind = cv.kind, keys = keys }
+end
+-- field motion m (curves on fieldNames) as a motion on battleNames
+local function retarget(m, fieldNames, battleNames, base, s)
+  local at = {}
+  for j, n in ipairs(battleNames) do at[n] = j end
+  local curves, driven = {}, {}
+  for i, n in ipairs(fieldNames) do
+    local j = at[n]
+    if j then
+      driven[j] = true
+      for c = 3, 5 do
+        local cv = m.curves[(i - 1) * 9 + c]
+        if cv then curves[(j - 1) * 9 + c] = cv end
+      end
+      if s and T.WALKER_MOVED[n] then
+        for c = 0, 2 do
+          local cv = m.curves[(i - 1) * 9 + c]
+          if cv then curves[(j - 1) * 9 + c] = scaledCurve(cv, s) end
+        end
+      end
+    end
+  end
+  for k, v in pairs(base and base.curves or {}) do
+    local j = math.floor(k / 9) + 1
+    if not driven[j] then curves[k] = v end
+  end
+  local out = {}
+  for k, v in pairs(m) do out[k] = v end
+  out.curves = curves
+  return out
+end
+T._retarget = retarget
+
 T.BATTLE_ACTIONS = {
   { name = "throw", slot = 1 }, { name = "command", slot = 2 },
   { name = "throwB", slot = 6 }, { name = "idleB", slot = 3 },
@@ -192,6 +249,24 @@ local function decodeModel(raw)
   return model, d, h
 end
 
+-- battle leg length / field leg length (LLeg + LFoot bind offsets): the
+-- scale for the field motions' foot targets and hip bob on a walker
+function T.legRatio(battleModel, fieldModel)
+  local function leg(model)
+    local sum = 0
+    for _, b in ipairs(model and model.bones or {}) do
+      if b.name == "LLeg" or b.name == "LFoot" then
+        local t = b.translation
+        sum = sum + math.sqrt(t[1] * t[1] + t[2] * t[2] + t[3] * t[3])
+      end
+    end
+    return sum
+  end
+  local a, b = leg(battleModel), leg(fieldModel)
+  if a > 0 and b > 0 then return a / b end
+  return 1
+end
+
 -- the people in both archives: { id, kind, name, member, bones }
 function T.listSources(R)
   local G = V.require("GARC")
@@ -230,6 +305,15 @@ function T.listSources(R)
       if T.checkpoint then T.checkpoint() end
     end
   end
+  local byId = {}
+  for _, s in ipairs(out) do byId[s.id] = s end
+  for bt, twin in pairs(T.WALKERS) do
+    local b, f = byId[bt], byId[twin]
+    if b and f and b.kind == "battle" and f.kind == "field" then
+      out[#out + 1] = { id = bt .. "w", kind = "walker", name = b.name, member = b.member,
+                        fieldMember = f.member, bones = b.bones }
+    end
+  end
   return out, field, battle
 end
 
@@ -260,16 +344,32 @@ function T.buildOne(cache, src, field, battle)
   end
   local names = {}
   for i, b in ipairs(skeleton or {}) do names[i] = b.name end
+  if src.kind == "walker" then
+    local fs = field:member(src.fieldMember)
+    local okF, fsk, fmo = pcall(GF1.readPack, part(fs, 1))
+    if not (okF and fsk and fmo) then return nil, "field twin motions: " .. tostring(fsk) end
+    local fnames = {}
+    for i, b in ipairs(fsk) do fnames[i] = b.name end
+    local s = T.legRatio(model, (decodeModel(part(fs, 0))))
+    local base = motions[T.WALKER_BASE_SLOT]
+    local keep = { [T.BATTLE_IDLE_SLOT] = motions[T.BATTLE_IDLE_SLOT] }
+    for _, a in ipairs(T.WALKER_ACTIONS) do
+      local m = fmo[a.slot - T.WALKER_OFFSET]
+      if m then keep[a.slot] = retarget(m, fnames, names, base, s) end
+    end
+    motions = keep
+  end
   -- field motions place each foot as a model-space IK target and leave the
   -- knee to the game (H3D.poser opts.legIK)
   local pose = H.poser(model, function(curve, f) return GF1.sample(curve, f) end, names,
-    src.kind == "field" and { legIK = T.LEG_IK } or nil)
-  local actions = src.kind == "field" and T.FIELD_ACTIONS or T.BATTLE_ACTIONS
+    (src.kind == "field" or src.kind == "walker") and { legIK = T.LEG_IK } or nil)
+  local actions = (src.kind == "field" and T.FIELD_ACTIONS) or (src.kind == "walker" and T.WALKER_ACTIONS)
+      or T.BATTLE_ACTIONS
   local dir = ("%s/%s"):format(T.ROOT, src.id)
   local summary, why = C.bakeActor({ cache = cache }, {
     model = model, textures = textures, texData = d,
     motions = motions, pose = pose, select = T.selectFor(model),
-    actions = actions, idleSlot = src.kind == "battle" and T.BATTLE_IDLE_SLOT or 0, stamp = T.STAMP,
+    actions = actions, idleSlot = src.kind == "field" and 0 or T.BATTLE_IDLE_SLOT, stamp = T.STAMP,
     dir = dir, attackAliases = false,
     meta = { trainer = src.kind, trainerId = src.id },
     nativeScale = src.kind == "field" and T.FIELD_SCALE or nil,
@@ -310,11 +410,12 @@ T.NAMES = {
   -- battle models
   rsbt0001 = "MAY", rsbt0002 = "BRENDAN", rsbt0003 = "WALLY", rsbt0004 = "WALLY (MEGA)",
   rsbt0005 = "STEVEN", rsbt0019 = "MAXIE", rsbt0024 = "ARCHIE", rsbt0035 = "ZINNIA",
+  rsbt0002w = "BRENDAN (BATTLE)", rsbt0001w = "MAY (BATTLE)",
   bt0001 = "SERENA", bt0002 = "CALEM", bt0003 = "SHAUNA", bt0004 = "TIERNO", bt0005 = "TREVOR",
 }
 -- the ORAS PLAYER row's choices, in order (field models: they walk and run)
 T.PLAYER_ORDER = {
-  "rstr0002", "rstr0001", "rstr0004", "rstr0003", "rstr0051", "rstr0050",
+  "rstr0002", "rstr0001", "rsbt0002w", "rsbt0001w", "rstr0004", "rstr0003", "rstr0051", "rstr0050",
   "rstr0005", "rstr0006", "rstr0007", "rstr0008",
   "rstr0010", "rstr0011", "rstr0042", "rstr0009", "rstr0012",
   "rstr0017", "rstr0018", "rstr0019", "rstr0020", "rstr0021", "rstr0022", "rstr0023", "rstr0024", "rstr0025",

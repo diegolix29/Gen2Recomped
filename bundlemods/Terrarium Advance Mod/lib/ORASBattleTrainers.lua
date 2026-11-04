@@ -93,6 +93,7 @@ B.BATTLE_OF = {
   rstr0010 = "rsbt0003", rstr0011 = "rsbt0003",
   rstr0012 = "rsbt0005", rstr0026 = "rsbt0019", rstr0031 = "rsbt0024",
   rstr0042 = "rsbt0035",
+  rsbt0001w = "rsbt0001", rsbt0002w = "rsbt0002",   -- the overworld battle models
 }
 
 -- principal characters by trainer NAME (Emerald's own trainers)

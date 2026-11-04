@@ -457,3 +457,7 @@ Open questions for the user before writing: battle-model coverage is only 15 cha
 - ORASBattleTrainers: auto idle B off in battle (actor.orasNoAutoIdleB, checked in PokemonActors); F12 report section "ORAS BTL TRAINERS" (per side action / slot / state, last 40 plays with reason, clip changes, restarts).
 - Stamp oras-trainer=6: user presses ORAS TRAINERS again (rebakes all 263), then restart.
 - Later the same night: F12 on the command: plays fire right (each move, 0.5 s) but slot 2 is a LAYER motion (moves only right arm / Spine3 / hair / Bag3, carries const T-pose curves on 37 bones): alone = T-pose, head snapped back. ORASTrainers.BATTLE_LAYERS = { [2] = 5 }: baked as idle curves + slot 2's non-const curves (render scratchpad tr/cmd2.png: idle body, right arm up then thrust forward). Stamp oras-trainer=7 (press ORAS TRAINERS). Only slot 2 is partial (others carry 58-72 of 73 bones).
+
+## 2026-11-04 — ORAS enemy idle, battle models walking the overworld
+- Generic NPC field models have one-frame stands; ORASBattleTrainers loops their idle B (slot 93) for field-kind foes.
+- Walkers (rsbt0002w / rsbt0001w): Brendan / May battle models driven by the field twin's walk / run / jump / idle B (rotations by bone name, foot targets + Waist bob scaled by the leg-length ratio, leg IK). ORAS PLAYER lists them as BRENDAN (BATTLE) / MAY (BATTLE).
