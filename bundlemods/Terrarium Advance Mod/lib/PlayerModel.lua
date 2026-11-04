@@ -660,7 +660,14 @@ function PlayerModel.getOrasCharacterId() return orasCharacterId end
 -- so the bank only goes back to standing after a short still spell --
 -- otherwise every step restarted the walk cycle.
 local ORAS_STILL_HOLD = 0.15
-local ORAS_RUN_SPEED = 1.5      -- world px per frame; walking is 1
+-- Running from speed: world px per SECOND, smoothed, with a gap between the
+-- two thresholds.  It was px per FRAME (> 1.5): at a lower frame rate (the
+-- heavier battle-model walkers, 2026-11-04) each frame covers more ground and
+-- a plain walk crossed it on and off -- walk / run flicker.  Walking is about
+-- 60 px/s, running about twice that.
+local ORAS_RUN_ON, ORAS_RUN_OFF = 95, 80
+local ORAS_SPEED_SMOOTH = 0.12  -- seconds
+local orasSpeedPS, orasRunning = 0, false
 local function driveOrasCharacter(dt, px, py)
   local actor = ColosseumMon.actor and ColosseumMon.actor(currentColosseumDex, colosseumVariant)
   if not actor then return nil end
@@ -674,6 +681,10 @@ local function driveOrasCharacter(dt, px, py)
     if speed > 24 then speed = 0 end   -- a warp / teleport, not a step
   end
   orasLastX, orasLastY = px, py
+  local step = math.max(tonumber(dt) or 0, 1 / 240)
+  local k = math.min(1, step / ORAS_SPEED_SMOOTH)
+  orasSpeedPS = orasSpeedPS + (speed / step - orasSpeedPS) * k
+  if orasRunning then orasRunning = orasSpeedPS > ORAS_RUN_OFF else orasRunning = orasSpeedPS > ORAS_RUN_ON end
   local okG, Game = pcall(require, "src.core.Game")
   local pl = okG and Game and Game.overworld and Game.overworld.player
   -- riding a FREEFLY mount: the rider stands still whatever the flight does
@@ -681,7 +692,7 @@ local function driveOrasCharacter(dt, px, py)
   if moving then orasStillFor = 0 else orasStillFor = orasStillFor + dt end
   local want = "idle"
   if moving then
-    want = ((pl and pl.running) or speed > ORAS_RUN_SPEED) and "run" or "walk"
+    want = ((pl and pl.running) or orasRunning) and "run" or "walk"
   elseif orasBank and orasBank ~= "idle" and orasStillFor < ORAS_STILL_HOLD then
     want = orasBank   -- between two steps: keep the cycle going
   end
