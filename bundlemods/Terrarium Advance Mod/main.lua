@@ -667,6 +667,10 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     pcall(function()
       V.require("ORASArenas").pump()
     end)
+    -- and the ORAS character bake (lib/ORASTrainers.lua)
+    pcall(function()
+      V.require("ORASTrainers").pump()
+    end)
     -- The horde, on the same always-running tick and for the same reason:
     -- it owns no pass of the frame, it is a MODE over the overworld, and
     -- it has to keep thinking while a warp's wipe covers the screen (the

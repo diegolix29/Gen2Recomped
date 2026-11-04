@@ -77,6 +77,9 @@ function PlayerModelInstall.installed()
   if marker.filename:match("^colosseum_character_.+$") then
     return true
   end
+  if marker.filename:match("^oras_character_.+$") then
+    return true   -- an ORAS character (lib/ORASTrainers.lua, row ORAS PLAYER)
+  end
   local path = PlayerModelInstall.DIR .. "/" .. marker.filename
   return isFile(path)
 end

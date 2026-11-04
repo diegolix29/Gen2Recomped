@@ -161,6 +161,12 @@ local function actorFor(dex, variant)
   return actors[key]
 end
 
+-- The live actor itself, for a caller that picks its banks (PlayerModel's
+-- ORAS characters play walk / run / stand; update() would park it on idle).
+function M.actor(dex, variant)
+  return actorFor(dex, variant)
+end
+
 -- Whether a Colosseum model is available (already resident, or reachable
 -- from the imported disc) for this dex right now. Cheap: does not force
 -- extraction merely to answer.

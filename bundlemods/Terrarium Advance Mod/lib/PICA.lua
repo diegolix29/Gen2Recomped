@@ -222,7 +222,10 @@ function PICA.decodeTexture(data, at, w, h, fmt)
               a = nib * 17
             end
             local px, py = bx + x, by + y
-            if px < w and py < h then img:setPixel(px, py, r / 255, g / 255, bl / 255, a / 255) end
+            -- etcBlock's channels come out as B, G, R (SPICA's BGRA order):
+            -- written as RGB, skin turned blue and sand / sea floors bluish
+            -- (checked on ORAS character faces, 2026-11-03)
+            if px < w and py < h then img:setPixel(px, py, bl / 255, g / 255, r / 255, a / 255) end
           end)
           p = p + 8
         end

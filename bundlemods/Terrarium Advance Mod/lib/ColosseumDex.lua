@@ -531,14 +531,50 @@ function D.loadOras(mod)
   if okRun and type(list)=="table" then
     for _,dex in ipairs(list) do if tonumber(dex) then D.orasDex[tonumber(dex)]=true;n=n+1 end end
   end
+  pcall(D.loadOrasTrainers,mod)
   return n
+end
+-- ORAS characters (lib/ORASTrainers.lua) are the same cache format under
+-- oras/trainers/<id>.  PokemonActors and ColosseumMon address a model by
+-- number, so each baked character gets one past TRAINER_BASE, in index
+-- order: 30001 is the first entry of oras/trainers/index.lua.  The numbers
+-- are only for this session's lookups -- anything stored names the id
+-- (D.trainerDex(id)).  maxDex() and every dex range check stop below them.
+D.TRAINER_BASE=30000
+D.TRAINER_INDEX="oras/trainers/index.lua"
+D.orasTrainerIds={}   -- [number]=id
+D.orasTrainerNums={}  -- [id]=number
+function D.loadOrasTrainers(mod)
+  D.orasTrainerIds,D.orasTrainerNums={},{}
+  if not (mod and mod.cache and type(mod.cache.read)=="function") then return 0 end
+  local ok,src=pcall(mod.cache.read,mod.cache,D.TRAINER_INDEX)
+  if not ok or type(src)~="string" then return 0 end
+  local chunk=load(src,"@"..D.TRAINER_INDEX)
+  local okRun,idx=pcall(chunk or function() end)
+  if not (okRun and type(idx)=="table" and type(idx.list)=="table") then return 0 end
+  for i,e in ipairs(idx.list) do
+    if type(e)=="table" and type(e.id)=="string" then
+      D.orasTrainerIds[D.TRAINER_BASE+i]=e.id
+      D.orasTrainerNums[e.id]=D.TRAINER_BASE+i
+    end
+  end
+  return #idx.list
 end
 function D.orasHas(n)
   if not D.orasLoaded then
     local m=type(loaderArg)=="table" and loaderArg.mod or nil
     if m then pcall(D.loadOras,m) else D.orasLoaded=true end
   end
-  return n~=nil and D.orasDex[n]==true
+  return n~=nil and (D.orasDex[n]==true or D.orasTrainerIds[n]~=nil)
+end
+-- the number a baked ORAS character is drawn under, or nil
+function D.trainerDex(id)
+  D.orasHas(nil)
+  return D.orasTrainerNums[id]
+end
+function D.trainerId(n)
+  D.orasHas(nil)
+  return D.orasTrainerIds[tonumber(n) or -1]
 end
 -- Both variants of an ORAS species live in the one oras/pokemon/<dex> folder:
 -- the shiny scene shares its geometry and animation banks and swaps in each
@@ -549,6 +585,8 @@ end
 
 function D.cacheRoot(dex,variant)
   local n=D.number(dex) or 0
+  local tid=D.orasTrainerIds[n]
+  if tid then return "oras/trainers/"..tid end
   if D.isOras(dex,variant) then return ("oras/pokemon/%d"):format(n) end
   return ("cache/pokemon/%d"):format(n)..(type(D.modelKey(dex,variant))=="string" and "/shiny" or "")
 end
@@ -595,7 +633,7 @@ D.speciesCount=386
 function D.maxDex()
   D.orasHas(nil)  -- loads the ORAS index on first use
   local top=D.speciesCount
-  for dex in pairs(D.orasDex) do if dex>top then top=dex end end
+  for dex in pairs(D.orasDex) do if dex>top and dex<D.TRAINER_BASE then top=dex end end
   return top
 end
 

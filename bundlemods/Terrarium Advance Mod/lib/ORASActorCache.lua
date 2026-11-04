@@ -606,75 +606,42 @@ local function needsScaleFix(g, index, dex)
 end
 C._needsScaleFix = needsScaleFix
 
--- Build one species. Returns a summary string, or nil and a reason.
-function C.buildSpecies(mod, rom, g, index, dex)
-  local GF1 = V.require("GF1Motion")
-  local base, md, mh, model = findSpecies(g, index, dex)
-  if not base then return nil, md end
-  local td, th = packBch(g, base + 3, 1)
-  if not td then return nil, th end
-  local textures = H3D.textures(td, th)
-  checkpoint()
-  -- shiny textures: block slot 4, the same names as the normal set
-  local sd, sh = packBch(g, base + 4, 1)
-  local shinyTextures = sd and H3D.textures(sd, sh) or {}
-  checkpoint()
-
-  -- battle motions: part 0 of the battle-motion member (slot 6 of the block)
-  local skeleton, motions = nil, {}
-  do
-    local okPb, pb = pcall(g.member, g, base + 6)
-    if okPb and pb and #pb >= 12 then
-      local count = u16(pb, 3)
-      if count > 0 then
-        local off, nxt = u32(pb, 5), u32(pb, 9)
-        local okRead, skel, mots = pcall(GF1.readPack, pb:sub(off + 1, nxt))
-        if okRead then skeleton, motions = skel, mots end
-      end
-    end
-  end
-  local names = {}
-  for i, b in ipairs(skeleton or {}) do names[i] = b.name end
-  -- composite motions (ACTIONS `chain` / `over`) carry kind "seq" / "wrap"
-  -- curves; a nil sample keeps the bone's bind value (H3D.poser)
-  local function sampleCurve(curve, f)
-    if curve.kind == "wrap" then return GF1.sample(curve.inner, f % curve.period) end
-    if curve.kind == "seq" then
-      local parts = curve.parts
-      local part = parts[#parts]
-      for _, q in ipairs(parts) do
-        if f <= q.stop then part = q; break end
-      end
-      if not part.curve then return nil end
-      return GF1.sample(part.curve, math.min(f, part.stop) - part.start)
-    end
-    return GF1.sample(curve, f)
-  end
-  local pose = H3D.poser(model, sampleCurve, names)
-  local blinks = eyeBlinks(g, base, model)
-
+-- The bake shared by species and characters (lib/ORASTrainers.lua): one
+-- skinned model + its motions -> a PokemonActors cache under A.dir.
+--   A.model, A.textures / A.texData (decoded H3D textures + their relocated
+--   BCH), A.shinyTextures / A.shinyData (optional), A.motions (GF1Motion
+--   slots), A.pose (H3D.poser), A.blinks (eyeBlinks, optional),
+--   A.select(mesh, mat) -> nil (skip) or { tname, glow, unit, wrapU, wrapV },
+--   A.actions (ACTIONS-shaped list), A.idleSlot, A.stamp, A.dex, A.meta
+--   (merged into the metadata), A.visibility(groupMeshes, actions),
+--   A.attackAliases (false: no physicalA / specialA stand-ins), A.label.
+local function bakeActor(mod, A)
+  local model, textures, td = A.model, A.textures, A.texData
+  local sd, shinyTextures = A.shinyData, A.shinyTextures or {}
+  local motions, pose, blinks = A.motions or {}, A.pose, A.blinks or {}
+  local ACTIONS = A.actions or ACTIONS
+  local IDLE_SLOT = A.idleSlot or IDLE_SLOT
+  local ORAS_STAMP = A.stamp or ORAS_STAMP
+  local Q16_MARK = A.q16Mark or Q16_MARK
   -- kept meshes (effect meshes skipped, see below), their bind data and
   -- skinning recipes; bounds from the bind pose normalize every frame alike
-  local prefix = (model.name or ""):match("^(pm%d+)") or "pm"  -- Natu (pm0177) drops the _00
   local kept, glows, skipped = {}, {}, 0
   local lo, hi = { math.huge, math.huge, math.huge }, { -math.huge, -math.huge, -math.huge }
   for _, mesh in ipairs(model.meshes) do
     local mat = model.materials[mesh.materialIndex + 1] or {}
-    local tname = mat.textures and mat.textures[1]
+    local pick = A.select(mesh, mat)
     -- Effect meshes (flames, glows: FireCoreA, FireStenA, ...) sample shared
     -- effect textures through the game's additive/stencil shaders.  Drawn as
     -- ordinary surfaces they are black and white blobs.  Those whose texture
     -- is an intensity map (luminance / alpha formats) become GLOW groups:
     -- the intensity is baked into a flame colour and PokemonActors draws them
     -- unlit and additive, after the body.  Anything else is still skipped.
-    local t = tname and textures[tname]
-    local glow = effectTexture(prefix, tname, t)
-    local own = not glow and tname and tname:sub(1, #prefix) == prefix
-      and not isMask(mat)
-    if own or glow then
-      local bind = H3D.bindPose(model, mesh)
+    if pick then
+      local tname, glow = pick.tname, pick.glow
+      local bind = H3D.bindPose(model, mesh, pick.unit)
       local entry = { mesh = mesh, mat = mat, tname = tname, bind = bind,
-                      skin = H3D.skinning(model, mesh) }
+                      skin = H3D.skinning(model, mesh),
+                      wrapU = pick.wrapU or mat.wrapU, wrapV = pick.wrapV or mat.wrapV }
       if glow then
         entry.glow = true
         entry.glowColor = glowColor(tname)
@@ -732,7 +699,7 @@ function C.buildSpecies(mod, rom, g, index, dex)
     return out, joints
   end
 
-  local dir = root(dex)
+  local dir = A.dir
   local rt = dir .. "/runtime_mesh_v1"
 
   -- textures, normal and shiny
@@ -752,7 +719,7 @@ function C.buildSpecies(mod, rom, g, index, dex)
     assert(mod.cache:write(path, img:getString()) ~= false, "texture write failed: " .. path)
     checkpoint()
     return { path = path, w = t.width, h = t.height,
-             wrapS = WRAP[entry.mat.wrapU] or 1, wrapT = WRAP[entry.mat.wrapV] or 1 }
+             wrapS = WRAP[entry.wrapU] or 1, wrapT = WRAP[entry.wrapV] or 1 }
   end
   for _, entry in ipairs(kept) do
     local t = textures[entry.tname]
@@ -942,11 +909,11 @@ function C.buildSpecies(mod, rom, g, index, dex)
 
   -- a species with motions of only one attack family (Caterpie has no
   -- physical one) plays that one for both
-  if not actions.physicalA then
+  if A.attackAliases ~= false and not actions.physicalA then
     local other = actions.physicalB and "physicalB" or (actions.specialA and "specialA")
     if other then actions.physicalA = { alias = other, clip = actions[other].clip, duration = actions[other].duration } end
   end
-  if not actions.specialA and actions.physicalA and not actions.physicalA.alias then
+  if A.attackAliases ~= false and not actions.specialA and actions.physicalA and not actions.physicalA.alias then
     actions.specialA = { alias = "physicalA", clip = actions.physicalA.clip, duration = actions.physicalA.duration }
   end
 
@@ -969,7 +936,7 @@ function C.buildSpecies(mod, rom, g, index, dex)
   local meta = {
     runtimeMeshVersion = 1, stamp = ORAS_STAMP,
     formatVersion = 4, poseFormat = "oras-gf1-motion-v1", oras = true,
-    dex = dex, stem = model.name or "", source = "ORAS",
+    dex = A.dex, stem = model.name or "", source = "ORAS",
     clip = IDLE_SLOT, clipCount = 0, frameSpacing = 1,
     idleDuration = idle and idle.frames / FPS or 0,
     morphFrames = idle and MORPH_SLOTS or 0, morphSlots = MORPH_SLOTS,
@@ -985,10 +952,19 @@ function C.buildSpecies(mod, rom, g, index, dex)
   do
     local groupMeshes = {}
     for m, entry in ipairs(kept) do groupMeshes[m] = entry.mesh end
-    local okV, vis = pcall(visibilityFor, g, base, model, motions, groupMeshes, actions)
-    if okV then meta.orasVisibility = vis end
+    if A.visibility then
+      local okV, vis = pcall(A.visibility, groupMeshes, actions)
+      if okV then meta.orasVisibility = vis end
+    end
     meta.visibilityVersion = VIS_VERSION
   end
+  -- ORAS field characters are authored chibi-sized (the player stands 31 cm):
+  -- the size PokemonActors reads is scaled to the person's real height
+  if A.nativeScale and meta.nativeHeight then
+    meta.nativeHeight = meta.nativeHeight * A.nativeScale
+    meta.nativeSpan = (meta.nativeSpan or 0) * A.nativeScale
+  end
+  for k, v in pairs(A.meta or {}) do meta[k] = v end
   -- base.lua is what PokemonActors loads (its stamp matches rev.txt);
   -- model_cache.lua is the same table, which marks the species as present
   assert(writeLua(mod, rt .. "/base.lua", meta), "runtime base write failed")
@@ -998,10 +974,82 @@ function C.buildSpecies(mod, rom, g, index, dex)
 
   local blinkCount = 0
   for _ in pairs(blinks) do blinkCount = blinkCount + 1 end
-  return ("%s: %d groups (%d glow, %d blink), %d verts, %d textures, %d effect meshes skipped, idle %s, actions %s (members %d-%d)"):format(
+  return ("%s: %d groups (%d glow, %d blink), %d verts, %d textures, %d effect meshes skipped, idle %s, actions %s (%s)"):format(
     tostring(model.name), #groups, #glows, blinkCount, vertexTotal, texCount, skipped,
     idle and ("%.2fs"):format(idle.frames / FPS) or "none",
-    #baked > 0 and table.concat(baked, ", ") or "none", base, base + 7)
+    #baked > 0 and table.concat(baked, ", ") or "none", A.label or "")
+end
+C.bakeActor = bakeActor
+
+-- Build one species. Returns a summary string, or nil and a reason.
+function C.buildSpecies(mod, rom, g, index, dex)
+  local GF1 = V.require("GF1Motion")
+  local base, md, mh, model = findSpecies(g, index, dex)
+  if not base then return nil, md end
+  local td, th = packBch(g, base + 3, 1)
+  if not td then return nil, th end
+  local textures = H3D.textures(td, th)
+  checkpoint()
+  -- shiny textures: block slot 4, the same names as the normal set
+  local sd, sh = packBch(g, base + 4, 1)
+  local shinyTextures = sd and H3D.textures(sd, sh) or {}
+  checkpoint()
+
+  -- battle motions: part 0 of the battle-motion member (slot 6 of the block)
+  local skeleton, motions = nil, {}
+  do
+    local okPb, pb = pcall(g.member, g, base + 6)
+    if okPb and pb and #pb >= 12 then
+      local count = u16(pb, 3)
+      if count > 0 then
+        local off, nxt = u32(pb, 5), u32(pb, 9)
+        local okRead, skel, mots = pcall(GF1.readPack, pb:sub(off + 1, nxt))
+        if okRead then skeleton, motions = skel, mots end
+      end
+    end
+  end
+  local names = {}
+  for i, b in ipairs(skeleton or {}) do names[i] = b.name end
+  -- composite motions (ACTIONS `chain` / `over`) carry kind "seq" / "wrap"
+  -- curves; a nil sample keeps the bone's bind value (H3D.poser)
+  local function sampleCurve(curve, f)
+    if curve.kind == "wrap" then return GF1.sample(curve.inner, f % curve.period) end
+    if curve.kind == "seq" then
+      local parts = curve.parts
+      local part = parts[#parts]
+      for _, q in ipairs(parts) do
+        if f <= q.stop then part = q; break end
+      end
+      if not part.curve then return nil end
+      return GF1.sample(part.curve, math.min(f, part.stop) - part.start)
+    end
+    return GF1.sample(curve, f)
+  end
+  local pose = H3D.poser(model, sampleCurve, names)
+  local blinks = eyeBlinks(g, base, model)
+
+  -- species meshes: their own (pmNNNN-prefixed) textures, plus effect
+  -- meshes whose texture is an intensity map (glows); masks and the rest are
+  -- skipped
+  local prefix = (model.name or ""):match("^(pm%d+)") or "pm"  -- Natu (pm0177) drops the _00
+  local function select(mesh, mat)
+    local tname = mat.textures and mat.textures[1]
+    local t = tname and textures[tname]
+    local glow = effectTexture(prefix, tname, t)
+    local own = not glow and tname and tname:sub(1, #prefix) == prefix
+      and not isMask(mat)
+    if own or glow then return { tname = tname, glow = glow } end
+    return nil
+  end
+  return bakeActor(mod, {
+    model = model, textures = textures, texData = td,
+    shinyTextures = shinyTextures, shinyData = sd,
+    motions = motions, pose = pose, blinks = blinks, select = select,
+    dir = root(dex), dex = dex, label = ("members %d-%d"):format(base, base + 7),
+    visibility = function(groupMeshes, actions)
+      return visibilityFor(g, base, model, motions, groupMeshes, actions)
+    end,
+  })
 end
 
 -- A species built before posed sizes were recorded: measure it from its

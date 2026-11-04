@@ -351,11 +351,23 @@ function H3D.models(d, h)
       local mappers = W(d, b + 0x18)
       local wrapU = mappers and mappers > 0 and d:byte(mappers + 2) or 2
       local wrapV = mappers and mappers > 0 and d:byte(mappers + 3) or 2
+      -- all three texture units: coordinate transform k at params + 0x0C +
+      -- 24k, mapper k at mappers + 16k.  ORAS field characters put a
+      -- projection dummy in unit 0 and their own texture in unit 1 (still
+      -- sampled with uv0, the only set they carry).
+      local units = {}
+      for k = 0, 2 do
+        units[k + 1] = {
+          uvTransform = params and params > 0 and H3D.uvTransform(d, params + 0x0C + 24 * k) or nil,
+          wrapU = mappers and mappers > 0 and d:byte(mappers + 16 * k + 2) or 2,
+          wrapV = mappers and mappers > 0 and d:byte(mappers + 16 * k + 3) or 2,
+        }
+      end
       model.materials[i + 1] = {
         name = str(d, b + 0x28),
         textures = { str(d, b + 0x1C), str(d, b + 0x20), str(d, b + 0x24) },
         uvTransform = params and params > 0 and H3D.uvTransform(d, params + 0x0C) or nil,
-        wrapU = wrapU, wrapV = wrapV,
+        wrapU = wrapU, wrapV = wrapV, units = units,
         -- raw offsets (relocated data) for RenderDump: blend / stencil /
         -- constant colours are not decoded yet, the dump prints the bytes
         at = b, paramsAt = params,
@@ -415,13 +427,16 @@ end
 -- Smooth-skinned vertices already are; rigid ones are relative to their
 -- single bone (the palette entry their first bone index names).  A vertex is
 -- assigned to the first submesh that references it.
-function H3D.bindPose(model, mesh)
+-- `unit` (1-3, default 1): the texture unit whose coordinate transform the
+-- uvs get
+function H3D.bindPose(model, mesh, unit)
   local owner = {}
   for _, sm in ipairs(mesh.submeshes) do
     for _, ix in ipairs(sm.indices) do owner[ix] = owner[ix] or sm end
   end
   local mat = model.materials[mesh.materialIndex + 1]
   local uvT = mat and mat.uvTransform
+  if mat and unit and unit > 1 and mat.units and mat.units[unit] then uvT = mat.units[unit].uvTransform end
   local out = {}
   for i, v in ipairs(mesh.vertices) do
     local p, n = v.position or { 0, 0, 0 }, v.normal

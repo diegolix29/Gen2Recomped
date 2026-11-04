@@ -22,7 +22,8 @@
 -- light; bases also file 5): texture 0 translation (target 21) and rotation
 -- (20), looping. Meshes they animate keep their RAW uvs plus the material's
 -- uvt; ORASArenaStage applies the animated matrix per frame (stamp 2).
--- Not decoded yet: fragment lighting (some sand / water floors come out bluish).
+-- Not decoded yet: fragment lighting.  (The bluish sand / water floors were
+-- PICA's ETC1 decode writing red and blue swapped; fixed 2026-11-03, stamp 3.)
 --
 -- BUILD (row "ORAS ARENAS") into mod cache oras/arenas/:
 --   index.lua        { stamp, stages = { [env] = { g =, f =, o = } }, list = { env, ... } }
@@ -40,7 +41,7 @@ local A = { ID = "oras_arenas", LABEL = "ORAS ARENAS" }
 
 A.ROOT = "oras/arenas"
 A.INDEX = A.ROOT .. "/index.lua"
-A.STAMP = "oras-arena=2"   -- 2: material animations (texture scroll / rotation)
+A.STAMP = "oras-arena=3"   -- 2: material animations (texture scroll / rotation); 3: ETC1 red / blue fix (PICA)
 A.CHOICE = A.ROOT .. "/choice.txt"
 A.GARC_PATH = "a/1/3/6"
 A.IMPORT_ID = "pokemon_oras"

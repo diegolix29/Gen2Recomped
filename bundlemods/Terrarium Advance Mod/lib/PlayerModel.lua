@@ -60,6 +60,16 @@ local usingColosseum = false
 local colosseumVariant = "normal"
 local currentColosseumDex = nil
 
+-- An ORAS character (lib/ORASTrainers.lua, row ORAS PLAYER) rides the same
+-- actor path: its cache is a PokemonActors species cache that ColosseumDex
+-- serves under a trainer number (ColosseumDex.trainerDex).  Unlike a Pokemon
+-- it plays its own banks -- stand, walk, run -- from the player's movement
+-- (driveOrasCharacter), and is sized like the Colosseum characters
+-- (CHARACTER_HEIGHT), not by the Pokedex-relative battle scale.
+local orasCharacterId = nil
+local orasBank = nil          -- the bank playing: "idle" / "walk" / "run"
+local orasStillFor = 0        -- seconds the player has not been moving
+
 -- A Colosseum trainer/character model standing in for the player sprite
 -- (see PlayerModel.loadColosseumCharacter / lib/ColosseumTrainer.lua).
 -- Standing still, the figure plays the character's own extracted Colosseum
@@ -333,6 +343,7 @@ end
 -- installed is capped at that source's own roster rather than failing outright.
 function PlayerModel.loadStadium(dex)
   if not dex then return false, "no dex number" end
+  orasCharacterId, orasBank = nil, nil
 
   -- Check cache first (Stadium/Stadium2 rigs only -- a Colosseum actor is
   -- ColosseumMon's own shared cache, checked via .available()/.matrix() below
@@ -441,6 +452,7 @@ end
 -- dense vertex-morph/shader machinery this module has no way to drive.
 function PlayerModel.loadColosseumCharacter(id)
   if not id or id == "" then return false, "no character id" end
+  orasCharacterId, orasBank = nil, nil
 
   local cached = characterCache[id]
   if cached and cached.walkVersion ~= CharacterWalkCycle.version then
@@ -598,6 +610,67 @@ function PlayerModel.loadColosseumCharacter(id)
   return true
 end
 
+-- Load an ORAS character (an id from oras/trainers/index.lua, e.g. "rstr0002"
+-- Brendan) as the player's overworld figure.  Needs ORAS TRAINERS built and
+-- the ORAS / Colosseum actor runtime (mod.exports.pokemonActorsOverworld).
+function PlayerModel.loadORASCharacter(id)
+  if not id or id == "" then return false, "no character id" end
+  local Dex = V.require("ColosseumDex")
+  local n = Dex and Dex.trainerDex and Dex.trainerDex(id)
+  if not n and Dex and Dex.loadOrasTrainers then
+    pcall(Dex.loadOrasTrainers, V.mod)   -- built after this copy first read the index
+    n = Dex.trainerDex(id)
+  end
+  if not n then return false, "ORAS character not built: " .. tostring(id) end
+  if currentRig then currentRig:release() end
+  currentRig, currentStadiumModel, currentModel, currentTexture = nil, nil, nil, nil
+  isStadiumModel, usingCharacter = false, false
+  currentCharacterId, characterGroups, characterNative = nil, nil, nil
+  usingColosseum = true
+  currentColosseumDex = n
+  colosseumVariant = "normal"
+  orasCharacterId, orasBank, orasStillFor = id, nil, 0
+  currentFilename = "oras_character_" .. id
+  return true
+end
+
+function PlayerModel.getOrasCharacterId() return orasCharacterId end
+
+-- Stand / walk / run for the ORAS character from the overworld player's own
+-- state (src/world/Player.lua: moving, running).  `moving` drops for a frame
+-- between two steps, so the bank only goes back to standing after a short
+-- still spell -- otherwise every step restarted the walk cycle.
+local ORAS_STILL_HOLD = 0.12
+local function driveOrasCharacter(dt)
+  local actor = ColosseumMon.actor and ColosseumMon.actor(currentColosseumDex, colosseumVariant)
+  if not actor then return nil end
+  local token = Voxel3D.vp
+  if token ~= nil and rawget(actor, "__owFrameToken") == token then return actor end
+  actor.__owFrameToken = token
+  local okG, Game = pcall(require, "src.core.Game")
+  local pl = okG and Game and Game.overworld and Game.overworld.player
+  local moving = pl and pl.moving == true
+  if moving then orasStillFor = 0 else orasStillFor = orasStillFor + dt end
+  local want = "idle"
+  if moving or orasStillFor < ORAS_STILL_HOLD then
+    if orasBank == "idle" and not moving then want = "idle"
+    else want = (pl and pl.running) and "run" or "walk" end
+  end
+  if want ~= orasBank then
+    actor.action, actor.actionAge = nil, 0
+    local ok = actor:selectNativeSlot(want)
+    if not ok and want == "run" then ok = actor:selectNativeSlot("walk") end
+    if not ok and want ~= "idle" then actor:selectNativeSlot("idle") end
+    actor:transition("idle")
+    orasBank = want
+  end
+  -- the figure height the Colosseum characters use (16 cache units tall)
+  local h = tonumber(actor.height) or 0
+  if h > 0.01 then actor.worldScale = CHARACTER_HEIGHT / h end
+  pcall(actor.update, actor, dt)
+  return actor
+end
+
 -- Get the id of the currently loaded Colosseum character, or nil.
 function PlayerModel.getCharacterId()
   if usingCharacter then return currentCharacterId end
@@ -710,6 +783,12 @@ function PlayerModel.loadInstalled()
   if characterId then
     return PlayerModel.loadColosseumCharacter(characterId)
   end
+
+  -- Or an ORAS character (format: oras_character_ID, row ORAS PLAYER)
+  local orasId = filename:match("^oras_character_(.+)$")
+  if orasId then
+    return PlayerModel.loadORASCharacter(orasId)
+  end
   
   -- Load as regular model (custom GLB/OBJ takes priority over CharacterModelPick)
   local ok, err = PlayerModel.load(filename)
@@ -740,6 +819,7 @@ function PlayerModel.clear()
   isStadiumModel = false
   usingColosseum = false
   currentColosseumDex = nil
+  orasCharacterId, orasBank, orasStillFor = nil, nil, 0
   usingCharacter = false
   currentCharacterId = nil
   characterGroups = nil
@@ -904,7 +984,11 @@ function PlayerModel.draw(px, py, y, facing, mirror)
   -- direction in that mode too, same known gap as the follower.
   if usingColosseum and currentColosseumDex then
     local dt = 1 / 60  -- Assume 60 FPS, same assumption the Stadium branch makes
-    ColosseumMon.update(currentColosseumDex, colosseumVariant, dt)
+    if orasCharacterId then
+      driveOrasCharacter(dt)
+    else
+      ColosseumMon.update(currentColosseumDex, colosseumVariant, dt)
+    end
 
     -- Detect if player is moving by checking actual input
     local Game = require("src.core.Game")
@@ -1248,6 +1332,7 @@ function PlayerModel.clearCache()
   isStadiumModel = false
   usingColosseum = false
   currentColosseumDex = nil
+  orasCharacterId, orasBank, orasStillFor = nil, nil, 0
   usingCharacter = false
   currentCharacterId = nil
   characterGroups = nil

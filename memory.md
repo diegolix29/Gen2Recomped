@@ -390,3 +390,18 @@ User steps after: press ORAS ARENA PACK, restart, fight on a few stages (kusa, s
 - a/1/6/9 (35 MM packs) = shared field motion sets (1-6 GF1Motion packs each), probably per rig; not needed if each field pack's own part 1 is enough.
 - Plan: (1) lib/ORASTrainers.lua bake (row ORAS TRAINERS on ORAS.. menu) -> oras/trainers/<name>/ pose banks through ORASActorCache's skinning / OQ16 path, actions idle / walk / run (field) and idle / intro / throw (battle); offline contact sheet so the user names who is who; own CacheArchive kind later. (2) overworld: PlayerModel ORAS character branch + picker entries (marker oras_character_<name>), walk / run / idle from movement. (3) battle: trainer actor behind its Pokemon on every 3D-BTL rung, player = picked character (battle model if it has one), foe = trainer class -> model map, ORAS intro / throw before the send-out. (4) pack, then step 5 ladder.
 - Probes: session 47325eee scratchpad tr/ (probe4 = member contents, probe5 = all names, probe6 = motion packs).
+
+## 2026-11-03 — Step 4 phase 1: ORAS TRAINERS bake (uncommitted, untested in game)
+- New lib/ORASTrainers.lua + row ORAS TRAINERS (ORASMenu SOURCES, pump in main.lua). 263 characters -> oras/trainers/<id>/ (PokemonActors caches, stamp oras-trainer=1). Details in context.md "ORAS trainers".
+- ORASActorCache: buildSpecies' bake body moved into C.bakeActor(mod, A) (select / actions / idleSlot / stamp / dir / meta / visibility / attackAliases); species bake byte-identical (507 files, dex 25/6/16/93, session 47325eee scratchpad tr/refbake.lua ref.txt vs new.txt).
+- H3D: material.units[1..3] (uv transform + wrap per texture unit), bindPose(model, mesh, unit).
+- PICA ETC1 red/blue swap fixed; arena stamp oras-arena=3 (user must press ORAS ARENAS + ORAS ARENA PACK again).
+- Offline: full bake 10.5 s / 98.8 MiB; contact sheet rendered from the baked banks (scratchpad oras_trainers_sheet.png / .txt, 263 numbered cells); rstr0001 walk bank checked. Field 81 = rstr0001 May, 82 = rstr0002 Brendan, 83/84 contest outfits, 85-88 dive suits; battle 250 Serena, 251 Calem, 253 May, 254 Brendan, 255/256 Wally?, 257 Steven, 258 Maxie, 259 Archie. Oddities: 187/188 stand upside down (slot 0 is a hanging pose), 168 tiny sitting pose, 252 bt0010 no actions.
+- NEXT: user names / confirms the characters from the sheet; phase 2 overworld player (PlayerModel ORAS branch + picker).
+
+## 2026-11-03 — Step 4 phase 2: ORAS PLAYER in the overworld (uncommitted, untested in game)
+- Names from the contact sheet are in ORASTrainers.T.NAMES (field rstr0001 May .. rstr0044; battle rsbt*/bt*). Guesses: rstr0165 MR. STONE, rstr0114 CAPT. STERN; not found yet: Mr. Briney, Lanette, Game Director, Giddy. rstr0036-0039 / 0046 / 0047 (red-jacket boys) unknown.
+- Row ORAS PLAYER + PlayerModel ORAS branch + ColosseumDex trainer numbers + ColosseumMon.actor; details in context.md "ORAS PLAYER". Trainer stamp now oras-trainer=2 (field heights x4.3): press ORAS TRAINERS again.
+- Offline verified: rebake (263, 10.8 s), heights, action manifests / pages, dex routing (Pokemon unchanged, maxDex unchanged), row cycling + marker. Not verifiable offline: the GPU scene load, walk / run in game, size next to the map.
+- User's plan for phase 3 (2026-11-03): the principal characters (player variants, Wally, Zinnia, Birch, Steven, gym leaders, E4, Magma / Aqua leaders + admins + grunts, Lisia, Aarune, Mr. Stone, Stern, Briney, Lanette, ...) replace their own trainers DIRECTLY in Gen 3 Emerald; in the other games gym leaders and Elite Four get a RANDOM one of those; every other trainer gets an NPC model paired by its trainer class name.
+- User is testing phase 2 in game.
