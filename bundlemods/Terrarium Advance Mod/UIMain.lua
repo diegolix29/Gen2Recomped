@@ -27599,12 +27599,53 @@ return function(mod)
   GoldCompat.installNativeLocationBannerSuppression()
 
   mod.hooks:wrap("battle.overlay", battleOverlayHook, 9000)
-  mod.hooks:wrap("render.hud", function(next,game,viewport)
-    return renderHudHook(mod,next,game,viewport)
-  end, 10000)
 
-  mod.hooks:wrap("render.hud", GoldCompat.locationBannerHud, 10900)
-  mod.hooks:wrap("render.hud", DexUI.hud, 11000)
+  -- F12 meter (RenderDump "MODERN UI COST"): CPU time each HUD pass of this
+  -- UI spends on its OWN drawing per frame -- the time inside next(), the
+  -- hooks below it, is taken out.  Native screens this UI replaces return
+  -- early from their draw, so nothing is drawn twice; this shows what the
+  -- replacement itself costs.
+  local uiPerf={order={},by={}}
+  mod.exports=mod.exports or {}
+  mod.exports.modernUiPerf=uiPerf
+  local clock=(love and love.timer and love.timer.getTime) or os.clock
+  local function timed(name,fn)
+    local rec={name=name,last=0,avg=0,max=0,n=0}
+    uiPerf.by[name]=rec
+    uiPerf.order[#uiPerf.order+1]=name
+    return function(next,...)
+      local inner=0
+      local function timedNext(...)
+        local t=clock()
+        local r=next(...)
+        inner=inner+(clock()-t)
+        return r
+      end
+      local t0=clock()
+      local r=fn(timedNext,...)
+      local own=math.max(0,(clock()-t0)-inner)*1000
+      rec.last=own
+      rec.n=rec.n+1
+      rec.avg=rec.n==1 and own or rec.avg+(own-rec.avg)*0.05
+      -- the worst frame decays, so one old spike does not stick forever
+      rec.max=math.max(own,rec.max*0.995)
+      return r
+    end
+  end
+  function uiPerf.report(out)
+    out[#out+1]="MODERN UI COST (ms of CPU per frame, own drawing; avg = recent average, max = recent worst):"
+    for _,name in ipairs(uiPerf.order) do
+      local r=uiPerf.by[name]
+      out[#out+1]=("  %-22s last %6.2f  avg %6.2f  max %6.2f  (%d frames)"):format(name,r.last,r.avg,r.max,r.n)
+    end
+  end
+
+  mod.hooks:wrap("render.hud", timed("hud (menus/battle)",function(next,game,viewport)
+    return renderHudHook(mod,next,game,viewport)
+  end), 10000)
+
+  mod.hooks:wrap("render.hud", timed("location banner",GoldCompat.locationBannerHud), 10900)
+  mod.hooks:wrap("render.hud", timed("pokedex",DexUI.hud), 11000)
 
   -- Gen 3 / 4 / 5 screens (lib/CrossGenUI.lua): the same Terrarium look on
   -- Hoenn / Sinnoh / Unova start and party menus. Draw-only; each screen's
@@ -27624,14 +27665,14 @@ return function(mod)
     if okCG and type(CrossGen)=="table" then
       GoldCompat.CrossGenUI=CrossGen
       pcall(CrossGen.install)
-      mod.hooks:wrap("render.hud",function(next,game,viewport)
+      mod.hooks:wrap("render.hud",timed("gen 3-5 screens",function(next,game,viewport)
         local out=next(game,viewport)
         local okHud,errHud=pcall(CrossGen.hud,game)
         if not okHud and mod.log then
           mod.log:warn("Terrarium Gen 3-5 screens: "..tostring(errHud))
         end
         return out
-      end,11500)
+      end),11500)
     elseif mod.log then
       mod.log:warn("Terrarium Gen 3-5 screens unavailable: "..tostring(CrossGen))
     end
