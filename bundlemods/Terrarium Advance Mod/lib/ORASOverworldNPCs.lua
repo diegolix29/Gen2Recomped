@@ -367,9 +367,13 @@ local function drawAt(e, px, py, y, facing, gen4)
   if not vp then return false end
   if frameToken ~= vp then frameToken, drawnThisFrame = vp, 0 end
   if drawnThisFrame >= N.MAX_PER_FRAME then return false end
+  -- radius in MAP pixels on both sides: the drawn position carries the
+  -- ground's world offset on Gen 4 / 5 (Gen4WorldHost adds offsetX / Y), the
+  -- player's px does not -- comparing the two put every NPC out of range
   local qx, qy = playerXY()
-  if qx and px then
-    local dx, dy = px - qx, py - qy
+  local ex, ey = tonumber(e.px), tonumber(e.py)
+  if qx and ex and ey then
+    local dx, dy = ex - qx, ey - qy
     if dx * dx + dy * dy > N.RADIUS * N.RADIUS then return false end
   end
   local actor = actorOf(en)
