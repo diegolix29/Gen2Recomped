@@ -196,6 +196,12 @@ local function monCards(arena, groundY, textures)
     local tex = textures[side]
     local cell = (side == "player") and arena.player or arena.enemy
     if side == "player" and cap and cap.hidePlayer then tex = nil end
+    -- the trainer pic gives way to an ORAS trainer that drew on this side
+    -- (lib/ORASBattleTrainers.lua, row ORAS BTL TRAINERS)
+    if tex and tex.trainer then
+      local okT, covered = pcall(function() return V.require("ORASBattleTrainers").covers(side) end)
+      if okT and covered then tex = nil end
+    end
     if tex and tex.canvas and cell then
       local mirror = (side == "player") and not tex.trainer
       local model = monMatrix(tex, cell[1], groundY, cell[2], mirror)
@@ -621,6 +627,11 @@ function BattleScene.render(state, arena, textures, token)
       V.require("Stadium").draw(BattleBillboard.PULL)
     end)
     if not okStadium then V.require("Stadium").report(stadiumErr) end
+
+    -- ORAS trainers behind their Pokemon (row ORAS BTL TRAINERS)
+    pcall(function()
+      V.require("ORASBattleTrainers").draw(arena, groundY, textures)
+    end)
     
     local cap = BattleScene.capture
     if cap and cap.draw then pcall(cap.draw, BattleBillboard.PULL) end

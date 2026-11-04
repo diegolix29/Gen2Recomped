@@ -21,6 +21,7 @@ local SOURCES = {
   { "ORASEffects", { "row", "packRow", "battleRow", "sizeRow", "soundRow", "cameraRow", "zoomRow" } },
   { "ORASArenas", { "row", "choiceRow", "packRow" } },
   { "ORASTrainers", { "row", "playerRow" } },
+  { "ORASBattleTrainers", { "row" } },
 }
 
 -- the rows, each module and each row reached through pcall: a fault in one

@@ -3449,8 +3449,27 @@ function A:render(ctx,arena,drawActors)
     -- sizing.
     love.graphics.setShader()
     love.graphics.setColor(1,1,1,1)
-    if PlayerTrainer then PlayerTrainer:drawShadow(ctx,vp,pose) end
-    if Trainer then Trainer:drawShadow(ctx,vp,pose) end
+    -- ORAS BTL TRAINERS (lib/ORASBattleTrainers.lua, published on
+    -- mod.exports): with it on, ORAS trainers stand at the Colosseum
+    -- trainers' anchors and the Colosseum trainer of every side it drew is
+    -- skipped below (shadow, figure and ball). Fails open.
+    local orasT=V.mod and V.mod.exports and V.mod.exports.orasBattleTrainers
+    local orasSide={}
+    if orasT and type(orasT.enabled)=="function" and orasT.enabled() then
+      local okO=pcall(function()
+        local pa=PlayerTrainer and type(PlayerTrainer.anchor)=="function" and PlayerTrainer:anchor(0)
+        local ea=Trainer and type(Trainer.anchor)=="function" and Trainer:anchor(0)
+        love.graphics.setDepthMode("lequal",true)
+        orasT.drawArena(ctx,vp,pose,pa,ea)
+        orasSide.player=orasT.drewArena("player")
+        orasSide.enemy=orasT.drewArena("enemy")
+      end)
+      if not okO then orasSide={} end
+      love.graphics.setShader()
+      love.graphics.setColor(1,1,1,1)
+    end
+    if PlayerTrainer and not orasSide.player then PlayerTrainer:drawShadow(ctx,vp,pose) end
+    if Trainer and not orasSide.enemy then Trainer:drawShadow(ctx,vp,pose) end
 
     -- 3) StadiumBattleFX Pokemon are projected into this SAME depth buffer.
     -- actorVP applies their global figure scale without touching the trainer.
@@ -3486,10 +3505,14 @@ function A:render(ctx,arena,drawActors)
         if changed then log(ctx,"warn","%s failed open: %s",label,tostring(errT)) end
       end
     end
-    safeTrainer("playerTrainer",PlayerTrainer,"draw",ctx,vp,pose)
-    safeTrainer("playerBall",PlayerTrainer,"drawBall",ctx,vp,pose)
-    safeTrainer("enemyTrainer",Trainer,"draw",ctx,vp,pose)
-    safeTrainer("enemyBall",Trainer,"drawBall",ctx,vp,pose)
+    if not orasSide.player then
+      safeTrainer("playerTrainer",PlayerTrainer,"draw",ctx,vp,pose)
+      safeTrainer("playerBall",PlayerTrainer,"drawBall",ctx,vp,pose)
+    end
+    if not orasSide.enemy then
+      safeTrainer("enemyTrainer",Trainer,"draw",ctx,vp,pose)
+      safeTrainer("enemyBall",Trainer,"drawBall",ctx,vp,pose)
+    end
 
     -- 5) Water/glass/NO_ZUPDATE material groups are camera-sorted and then
     -- composited without depth writes, preserving actors behind transparency.

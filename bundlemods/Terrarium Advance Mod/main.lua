@@ -671,6 +671,11 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     pcall(function()
       V.require("ORASTrainers").pump()
     end)
+    -- and the ORAS trainers in battle (lib/ORASBattleTrainers.lua): its
+    -- performMove hook, installed once
+    pcall(function()
+      V.require("ORASBattleTrainers").install()
+    end)
     -- The installed player model, loaded here too: the voxel mode's update
     -- (which also does this) stands down on Gen 4 / 5's own 3D world, so a
     -- player model picked in another game never loaded there.
