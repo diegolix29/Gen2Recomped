@@ -96,8 +96,14 @@ local Glass = {
   -- texture glass (Gen4Terrain: `wtk_kabe_garasu3`)
   GLASS_NAMES = { "garasu", "glass" },
   -- substrings that are never scanned: shadows, water, sky, snow
+  -- (2026-11-04, from the user's log: sign01a-03a and kazami001 -- signs and
+  -- the weathervane -- were passing as glass and lighting up at night)
   DENY_NAMES = { "kage", "shadow", "shade", "water", "sea", "kumo", "cloud",
-                 "snow", "yuki" },
+                 "snow", "yuki", "sign", "kanban", "kazami" },
+  -- substrings that name a WINDOW texture (mado = window): its white is the
+  -- pane however much of the picture it is, so MAX_FRACTION does not apply.
+  -- h_mado (the house window, 54% white) was rejected by the cap.
+  WINDOW_NAMES = { "mado", "win" },
   -- exact lower-case texture names forced to glass whole (tuning)
   -- c1_lamp01 / c1_lamp02: city building lights (not street posts).
   ALLOW = { c1_lamp01 = true, c1_lamp02 = true },
@@ -230,7 +236,8 @@ local function analyse(path, textureName, materialName)
   local bits, count = scanTexels(data, w, h, whole, Glass.WHITE)
 
   local fraction = count / (w * h)
-  local keep = count >= Glass.MIN_TEXELS and (whole or fraction <= Glass.MAX_FRACTION)
+  local named = hasAny(tex, Glass.WINDOW_NAMES) or hasAny(mat, Glass.WINDOW_NAMES)
+  local keep = count >= Glass.MIN_TEXELS and (whole or named or fraction <= Glass.MAX_FRACTION)
   if Glass.LOG then
     note("tex:" .. path, "%s (%s) %dx%d: %d glass texels (%.0f%%)%s -> %s",
          tex, mat, w, h, count, fraction * 100, whole and ", whole pane" or "",
@@ -413,6 +420,74 @@ local function readTerrainPos(ground, s, posScale)
   return pos
 end
 
+-- Summed-area table of a mask's glass bits, built once per texture: the glass
+-- texel count of any texel rectangle in O(1).
+local function satOf(entry)
+  local sat = entry.sat
+  if sat then return sat end
+  local w, h, bits = entry.w, entry.h, entry.bits
+  sat = {}
+  local W = w + 1
+  for x = 0, w do sat[x] = 0 end
+  for y = 1, h do
+    local row = 0
+    sat[y * W] = 0
+    for x = 1, w do
+      if bits[(y - 1) * w + x] then row = row + 1 end
+      sat[y * W + x] = sat[(y - 1) * W + x] + row
+    end
+  end
+  entry.sat = sat
+  return sat
+end
+
+-- glass texels in texels [x0, x1) x [y0, y1), all inside the picture
+local function rectGlass(entry, x0, x1, y0, y1)
+  if x1 <= x0 or y1 <= y0 then return 0 end
+  local sat, W = satOf(entry), entry.w + 1
+  return sat[y1 * W + x1] - sat[y0 * W + x1] - sat[y1 * W + x0] + sat[y0 * W + x0]
+end
+
+-- Whether any glass texel lies inside a UV box (repeat wrap): a conservative
+-- "this triangle can show glass", so a wall whose window sits mid-quad is kept
+-- while roofs, sides without windows and sign posts are not.
+local function boxHasGlass(entry, u0, u1, v0, v1)
+  if entry.whole or not entry.bits then return true end
+  local w, h = entry.w, entry.h
+  -- an axis spanning a whole repeat covers every texel on that axis
+  local x0, x1, y0, y1
+  if u1 - u0 >= 1 then x0, x1 = 0, w else
+    local fu = math.floor(u0)
+    x0 = math.floor((u0 - fu) * w)
+    x1 = math.min(2 * w, math.ceil((u1 - fu) * w))
+  end
+  if v1 - v0 >= 1 then y0, y1 = 0, h else
+    local fv = math.floor(v0)
+    y0 = math.floor((v0 - fv) * h)
+    y1 = math.min(2 * h, math.ceil((v1 - fv) * h))
+  end
+  if x1 <= x0 then x1 = x0 + 1 end
+  if y1 <= y0 then y1 = y0 + 1 end
+  -- split a range that runs past the picture's edge into its two wrapped parts
+  local xs = x1 <= w and { { x0, x1 } } or { { x0, w }, { 0, x1 - w } }
+  local ys = y1 <= h and { { y0, y1 } } or { { y0, h }, { 0, y1 - h } }
+  for _, xr in ipairs(xs) do
+    for _, yr in ipairs(ys) do
+      if rectGlass(entry, math.max(0, xr[1]), math.min(w, xr[2]),
+                   math.max(0, yr[1]), math.min(h, yr[2])) > 0 then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+-- ONLY THE TRIANGLES THAT CAN SHOW GLASS (2026-11-04). Every triangle of a
+-- shape whose texture had a few white texels used to be copied -- whole walls,
+-- signs, the weathervane -- and then drawn a second time over the building
+-- through a discard shader, which on a phone's tiled GPU is the expensive
+-- kind of overdraw. Now a triangle is kept when its UV box holds a glass
+-- texel; the vertices are remapped so the mesh carries only those.
 local function addShape(bk, s, posScale, m)
   local vdata, idata = s.vertices, s.indices
   if type(vdata) ~= "string" or type(idata) ~= "string" then return false end
@@ -420,9 +495,19 @@ local function addShape(bk, s, posScale, m)
   if count < 3 or tris < 1 then return false end
   local stride = math.floor(#vdata / count)
   if stride ~= 14 and stride ~= 16 then return false end
-  local tw, th = bk.entry.w, bk.entry.h
-  local base = #bk.verts
+  local entry = bk.entry
+  local tw, th = entry.w, entry.h
+  -- the shape's UVs, read once (positions only for triangles that are kept)
+  local us, vs = {}, {}
   for i = 0, count - 1 do
+    local at = i * stride
+    us[i] = s16(vdata, at + 6) / UV_UNITS / tw     -- texel -> 0..1 of THIS picture
+    vs[i] = s16(vdata, at + 8) / UV_UNITS / th     -- (no V flip: Gen4Model does none)
+  end
+  local remap = {}
+  local function vertex(i)
+    local n = remap[i]
+    if n then return n end
     local at = i * stride
     local x = s16(vdata, at) / FX16 * posScale
     local y = s16(vdata, at + 2) / FX16 * posScale
@@ -433,48 +518,42 @@ local function addShape(bk, s, posScale, m)
     if wx > bk.maxx then bk.maxx = wx end
     if wz < bk.minz then bk.minz = wz end
     if wz > bk.maxz then bk.maxz = wz end
-    bk.verts[base + i + 1] = {
-      wx,
-      m[5] * x + m[6] * y + m[7] * z + m[8],
-      wz,
-      s16(vdata, at + 6) / UV_UNITS / tw,     -- texel -> 0..1 of THIS picture
-      s16(vdata, at + 8) / UV_UNITS / th,     -- (no V flip: Gen4Model does none)
-      Glass.SHADE, 0,
-    }
+    n = #bk.verts + 1
+    bk.verts[n] = { wx, m[5] * x + m[6] * y + m[7] * z + m[8], wz, us[i], vs[i], Glass.SHADE, 0 }
+    remap[i] = n
+    return n
   end
-  for t = 0, tris * 3 - 1 do
-    local a, b = idata:byte(t * 2 + 1, t * 2 + 2)
-    if not b then break end
-    bk.map[#bk.map + 1] = base + a + b * 256 + 1
-  end
-  -- One sample per triangle that actually hits the mask: the overlay's
-  -- own verts, so the flame sits on the pane rather than on the land.
+  local kept = 0
   for t = 0, tris - 1 do
-    local a1, a2 = idata:byte(t * 6 + 1, t * 6 + 2)
-    local b1, b2 = idata:byte(t * 6 + 3, t * 6 + 4)
-    local c1, c2 = idata:byte(t * 6 + 5, t * 6 + 6)
+    local a1, a2, b1, b2, c1, c2 = idata:byte(t * 6 + 1, t * 6 + 6)
     if not c2 then break end
-    local va = bk.verts[base + a1 + a2 * 256 + 1]
-    local vb = bk.verts[base + b1 + b2 * 256 + 1]
-    local vc = bk.verts[base + c1 + c2 * 256 + 1]
-    if va and vb and vc then
-      local ua, va2 = va[4], va[5]
-      local ub, vb2 = vb[4], vb[5]
-      local uc, vc2 = vc[4], vc[5]
-      if glassAt(bk.entry, ua, va2) or glassAt(bk.entry, ub, vb2)
-         or glassAt(bk.entry, uc, vc2)
-         or glassAt(bk.entry, (ua + ub + uc) / 3, (va2 + vb2 + vc2) / 3) then
-        bk.lightPts[#bk.lightPts + 1] = {
-          (va[1] + vb[1] + vc[1]) / 3,
-          (va[2] + vb[2] + vc[2]) / 3,
-          (va[3] + vb[3] + vc[3]) / 3,
-        }
+    local ia, ib, ic = a1 + a2 * 256, b1 + b2 * 256, c1 + c2 * 256
+    local ua, ub, uc = us[ia], us[ib], us[ic]
+    local va, vb, vc = vs[ia], vs[ib], vs[ic]
+    if ua and ub and uc then
+      if boxHasGlass(entry, math.min(ua, ub, uc), math.max(ua, ub, uc),
+                     math.min(va, vb, vc), math.max(va, vb, vc)) then
+        local na, nb, nc = vertex(ia), vertex(ib), vertex(ic)
+        local map = bk.map
+        map[#map + 1], map[#map + 2], map[#map + 3] = na, nb, nc
+        kept = kept + 1
+        -- One flame sample per triangle that actually hits the mask at a
+        -- corner or its centre, so the flame sits on the pane.
+        if glassAt(entry, ua, va) or glassAt(entry, ub, vb) or glassAt(entry, uc, vc)
+           or glassAt(entry, (ua + ub + uc) / 3, (va + vb + vc) / 3) then
+          local A, B, C = bk.verts[na], bk.verts[nb], bk.verts[nc]
+          bk.lightPts[#bk.lightPts + 1] = {
+            (A[1] + B[1] + C[1]) / 3, (A[2] + B[2] + C[2]) / 3, (A[3] + B[3] + C[3]) / 3,
+          }
+        end
       end
     end
   end
   Glass.stats.shapes = Glass.stats.shapes + 1
+  Glass.stats.trisIn = (Glass.stats.trisIn or 0) + tris
+  Glass.stats.trisKept = (Glass.stats.trisKept or 0) + kept
   if #bk.verts > Glass.MAX_VERTS then seal(bk) end
-  return true
+  return kept > 0
 end
 
 -- Everything on one land that wears glass: { pieces = { {mesh, entry}, ... } }

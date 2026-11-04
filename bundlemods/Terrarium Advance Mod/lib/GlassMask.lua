@@ -58,6 +58,24 @@ GlassMask.WIDTHS = { 6, 8 }      -- glass texels across a pane
 GlassMask.ROWS_MIN = 3
 GlassMask.ROWS_MAX = 16
 
+-- GLASS IS LIGHT (2026-11-04). Run over every Yellow and Crystal sheet, the
+-- shape rules also took black-framed boxes that are not windows: switched-off
+-- screens, machines, shelves, PC monitors, gravestones -- all with a mostly
+-- dark interior. Every real pane in the same dump (Kanto's diagonal shine,
+-- Johto's cross-bar window, the multi-storey panes, curtains) is mostly light.
+-- A pane now needs at least LIGHT_MIN of its interior at LIGHT_LEVEL or above.
+GlassMask.LIGHT_LEVEL = 0.45     -- mean channel: above the dark grey rung
+GlassMask.LIGHT_MIN = 0.65
+
+-- Tilesets with no buildings at all never get glass: the scan found "panes"
+-- in the Pokemon Tower graveyard, the caves and the forests, which is only
+-- ever a sign, a gravestone or a rock that happens to be framed in black.
+-- Matched like MANUAL (engine id, TILESET_ stripped, or image basename).
+GlassMask.NO_WINDOWS = {
+  cemetery = true, cave = true, cavern = true, darkcave = true,
+  icepath = true, forest = true,
+}
+
 -- kept for anything still reading the old names
 GlassMask.GLASS_W = GlassMask.WIDTHS[1]
 GlassMask.ROWS = { 4, 5 }
@@ -122,6 +140,14 @@ local function manualKeysFor(tileset)
   end
   return keys
 end
+
+local function hasNoWindows(tileset)
+  for _, key in ipairs(manualKeysFor(tileset)) do
+    if GlassMask.NO_WINDOWS[key] then return true end
+  end
+  return false
+end
+GlassMask._hasNoWindows = hasNoWindows
 
 local function manualRectsFor(tileset)
   for _, key in ipairs(manualKeysFor(tileset)) do
@@ -300,6 +326,19 @@ function GlassMask.scan(getPixel, w, h)
     return true
   end
 
+  local level, need = GlassMask.LIGHT_LEVEL or 0.45, GlassMask.LIGHT_MIN or 0
+  local function mostlyLight(x0, y0, gw, n)
+    if need <= 0 then return true end
+    local light = 0
+    for yy = y0, y0 + n - 1 do
+      for xx = x0, x0 + gw - 1 do
+        local r, g, b = getPixel(xx, yy)
+        if (r + g + b) / 3 >= level then light = light + 1 end
+      end
+    end
+    return light >= need * gw * n
+  end
+
   local rects = {}
   for y = 0, h - 1 do
     for _, gw in ipairs(GlassMask.WIDTHS) do
@@ -310,7 +349,8 @@ function GlassMask.scan(getPixel, w, h)
             n = n + 1
           end
           if n >= GlassMask.ROWS_MIN and n <= GlassMask.ROWS_MAX
-             and y + 1 + n < h and borderRow(x, y + 1 + n, gw) then
+             and y + 1 + n < h and borderRow(x, y + 1 + n, gw)
+             and mostlyLight(x + 1, y + 1, gw, n) then
             rects[#rects + 1] = { x = x + 1, y = y + 1, w = gw, h = n }
           end
         end
@@ -337,7 +377,13 @@ local function entry(tileset)
   local key = cacheKeyFor(tileset)
   if not key then return nil end
   local hit = cache[key]
-  if hit then return hit end
+  if hit then
+    if not hit.retryAt then return hit end
+    local now = (love and love.timer and love.timer.getTime and love.timer.getTime()) or os.clock()
+    if now < hit.retryAt then return hit end
+    -- a Gen 3 mask waiting for its atlas: try the pixel pass again (the entry
+    -- stays in place so the retry count carries over)
+  end
 
   local w, h, rects
 
@@ -355,12 +401,32 @@ local function entry(tileset)
     local pixels = ids and gen3GlassPixels(tileset, ids, w, h, perRow)
     if pixels and #pixels > 0 then
       rects = pixels
-    else
+    elseif ids and GlassMask.GEN3_STRIP_FALLBACK then
       rects = gen3Rects(tileset) or {}
+    else
+      -- NO STRIPS WHILE THE ATLAS IS NOT BAKED (2026-11-04). The 32x8 strip
+      -- is the whole window METATILE -- frame, wall, sill -- and it used to
+      -- be cached for the session, so a map whose atlas baked a moment late
+      -- lit its window frames and the wall round them as glass. The mask is
+      -- empty for now and the pixel pass is tried again shortly.
+      rects = {}
+      if ids then
+        local now = (love and love.timer and love.timer.getTime and love.timer.getTime()) or os.clock()
+        local tries = (cache[key] and cache[key].tries or 0) + 1
+        if tries <= (GlassMask.GEN3_RETRIES or 20) then
+          cache[key] = { rects = {}, texture = false, retryAt = now + (GlassMask.GEN3_RETRY_S or 2),
+                         tries = tries }
+          return cache[key]
+        end
+      end
     end
   else
     local path = tileset and tileset.image
     if not path then return nil end
+    if hasNoWindows(tileset) then
+      cache[key] = { rects = {}, texture = false }
+      return cache[key]
+    end
     local ok, data = pcall(Assets.imageData, path)
     if not (ok and data) then
       -- unreadable art is a verdict for the session, not a retry loop
