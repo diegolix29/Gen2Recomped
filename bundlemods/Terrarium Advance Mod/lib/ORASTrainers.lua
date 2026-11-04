@@ -40,7 +40,7 @@ local mod = V and V.mod
 local T = { ID = "oras_trainers", LABEL = "ORAS TRAINERS" }
 T.ROOT = "oras/trainers"
 T.INDEX = T.ROOT .. "/index.lua"
-T.STAMP = "oras-trainer=5\n"   -- 2: field heights scaled (FIELD_SCALE); 3: field idleB = slot 93; 4: shoes / bracelet kept; 5: leg IK
+T.STAMP = "oras-trainer=6\n"   -- 2: field heights scaled (FIELD_SCALE); 3: field idleB = slot 93; 4: shoes / bracelet kept; 5: leg IK; 6: battle idle slot 5, FK feet not IK'd
 T.LEG_IK = { { "LThigh", "LLeg", "LFoot" }, { "RThigh", "RLeg", "RFoot" } }
 T.IMPORT_ID = "pokemon_oras"
 T.FIELD_GARC = "a/0/2/1"
@@ -56,9 +56,15 @@ T.FIELD_ACTIONS = {
   { name = "walk", slot = 2 }, { name = "run", slot = 4 }, { name = "jump", slot = 5 },
   { name = "idleB", slot = 93 },
 }
+-- battle pack +2 (rsbt0002 rendered 2026-11-03): 0 intro (crouch, arm up),
+-- 1 throw, 2 point, 3 cap / hip gesture, 4 one still frame, 5 the standing
+-- loop, 6 big throw, 14 hand to face, 15 celebrate.  Slot 0 was baked as the
+-- idle and looked like a win / hurt loop in battle.
+T.BATTLE_IDLE_SLOT = 5
 T.BATTLE_ACTIONS = {
   { name = "throw", slot = 1 }, { name = "command", slot = 2 },
-  { name = "throwB", slot = 6 }, { name = "idleB", slot = 4 },
+  { name = "throwB", slot = 6 }, { name = "idleB", slot = 3 },
+  { name = "intro", slot = 0 }, { name = "win", slot = 15 },
 }
 
 local FRAME_BUDGET = 0.010
@@ -241,7 +247,7 @@ function T.buildOne(cache, src, field, battle)
   local summary, why = C.bakeActor({ cache = cache }, {
     model = model, textures = textures, texData = d,
     motions = motions, pose = pose, select = T.selectFor(model),
-    actions = actions, idleSlot = 0, stamp = T.STAMP,
+    actions = actions, idleSlot = src.kind == "battle" and T.BATTLE_IDLE_SLOT or 0, stamp = T.STAMP,
     dir = dir, attackAliases = false,
     meta = { trainer = src.kind, trainerId = src.id },
     nativeScale = src.kind == "field" and T.FIELD_SCALE or nil,

@@ -355,7 +355,7 @@ local function sideEntry(battle, side)
       if side == "player" then id = B.playerModel(game, have) else id = B.foeModel(battle, have) end
     end
     local n = id and numberOf(id)
-    e = n and { id = id, n = n } or false
+    e = n and { id = id, n = n, side = side } or false
     cast[side] = e
     if e then log("info", "ORAS BTL TRAINERS: %s side = %s (%s)", side, id, tostring(Trainers().label(id))) end
   end
@@ -364,7 +364,14 @@ end
 
 local function actorOf(e)
   local okA, actor = pcall(Mon().actor, e.n, "normal")
-  return okA and actor or nil
+  if not (okA and actor) then return nil end
+  -- no automatic idle B in battle: on the battle models (rsbt*, the player's
+  -- side) idle B is slot 4, which looked like a random motion every few loops
+  if not actor.orasNoAutoIdleB then
+    actor.orasNoAutoIdleB = true
+    actor._idleLoops = nil
+  end
+  return actor
 end
 
 -- advance a trainer's actor once per frame (several draws a frame share it);
@@ -380,21 +387,75 @@ local function advance(e, actor, height)
   local h = tonumber(actor.height) or 0
   if h > 0.01 then actor.worldScale = height / h end
   pcall(actor.update, actor, math.min(math.max(dt, 0), 0.1))
+  if B._watch then pcall(B._watch, e, actor) end
   return true
 end
 
-local function play(e, action)
+-- F12 trace (RenderDump "ORAS BTL TRAINERS"): what each trainer was asked to
+-- play and why, plus clip changes seen on its actor between frames
+local trace = {}
+local function note(side, what)
+  trace[#trace + 1] = { t = clock(), side = side, what = what }
+  if #trace > 40 then table.remove(trace, 1) end
+end
+B._note = note
+
+local function play(e, action, why)
   local actor = e and actorOf(e)
-  if actor and actor.startOrasExtra then pcall(actor.startOrasExtra, actor, action) end
+  local ok = false
+  if actor and actor.startOrasExtra then
+    local okP, v = pcall(actor.startOrasExtra, actor, action)
+    ok = okP and v == true
+  end
+  note(e and e.side or "?", ("play %s (%s) -> %s"):format(tostring(action), tostring(why), tostring(ok)))
+end
+
+-- a clip change nobody here asked for shows up as "seen"
+local function watch(e, actor)
+  local key = tostring(actor.action) .. "/" .. tostring(actor.requestedNativeSlot) .. "/" .. tostring(actor.state)
+  if e.lastKey ~= key then
+    if e.lastKey then note(e.side or "?", "seen " .. e.lastKey .. " -> " .. key) end
+    e.lastKey = key
+  else
+    local c, last = tonumber(actor.clipClock), e.lastClip
+    local loop = tonumber(actor.nativeDuration) or 0
+    -- a restart that is not the clip's own loop wrap
+    if c and last and c + 0.05 < last and not (loop > 0 and last > loop * 0.8) then
+      note(e.side or "?", ("restart %s at %.2f s"):format(key, last))
+    end
+  end
+  e.lastClip = tonumber(actor.clipClock)
+end
+B._watch = watch
+
+function B.report(out)
+  out[#out + 1] = ""
+  out[#out + 1] = "ORAS BTL TRAINERS: enabled " .. tostring(B.enabled())
+  local now = clock()
+  for _, side in ipairs({ "player", "enemy" }) do
+    local e = cast[side]
+    if e then
+      local a = actorOf(e)
+      out[#out + 1] = ("  %s = %s (n %s) drew %s  action %s slot %s state %s actionAge %s clipClock %s noAutoIdleB %s"):format(
+        side, tostring(e.id), tostring(e.n), tostring(e.drew),
+        tostring(a and a.action), tostring(a and a.requestedNativeSlot), tostring(a and a.state),
+        tostring(a and a.actionAge), tostring(a and a.clipClock), tostring(a and a.orasNoAutoIdleB))
+    end
+  end
+  out[#out + 1] = "  recent (seconds ago):"
+  for i = #trace, 1, -1 do
+    local r = trace[i]
+    out[#out + 1] = ("    %7.2f  %-6s %s"):format(now - r.t, r.side, r.what)
+  end
 end
 
 -- the send-out throw, once per send-out (the card edge and the engine's
 -- sendingOut flag can both report the same one)
-local function throwOnce(e)
+local function throwOnce(e, why)
   local t = clock()
   if e.thrownAt and t - e.thrownAt < 1.5 then return end
   e.thrownAt = t
-  play(e, "throw")
+  play(e, "throw", why)
 end
 
 -- whether this side's flat trainer pic should give way (its ORAS trainer drew
@@ -425,7 +486,8 @@ function B.draw(arena, groundY, textures)
         local card = tex and tex.trainer == true or false
         if advance(e, actor, B.HEIGHT) then
           local sending = (side == "player" and battle.sendingOut or battle.enemySendingOut) and true or false
-          if (e.wasCard and not card) or (sending and not e.wasSending) then throwOnce(e) end
+          if e.wasCard and not card then throwOnce(e, "card edge")
+          elseif sending and not e.wasSending then throwOnce(e, "sendingOut") end
           e.wasCard = card
           e.wasSending = sending
         end
@@ -480,7 +542,7 @@ function B.drawArena(ctx, vp, pose, playerAnchor, enemyAnchor)
     if actor then
       local sending = side == "player" and battle.sendingOut or battle.enemySendingOut
       if advance(e, actor, B.ARENA_HEIGHT) then
-        if sending and not e.wasSending then throwOnce(e) end
+        if sending and not e.wasSending then throwOnce(e, "arena sendingOut") end
         e.wasSending = sending and true or false
       end
       local own = side == "player" and playerAnchor or enemyAnchor
@@ -514,7 +576,7 @@ end
 function B.command(side)
   if not B.enabled() then return end
   local e = cast[side]
-  if e then play(e, "command") end
+  if e then play(e, "command", "performMove") end
 end
 
 function B.reset()

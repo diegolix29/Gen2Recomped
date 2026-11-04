@@ -173,6 +173,7 @@ function D.request(A)
     end)
     V.require("ORASEffectsPlayer").report(out)
   end)
+  pcall(function() V.require("ORASBattleTrainers").report(out) end)
   out[#out + 1] = ""
   local okA, errA = pcall(describeActors, A, out)
   if not okA then out[#out + 1] = "actor listing failed: " .. tostring(errA) end

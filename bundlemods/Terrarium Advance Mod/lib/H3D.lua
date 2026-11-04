@@ -575,7 +575,7 @@ function H3D.poser(model, sample, skeletonNames, opts)
     if ti and li and fi and gfIndex[names[2]] and gfIndex[names[3]] then
       local lb, fb = model.bones[li], model.bones[fi]
       chains[#chains + 1] = { ti = ti, li = li, fi = fi, gl = gfIndex[names[2]], gf = gfIndex[names[3]],
-                              l1 = vlen(lb.translation), l2 = vlen(fb.translation) }
+                              l1 = vlen(lb.translation), l2 = vlen(fb.translation), ft = fb.translation }
     end
   end
   -- does this motion move the foot by position but leave the knee alone?
@@ -587,8 +587,21 @@ function H3D.poser(model, sample, skeletonNames, opts)
       local curves = motion.curves
       local knee = false
       for c = 3, 5 do if curves[ch.gl * 9 + c] and curves[ch.gl * 9 + c].kind ~= "const" then knee = true end end
+      -- a foot translation that only repeats the bone's own offset from the
+      -- knee is ordinary FK (the generic NPC rigs' stand: (3.55, 0, 0)), not
+      -- a model-space target -- solving it put both feet on one point
       local foot = false
-      for c = 0, 2 do if curves[ch.gf * 9 + c] then foot = true end end
+      for c = 0, 2 do
+        local cv = curves[ch.gf * 9 + c]
+        if cv then
+          if cv.kind ~= "const" then foot = true
+          else
+            local v = tonumber(sample(cv, 0))
+            local b = tonumber(ch.ft and ch.ft[c + 1]) or 0
+            if v and math.abs(v - b) > 1e-3 * math.max(1, math.abs(b)) then foot = true end
+          end
+        end
+      end
       memo[ch] = foot and not knee
     end
     return memo[ch]

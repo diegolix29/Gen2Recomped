@@ -1396,7 +1396,8 @@ function Actor:update(dt)
     -- ORAS: every few idle loops play idle B, switching on a loop boundary
     local sc=self.scene
     local loop=sc and sc.source=="ORAS" and tonumber(sc.idleDuration) or 0
-    if loop>0.1 and not self.cbeStructuralDeparture and hasOrasAction(sc,"idleB") and not self.nativeAction then
+    -- (orasNoAutoIdleB: ORAS trainers in battle stand on idle; ORASBattleTrainers)
+    if loop>0.1 and not self.orasNoAutoIdleB and not self.cbeStructuralDeparture and hasOrasAction(sc,"idleB") and not self.nativeAction then
       self._idleLoops=self._idleLoops or (3+math.random(0,2))
       if (self.clipClock or 0)>=loop*self._idleLoops then
         self._idleLoops=nil
