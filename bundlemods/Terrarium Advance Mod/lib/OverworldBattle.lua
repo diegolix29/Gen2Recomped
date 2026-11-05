@@ -64,13 +64,12 @@ if DEBUG == nil or DEBUG == false then DEBUG = nil end
 OverworldBattle.KEY = "battles"
 OverworldBattle.LABEL = "3D-BTL"
 
--- Seven rungs. Two independent choices, laid out as one ladder because they
+-- Five rungs. Two independent choices, laid out as one ladder because they
 -- are one question to the player -- WHAT is standing there, and WHERE:
 --
 --              on the MAP              on two DISCS
 --   pics       2D-3D A                 2D-3D B
---   models     STADIUM A               STADIUM B
---   colosseum  COLOSSEUM A             COLOSSEUM B
+--   models     3D-3D A                 3D-3D B
 --
 --   2D-3D A    the mode this file was written for: the fight is staged on
 --              the map and the two Pokemon are the GB's OWN PICS, stood up
@@ -80,74 +79,58 @@ OverworldBattle.LABEL = "3D-BTL"
 --              framing with the Game Boy's own art, in three dimensions --
 --              and, like every B rung, it works everywhere, including the
 --              caves and shop floors that have nowhere to stage a fight.
---   STADIUM A  the staged fight with the Pokemon Stadium battle models in
---              place of those quads -- skinned, animated, and playing the
---              animation the move being used actually calls for (see
---              lib/Stadium.lua). The world is still the world: the fight
---              happens on real ground, in the map's own weather and light.
---   STADIUM B  the models on the discs: both halves swapped at once.
---   COLOSSEUM A the staged fight with the Colosseum GC6E01 battle models in
---              place of the GB's pics -- the world is still the world: the
---              fight happens on real ground, in the map's own weather and light.
---   COLOSSEUM B the Colosseum models on the discs: both halves swapped at once.
+--   3D-3D A    the staged fight with 3D battle models in place of the pics,
+--              each species from the best source the player has for it
+--              (lib/ChainBattleMon.lua): ORAS, then Colosseum (both through
+--              the PokemonActors service), then Stadium 2, then Stadium 1
+--              (StadiumPack). A species no source has keeps its pic. The
+--              world is still the world: real ground, the map's own light.
+--   3D-3D B    the models on the discs: both halves swapped at once.
 --   OFF        the engine's own white battle screen.
+--
+-- Until 2026-11 there was one model rung per source (STADIUM A/B, COLOSSEUM
+-- A/B); the player only cares sprites vs models, and a rung per source
+-- multiplied with every import. Their stored values are aliases now
+-- (ModSetting.setAliases), so those saves read back as 3D-3D on the same
+-- stage.
 --
 -- A and B is the STAGE and it is the same stage either way -- the discs do
 -- not know what is standing on them and BattleScene draws them off
--- `arena.discs` alone, which is why the second column cost a value in this
--- table and nothing else. The six combinations are all reachable rather
--- than only the diagonal, because a player who cannot use the STADIUM rungs
--- -- no ROM, or a ROM they would rather not go and find -- should still be
--- able to have the disc framing, and because the discs are the answer to
--- "this map has nowhere to fight" whichever art is standing on them.
+-- `arena.discs` alone.
 --
 -- 2D-3D A stays FIRST because ModSetting's values[1] is both the default and
 -- what an unrecognised stored value falls back to, and the stored value for
--- this row has been `true` since the row existed. Keeping `true` at the head
--- means every save written before the later rungs existed reads back as the
--- 2D-3D it was written for, and a mod whose headline is "the world in 3D"
--- still does not need the player to go and find the switch.
+-- this row has been `true` since the row existed. "flatB" is the value it
+-- has always been.
 --
--- Every other stored value is likewise the one it has always been --
--- "stadium" from before there was a B, "stadiumB" from before there was a
--- flat one -- so no save loses the mode it chose.
---
--- Both STADIUM rungs are GATED on the models existing: the mod ships no
--- Pokemon Stadium data, and until the player's own ROM has been found and
--- built from (StadiumInstall) the row simply has two fewer stops. See
--- ModSetting.setGate for why they are skipped rather than shown and refused.
--- 2D-3D B is NOT gated: its stage is generated in Lua and its Pokemon are
--- the game's own art, so it needs nothing the base game did not ship.
--- COLOSSEUM A and B are NOT gated: they use the same GC6E01 models that
--- the Colosseum Battle Environments already require, so they work whenever
--- CBE is available.
+-- No rung is gated: 3D-3D declines per species (no ORAS / Colosseum model,
+-- no Stadium pack -> that side keeps its pic), which is one message on the
+-- console rather than a row that silently refuses to move.
 OverworldBattle.FLAT_B = "flatB"
-OverworldBattle.COLOSSEUM_A = "colosseumA"
-OverworldBattle.COLOSSEUM_B = "colosseumB"
+OverworldBattle.MODELS_A = "modelsA"
+OverworldBattle.MODELS_B = "modelsB"
+-- the old per-source rungs, read as 3D-3D (see above)
+OverworldBattle.COLOSSEUM_A = OverworldBattle.MODELS_A
+OverworldBattle.COLOSSEUM_B = OverworldBattle.MODELS_B
+OverworldBattle.LEGACY = {
+  stadium = "modelsA", colosseumA = "modelsA",
+  stadiumB = "modelsB", colosseumB = "modelsB",
+}
 
 OverworldBattle.setting =
   ModSetting.new(OverworldBattle.KEY, OverworldBattle.LABEL,
-                 { true, "flatB", "stadium", "stadiumB", "colosseumA", "colosseumB", false },
-                 { "2D-3D A", "2D-3D B", "STADIUM A", "STADIUM B", "COLOSSEUM A", "COLOSSEUM B", "OFF" })
-  :setGate(function(value)
-    if value ~= "stadium" and value ~= "stadiumB" then return true end
-    local ok1, install1 = pcall(V.require, "StadiumInstall")
-    local ok2, install2 = pcall(V.require, "Stadium2Install")
-    return (ok1 and install1 and install1.available()) or (ok2 and install2 and install2.available())
-  end)
+                 { true, "flatB", "modelsA", "modelsB", false },
+                 { "2D-3D A", "2D-3D B", "3D-3D A", "3D-3D B", "OFF" })
+  :setAliases(OverworldBattle.LEGACY)
 
 -- Whether the fight stands on the two carried DISCS rather than on the map
 -- -- the B column above, whichever row of it. Asked by stageFor (what to
 -- stage on), wantsFront (whether this map needs an arena at all) and, once
 -- the arena carries the answer as `arena.discs`, by BattleScene and
 -- VoxelScene for what to draw.
---
--- Read straight off the row rather than through Stadium, because it is a
--- question about the STAGE and half the rungs that answer yes have no
--- Stadium models on them at all.
 function OverworldBattle.discs()
   local value = OverworldBattle.setting:get()
-  return (value == OverworldBattle.FLAT_B or value == "stadiumB" or value == OverworldBattle.COLOSSEUM_B)
+  return (value == OverworldBattle.FLAT_B or value == OverworldBattle.MODELS_B)
 end
 
 -- Whether the VR row is ON -- read lazily, because VR requires modules
@@ -174,19 +157,25 @@ function OverworldBattle.enabled()
   return OverworldBattle.setting:get() and true or false
 end
 
--- Whether the STADIUM rung is the one selected -- read through Stadium so
--- there is one answer to that question and it lives with the mode it
--- describes. Required lazily: Stadium sits above this file and requires it
--- back (for the row), which a load-time require would deadlock.
+-- Whether a 3D-3D rung is selected (models in place of the pics).
+function OverworldBattle.models()
+  local value = OverworldBattle.setting:get()
+  return (value == OverworldBattle.MODELS_A or value == OverworldBattle.MODELS_B) and true or false
+end
+
+-- Whether the models are running -- read through Stadium so there is one
+-- answer to that question and it lives with the mode it describes. Required
+-- lazily: Stadium sits above this file and requires it back (for the row),
+-- which a load-time require would deadlock.
 function OverworldBattle.stadium()
   local ok, stadium = pcall(V.require, "Stadium")
   return (ok and stadium and stadium.enabled()) and true or false
 end
 
--- Whether the COLOSSEUM rung is the one selected
+-- Kept for callers that asked whether the COLOSSEUM rung was selected
+-- (StadiumBridge: battle models on): any 3D-3D rung now.
 function OverworldBattle.colosseum(context)
-  local value = OverworldBattle.setting:get()
-  return (value == OverworldBattle.COLOSSEUM_A or value == OverworldBattle.COLOSSEUM_B) and true or false
+  return OverworldBattle.models()
 end
 
 -- ------- BACK SPRITES: the player's own mon stays on the menu

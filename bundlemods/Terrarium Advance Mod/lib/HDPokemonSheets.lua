@@ -775,7 +775,7 @@ function M.colosseumOwns(context, battler)
   return true
 end
 
--- Every 3D battle mode (2D-3D A/B, STADIUM A/B, COLOSSEUM A/B) shows the FRONT
+-- Every 3D battle mode (2D-3D A/B, 3D-3D A/B) shows the FRONT
 -- sheet for BOTH sides: the camera looks at the player's mon from the side, so
 -- the back-view art is wrong there. Back sheets are reserved for followers and
 -- roamers, which ask HDPokemonSheets.frame({facing = "back"}) directly.

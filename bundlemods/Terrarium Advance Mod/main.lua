@@ -1380,7 +1380,9 @@ local SETTINGS = {
   -- anything is worse than no row.
   { OverworldBattle.setting,
     "Fight on the map: the battle draws over the nearest clear ground, "
-    .. "shot over the shoulder with a slow parallax drift.",
+    .. "shot over the shoulder with a slow parallax drift. 2D-3D stands the "
+    .. "game's own sprites there, 3D-3D the best 3D model each Pokemon has "
+    .. "(ORAS, Colosseum, Stadium 2, Stadium 1). A = on the map, B = on two discs.",
     when = function() return not VR.enabled() end,
     full = true, cat = "battles" },
   -- Only offered while a fight can actually be staged on the map: with 3D-BTL

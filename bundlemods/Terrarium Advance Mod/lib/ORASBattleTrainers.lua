@@ -1,6 +1,6 @@
 -- ORASBattleTrainers: ORAS trainers standing in battle (row ORAS BTL TRAINERS
 -- on the ORAS.. menu), in place of the flat trainer pic on every 3D-BTL rung
--- (2D-3D A/B, STADIUM A/B, COLOSSEUM A/B and the ORAS arena: all of them are
+-- (2D-3D A/B, 3D-3D A/B and the ORAS arena: all of them are
 -- staged by lib/OverworldBattle.lua and drawn by lib/BattleScene.lua).
 --
 -- Who stands where (T.pick):

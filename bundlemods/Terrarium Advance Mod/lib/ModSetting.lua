@@ -41,6 +41,11 @@ function ModSetting.new(key, label, values, labels)
 end
 
 local function indexOf(self, value)
+  -- a value an older ladder stored, read as the rung that replaced it
+  -- (see setAliases)
+  if self.aliases and value ~= nil and self.aliases[value] ~= nil then
+    value = self.aliases[value]
+  end
   for i, v in ipairs(self.values) do
     if v == value then return i end
   end
@@ -62,6 +67,16 @@ end
 --
 -- values[1] is never gated: it is the default and the fallback, so there is
 -- always at least one rung to land on.
+-- Old stored values -> the value of the rung that replaced them, for a
+-- ladder whose rungs were merged: a save written before still reads back as
+-- the mode it chose. The stored value is rewritten only when the player
+-- next moves the row.
+function ModSetting:setAliases(aliases)
+  self.aliases = aliases
+  self.index = nil
+  return self
+end
+
 function ModSetting:setGate(gate)
   self.gate = gate
   return self

@@ -56,6 +56,9 @@ local StadiumMon = V.require("StadiumMon")
 -- The COLOSSEUM A/B counterpart to StadiumMon -- see its own header for why
 -- Stadium.begin needed a second mon class rather than a flag on StadiumMon.
 local ColosseumBattleMon = V.require("ColosseumBattleMon")
+-- 3D-3D: one mon per side that picks, per species, the ORAS / Colosseum
+-- actor (ColosseumBattleMon) or the Stadium 2 / Stadium 1 pack (StadiumMon)
+local ChainBattleMon = V.require("ChainBattleMon")
 local ShinyBattle = V.require("ShinyBattle")
 local ShinyFx = V.require("ShinyFx")
 
@@ -72,10 +75,13 @@ local Stadium = {}
 -- fight is asking for, the skinning, the draw. The difference is entirely
 -- in what the camera is pointed at, which is BattleScene's business and
 -- StadiumStage's.
-Stadium.VALUE = "stadium"
-Stadium.VALUE_B = "stadiumB"
-Stadium.VALUE_COLOSSEUM_A = "colosseumA"
-Stadium.VALUE_COLOSSEUM_B = "colosseumB"
+--
+-- Since 2026-11 these are the 3D-3D A/B rungs; the old STADIUM / COLOSSEUM
+-- values read as them (OverworldBattle.LEGACY).
+Stadium.VALUE = "modelsA"
+Stadium.VALUE_B = "modelsB"
+Stadium.VALUE_COLOSSEUM_A = Stadium.VALUE
+Stadium.VALUE_COLOSSEUM_B = Stadium.VALUE_B
 
 -- ------- the live pair
 
@@ -107,14 +113,12 @@ function Stadium.selected()
   return mode ~= nil
 end
 
--- "A", "B", "COLOSSEUM_A", "COLOSSEUM_B", or nil when the row is on neither stadium/colosseum rung.
+-- "A" or "B" (3D-3D on the map / on the discs), or nil on any other rung.
 function Stadium.mode()
   local OverworldBattle = V.require("OverworldBattle")
   local value = OverworldBattle.setting:get()
   if value == Stadium.VALUE then return "A" end
   if value == Stadium.VALUE_B then return "B" end
-  if value == Stadium.VALUE_COLOSSEUM_A then return "COLOSSEUM_A" end
-  if value == Stadium.VALUE_COLOSSEUM_B then return "COLOSSEUM_B" end
   return nil
 end
 
@@ -131,16 +135,9 @@ end
 
 function Stadium.enabled()
   if not Stadium.selected() then return false end
-  local mode = Stadium.mode()
-  -- Colosseum modes don't require Stadium ROM, only CBE availability
-  if mode == "COLOSSEUM_A" or mode == "COLOSSEUM_B" then
-    return Voxel3D.available()
-  end
-  local ok1, install1 = pcall(V.require, "StadiumInstall")
-  local stadium1Available = ok1 and install1 and install1.available()
-  local ok2, install2 = pcall(V.require, "Stadium2Install")
-  local stadium2Available = ok2 and install2 and install2.available()
-  return Voxel3D.available() and (stadium1Available or stadium2Available)
+  -- no source is required up front: each species declines on its own
+  -- (ChainBattleMon) and keeps its pic when no source has it
+  return Voxel3D.available()
 end
 
 -- A staged fight has begun on `arena`. Called from OverworldBattle.begin,
@@ -154,14 +151,13 @@ function Stadium.begin(arena)
   -- console is not filled sixty times a second, but latched for the whole
   -- process it would swallow every failure after the first one ever
   Stadium.reported = false
-  -- COLOSSEUM A/B stand a PokemonActors-backed actor on the tile instead of
-  -- a StadiumPack model; everything from here down (update/draw/cast/
-  -- covers/captureBody/...) reads session.player/enemy through the same
-  -- method names either class answers, so nothing past this branch needs
-  -- its own mode check (see ColosseumBattleMon's header).
-  local mode = Stadium.mode()
-  local Mon = (mode == "COLOSSEUM_A" or mode == "COLOSSEUM_B")
-              and ColosseumBattleMon or StadiumMon
+  -- 3D-3D: each side is a ChainBattleMon, standing per species either a
+  -- PokemonActors actor (ORAS, then Colosseum) or a StadiumPack model
+  -- (Stadium 2, then Stadium 1); everything from here down (update/draw/
+  -- cast/covers/captureBody/...) reads session.player/enemy through the
+  -- same method names either class answers, so nothing past this branch
+  -- needs its own mode check (see ColosseumBattleMon's header).
+  local Mon = ChainBattleMon
   session = {
     arena = arena,
     groundY = 0,
@@ -198,13 +194,12 @@ function Stadium.sideMon(side)
 end
 
 
--- Return the current session if in colosseum mode, nil otherwise
+-- The current session on a 3D-3D rung, nil otherwise. Its sides may stand
+-- an actor (ORAS / Colosseum: mon.actor) or a Stadium model (no actor);
+-- ColosseumMoveFX binds only the sides with an actor.
 function Stadium.colosseumSession(battle)
   if not session then return nil end
-  local mode = Stadium.mode()
-  if mode == "COLOSSEUM_A" or mode == "COLOSSEUM_B" then
-    return session
-  end
+  if Stadium.mode() then return session end
   return nil
 end
 

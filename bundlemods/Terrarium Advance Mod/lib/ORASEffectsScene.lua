@@ -1,4 +1,4 @@
--- ORAS move effects on the 3D-BTL rungs (2D-3D A/B, COLOSSEUM A/B): battles
+-- ORAS move effects on every 3D-BTL rung (2D-3D A/B, 3D-3D A/B): battles
 -- staged on the map by lib/OverworldBattle.lua and drawn by lib/BattleScene.lua.
 --
 -- Independent of the Colosseum runtime: it hooks the engine's own

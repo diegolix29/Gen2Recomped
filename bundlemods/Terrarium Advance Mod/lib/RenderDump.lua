@@ -163,6 +163,18 @@ function D.request(A)
     out[#out + 1] = ("3D-BTL staged: %s, rung: %s"):format(
       tostring(okO and OB and OB.arenaInfo and OB.arenaInfo() ~= nil),
       tostring(okS and St and St.mode and St.mode() or "none"))
+    -- 3D-3D: which source each side's model came from (ChainBattleMon)
+    pcall(function()
+      local parts = {}
+      for _, side in ipairs({ "player", "enemy" }) do
+        local mon = St.sideMon(side)
+        if mon then
+          local src = mon.modelSource and mon:modelSource() or "-"
+          parts[#parts + 1] = ("%s dex %s -> %s"):format(side, tostring(mon.species), tostring(src or "pic"))
+        end
+      end
+      if #parts > 0 then out[#out + 1] = "3D-3D models: " .. table.concat(parts, ", ") end
+    end)
     pcall(function()
       local Ar = V.require("ORASArenas")
       if Ar.active() then

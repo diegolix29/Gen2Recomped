@@ -9,7 +9,7 @@
 --
 --   mod.exports.pokemonActorsOverworld  ColosseumMon (overworld spawns,
 --                                       followers, roamers) and
---                                       ColosseumBattleMon (COLOSSEUM A/B)
+--                                       ColosseumBattleMon (3D-3D A/B)
 --   V.PokemonActors                     everything that reads it directly
 --
 -- In place of the Colosseum PokemonExtractor it hands PokemonActors a tiny

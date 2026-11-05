@@ -87,10 +87,10 @@ Stadium._shinyVariant = shinyVariant
 -- fight is asking for, the skinning, the draw. The difference is entirely
 -- in what the camera is pointed at, which is BattleScene's business and
 -- StadiumStage's.
-Stadium.VALUE = "stadium"
-Stadium.VALUE_B = "stadiumB"
-Stadium.VALUE_COLOSSEUM_A = "colosseumA"
-Stadium.VALUE_COLOSSEUM_B = "colosseumB"
+Stadium.VALUE = "modelsA"   -- 3D-3D A (OverworldBattle ladder, 2026-11)
+Stadium.VALUE_B = "modelsB"   -- 3D-3D B
+Stadium.VALUE_COLOSSEUM_A = Stadium.VALUE
+Stadium.VALUE_COLOSSEUM_B = Stadium.VALUE_B
 
 -- ------- the live pair
 
