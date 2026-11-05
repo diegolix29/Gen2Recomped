@@ -359,7 +359,7 @@ apply_android_branding() {
 
   # Detect if running on Windows (Git Bash) or Linux/macOS
   local is_windows=false
-  if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+  if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* || "$OSTYPE" == "win32" ]]; then
     is_windows=true
   fi
 
@@ -368,8 +368,13 @@ apply_android_branding() {
     local win_manifest
     win_props="$(git_bash_to_windows_path "$props")"
     win_manifest="$(git_bash_to_windows_path "$manifest")"
+    # The py launcher only ships with python.org installers; MSYS2/UCRT64
+    # and Store installs expose python3/python instead.
+    local win_py
+    win_py="$(command -v py || command -v python3 || command -v python)" \
+      || fail "python not found (need py, python3 or python on PATH)"
 
-    py - "$win_props" "$APPLICATION_ID" "$APP_NAME" "$VERSION" "$VERSION_CODE" <<'PY'
+    "$win_py" - "$win_props" "$APPLICATION_ID" "$APP_NAME" "$VERSION" "$VERSION_CODE" <<'PY'
 import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 app_id, name, version, version_code = sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5]
@@ -393,7 +398,7 @@ if version:
 path.write_text(text)
 PY
 
-    py - "$win_manifest" <<'PY'
+    "$win_py" - "$win_manifest" <<'PY'
 import pathlib, re, sys
 path = pathlib.Path(sys.argv[1])
 text = path.read_text()
@@ -472,7 +477,7 @@ pack_game_love() {
   
   # Detect if running on Windows (Git Bash) or Linux/macOS
   local is_windows=false
-  if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+  if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* || "$OSTYPE" == "win32" ]]; then
     is_windows=true
   fi
   
@@ -792,7 +797,7 @@ run_gradle() {
 
   # Detect if running on Windows (Git Bash) or Linux/macOS
   local is_windows=false
-  if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "win32" ]]; then
+  if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* || "$OSTYPE" == "win32" ]]; then
     is_windows=true
   fi
 
