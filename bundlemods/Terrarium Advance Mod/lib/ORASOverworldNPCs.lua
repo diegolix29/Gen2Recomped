@@ -455,8 +455,55 @@ local candidates = setmetatable({}, { __mode = "k" })   -- entity -> d2, this fr
 local chosen = setmetatable({}, { __mode = "k" })       -- entity -> true, this frame's set
 local chosenCount, extraThisFrame = 0, 0
 
+-- LOADING.  An NPC's model used to load inside its own draw call, so entering
+-- a town loaded every NPC's character in the same frame (a long freeze, worst
+-- on phones).  Now an NPC without its model joins `waiting` (its sprite
+-- draws meanwhile) and the start of each frame loads them nearest first:
+-- always one, then more only while the frame's budget lasts -- a character
+-- another NPC already uses is resident and costs next to nothing, a cold one
+-- spends the budget and the rest wait for the next frame.
+N.LOAD_BUDGET = 0.004       -- s of loading per frame (at least one load)
+local waiting = setmetatable({}, { __mode = "k" })      -- entity -> d2, last frame
+local loadsLeft = 0          -- F12: still waiting after this frame's loads
+
+local function loadWaiting()
+  local list = {}
+  for e, d2 in pairs(waiting) do list[#list + 1] = { e = e, d2 = d2 } end
+  waiting = setmetatable({}, { __mode = "k" })
+  if #list == 0 then loadsLeft = 0; return end
+  table.sort(list, function(a, b) return a.d2 < b.d2 end)
+  local t0, now = clock(), clock()
+  local i = 1
+  while i <= #list and (i == 1 or now - t0 < N.LOAD_BUDGET) do
+    local en = entries[list[i].e]
+    if en and en.actor == nil and not (en.retryAt and now < en.retryAt) then
+      actorOf(en)
+    end
+    i = i + 1
+    now = clock()
+  end
+  loadsLeft = #list - (i - 1)
+end
+
+-- Off screen: Gen 4 / 5 hand over every NPC of the resident maps (Gen 1-3
+-- cull before asking), so an NPC behind the camera animated, drew and took
+-- one of the N.MAX_PER_FRAME slots.  A point test in clip space against the
+-- frame's view-projection (row-major, as Mat4 builds it), with a margin so a
+-- model half in view still draws.
+N.SCREEN_MARGIN = 1.3
+local function onScreen(vp, x, y, z)
+  if type(vp) ~= "table" or not vp[16] then return true end
+  local w = vp[13] * x + vp[14] * y + vp[15] * z + vp[16]
+  if w <= 0 then return false end
+  local cx = vp[1] * x + vp[2] * y + vp[3] * z + vp[4]
+  local cy = vp[5] * x + vp[6] * y + vp[7] * z + vp[8]
+  local m = w * N.SCREEN_MARGIN
+  return cx >= -m and cx <= m and cy >= -m and cy <= m
+end
+
 local function newFrame(vp)
   frameToken, drawnThisFrame, extraThisFrame = vp, 0, 0
+  loadWaiting()
   local list = {}
   for e, d2 in pairs(candidates) do
     list[#list + 1] = { e = e, k = chosen[e] and d2 * N.STICKY or d2 }
@@ -495,6 +542,10 @@ local function drawAt(e, px, py, y, facing, gen4)
     local r = N.RADIUS + (chosen[e] and N.HYSTERESIS or 0)
     if d2 > r * r then return false end
   end
+  -- off screen: neither a model nor a slot (its cheap sprite path runs)
+  if gen4 and not onScreen(vp, (px or 0) + 8, (y or 0) + N.HEIGHT * 0.5, (py or 0) + 8) then
+    return false
+  end
   candidates[e] = d2
   -- the nearest N.MAX_PER_FRAME, picked once a frame from last frame's
   -- candidates; an NPC that was not a candidate then gets a spare slot only
@@ -502,7 +553,13 @@ local function drawAt(e, px, py, y, facing, gen4)
     if chosenCount + extraThisFrame >= N.MAX_PER_FRAME then return false end
     extraThisFrame = extraThisFrame + 1
   end
-  local actor = actorOf(en)
+  -- not loaded yet: queue it (loaded nearest first at a frame start); the
+  -- sprite draws until then
+  if en.actor == nil then
+    waiting[e] = d2
+    return false
+  end
+  local actor = en.actor or nil
   if not actor then return false end
   local svc = service()
   if not (svc and type(svc.withRenderer) == "function") then return false end
@@ -560,16 +617,18 @@ function N.reset()
   drewLast = setmetatable({}, { __mode = "k" })
   candidates = setmetatable({}, { __mode = "k" })
   chosen = setmetatable({}, { __mode = "k" })
-  chosenCount, extraThisFrame = 0, 0
+  waiting = setmetatable({}, { __mode = "k" })
+  chosenCount, extraThisFrame, loadsLeft = 0, 0, 0
   haveMemo, haveAt = nil, -1
 end
 
 -- F12 (RenderDump): who is cast as whom
 function N.report(out)
   out[#out + 1] = ""
-  out[#out + 1] = ("ORAS NPCS: enabled %s, drawn last frame %d, chosen %d (cap %d), in range %d"):format(
+  out[#out + 1] = ("ORAS NPCS: enabled %s, drawn last frame %d, chosen %d (cap %d), in range %d, waiting to load %d, distance %s"):format(
     tostring(N.enabled()), drawnThisFrame, chosenCount, N.MAX_PER_FRAME,
-    (function() local c = 0; for _ in pairs(candidates) do c = c + 1 end; return c end)())
+    (function() local c = 0; for _ in pairs(candidates) do c = c + 1 end; return c end)(),
+    loadsLeft, N.distance() > 0 and (N.distance() .. " tiles") or "ALL")
   local n = 0
   for e, en in pairs(entries) do
     if en and n < 40 then
