@@ -586,8 +586,92 @@ end
 
 function T.running() return job ~= nil end
 
+-- -------------------------------------------------------------------- pack
+-- ORAS TRAINERS PACK packs oras/trainers/<id>/* into
+-- cbe_cache_archive/orastrainer (lib/CacheArchive.lua kind "orastrainer"),
+-- one unit per character.  Every build ends with a pack.  It is incremental,
+-- as ORAS MODELS': a rebuild skips characters whose rev.txt holds the stamp
+-- and writes nothing for them, so their units must stay; a rebuilt
+-- character's loose files replace its entries in its unit.
+
+local packJob = nil   -- { Ar, started, startedAt }
+local PACK_BUDGET_MS = 12
+T.autoPack = true   -- false: a build leaves the files loose
+
+local function archive()
+  local Ar = mod and mod.exports and mod.exports.cacheArchive
+  if Ar then return Ar end
+  local okS, src = pcall(function() return mod:read("lib/CacheArchive.lua") end)
+  local chunk = okS and type(src) == "string" and load(src, "@lib/CacheArchive.lua")
+  if not chunk then return nil end
+  local okW, WorkBudget = pcall(V.require, "WorkBudget")
+  local okA, arch = pcall(chunk, { mod = mod, WorkBudget = okW and WorkBudget or nil })
+  if not (okA and type(arch) == "table") then return nil end
+  if mod.exports then mod.exports.cacheArchive = arch end
+  return arch
+end
+
+local function startPack()
+  local Ar = archive()
+  if not (Ar and Ar.beginPack) then
+    log("warn", "ORAS TRAINERS PACK: cache packing unavailable (lib/CacheArchive.lua did not load); characters stay loose")
+    return false
+  end
+  packJob = { Ar = Ar, started = false, startedAt = now() }
+  return true
+end
+T.startPack = startPack
+
+-- status() lists the archive folders: the row asks every frame
+local packStatusMemo, packStatusAt, packStatusStale = nil, -1, false
+function T.packStatus()
+  local t = now()
+  if packStatusMemo and not packJob and not packStatusStale and t - packStatusAt < 1 then return packStatusMemo end
+  packStatusStale = false
+  local Ar = archive()
+  local okS, s = pcall(function() return Ar and Ar.status and Ar.status() or nil end)
+  s = okS and s or nil
+  packStatusMemo = s and { packed = s.orastrainerPacked, entries = s.orastrainerEntries,
+                           original = s.orastrainerOriginalLabel, archive = s.orastrainerArchiveLabel } or {}
+  packStatusAt = t
+  return packStatusMemo
+end
+
+local function pumpPack()
+  local Ar = packJob.Ar
+  if not packJob.started then
+    -- another pack job (ORAS MODELS / FX / ARENA PACK, Colosseum auto-pack)
+    -- holds the archive: drive it to its end, then start ours
+    if Ar.running and Ar.running() then Ar.pump(PACK_BUDGET_MS); return end
+    local ok, why = Ar.beginPack("orastrainer")
+    if not ok then
+      packJob = nil
+      T.packError = tostring(why)
+      log("warn", "ORAS TRAINERS PACK: packing could not start: %s", tostring(why))
+      return
+    end
+    packJob.started = true
+    log("info", "ORAS TRAINERS PACK: packing the ORAS characters in the background")
+    return
+  end
+  local state, err = Ar.pump(PACK_BUDGET_MS)
+  if state == "working" then return end
+  local seconds = now() - packJob.startedAt
+  packJob = nil
+  packStatusStale = true
+  if state == "error" then
+    T.packError = tostring(err)
+    log("warn", "ORAS TRAINERS PACK: packing failed (loose files kept): %s", tostring(err))
+    return
+  end
+  T.packError = nil
+  local st = T.packStatus()
+  log("info", "ORAS TRAINERS PACK: packed in %.0fs -- %s of characters in %s (cbe_cache_archive/orastrainer)",
+      seconds, tostring(st.original), tostring(st.archive))
+end
+
 function T.startBuild()
-  if job then return false end
+  if job or packJob then return false end
   job = { done = 0, total = 0, startedAt = now(), frameStart = now() }
   job.co = coroutine.create(bake)
   T.status = { state = "building" }
@@ -597,6 +681,7 @@ end
 
 -- once a frame (main.lua)
 function T.pump()
+  if packJob then return pumpPack() end
   if not job then return end
   job.frameStart = now()
   local ok, n, built, kept, failed = coroutine.resume(job.co)
@@ -611,6 +696,7 @@ function T.pump()
         n or 0, built or 0, kept or 0, failed or 0, now() - job.startedAt)
     job = nil
     T.status = { state = "done" }
+    if T.autoPack ~= false and (n or 0) > 0 then startPack() end
   end
 end
 
@@ -630,12 +716,42 @@ function T.row()
       return T.imported() and "BUILD" or "NO DUMP"
     end,
     step = function()
-      if job then return true end
+      if job or packJob then return true end
       if not T.imported() then
         log("info", "ORAS TRAINERS: import a decrypted Omega Ruby / Alpha Sapphire .3ds from the MODS panel first")
         return true
       end
       T.startBuild()
+      return true
+    end,
+  }
+end
+
+-- ORAS TRAINERS PACK: the row under ORAS TRAINERS.  A build packs by itself;
+-- pressing it packs whatever is still loose (an install built before it).
+function T.packRow()
+  return {
+    id = "oras_trainers_pack",
+    label = "ORAS TRAINERS PACK",
+    value = function()
+      if packJob then
+        local Ar = packJob.Ar
+        local label = Ar and Ar.stage and Ar.stage()
+        return packJob.started and tostring(label or "PACKING"):gsub("^PACK ORASTRAINER ", "") or "WAITING"
+      end
+      if job then return "AFTER BUILD" end
+      if T.packError then return "ERROR" end
+      local st = T.packStatus()
+      if st.packed then return "PACKED " .. tostring(st.archive or "") end
+      return T.built() and "LOOSE FILES" or "BUILD FIRST"
+    end,
+    step = function()
+      if job or packJob then return true end
+      if not T.built() then
+        log("info", "ORAS TRAINERS PACK: build the characters first (ORAS TRAINERS)")
+        return true
+      end
+      startPack()
       return true
     end,
   }

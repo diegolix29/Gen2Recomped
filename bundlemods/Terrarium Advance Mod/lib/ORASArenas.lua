@@ -536,6 +536,7 @@ function A.running() return job ~= nil end
 
 local packJob = nil   -- { Ar, started, startedAt, fresh }
 local PACK_BUDGET_MS = 12
+A.autoPack = true   -- false: a bake leaves the files loose
 
 -- fresh: the bake just wrote every file loose again, so the old units are
 -- dropped first (they would keep members the new bake left out)
@@ -627,8 +628,9 @@ function A.pump()
         nStages or 0, nTex or 0, now() - job.startedAt, failed or 0)
     job = nil
     A.status = { state = "done" }
-    -- once the player has packed, a new bake is packed right after it
-    if A.packStatus().packed then startPack(true) end
+    -- every bake is packed right after it (fresh: the bake wrote every file
+    -- loose again, so old units would only hold stale copies)
+    if A.autoPack ~= false then startPack(true) end
   end
 end
 

@@ -728,6 +728,7 @@ end
 
 local packJob = nil   -- { A, started, startedAt, fresh }
 local PACK_BUDGET_MS = 12
+E.autoPack = true   -- false: a bake leaves the files loose
 
 -- fresh: the bake just wrote every file loose again, so the old units are
 -- dropped first (they would keep members the new bake left out)
@@ -838,8 +839,9 @@ function E.pump()
     E.status = { state = "done" }
     log("info", "ORAS EFFECTS: %d moves, %d particle files, %d textures baked in %.1fs (%d unreadable)",
         nMoves or 0, nFx or 0, nTex or 0, seconds, failed or 0)
-    -- once the player has packed, a new bake is packed right after it
-    if E.packStatus().packed then startPack(true) end
+    -- every bake is packed right after it (fresh: the bake wrote every file
+    -- loose again, so old units would only hold stale copies)
+    if E.autoPack ~= false then startPack(true) end
   end
 end
 

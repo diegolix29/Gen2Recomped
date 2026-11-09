@@ -219,12 +219,9 @@ local function finish(ok, built, failed, err, skipped)
   st.error = err
   log("info", "ORAS MODELS: %s -- restart the game so every part of the mod picks them up (per-species lines: modstorage/DRAMATIC_SHAPE/oras/build.txt.bin)", st.summary)
   if mod and mod.cache then pcall(mod.cache.write, mod.cache, "oras/build.txt", table.concat(lines, "\n") .. "\n") end
-  -- packing is its own row (ORAS PACK); once the player has packed, species
-  -- built later are packed right after the build so the install stays packed
-  if st.state == "done" and M.autoPack ~= false then
-    local s = M.packStatus()
-    if s.packed then startPack() end
-  end
+  -- every build is packed right after it (incremental: species the build
+  -- skipped keep their units; ORAS PACK still packs anything left loose)
+  if st.state == "done" and M.autoPack ~= false then startPack() end
 end
 
 -- once a frame (main.lua)

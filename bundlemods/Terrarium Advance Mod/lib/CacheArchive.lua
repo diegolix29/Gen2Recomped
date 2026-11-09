@@ -55,6 +55,13 @@ local MARKER_ORASFX="build/cache_archive_orasfx_v1.complete"
 local ORASARENA_DIR=ARCHIVE_ROOT.."/orasarena"
 local INDEX_ORASARENA="cache/archive_v1/orasarena.lua"
 local MARKER_ORASARENA="build/cache_archive_orasarena_v1.complete"
+-- ORAS characters (lib/ORASTrainers.lua bake): oras/trainers/<id>/..., one
+-- unit per character (the same layout as an ORAS species); index.lua and the
+-- row settings directly under oras/trainers, and each character's identity
+-- files (rev.txt, model_cache.lua, ...) stay loose
+local ORASTRAINER_DIR=ARCHIVE_ROOT.."/orastrainer"
+local INDEX_ORASTRAINER="cache/archive_v1/orastrainer.lua"
+local MARKER_ORASTRAINER="build/cache_archive_orastrainer_v1.complete"
 
 -- per kind: loose prefix, unit folder, index, done marker
 local KINDS={
@@ -63,8 +70,9 @@ local KINDS={
   oras={prefix="oras/pokemon/",dir=ORAS_DIR,index=INDEX_ORAS,marker=MARKER_ORAS},
   orasfx={prefix="oras/movefx/",dir=ORASFX_DIR,index=INDEX_ORASFX,marker=MARKER_ORASFX},
   orasarena={prefix="oras/arenas/",dir=ORASARENA_DIR,index=INDEX_ORASARENA,marker=MARKER_ORASARENA},
+  orastrainer={prefix="oras/trainers/",dir=ORASTRAINER_DIR,index=INDEX_ORASTRAINER,marker=MARKER_ORASTRAINER},
 }
-local KIND_LIST={"pokemon","movefx","oras","orasfx","orasarena"}
+local KIND_LIST={"pokemon","movefx","oras","orasfx","orasarena","orastrainer"}
 A.KINDS=KINDS
 
 local job=nil
@@ -265,6 +273,11 @@ local function pinnedLoose(path)
   if path:match("^oras/movefx/[^/]+$") then return true end
   -- ORAS arenas: the same (index.lua = "is it built", choice.txt = the row)
   if path:match("^oras/arenas/[^/]+$") then return true end
+  -- ORAS characters: the list + row settings, and per character what
+  -- ORASTrainers' bake and the actor loaders read through mod.cache
+  if path:match("^oras/trainers/[^/]+$") then return true end
+  local tname=path:match("^oras/trainers/[^/]+/([^/]+)$")
+  if tname=="rev.txt" or tname=="q16.txt" or tname=="ssc.txt" or tname=="model_cache.lua" or tname=="metadata_v1.lua" then return true end
   return false
 end
 
@@ -275,6 +288,7 @@ local function kindFor(path)
   if startsWith(path,"oras/pokemon/") then return "oras" end
   if startsWith(path,"oras/movefx/") then return "orasfx" end
   if startsWith(path,"oras/arenas/") then return "orasarena" end
+  if startsWith(path,"oras/trainers/") then return "orastrainer" end
   return nil
 end
 
@@ -287,6 +301,9 @@ local function unitKey(kind,path)
   end
   if kind=="orasarena" then
     return path:match("^oras/arenas/([^/]+)/") or "_meta"
+  end
+  if kind=="orastrainer" then
+    return path:match("^oras/trainers/([^/]+)/") or "_meta"
   end
   if kind=="pokemon" then
     local dex,rest=path:match("^cache/pokemon/(%d+)/(.*)$")
@@ -440,7 +457,7 @@ local function queueFor(kind)
     if #queue>0 then return queue end
     A.lastListing.method=method.." (unusable, manifest walk)"
   end
-  if kind=="oras" or kind=="orasfx" or kind=="orasarena" then
+  if kind=="oras" or kind=="orasfx" or kind=="orasarena" or kind=="orastrainer" then
     -- no manifest to walk: the store listing is the only source
   elseif kind=="pokemon" then
     for _,path in ipairs(pokemonManifestPaths()) do add(path) end
@@ -668,6 +685,10 @@ function A.status()
   local rBytes=archiveBytesOnDisk("orasarena")
   local rCount=0
   for _ in pairs(r.entries) do rCount=rCount+1 end
+  local t=readIndex("orastrainer")
+  local tBytes=archiveBytesOnDisk("orastrainer")
+  local tCount=0
+  for _ in pairs(t.entries) do tCount=tCount+1 end
   -- totals are the Colosseum caches (the PACK CACHE menu); ORAS has its own
   -- fields below (ORAS MODELS reports them)
   local original=(p.originalBytes or 0)+(m.originalBytes or 0)
@@ -702,6 +723,10 @@ function A.status()
     orasarenaEntries=rCount,
     orasarenaArchiveLabel=prettyBytes(rBytes),
     orasarenaOriginalLabel=prettyBytes(r.originalBytes or 0),
+    orastrainerPacked=looseExists(MARKER_ORASTRAINER) and true or false,
+    orastrainerEntries=tCount,
+    orastrainerArchiveLabel=prettyBytes(tBytes),
+    orastrainerOriginalLabel=prettyBytes(t.originalBytes or 0),
     originalBytes=original,
     archiveBytes=packed,
     savedBytes=math.max(0,original-packed),
@@ -887,6 +912,7 @@ local function packBody(scope)
   if scope=="oras" then packKind("oras") end
   if scope=="orasfx" then packKind("orasfx") end
   if scope=="orasarena" then packKind("orasarena") end
+  if scope=="orastrainer" then packKind("orastrainer") end
   return true
 end
 
@@ -899,7 +925,8 @@ function A.beginPack(scope)
     or (scope=="movefx" and "PACKING MOVEFX CACHE")
     or (scope=="oras" and "PACKING ORAS MODELS")
     or (scope=="orasfx" and "PACKING ORAS EFFECTS")
-    or (scope=="orasarena" and "PACKING ORAS ARENAS" or "PACKING POKEMON + MOVEFX")
+    or (scope=="orasarena" and "PACKING ORAS ARENAS")
+    or (scope=="orastrainer" and "PACKING ORAS TRAINERS" or "PACKING POKEMON + MOVEFX")
   A.lastError=nil
   local co=WorkBudget.new(function()
     local ok,err=xpcall(function() packBody(scope) end,debug.traceback)
@@ -924,7 +951,7 @@ end
 ----------------------------------------------------------------------
 A.autoPack=true
 local AUTO_SETTLE=20
-local dirty={pokemon={},movefx={},oras={},orasfx={},orasarena={}}
+local dirty={pokemon={},movefx={},oras={},orasfx={},orasarena={},orastrainer={}}
 local function now()
   if love and love.timer and love.timer.getTime then return love.timer.getTime() end
   return os.clock()
@@ -1198,6 +1225,9 @@ function A.repairLostEntries(force)
         elseif kind=="orasarena" then
           -- the same for ORAS ARENAS
           looseDelete("oras/arenas/index.lua")
+        elseif kind=="orastrainer" then
+          -- ORAS TRAINERS rebuilds a character whose stamp is gone
+          looseDelete(("oras/trainers/%s/rev.txt"):format(tostring(key)))
         elseif kind=="pokemon" then
           local dex,variant=tostring(key):match("^(%d+)/(%a+)$")
           if dex then looseDelete(("cache/pokemon/%s%s/rev.txt"):format(dex,variant=="shiny" and "/shiny" or "")) end

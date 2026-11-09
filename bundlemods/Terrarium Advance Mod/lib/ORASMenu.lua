@@ -20,7 +20,7 @@ local SOURCES = {
   { "ORASModels", { "row", "packRow" } },
   { "ORASEffects", { "row", "packRow", "battleRow", "sizeRow", "soundRow", "cameraRow", "zoomRow" } },
   { "ORASArenas", { "row", "choiceRow", "packRow" } },
-  { "ORASTrainers", { "row", "playerRow" } },
+  { "ORASTrainers", { "row", "packRow", "playerRow" } },
   { "ORASBattleTrainers", { "row" } },
   { "ORASOverworldNPCs", { "row" } },
 }
