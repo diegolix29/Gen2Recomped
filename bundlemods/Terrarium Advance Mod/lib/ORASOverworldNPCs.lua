@@ -16,7 +16,8 @@
 -- How: one actor per NPC (PokemonActors acquire: shared meshes, own clock),
 -- stand / walk / run from the NPC's own movement, facing = its own world
 -- facing, sized like the ORAS PLAYER (16 world px; Gen 4 / 5 world factor).
--- Only NPCs within N.RADIUS of the player and at most N.MAX_PER_FRAME a frame;
+-- Every drawn NPC (N.RADIUS = nil; set it to limit by distance) and at most
+-- N.MAX_PER_FRAME a frame, nearest first;
 -- the rest (and any NPC whose model is not ready) draw as before.
 --
 -- Hooks: lib/VoxelScene.lua tryNpcBody / castNpcBody (Gen 1-3, also the
@@ -29,8 +30,14 @@ local mod = V and V.mod
 local N = { ID = "oras_npcs", LABEL = "ORAS NPCS" }
 N.SETTING = "oras/trainers/npcs.txt"
 N.HEIGHT = 16           -- world px, the ORAS PLAYER's CHARACTER_HEIGHT
-N.RADIUS = 14 * 16      -- world px from the player
-N.MAX_PER_FRAME = 16
+-- N.RADIUS nil = no radius: every NPC the scene draws (the current map and
+-- the resident neighbour maps) gets its model.  Row ORAS NPC DISTANCE sets
+-- it (tiles; ALL by default) so a slow phone can keep only the near ones.
+-- The cap still ranks by distance, so the nearest win if a seam has more.
+N.RADIUS = nil          -- world px from the player, or nil for no limit
+N.MAX_PER_FRAME = 48
+N.DISTANCE_SETTING = "oras/trainers/npc_distance.txt"
+N.DISTANCES = { 8, 12, 16, 24, 32, 0 }   -- tiles; 0 = ALL
 N.STILL_HOLD = 0.15     -- s: between two grid steps the walk keeps going
 
 local function log(level, fmt, ...)
@@ -76,6 +83,47 @@ function N.row()
         return true
       end
       N.setEnabled(not N.enabled())
+      return true
+    end,
+  }
+end
+
+-- ORAS NPC DISTANCE: how far from the player an NPC swaps sprite -> model
+local distanceTiles   -- nil = not read yet; 0 = ALL
+function N.distance()
+  if distanceTiles == nil then
+    local ok, s = pcall(mod.cache.read, mod.cache, N.DISTANCE_SETTING)
+    local v = ok and type(s) == "string" and tonumber(s:match("%d+")) or nil
+    distanceTiles = 0
+    for _, d in ipairs(N.DISTANCES) do
+      if d == v then distanceTiles = v end
+    end
+    N.RADIUS = distanceTiles > 0 and distanceTiles * 16 or nil
+  end
+  return distanceTiles
+end
+function N.setDistance(tiles)
+  distanceTiles = tonumber(tiles) or 0
+  N.RADIUS = distanceTiles > 0 and distanceTiles * 16 or nil
+  pcall(mod.cache.write, mod.cache, N.DISTANCE_SETTING, tostring(distanceTiles) .. "\n")
+end
+
+function N.distanceRow()
+  return {
+    id = "oras_npcs_distance",
+    label = "ORAS NPC DISTANCE",
+    value = function()
+      local d = N.distance()
+      return d > 0 and (tostring(d) .. " TILES") or "ALL"
+    end,
+    step = function(_, dir)
+      local cur, i = N.distance(), #N.DISTANCES
+      for k, d in ipairs(N.DISTANCES) do
+        if d == cur then i = k end
+      end
+      local step = (tonumber(dir) or 1) < 0 and -1 or 1
+      i = (i - 1 + step) % #N.DISTANCES + 1
+      N.setDistance(N.DISTANCES[i])
       return true
     end,
   }
@@ -442,8 +490,11 @@ local function drawAt(e, px, py, y, facing, gen4)
     d2 = dx * dx + dy * dy
   end
   -- a member keeps its model a little past the radius (no flicker at the edge)
-  local r = N.RADIUS + (chosen[e] and N.HYSTERESIS or 0)
-  if d2 > r * r then return false end
+  N.distance()   -- reads the saved row value once (sets N.RADIUS)
+  if N.RADIUS then
+    local r = N.RADIUS + (chosen[e] and N.HYSTERESIS or 0)
+    if d2 > r * r then return false end
+  end
   candidates[e] = d2
   -- the nearest N.MAX_PER_FRAME, picked once a frame from last frame's
   -- candidates; an NPC that was not a candidate then gets a spare slot only

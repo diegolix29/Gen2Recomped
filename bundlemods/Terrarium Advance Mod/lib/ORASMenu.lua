@@ -22,7 +22,7 @@ local SOURCES = {
   { "ORASArenas", { "row", "choiceRow", "packRow" } },
   { "ORASTrainers", { "row", "packRow", "playerRow" } },
   { "ORASBattleTrainers", { "row" } },
-  { "ORASOverworldNPCs", { "row" } },
+  { "ORASOverworldNPCs", { "row", "distanceRow" } },
 }
 
 -- the rows, each module and each row reached through pcall: a fault in one
