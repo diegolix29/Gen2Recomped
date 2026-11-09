@@ -391,6 +391,11 @@ function Shop:transact()
       -- the till (Shop_SelectConfirmPurchase, on YES)
       se(self, "SEQ_SE_DP_REGI")
       self.purchases = bump(self.purchases, self.qty)
+      -- Platinum's Sinnoh Shopping Champ Corner (Shop_ConfirmItemPurchase,
+      -- MART_TYPE_NORMAL: 10 or more at once; src/script/PtTvRecords.lua)
+      if not self.frontier then
+        pcall(function() require('src.script.PtTvRecords').shopping(save, self:def(self.item) or self.item, self.qty) end)
+      end
       local def = self:def(self.item) or {}
       local pockets = ((self.game.data.gen4_menus or {}).bag or {}).pockets or {}
       local pocket = pockets[(tonumber(def.fieldPocket) or 0) + 1] or ''
@@ -400,6 +405,14 @@ function Shop:transact()
         local info = require('src.core.GameVersion').info()
         local line = info and info.family == 'hgss' and T.resolve(self.game.data, 10, 120 + (tonumber(def.fieldPocket) or 0), self.game)
         pocket = line and line:match('^(.-) Pocket') or ''
+      end
+      -- BLACK / WHITE: the mart's line (bank 423 #9 "... in the {VAR2}
+      -- Case.") takes BufferPocketName (arm9 0x0201F14C: system bank 55,
+      -- ITEMS .. KEY ITEMS) of the item's pocket field (param 5 = bwPocket),
+      -- ov21 0x021B4714
+      if pocket == '' and require('src.core.GameVersion').isGen5() then
+        local label = require('src.import.Gen5Text').label('system', 55, tonumber(def.bwPocket) or 0)
+        pocket = (self.game.data.text or {})[label] or ''
       end
       self.message = self:line(6, 'Thank you!', def.name or '', pocket)
       -- Platinum awards one Premier Ball per purchase of at least ten Poke Balls.

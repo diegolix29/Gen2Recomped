@@ -164,15 +164,14 @@ function Gen4ModelPack.pack(model)
     for _, v in ipairs(shape.vertices) do
       matrixParts[#matrixParts+1]=char(v.matrix==nil and 255 or v.matrix)
       if v.matrix~=nil then hasMatrices=true end
-      vertexParts[#vertexParts + 1] = concat({
-        s16(v.x * Gen4ModelPack.FX16),
-        s16(v.y * Gen4ModelPack.FX16),
-        s16(v.z * Gen4ModelPack.FX16),
-        s16(v.u * Gen4ModelPack.UV_UNITS),
-        s16(v.v * Gen4ModelPack.UV_UNITS),
-        u8(v.r), u8(v.g), u8(v.b),
-        s8(v.nx), s8(v.ny), s8(v.nz),
-      })
+      vertexParts[#vertexParts + 1] =
+        s16(v.x * Gen4ModelPack.FX16) ..
+        s16(v.y * Gen4ModelPack.FX16) ..
+        s16(v.z * Gen4ModelPack.FX16) ..
+        s16(v.u * Gen4ModelPack.UV_UNITS) ..
+        s16(v.v * Gen4ModelPack.UV_UNITS) ..
+        u8(v.r) .. u8(v.g) .. u8(v.b) ..
+        s8(v.nx) .. s8(v.ny) .. s8(v.nz)
     end
 
     for _, t in ipairs(shape.triangles) do
@@ -222,6 +221,12 @@ function Gen4ModelPack.pack(model)
       -- whole room to black and its candle spots (`dun_spot`) shine through.
       noFog = (material and material.polyAttr
                and math.floor(material.polyAttr / 0x8000) % 2 == 0) or nil,
+      -- WHICH LIGHTS REACH IT: polyAttr bits 0..3 (the four GX lights). The
+      -- area light's templates set the lights and the colours globally and
+      -- leave this to the material (AreaLight_UseGlobalModelAttributes; and
+      -- map_prop.c ApplyToModel passes no MODEL_LIGHT_ENABLE_FLAGS), so the
+      -- night is however dark its own lights make it (Gen4Shade)
+      lights = (material and material.polyAttr) and (material.polyAttr % 16) or nil,
     }
   end
 
@@ -300,11 +305,8 @@ function Gen4ModelPack.unpack(shape)
   local index = shape.indices
   for i = 0, shape.triangleCount - 1 do
     local at = i * 6
-    local function idx(k)
-      local a, b = index:byte(at + k + 1, at + k + 2)
-      return a and (a + b * 256) or nil
-    end
-    triangles[i + 1] = { idx(0) + 1, idx(2) + 1, idx(4) + 1 }
+    local a, b, c, d, e, f = index:byte(at + 1, at + 6)
+    triangles[i + 1] = { a + b * 256 + 1, c + d * 256 + 1, e + f * 256 + 1 }
   end
 
   return vertices, triangles

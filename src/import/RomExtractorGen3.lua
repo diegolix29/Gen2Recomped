@@ -205,8 +205,20 @@ function RomExtractorGen3:tick(name, current, total)
   end
 end
 
+-- constants.lua IS WRITTEN LAST, ONCE.  Some 150 stages add a field to the one
+-- constants table and each used to write the whole of it again -- 2 MB of text,
+-- 150 times, a third of a Gen 3 import's Lua time -- and every copy but the last
+-- was overwritten without ever being read: nothing in an import reads
+-- data/generated back, and a run that dies leaves no marker either way.  The
+-- table stays alive for the whole run regardless.  Only run() defers (a tool
+-- calling one stage still gets its file), and it writes the last value it was
+-- given.
 function RomExtractorGen3:write(name, value)
   if self.checkpoint and self.stageName=='Gen3 constants' then self.checkpoint('Writing '..name..'.lua') end
+  if name == "constants" and self._deferConstants then
+    self._pendingConstants = value
+    return
+  end
   LuaWriter.write("data/generated/" .. name .. ".lua", value)
 end
 
@@ -404,9 +416,11 @@ function RomExtractorGen3:readText(off, maxBytes, spacers)
   local out = {}
   local i = 0
   local limit = maxBytes or 1024
+  local data = self.rom.data
+  local stringByte = string.byte
   while i < limit do
-    local ok, b = pcall(self.rom.u8, self.rom, off + i)
-    if not ok then return nil end
+    local b = stringByte(data, off + i + 1)   -- nil past the end of the ROM
+    if not b then return nil end
     if b == EOS then
       return table.concat(out), i + 1
     elseif b == NEWLINE then
@@ -10146,10 +10160,12 @@ function RomExtractorGen3:extractTrainerMoney()
   end
 
   local found, at = nil, 0
+  local romData, stringByte = rom.data, string.byte
   while at < rom.size - GEN3_MONEY_MIN * GEN3_MONEY_STRIDE do
     -- the cheap test first: a row's last two bytes are zero and its class is
     -- one a trainer has
-    if rom:u8(at + 2) == 0 and rom:u8(at + 3) == 0 and used[rom:u8(at)] then
+    if stringByte(romData, at + 3) == 0 and stringByte(romData, at + 4) == 0
+       and used[stringByte(romData, at + 1)] then
       local rows, fallback = runAt(at)
       if #rows >= GEN3_MONEY_MIN and fallback then
         if found then
@@ -11350,11 +11366,30 @@ function RomExtractorGen3:multichoiceTable()
     end
     return good >= 1 and good >= count - 1
   end
+  -- FIRERED'S TABLE HAS A HOLE: MULTICHOICE_48 (three options whose labels
+  -- this charmap can't read as menu text), and a run that stopped there lost
+  -- lists 49..64 -- the Direct Corner's TRADE / COLOSSEUM (50), its JOIN /
+  -- LEAD (63), the Seagallop ferries.  A record of the table's shape (a
+  -- pointer, a count in range) is carried when a real record follows it.
+  local function empty(at2)
+    if at2 % 4 ~= 0 or at2 + M.STRIDE > rom.size then return false end
+    local count = rom:u8(at2 + M.COUNT)
+    if count == 0 then return true end
+    return count <= M.MAX_OPTIONS and rom:pointer(at2) ~= nil
+  end
+  local function runFrom(at2)
+    local n = 0
+    while true do
+      if record(at2 + n * M.STRIDE) then n = n + 1
+      elseif empty(at2 + n * M.STRIDE) and record(at2 + (n + 1) * M.STRIDE) then n = n + 1
+      else break end
+    end
+    return n
+  end
   local best, bestN, at = nil, 0, 0
   while at <= rom.size - M.STRIDE do
     if record(at) then
-      local n = 0
-      while record(at + n * M.STRIDE) do n = n + 1 end
+      local n = runFrom(at)
       if n > bestN then best, bestN = at, n end
       at = at + math.max(n, 1) * M.STRIDE
     else
@@ -11379,6 +11414,7 @@ function RomExtractorGen3:extractMultichoice()
     local o = at + i * M.STRIDE
     local list, n = rom:pointer(o), rom:u8(o + M.COUNT)
     local row = {}
+    if not list then n = 0 end
     for k = 0, n - 1 do
       local text = rom:pointer(list + k * M.ACTION)
       row[k + 1] = (text and self:multichoiceText(text)) or ""
@@ -12563,6 +12599,7 @@ function RomExtractorGen3:extractText()
   local size = self.rom.size
   local off = 0
   local map = self:charmap()
+  local romData, stringByte = self.rom.data, string.byte
   while off < size - 4 do
     -- Cheap rejection first -- the scan touches every byte of a 16 MiB
     -- cartridge.  A string may open with a CHARACTER, with a PLACEHOLDER
@@ -12570,7 +12607,7 @@ function RomExtractorGen3:extractText()
     -- and only leading spaces and line breaks are ruled out.  Requiring a
     -- character lost every line that starts on the player's name, which is a
     -- lot of them.
-    local b = self.rom:u8(off)
+    local b = stringByte(romData, off + 1)
     if (map[b] == nil and b ~= TEXT_PLACEHOLDER and b ~= TEXT_EXTENDED)
        or b == 0x00 then
       off = off + 1
@@ -21514,20 +21551,23 @@ local function lz77Length(rom, off)
   if size < 32 or size > 0x20000 then return nil end
   local limit = rom.size or 0
   local p, out = off + 4, 0
+  local data, stringByte, floor = rom.data, string.byte, math.floor
   while out < size do
     if p >= limit then return nil end
-    local flags = rom:u8(p)
+    local flags = stringByte(data, p + 1)
     p = p + 1
     for bit = 7, 0, -1 do
       if out >= size then break end
-      if math.floor(flags / 2 ^ bit) % 2 == 1 then
+      -- one mask a step instead of a power and a floor: flags' bit `bit`
+      if flags >= 128 then
         if p + 1 >= limit then return nil end
-        out = out + math.floor(rom:u8(p) / 16) + 3
+        out = out + floor(stringByte(data, p + 1) / 16) + 3
         p = p + 2
       else
         p = p + 1
         out = out + 1
       end
+      flags = (flags * 2) % 256
     end
   end
   return p - off, size
@@ -32596,6 +32636,16 @@ function RomExtractorGen3:extractBattleWindows()
   end
 
   local function isArray(o)
+    -- The first record's four distinctive bytes, before seven tables of seven
+    -- fields each are built for every offset of the cartridge just to read them
+    local romData = rom.data
+    local l0, t0, w0, h0 = string.byte(romData, o + 2, o + 5)
+    if isFRLG then
+      if not (l0 == 1 and t0 == 15 and w0 == 28 and h0 == 4) then return nil end
+    elseif not (l0 == mw.left and t0 == mw.top
+                 and w0 == mw.width and h0 == mw.height) then
+      return nil
+    end
     local r = {}
     for i = 0, 6 do
       r[i] = rec(o + i * 8)
@@ -33184,17 +33234,18 @@ function RomExtractorGen3:extractMonAnims()
 
   -- shape: a hole of exactly `holeLen` zeros at `hole`, values inside the
   -- animation table's range, plenty of variety, and NOT zeros everywhere
+  local romData, stringByte = rom.data, string.byte
   local function looksLikeIds(at)
     if at < 0 or at + count * 2 >= rom.size then return false end
     for i = hole, hole + holeLen - 1 do
-      if rom:u8(at + i) ~= 0 then return false end
+      if stringByte(romData, at + i + 1) ~= 0 then return false end
     end
     -- the byte on each side of the hole has to be a real animation, or this
     -- is just a stretch of padding
-    if hole > 0 and rom:u8(at + hole - 1) == 0 then return false end
+    if hole > 0 and stringByte(romData, at + hole) == 0 then return false end
     local seen, zeros = {}, 0
     for i = 0, count - 1 do
-      local b = rom:u8(at + i)
+      local b = stringByte(romData, at + i + 1)
       if b > maxAnim then return false end
       if b == 0 then zeros = zeros + 1 end
       seen[b] = true
@@ -34938,9 +34989,13 @@ function RomExtractorGen3:extractContestMoves()
   local rom = self.rom
 
   -- ---- the effects: appeal and jam, in tenths ----------------------------
+  local romData, stringByte = rom.data, string.byte
   local function effectRow(o)
-    local kind, appeal, jam, pad =
-      rom:u8(o), rom:u8(o + 1), rom:u8(o + 2), rom:u8(o + 3)
+    local kind, appeal, jam, pad = stringByte(romData, o + 1, o + 4)
+    if not pad then   -- off the end of the cartridge: raise what a read raises
+      kind, appeal, jam, pad =
+        rom:u8(o), rom:u8(o + 1), rom:u8(o + 2), rom:u8(o + 3)
+    end
     if kind > 8 or pad ~= 0 then return nil end
     if appeal > 80 or jam > 80 then return nil end
     if appeal % 10 ~= 0 or jam % 10 ~= 0 then return nil end
@@ -58890,6 +58945,7 @@ function RomExtractorGen3:extractTradeScene()
 end
 
 function RomExtractorGen3:run()
+  self._deferConstants = true
   for _, stage in ipairs(RomExtractorGen3.DATA_STAGES) do
     self[stage](self)
   end
@@ -58898,6 +58954,11 @@ function RomExtractorGen3:run()
     if not ok then
       Logger.warn("gen3 %s failed: %s", stage, tostring(err))
     end
+  end
+  self._deferConstants = false
+  if self._pendingConstants then
+    self:write("constants", self._pendingConstants)
+    self._pendingConstants = nil
   end
   if self.progress then
     self.progress(STAGE_COUNT, STAGE_COUNT, "Ready", 1, 1)

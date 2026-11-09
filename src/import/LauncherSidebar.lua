@@ -35,6 +35,9 @@ Sidebar.SECTIONS = {
   { id = "news",     label = "News" },
   { id = "games",    label = "Games" },
   { id = "walker",   label = "Monster Walker" },
+  -- the Link Hub in the launcher, HOST WITH FRIENDS / JOIN FRIEND
+  -- (src/ui/online/LauncherHubScreen.lua, src/online/LauncherHub.lua)
+  { id = "hub",      label = "Online Hub" },
   { id = "mods",     label = "Mods" },
   { id = "tools",    label = "Tools" },
   { id = "settings", label = "Settings" },
@@ -53,13 +56,19 @@ Sidebar.CONSOLES = {
 -- The game TYPE a version belongs to. Every registered game is a Pokemon game;
 -- the two community hacks are kept apart so the official games read as a set.
 Sidebar.HACKS = { prism = true, polishedcrystal = true }
+-- Zelda sits right after Pokemon, so a console that has both (the GBA) shows
+-- the Zelda card next to the Pokemon one. A version names its own series and
+-- console (`info.series`, `info.console`); the generation is only the
+-- fallback for the Pokemon registry, which predates those fields.
 Sidebar.SERIES = {
   { id = "pokemon", name = "Pokemon" },
+  { id = "zelda",   name = "Zelda" },
   { id = "hacks",   name = "Pokemon ROM hacks" },
 }
 
 function Sidebar.consoleOf(version)
   local info = GameVersion.info(version)
+  if info and info.console then return info.console end
   local gen = info and tonumber(info.generation) or 1
   if gen >= 4 then return "nds" end
   if gen == 3 then return "gba" end
@@ -68,6 +77,8 @@ function Sidebar.consoleOf(version)
 end
 
 function Sidebar.seriesOf(version)
+  local info = GameVersion.info(version)
+  if info and info.series then return info.series end
   return Sidebar.HACKS[version] and "hacks" or "pokemon"
 end
 
@@ -85,6 +96,7 @@ end
 -- a save slot's summary line, as the SAVE SLOT panel words it
 local function metaText(meta)
   if type(meta) ~= "table" then return tostring(meta or "") end
+  if meta.line then return tostring(meta.line) end   -- Zelda slots
   return Strings("%d badges - %s - %d caught", meta.badges or 0, meta.timeText or "0:00", meta.dexCount or 0)
 end
 Sidebar.metaText = metaText
@@ -361,6 +373,9 @@ function Sidebar.install(RI)
     -- an interrupted import belongs on its game page, where its recovery is
     if self.interruptedImport and GameVersion.VERSIONS[self.tab] then self:_sbOpenGame(self.tab) end
     self:_sbEnsureNews()
+    -- the in-launcher Link Hub: "Start hub when launcher opens", and games
+    -- launched from here pointed at it (src/online/LauncherHub.lua)
+    pcall(function() require("src.online.LauncherHub").launcherOpened() end)
     return self
   end
 
@@ -381,6 +396,14 @@ function Sidebar.install(RI)
     if section == "tools" then self.toolFlow = nil end
     if section == "walker" then
       self.walker = self.walker or require("src.ui.PokewalkerScreen").new(self)
+    end
+    if section == "hub" then
+      local okH, scr = pcall(function()
+        return self.hubScreen or require("src.ui.online.LauncherHubScreen").new(self)
+      end)
+      if okH then self.hubScreen = scr; scr:go(scr.page or "home") end
+    elseif self.hubScreen then
+      pcall(self.hubScreen.close, self.hubScreen)
     end
     if section == "mods" and self.tab ~= "mods" and self.tab ~= "find" then self:_selectTab("mods") end
     if section == "news" then self:_sbEnsureNews() end
@@ -449,6 +472,14 @@ function Sidebar.install(RI)
       g.ellipse("fill", cx + r * 0.38, cy - r * 0.28, r * 0.24, r * 0.36)
       g.circle("fill", cx - r * 0.38, cy - r * 0.22, r * 0.1)
       g.circle("fill", cx + r * 0.38, cy - r * 0.78, r * 0.1)
+    elseif kind == "hub" then
+      -- a hub with three spokes
+      g.circle("line", cx, cy, r * 0.32)
+      for i = 0, 2 do
+        local a = -math.pi / 2 + i * 2 * math.pi / 3
+        g.line(cx + math.cos(a) * r * 0.32, cy + math.sin(a) * r * 0.32, cx + math.cos(a) * r * 0.8, cy + math.sin(a) * r * 0.8)
+        g.circle("fill", cx + math.cos(a) * r * 0.85, cy + math.sin(a) * r * 0.85, r * 0.17)
+      end
     elseif kind == "mods" then
       local q = r * 0.85
       g.rectangle("line", cx - q, cy - q, q * 0.9, q * 0.9); g.rectangle("line", cx + q * 0.1, cy - q, q * 0.9, q * 0.9)
@@ -974,6 +1005,11 @@ function Sidebar.install(RI)
   function RI:_sbToolUsable(tool, version)
     local info = GameVersion.info(version)
     if not info then return false, "unknown game" end
+    -- Pokemon tools on a Zelda cartridge: there is nothing for them to open
+    if info.engine == "zelda" and (tool.id == "map" or tool.id == "save" or tool.id == "translate"
+        or tool.id == "saveImport" or tool.id == "saveExport") then
+      return false, Strings("not for this game")
+    end
     if tool.needsReady or tool.id == "translate" or tool.id == "saveExport" then
       if not self.ready[version] then return false, Strings("import this game first") end
     end
@@ -1043,7 +1079,7 @@ function Sidebar.install(RI)
   function RI:_sbScrapeAll()
     local arts, descs, tried = 0, 0, 0
     for _, v in ipairs(GameVersion.ORDER or {}) do
-      if self.ready[v] and Sidebar.seriesOf(v) == "pokemon" then
+      if self.ready[v] and Sidebar.seriesOf(v) ~= "hacks" then
         tried = tried + 1
         local a, d = self:_sbScrape(v)
         if a then arts = arts + 1 end
@@ -1411,7 +1447,7 @@ function Sidebar.install(RI)
   -- the existing panels: the game page, the mod list, Find Mods)
   function RI:_sbOwns()
     if self.section == "news" or self.section == "tools" or self.section == "settings"
-       or self.section == "walker" then return true end
+       or self.section == "walker" or self.section == "hub" then return true end
     if self.section == "games" and self.gamesView ~= "game" then return true end
     return false
   end
@@ -1428,6 +1464,11 @@ function Sidebar.install(RI)
         body = self.detailFont, small = self.hintFont })
     end
     if self.section == "tools" then return self:_sbTools(x, y, w, h) end
+    if self.section == "hub" and self.hubScreen then
+      return self.hubScreen:draw(x, y, w, h, {
+        title = self.gameNameFont, head = self.stateFont or self.detailFont,
+        body = self.detailFont, small = self.hintFont, palette = PAL(), s = self._s or 1 })
+    end
     return 0
   end
 
@@ -1441,6 +1482,7 @@ function Sidebar.install(RI)
     end
     if inside(sb.back, x, y) then self:_sbBack(); return true end
     if self.section == "walker" and self.walker and self.walker:mousepressed(x, y) then return true end
+    if self.section == "hub" and self.hubScreen and self.hubScreen:mousepressed(x, y) then return true end
     if inside(sb.fav, x, y) then
       local opts = options(self)
       Sidebar.toggleFavorite(opts, sb.fav.version); saveOptions(self, opts)
@@ -1555,6 +1597,7 @@ function Sidebar.install(RI)
 
   local origText = RI.textinput
   RI.textinput = function(self, text, ...)
+    if self.sidebarMode and self.section == "hub" and self.hubScreen and self.hubScreen:textinput(text) then return end
     if self.sidebarMode and self._modSearchFocus then
       local q = (self.modSearch or "") .. text
       if #q <= MAX_SEARCH then self.modSearch = q end
@@ -1567,6 +1610,7 @@ function Sidebar.install(RI)
   local origKey = RI.keypressed
   RI.keypressed = function(self, key, ...)
     if self.sidebarMode and self.section == "walker" and self.walker and self.walker:keypressed(key) then return end
+    if self.sidebarMode and self.section == "hub" and self.hubScreen and self.hubScreen:keypressed(key) then return end
     if self.sidebarMode and self._modSearchFocus then
       if key == "backspace" then
         local q = self.modSearch or ""
@@ -1603,13 +1647,19 @@ function Sidebar.install(RI)
     local mode = opts.launcherBackground or "game"
     if mode == "off" then return nil end
     if mode == "video" then return "video" end
+    -- the backdrop boots a POKEMON game's main menu; a Zelda one has none
+    if GameVersion.isZelda(mode) then return nil end
     if GameVersion.VERSIONS[mode] then return self.ready[mode] and mode or nil end
     if mode == "game" and self.section == "games" and self.gamesView == "game"
-       and self.ready[self.tab] then
+       and self.ready[self.tab] and not GameVersion.isZelda(self.tab) then
       return self.tab
     end
-    for _, r in ipairs(Sidebar.recent(opts)) do if self.ready[r.v] then return r.v end end
-    return self:_sbLastSaved()
+    for _, r in ipairs(Sidebar.recent(opts)) do
+      if self.ready[r.v] and not GameVersion.isZelda(r.v) then return r.v end
+    end
+    local last = self:_sbLastSaved()
+    if last and GameVersion.isZelda(last) then return nil end
+    return last
   end
 
   function RI:_sbMusicOn()
@@ -1657,13 +1707,19 @@ function Sidebar.install(RI)
       end
     end
     require('src.cloud.Task').reap()
+    -- the Link Hub thread's status, and the Online Hub page when it is up
+    if self.hubScreen and self.section == "hub" then pcall(self.hubScreen.update, self.hubScreen, dt)
+    elseif package.loaded["src.online.LauncherHub"] then pcall(package.loaded["src.online.LauncherHub"].poll) end
     if self._cloudFlow then
       local ok,why=pcall(self._sbCloudPoll,self)
       if not ok then self:_sbCloudCancel();self.settingsNotice=Strings('Sign-in failed: ')..tostring(why) end
     end
     if self.sidebarMode and not self._handedOff then
-      -- held still while Settings is open (Backdrop.setPaused)
-      Backdrop.setPaused(self.section == "settings" or self.settingsOpen == true)
+      -- held still while Settings is open (Backdrop.setPaused), and while
+      -- the Monster Walker is: its full-screen app over a ticking game was
+      -- laggy on Android, and the walker never shows the game anyway
+      Backdrop.setPaused(self.section == "settings" or self.settingsOpen == true
+        or self.section == "walker")
       Backdrop.request(self:_sbBackdropWant(), self:_sbMusicOn())
       pcall(Backdrop.update, dt, self.workState == "working")
     elseif Backdrop.current() then
@@ -1696,10 +1752,17 @@ function Sidebar.install(RI)
   -- the top bar, drawn last so the footer does not sit over it
   local origDraw = RI.draw
   RI.draw = function(self, ...)
+    -- the gamepad pointer waits, or this page would be painted over it
+    local onSettings = self.sidebarMode and self.section == "settings"
+      and self.settingsOpen and self._sbContentRect
+    self._padCursorDeferred = onSettings and true or false
     local r = origDraw(self, ...)
-    if not (self.sidebarMode and self.section == "settings" and self.settingsOpen) then return r end
+    self._padCursorDeferred = false
     local area = self._sbContentRect
-    if not area then return r end
+    if not (onSettings and area) then
+      if onSettings then self:_drawPadCursor() end
+      return r
+    end
     local s, g = self._s or 1, love.graphics
     local pad = 16 * s
     local dx, dy, dw, dh = area.x, area.y, area.w, area.h
@@ -1725,6 +1788,7 @@ function Sidebar.install(RI)
       end
     end
     self._settingsMax = math.max(0, natural + 2 * pad - dh)
+    self:_drawPadCursor()
     return r
   end
 
@@ -1779,7 +1843,8 @@ function Sidebar.install(RI)
     -- only games that are imported and can actually run their menu
     for _, v in ipairs(GameVersion.ORDER) do
       local info = GameVersion.info(v)
-      if self.ready[v] == true and info and info.importable ~= false and not Backdrop.failedFor(v) then
+      if self.ready[v] == true and info and info.importable ~= false and info.engine ~= "zelda"
+         and not Backdrop.failedFor(v) then
         bgValues[#bgValues + 1] = v; bgLabels[v] = nameOf(v)
       end
     end

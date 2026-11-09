@@ -153,10 +153,21 @@ jobs:
       - uses: actions/checkout@v7      
       - name: Install zip utility
         run: choco install zip -y        
+      # Xbox Device Portal refuses an unsigned MSIX.  With the signing secret
+      # set, the package is signed with that PFX (a stable certificate across
+      # releases); without it, build_xbox_uwp.sh signs with a throwaway
+      # self-signed one, which Dev Mode accepts since it never checks trust.
       - name: Build Xbox UWP
         shell: bash
+        env:
+          XBOX_UWP_SIGNING_CERTIFICATE: ${{ secrets.XBOX_UWP_SIGNING_CERTIFICATE }}
+          XBOX_UWP_SIGNING_PASSWORD: ${{ secrets.XBOX_UWP_SIGNING_PASSWORD }}
         run: |
-          chmod +x scripts/*.sh          
+          chmod +x scripts/*.sh
+          if [ -n "${XBOX_UWP_SIGNING_CERTIFICATE:-}" ]; then
+            export XBOX_UWP_SIGNING_CERT_PATH="$RUNNER_TEMP/xbox-uwp-signing.pfx"
+            printf '%s' "$XBOX_UWP_SIGNING_CERTIFICATE" | tr -d '[:space:]' | base64 -d > "$XBOX_UWP_SIGNING_CERT_PATH"
+          fi
           bash scripts/pack_love.sh --output game.love --version "${{ needs.prep.outputs.version }}"          
           bash scripts/build_xbox_uwp.sh --release --version "${{ needs.prep.outputs.version }}" --game-love game.love
       - uses: actions/upload-artifact@v7

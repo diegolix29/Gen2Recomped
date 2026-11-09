@@ -508,6 +508,20 @@ local function buildRows(game)
       activate = function(g)
         require("src.ui.Screens").push(g, "HotkeyBindingsMenu")
       end },
+    -- ONLINE SETTINGS (docs/online-design.md WS10): port, router, relay,
+    -- hub, address, world size, name.  One row here reaches every
+    -- generation, because Gen3Options and Gen4Options (Gen 4 and 5) append
+    -- these same rows.  The value is what this device can do.
+    { id = "online", label = Strings("ONLINE"),
+      value = function()
+        local ok, info = pcall(function() return require("src.core.Platform").online() end)
+        if not ok or not info then return "" end
+        if info.available then return Strings("SETTINGS") end
+        return info.relayOnly and Strings("RELAY ONLY") or Strings("OFF")
+      end,
+      activate = function(g)
+        require("src.ui.online.OnlineSettings").open(g)
+      end },
     -- permanent on-screen pad toggle (#327); layout editing stays in the
     -- launcher.  Hidden where the overlay never appears (desktop without
     -- POKEPORT_TOUCH), so the row costs a non-mobile install nothing.
@@ -751,6 +765,26 @@ local function buildRows(game)
           (o.gen4StartMenuStyle == "bottom") and "main" or "bottom"
         return true
       end }
+  end
+
+  -- TV / CAST: what a second display -- the Thor's lower panel, or a TV the
+  -- phone is casting to -- is for: MIRROR, BOTTOM or TOP (src/ui/CastDisplay
+  -- .lua).  Every generation, because a cast carries the whole app; only
+  -- where an Android host that reads the choice is running, so a desktop or
+  -- an older APK gains no row that does nothing.  Stored beside the host in
+  -- second_display/, not in options.lua, so it never follows a save onto
+  -- another device -- hence `false` (nothing for writeOptions to flush).
+  do
+    local okCast, CastDisplay = pcall(require, "src.ui.CastDisplay")
+    if okCast and CastDisplay.supported() then
+      rows[#rows + 1] = { id = "castDisplay",
+        label = Strings(CastDisplay.ROW_LABEL),
+        value = function() return Strings(CastDisplay.label()) end,
+        step = function(_, dir)
+          CastDisplay.step(dir)
+          return false
+        end }
+    end
   end
 
   local pipelineRows = Pipelines.rows(game)

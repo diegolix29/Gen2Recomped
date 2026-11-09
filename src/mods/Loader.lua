@@ -1191,7 +1191,7 @@ function Loader:load(data)
     local modsOpt = options.mods or {}
     for id, mod in pairs(self.mods) do
       if not self.disabled[id] and modsOpt[id] == nil
-          and mod.manifest.experimental then
+          and (mod.manifest.experimental or mod.manifest.defaultOff) then
         self.disabled[id] = true
       end
     end

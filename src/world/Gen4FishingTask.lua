@@ -303,6 +303,10 @@ function Gen4FishingTask:finish()
   if stack.states and stack.states[#stack.states] == self then stack:pop() end
   local save = game.save
   save.gen4Records = save.gen4Records or {}
+  -- Platinum's What's Fishing segment (fishing.c; src/script/PtTvRecords.lua)
+  if self.caught or self.gotAway then
+    pcall(function() require('src.script.PtTvRecords').fishing(save, self.rod, self.caught and self.enc or nil) end)
+  end
   if self.caught then
     -- RECORD_CAUGHT_FISH / GAME_STAT_FISH_LANDED
     save.gen4Records.fishLanded = (save.gen4Records.fishLanded or 0) + 1
@@ -311,6 +315,9 @@ function Gen4FishingTask:finish()
     local battle = BattleState.newWild(game, enc.species, enc.level,
       { hooked = true, nature = enc.nature, gender = enc.gender })
     if ow:inSafariGame() then battle:makeSafari(save.safari) end
+    if enc.onePerfectIV and enc.gender == nil and battle.enemy and battle.enemy.mon then
+      require("src.world.Gen45EncounterRate").onePerfectIV(game.data, battle.enemy.mon)
+    end
     battle.onFinish = function(result) ow:afterBattle(result, battle) end
     ow:pushBattle(battle)
   elseif self.gotAway then

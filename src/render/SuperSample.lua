@@ -50,7 +50,7 @@ function SS.singleScreen(game)
   return SecondScreen.stowed(game) and true or false
 end
 
-function SS.draw(game, owner, fn)
+function SS.draw(game, owner, fn, surfaceW, surfaceH)
   if SS.active then return fn() end
   local Renderer = require("src.render.Renderer")
   local renderer = (game and game.renderer) or Renderer
@@ -59,14 +59,25 @@ function SS.draw(game, owner, fn)
   local g = love.graphics
   -- the owner's own surface (it is the one asking for this), else the
   -- renderer's
-  local w, h
-  if owner and owner.uiSize then w, h = owner:uiSize() end
+  --
+  -- ...UNLESS THE CALLER SAYS WHICH SURFACE THIS FRAME IS IN. Game:draw passes
+  -- the stack's top as the owner, and a battle holds a bigger surface than the
+  -- DS's 256x192 that a text box or the summary over it asks for. Sizing this
+  -- canvas by the box cropped the battle to the box's 256x192 and handed that
+  -- to the renderer as the whole UI, which stretched it over the window: the
+  -- "zoom on the player's Pokemon" of a move learn (the YES/NO, with no uiSize
+  -- of its own, was the one frame that came out right).
+  local w, h = surfaceW, surfaceH
+  if not (w and h) and owner and owner.uiSize then w, h = owner:uiSize() end
   if not (w and h) then w, h = renderer:uiSize() end
   local key = w .. "x" .. h .. "x" .. R
   local canvas = SS.canvas
   if not canvas or SS.key ~= key then
     if canvas and canvas.release then canvas:release() end
-    canvas = g.newCanvas(w * R, h * R)
+    -- dpiscale 1: R already IS the window's pixels per screen pixel (from
+    -- pixelSize); a canvas left at the window's density multiplied that
+    -- again -- 3072x2304 (27 MB, nine times the fill) on a 3x phone
+    canvas = g.newCanvas(w * R, h * R, { dpiscale = 1 })
     canvas:setFilter("linear", "linear")
     SS.canvas, SS.key = canvas, key
   end

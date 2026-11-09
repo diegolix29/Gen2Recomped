@@ -63,10 +63,14 @@ local resumeRetry -- { song, wait, left } while a resume re-cue is still owed
 -- player's volume, which `setplayervolume` sets and which outlives songs
 -- (NNS_SndPlayerSetPlayerVolume). Both multiply the option volume.
 local dsLevel, dsPlayer, dsFade = 1, 1, nil
+-- THE BGM HANDLE'S OWN VOLUME (GF_SndHandleMoveVolume(0, v, frames)): HGSS's
+-- soundplates dip the field music under an ambient sound and lift it back
+-- (src/world/HgssSoundplates.lua); 0..1, ramped in Music.update
+local handleLevel, handleRamp = 1, nil
 
 local function applyVolume(src)
   if not src then return end
-  local vol = VOLUME * volumeScale * dsLevel * dsPlayer
+  local vol = VOLUME * volumeScale * dsLevel * dsPlayer * handleLevel
   if cryDuck then vol = vol * cryDuck.scale end
   if Runtime.wantsHook("music.volume") then
     local ctx = {
@@ -388,6 +392,7 @@ function Music.stop()
   state.current, state.source, state.loopSource, state.fade = nil, nil, nil, nil
   state.chip = false
   state.pendingRestore = nil
+  state.onceResume = nil
   -- An explicit stop outranks a pending resume re-cue: whoever called this
   -- wants silence, and the retry in Music.update fires on a nil state.current
   resumeRetry = nil
@@ -514,13 +519,17 @@ end
 
 -- one-shot jingle (PkmnHealed, Jigglypuff's song): the map theme
 -- resumes when it ends, via update()
-function Music.playOnce(data, song)
+-- `resume` (optional): the song to come back to instead of the map theme --
+-- a DS PlayFanfare pauses whatever BGM is playing, a scripted TempBGM
+-- included, and the fanfare's end resumes THAT (Gen4Commands.g4_fanfare)
+function Music.playOnce(data, song, resume)
   if not songDef(data, song) then return false end
   Music.play(data, song, false, { reason = "once" })
   -- play() can no-op (hook silence, failed def); only arm restore when
   -- the jingle actually became current
   if state.current ~= song then return false end
   state.pendingRestore = true
+  state.onceResume = (resume ~= nil and resume ~= song) and { once = song, song = resume } or nil
   return true
 end
 
@@ -538,7 +547,31 @@ function Music.oneShotPlaying()
   return state.pendingRestore == true
 end
 
+-- is the current song still sounding? (SndRadio_CountPlayingSeq: the
+-- Pokegear radio waits on its one-shot jingle.) An intro with its loop body
+-- still queued counts as sounding.
+function Music.sounding()
+  if not state.current then return false end
+  if state.loopSource then return true end
+  if chipAwaitingFirstBuffer() then return true end
+  local src = state.source
+  if not src then return false end
+  local ok, playing = pcall(src.isPlaying, src)
+  return ok and playing == true
+end
+
 function Music.restoreMap(data)
+  -- a jingle that was asked to come back to another song (playOnce's
+  -- `resume`), and is still the one sounding, hands back to that song
+  local back = state.onceResume
+  state.onceResume = nil
+  if back and state.pendingRestore and state.current == back.once
+     and songDef(data, back.song) then
+    state.current = nil
+    state.pendingRestore = nil
+    Music.play(data, back.song, nil, { reason = "resume" })
+    return
+  end
   state.current = nil
   state.pendingRestore = nil
   local play = effectiveMapSong(data, state.mapSong)
@@ -557,6 +590,17 @@ function Music.dsFade(to, frames, from)
   applyVolume(state.loopSource)
 end
 function Music.dsFading() return dsFade ~= nil end
+-- GF_SndHandleMoveVolume on the BGM handle: to `to` (0..1) over `frames`
+-- 60 Hz frames (the cartridge counts 30 Hz field frames; callers double)
+function Music.moveHandleVolume(to, frames)
+  to = math.max(0, math.min(1, tonumber(to) or 1))
+  frames = math.max(0, math.floor(tonumber(frames) or 0))
+  if frames == 0 then handleLevel, handleRamp = to, nil
+  else handleRamp = { from = handleLevel, to = to, frames = frames, left = frames } end
+  applyVolume(state.source)
+  applyVolume(state.loopSource)
+end
+function Music.handleLevel() return handleLevel end
 function Music.setPlayerLevel(level)
   dsPlayer = math.max(0, math.min(1, tonumber(level) or 1))
   applyVolume(state.source)
@@ -714,6 +758,13 @@ function Music.update(data)
   -- distance / indoor muffling mods re-apply volume every frame while
   -- subscribed; otherwise applyVolume only runs on song/option changes
   if Runtime.wantsHook("music.volume") and not state.fade then
+    applyVolume(state.source)
+    applyVolume(state.loopSource)
+  end
+  if handleRamp then
+    handleRamp.left = handleRamp.left - 1
+    if handleRamp.left <= 0 then handleLevel, handleRamp = handleRamp.to, nil
+    else handleLevel = handleRamp.to + (handleRamp.from - handleRamp.to) * handleRamp.left / handleRamp.frames end
     applyVolume(state.source)
     applyVolume(state.loopSource)
   end

@@ -107,8 +107,39 @@ local MON_ICON_FPS = 4
 
 -- seed: any stable per-instance value (e.g. an NPC's `id`) used to resolve
 -- RED++'s per-instance "random" OBP sentinel (PaletteFX.spriteObp)
+-- A BLACK / WHITE SHEET FROM A CACHE IMPORTED BEFORE Gen5Field.facingsFor HAD IT
+-- RIGHT: `right = { 6, 6, 6 }` on 7 to 11 frames, where frame 6 is really a west
+-- step (see there). Corrected on the def, so an existing install needs no
+-- re-import and every sprite made from the same def agrees.
+local function correctOldBwFacings(def)
+  local own = def.facings
+  local right = type(own) == "table" and own.right
+  if not (right and right[1] == 6 and right[2] == 6 and right[3] == 6) then return end
+  local frames = tonumber(def.frames) or 0
+  if frames == 8 then
+    def.facings = { up = own.up, down = own.down, left = own.left, right = { 6, 7, 7 } }
+  elseif frames >= 7 and frames < 12 then
+    def.facings = { up = own.up, down = own.down, left = { 4, 5, 6 }, right = { 4, 5, 6 },
+                    mirrorRight = true, mirrorStep = true }
+  end
+end
+
+-- A HEARTGOLD / SOULSILVER NURSE FROM A CACHE IMPORTED BEFORE THE IMPORTER
+-- KNEW HER SHEET (Gen4HgssFacings.BY_MEMBER): member 133, 17 textures, no
+-- facings, so the classic slots showed her back at rest. These are the frames
+-- the cartridge's `pokecenter_nurse` sequence gives a 17-texture sheet (the
+-- same table Platinum's nurse is imported with). No re-import needed.
+local function correctOldHgssNurse(def)
+  if def.facings or tonumber(def.frames) ~= 17 then return end
+  if def.source ~= "ROM:mmodel.narc[133]" then return end
+  def.facings = { up = { 0, 9, 11 }, down = { 12, 13, 15 }, left = { 16, 1, 3 }, right = { 4, 5, 7 } }
+  def.facingSource = "pokecenter_nurse (SpriteRenderer correctOldHgssNurse)"
+end
+
 function SpriteRenderer.new(spriteDef, seed)
   local self = setmetatable({}, SpriteRenderer)
+  correctOldBwFacings(spriteDef)
+  correctOldHgssNurse(spriteDef)
   self.def = spriteDef
   self.seed = seed
   local source = type(spriteDef.source) == "string" and spriteDef.source or ""
@@ -452,8 +483,10 @@ end
 -- So a def may carry its own answer.  `facings` is { stand, step, step } per
 -- side in the sheet's own frame numbers, written by the import from the
 -- cartridge's own frame-sequence tables (see src/import/Gen4Facings.lua).
--- Nothing is mirrored on this path: all four sides are drawn, and mirroring a
--- real east frame would put the bag on the wrong shoulder.
+-- Nothing is mirrored on this path for a sheet that draws all four sides, and
+-- mirroring a real east frame would put the bag on the wrong shoulder -- but a
+-- Black / White 7-frame sheet draws three, and says so (`mirrorRight`,
+-- `mirrorStep`: Gen5Field.facingsFor), which is the second value returned.
 --
 -- Exported so a second pipeline can ask the same question rather than
 -- re-deriving it, for the same reason STAND/WALK/WALK2 are.
@@ -462,19 +495,25 @@ function SpriteRenderer.facingFrames(def, facing, walkPhase, stepFlip)
   local cycle = own and (own[facing] or own.down)
   if type(cycle) ~= "table" or cycle[1] == nil then return nil end
   if def.fullCycle then return cycle[(tonumber(walkPhase) or 0)%#cycle+1] end
+  local mirror = own.mirrorRight and facing == "right" or false
   if def.walker and walkPhase == 1 then
-    if stepFlip then return cycle[3] or cycle[2] or cycle[1] end
-    return cycle[2] or cycle[1]
+    if stepFlip then
+      if own.mirrorStep and (facing == "up" or facing == "down") then
+        return cycle[2] or cycle[1], true
+      end
+      return cycle[3] or cycle[2] or cycle[1], mirror
+    end
+    return cycle[2] or cycle[1], mirror
   end
-  return cycle[1]
+  return cycle[1], mirror
 end
 
 function SpriteRenderer:poseFrame(facing, walkPhase, stepFlip)
   -- A sheet with the full nine alternates its two REAL step frames; the
   -- six-frame ones keep the Game Boy's mirror, which is all they can do.
-  -- ...unless the sheet said so itself.  Never flipped: see facingFrames.
-  local own = SpriteRenderer.facingFrames(self.def, facing, walkPhase, stepFlip)
-  if own then return own, false end
+  -- ...unless the sheet said so itself, flip included: see facingFrames.
+  local own, ownMirror = SpriteRenderer.facingFrames(self.def, facing, walkPhase, stepFlip)
+  if own then return own, ownMirror or false end
   local full = (tonumber(self.def.frames) or 0) >= FULL_WALK_FRAMES
   local stepping = self.def.walker and walkPhase == 1
   local frame
@@ -527,8 +566,13 @@ function SpriteRenderer:reflectionImage()
   -- opaque pixels in the first frame settles "is the art there at all"
   -- without another round of guessing at it.
   local opaque = nil
-  local okData, data = pcall(require("src.render.Assets").imageData,
-                             def and def.image or nil)
+  -- only while the probe still writes the line: past its cap this decoded
+  -- the sheet again and counted pixels for nothing, per reflecting sprite
+  local okData, data = false, nil
+  if require("src.core.Probe").wants("reflectsheet") then
+    okData, data = pcall(require("src.render.Assets").imageData,
+                         def and def.image or nil)
+  end
   if okData and data then
     local dw, dh = data:getDimensions()
     opaque = 0

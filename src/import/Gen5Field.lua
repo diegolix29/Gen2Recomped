@@ -168,7 +168,7 @@ end
 -- BUILDINGS. A WB chunk's third section places them: u32 count, then per
 -- building fx32 x, y, z, a u16 rotation (0 / 0x4000 / 0x8000 / 0xC000 --
 -- the four quarter turns, nothing else occurs in 2,320 placements) and a u16
--- whose high byte is the building's id. The id is not an index into one
+-- that is the building's id, big-endian (F.placements). The id is not an index into one
 -- archive: it names a building IN THE AREA'S PACK, /a/2/2/9 outdoors (52
 -- packs, "AB") and /a/2/3/0 indoors (64). A pack is a table of entries: the
 -- first half are each building's record, opening with its id, and the second
@@ -212,7 +212,11 @@ function F.placements(raw)
     -- floor spans z -250..-72, the pieces 120..232) and Striaton's gym a
     -- block away from its door; negated, both sit where the doors and walls
     -- say. The rotation is used as stored.
-    out[i + 1] = { model = raw:byte(o + 16), x = s32(o) / 4096, y = s32(o + 4) / 4096, z = -s32(o + 8) / 4096,
+    -- THE ID IS BIG-ENDIAN over bytes 14..15 (READ FROM CODE, ov21
+    -- 0x0218B974 / 0x0218BA04: `b[0xE] << 8 | b[0xF]`): 92 of Black's 2,584
+    -- placements name a record past 255 (byte 14 = 1), which byte 15 alone
+    -- turned into another building
+    out[i + 1] = { model = raw:byte(o + 15) * 256 + raw:byte(o + 16), x = s32(o) / 4096, y = s32(o + 4) / 4096, z = -s32(o + 8) / 4096,
                    rotY = rot / 65536 * 360, gen5 = true }
   end
   return out
@@ -281,6 +285,9 @@ function F.buildingPacks(rom, kind, save)
         models = models + 1
       end
     end
+    -- ...and the buildings' animations, out of the same records
+    -- (src/import/Gen5BuildingAnim.lua)
+    pcall(require("src.import.Gen5BuildingAnim").attach, set, packs:get(p), textures, tb, save, kind, p)
     out[p] = set
   end
   return out, models, shapes
@@ -290,13 +297,26 @@ end
 -- sheet, keyed SPRITE_G4_<member> as Platinum's are. The frame order was read
 -- off the sheets themselves: a 12-frame-plus sheet (the player's has 32) is
 -- three a direction -- stand, step, step -- up, down, left, right, the run
--- after; a 7-frame NPC is up, up-step, down, down-step, then three side views
--- (left, left-step, right); fewer than that stand still.
+-- after; fewer than that stand still.
+--
+-- AN 8-FRAME SHEET (the Pokemon) IS TWO A SIDE: up, down, left, right.
+--
+-- A 7-FRAME SHEET (65 of the people, and the 9-frame gym leaders with two poses
+-- after them) IS NOT 7 = 2+2+3 WITH A RIGHT FRAME. Frames 4, 5 and 6 are ALL
+-- THE WEST SIDE -- stand, step, the other step -- and the east side is those
+-- three mirrored; up and down have one step each, whose other foot is the same
+-- frame mirrored. Measured over the sheets: frame 6 matches frame 4 as drawn, not
+-- frame 4 mirrored, on every asymmetric one. Reported from play as trainers
+-- "walking backwards" -- frame 6 is a west frame, and Striaton's first trainer
+-- walks east. `mirrorRight` / `mirrorStep` are read by SpriteRenderer.facingFrames.
 function F.facingsFor(frames)
   if frames >= 12 then
     return { up = { 0, 1, 2 }, down = { 3, 4, 5 }, left = { 6, 7, 8 }, right = { 9, 10, 11 } }
+  elseif frames == 8 then
+    return { up = { 0, 1, 1 }, down = { 2, 3, 3 }, left = { 4, 5, 5 }, right = { 6, 7, 7 } }
   elseif frames >= 7 then
-    return { up = { 0, 1, 1 }, down = { 2, 3, 3 }, left = { 4, 5, 5 }, right = { 6, 6, 6 } }
+    return { up = { 0, 1, 1 }, down = { 2, 3, 3 }, left = { 4, 5, 6 }, right = { 4, 5, 6 },
+             mirrorRight = true, mirrorStep = true }
   end
   return nil
 end

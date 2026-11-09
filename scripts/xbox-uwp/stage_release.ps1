@@ -8,7 +8,12 @@ param(
     [string]$OutputRoot,
     [string]$BuildInfo,
     [string]$CertificatePath,
-    [string]$CertificatePassword
+    [string]$CertificatePassword,
+    # Sign with a throwaway self-signed certificate whose subject is the
+    # manifest publisher when no PFX is given. Xbox Device Portal refuses an
+    # unsigned MSIX, but Dev Mode does not need the certificate to be trusted,
+    # so any signature matching the publisher installs there.
+    [switch]$MakeCert
 )
 
 Set-StrictMode -Version Latest
@@ -44,6 +49,33 @@ function Get-SignTool {
         throw 'SignTool was not found in the Windows SDK.'
     }
     return $tool.FullName
+}
+
+$selfSignedUsed = $false
+if (-not $CertificatePath -and $MakeCert) {
+    $selfSignedUsed = $true
+    Add-Type -AssemblyName System.IO.Compression
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $probe = [System.IO.Compression.ZipFile]::OpenRead($package)
+    try {
+        $probeEntry = $probe.GetEntry('AppxManifest.xml')
+        if (-not $probeEntry) { throw 'AppxManifest.xml is missing from the MSIX.' }
+        $probeReader = [System.IO.StreamReader]::new($probeEntry.Open())
+        try { [xml]$probeManifest = $probeReader.ReadToEnd() } finally { $probeReader.Dispose() }
+    } finally {
+        $probe.Dispose()
+    }
+    $subject = $probeManifest.Package.Identity.Publisher
+    Write-Host "Creating a self-signed certificate for $subject"
+    $selfSigned = New-SelfSignedCertificate -Type Custom -Subject $subject `
+        -KeyUsage DigitalSignature -FriendlyName 'Gen2Recomped Xbox sideload' `
+        -CertStoreLocation 'Cert:\CurrentUser\My' `
+        -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3', '2.5.29.19={text}')
+    $CertificatePassword = [guid]::NewGuid().ToString('N')
+    $CertificatePath = Join-Path ([System.IO.Path]::GetTempPath()) 'gen2recomped-xbox-sideload.pfx'
+    $securePassword = ConvertTo-SecureString -String $CertificatePassword -Force -AsPlainText
+    Export-PfxCertificate -Cert $selfSigned -FilePath $CertificatePath -Password $securePassword | Out-Null
+    Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($selfSigned.Thumbprint)" -ErrorAction SilentlyContinue
 }
 
 $certificate = $null
@@ -82,8 +114,22 @@ if ($CertificatePath) {
     $signArguments += $package
     & $signTool @signArguments
     if ($LASTEXITCODE -ne 0) { throw "SignTool failed with exit code $LASTEXITCODE." }
-    & $signTool verify /pa $package
-    if ($LASTEXITCODE -ne 0) { throw "Signature verification failed with exit code $LASTEXITCODE." }
+    if ($selfSignedUsed) {
+        # A throwaway certificate never chains to a trusted root on the build
+        # machine, so `verify /pa` always fails on it; Xbox Dev Mode does not
+        # check trust. Confirm the package carries its signature instead.
+        $signed = [System.IO.Compression.ZipFile]::OpenRead($package)
+        try {
+            if (-not $signed.GetEntry('AppxSignature.p7x')) {
+                throw 'The MSIX has no AppxSignature.p7x after signing.'
+            }
+        } finally {
+            $signed.Dispose()
+        }
+    } else {
+        & $signTool verify /pa $package
+        if ($LASTEXITCODE -ne 0) { throw "Signature verification failed with exit code $LASTEXITCODE." }
+    }
 }
 
 New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null

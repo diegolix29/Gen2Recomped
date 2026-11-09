@@ -182,6 +182,18 @@ function Game:load()
   -- Discord Rich Presence: map name / battle status on the player's profile.
   -- Soft-fail: missing Discord / IPC errors must never block boot.
   pcall(function() require("src.core.DiscordPresence").init(self) end)
+  -- The online screens' platform gate (src/ui/online/OnlineGate.lua): a
+  -- device that cannot go online says so when LINK / a world / the GTS
+  -- opens, the Switch asks about homebrew risk once, Windows gets a one-time
+  -- firewall tip on the first host code.  Soft-fail like presence above.
+  pcall(function() require("src.ui.online.OnlineGate").install(self) end)
+  -- The GTS counters' channel (src/online/HubGts.lua): the world's GTS, else
+  -- the player's Link Hub.  Soft-fail too.
+  pcall(function() require("src.online.HubGts").install() end)
+  -- The launcher's Link Hub (src/online/LauncherHub.lua): this game uses it
+  -- when its own LINK HUB setting is empty, and a HOST / JOIN picked in the
+  -- launcher runs once the map is up.  Soft-fail too.
+  pcall(function() require("src.online.LauncherHub").installGame(self) end)
 
   -- boot into the title screen (engine/movie/title.asm); NEW GAME runs
   -- the Oak speech + naming, CONTINUE restores the save.  The headless
@@ -668,6 +680,11 @@ function Game:update(dt)
     while self.audioAccum >= step do
       self.audioAccum = self.audioAccum - step
       require("src.core.Music").update(Data)
+      -- Black / White's layered field themes fade with the sound system, text
+      -- boxes or not (src/world/Gen5MusicParts.lua)
+      if Data and Data.constants and Data.constants.gen5MusicParts then
+        require("src.world.Gen5MusicParts").audioTick(self)
+      end
     end
     close()
   end
@@ -956,12 +973,19 @@ end
 -- in.  A state with no uiSize -- every Game Boy screen, and every state on a
 -- Gen 1, Gen 2 or Prism cartridge -- answers 160x144 and gets the arithmetic
 -- it always got, to the pixel.
+-- This frame's held DS battle panel, in rows (BattleState:heldPanelRows): the
+-- bottom of the surface is the panel and the rest is the top screen, and what
+-- the battle opens is centred on the TOP SCREEN -- which puts the DS's own text
+-- box and YES/NO exactly over the battle's box, where they belong.
+local heldPanelRows = 0
+
 local function homeOffset(state, uw, uh)
   local sw, sh = Renderer.WIDTH, Renderer.HEIGHT
   if state and state.uiSize then
     local ok, w, h = pcall(state.uiSize, state)
     if ok and type(w) == "number" and type(h) == "number" then sw, sh = w, h end
   end
+  if heldPanelRows > 0 and sh <= uh - heldPanelRows then uh = uh - heldPanelRows end
   return math.floor((uw - sw) / 2), math.floor((uh - sh) / 2)
 end
 
@@ -1003,8 +1027,8 @@ function Game:draw()
       local nds = GV.isNds and GV.isNds()
       -- THE WATCH ONLY ONCE IT IS ON THE WRIST: Platinum's lower screen shows
       -- the Pokétch after `enablepoketch` (Jubilife) and nothing before; Black
-      -- and White's is the C-Gear, not Platinum's watch (not built yet), so
-      -- theirs stays blank too.
+      -- and White's is the C-Gear once script 0x19B gives it
+      -- (src/ui/Gen5CGear.lua), blank before.
       -- Gen 1-3 have no lower-screen field panel -- `owned()` used to treat
       -- any gym badge as a Pokétch, which then drew Platinum's watch (or a
       -- black 256x192) over their OPTION screen.
@@ -1012,9 +1036,23 @@ function Game:draw()
         and require("src.pokemon.Gen4PoketchState").owned(self.save)
       local panelModule = family == "hgss" and "src.ui.HgssFieldPanel"
         or (poketchOn and "src.ui.Gen4Poketch") or nil
+      if family == "bw" and require("src.ui.Gen5CGear").owned(self.save) then
+        panelModule = "src.ui.Gen5CGear"
+      end
+      -- PLATINUM'S UNDERGROUND: the other screen is the passages' map with the
+      -- radar (top_screen.c), not the watch (src/ui/Gen4UgTopScreen.lua)
+      local ugDrawn = false
+      if version and version.id == "platinum" then
+        local okU, UgTop = pcall(require, "src.ui.Gen4UgTopScreen")
+        if okU and UgTop.active(self) then
+          panelModule = nil
+          pcall(SS.draw, self, function() UgTop.draw(self) end)
+          ugDrawn = true
+        end
+      end
       local okP, Poketch = false, nil
       if panelModule then okP, Poketch = pcall(require, panelModule) end
-      if not panelModule and nds then
+      if not panelModule and nds and not ugDrawn then
         pcall(SS.draw, self, function()
           love.graphics.setColor(0, 0, 0, 1)
           love.graphics.rectangle("fill", 0, 0, 256, 192)
@@ -1084,6 +1122,7 @@ function Game:_draw()
   -- ...and a Gen 3 battle that widened its own screen holds it the same way,
   -- ahead of the topmost-uiSize pick (see Game.heldSurfaceInStack).
   local held = not wideBattle and Game.heldSurfaceInStack(self.stack) or nil
+  heldPanelRows = held and held.heldPanelRows and held:heldPanelRows() or 0
   local native = not wideBattle
     and (held or Game.nativeSurfaceInStack(self.stack)) or nil
   local classicOffset, classicOffsetY = 0, 0
@@ -1180,7 +1219,7 @@ function Game:_draw()
   local SuperSample = require("src.render.SuperSample")
   if not worldDrawn and baseState and require("src.core.GameVersion").isNds()
      and SuperSample.singleScreen(self) and not SuperSample.active then
-    SuperSample.draw(self, self.stack:top(), drawStates)
+    SuperSample.draw(self, self.stack:top(), drawStates, surfW, surfH)
   else
     drawStates()
   end
@@ -1945,7 +1984,19 @@ local function offerPointer(self, method, id, x, y)
   return panel~=top and offer(panel) or false
 end
 
+-- TV / CAST = TOP shows the bottom screen in the phone's window; a tap on it
+-- is mapped into 256x192 and injected (src/render/CastTop.lua).  False -- and
+-- nothing else happens -- in every other mode.
+local function castTopTouch(self, method, id, x, y)
+  if self.secondScreenInjecting then return false end
+  local CastTop = package.loaded["src.render.CastTop"]
+  if not (CastTop and CastTop.routeTouch) then return false end
+  local ok, taken = pcall(CastTop.routeTouch, self, method, id, x, y)
+  return ok and taken or false
+end
+
 function Game:touchpressed(id, x, y)
+  if castTopTouch(self, "touchpressed", id, x, y) then return end
   -- Visible virtual controls own their complete gesture, even when pressing
   -- one opens a different screen before the finger is lifted.
   if not self.secondScreenInjecting and TouchControls.visible and TouchControls:visible()
@@ -1968,6 +2019,7 @@ function Game:hasPointerScreen()
 end
 
 function Game:touchmoved(id, x, y)
+  if castTopTouch(self, "touchmoved", id, x, y) then return end
   if not self.secondScreenInjecting and TouchControls.touches and TouchControls.touches[id] then
     TouchControls:touchmoved(id,x,y)
     return
@@ -1978,6 +2030,7 @@ function Game:touchmoved(id, x, y)
 end
 
 function Game:touchreleased(id, x, y)
+  if castTopTouch(self, "touchreleased", id, x, y) then return end
   if not self.secondScreenInjecting and TouchControls.touches and TouchControls.touches[id] then
     TouchControls:touchreleased(id,x,y)
     return

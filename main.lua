@@ -243,6 +243,23 @@ local function bootGame(version)
   local GameVersion = require("src.core.GameVersion")
   GameVersion.set(version or os.getenv("POKEPORT_VERSION") or "red")
 
+  -- ZELDA (engine "zelda") does not run on Game.lua: src/zelda/ZeldaRuntime
+  -- stands in for `Game` and main.lua forwards the same callbacks to it. The
+  -- last Pokemon game's cache overlay and generated modules come off first,
+  -- so a Pokemon boot after this one starts as clean as after a restart.
+  if GameVersion.isZelda(GameVersion.get()) then
+    local zv = GameVersion.get()
+    if bootedVersion then
+      pcall(function() require("src.import.CacheFs").unmountVersion(bootedVersion) end)
+      bootedVersion = nil
+    end
+    pcall(function() require("src.core.Data"):unloadGenerated() end)
+    pcall(function() require("src.render.Assets").invalidate() end)
+    Game = require("src.zelda.ZeldaRuntime").boot(zv)
+    BootTrace.booted()
+    return
+  end
+
   -- ONE PROCESS CAN BOOT TWO GAMES, AND `require` REMEMBERS THE FIRST.
   --
   -- Every version loads its data under the SAME module names -- Data:load
@@ -701,10 +718,21 @@ function love.draw()
   if bootReport then return drawBootReport() end
   if editorMode then EditorApp.draw() return drawSecondPanel() end
   if TouchEditor then TouchEditor.draw() return drawSecondPanel() end
-  if Importer then Importer:draw() return drawSecondPanel() end
+  -- TV / CAST = TOP: the frame is drawn into a canvas, a copy goes to the
+  -- cast display, and the phone gets its own picture (src/render/CastTop.lua).
+  -- Inert -- one cached boolean -- unless TOP is live.
+  local okCast, CastTop = pcall(require, "src.render.CastTop")
+  if Importer then
+    local cast = okCast and CastTop.begin(nil)
+    Importer:draw()
+    if cast then CastTop.finish(nil, cast) end
+    return drawSecondPanel()
+  end
 
   if not Game then return drawSecondPanel() end
+  local cast = okCast and CastTop.begin(Game)
   Game:draw()
+  if cast then CastTop.finish(Game, cast) end
   if Game.capturePath then
     local path = Game.capturePath
     Game.capturePath = nil
@@ -1215,12 +1243,23 @@ function love.quit()
   pcall(function()
     require("src.core.DiscordPresence").shutdown()
   end)
+  -- give the router back any port a link session asked it to open (UPnP /
+  -- NAT-PMP / PCP, src/online/net/PortMap.lua); bounded, and only when a
+  -- session ever loaded the module
+  if package.loaded["src.online.net.PortMap"] then
+    pcall(package.loaded["src.online.net.PortMap"].releaseAll, 1.5)
+  end
   -- LOVE waits for every live love.thread before the process exits, and both
   -- background workers idle in a loop that only a "quit" command breaks, so
   -- without this the process outlived the window and the next launch re-entered
   -- the dead one instead of starting fresh (#339)
   if package.loaded["src.core.ChipAudio"] then
     pcall(package.loaded["src.core.ChipAudio"].shutdown)
+  end
+  -- the launcher's Link Hub thread (src/online/LauncherHub.lua): stop it and
+  -- give the router its ports back
+  if package.loaded["src.online.LauncherHub"] then
+    pcall(package.loaded["src.online.LauncherHub"].shutdown, 2.5)
   end
   if package.loaded["src.update.Check"] then
     pcall(package.loaded["src.update.Check"].shutdown)

@@ -30,9 +30,26 @@ RomImporter.__index = RomImporter
 -- these three were not. Every caller here treats `false` as "no picker
 -- available" and shows its own notice, so a missing bridge now degrades to
 -- exactly the path a picker-less Android device has always taken.
+--
+-- BEFORE ANY OF THEM OPENS, the launcher lets go of what it can rebuild
+-- (releaseForPicker): the picker is a separate activity, and Android reclaims
+-- the memory of the one behind it -- a launcher still holding a running game
+-- menu behind its panels was killed outright, and "the app just closes when I
+-- add a mod" was the result. (A launcher killed anyway still installs the
+-- pick on its next start: new() arms the pick poll on every mobile launch.)
+local function releaseForPicker()
+  pcall(function()
+    local B = package.loaded["src.import.LauncherBackdrop"]
+    if B and B.holdForPicker then B.holdForPicker() end
+  end)
+  collectgarbage("collect")
+  collectgarbage("collect")
+end
+
 local function pickFile(...)
   local fn = love.system.pickFile
   if not fn then return false end
+  releaseForPicker()
   return fn(...) and true or false
 end
 
@@ -42,6 +59,7 @@ end
 local function pickFolder()
   local fn = love.system.pickFolder
   if not fn then return false end
+  releaseForPicker()
   return fn() and true or false
 end
 
@@ -1240,11 +1258,18 @@ local MARKER_PATH = "rom-cache.complete"
 -- The marker a finished import writes for a version: the generation tag plus
 -- that version's ROM hash, so both a format bump and a swapped ROM invalidate.
 local function markerFor(version)
+  -- Zelda (engine "zelda"): the game module's own cacheVersion + ROM hash
+  if GameVersion.isZelda and GameVersion.isZelda(version) then
+    return require("src.zelda.ZeldaImport").markerLine(version)
+  end
   -- platinum-field-fx-v1: gen4_pt_field_fx (Gen4PtFieldFx), the Cut / Rock
   -- Smash obstacle animations and the HM cut-in's art
   -- platinum-effect-pal-v1: move-effect palettes loaded sequentially (Gen4Graphics.palette
   -- `sequential`), as NNS_G2dLoadPalette does; hgss-pc-anim-v1: HGSS scriptProps PC
   -- monitor frames (members 102/103) for g4_pc_animation
+  -- platinum-back-throw-v1: ds-back-throw-v1 only ever imported on HGSS and BW;
+  -- Platinum's backs (trbgra, class 0 / 1, the winter outfits) and their throw
+  -- now import too, and field.playerForms.*.back points at them
   -- ds-back-throw-v1 (Platinum, HGSS, Black / White): gen4_trainer_sprites.backThrows,
   -- the player's send-out throw (Gen4BackThrow / Gen5TrainerPics.backThrow); BW's
   -- back also gains the throwing arm cell 0 never had
@@ -1252,8 +1277,43 @@ local function markerFor(version)
   -- hgss-special-marts-v1 (Gen4HgssSpecialMarts lists), hgss-tmhm-v1 (the
   -- HGSS sTMHMMoves search -> per-species tmhm), gen5-npc-ranges-v1 (NPC
   -- wander box at +20/+22), gen5-script-link-v2 (0x08B/0x080/0x081/0x083
-  -- and the gym ops 0x185/0x187-0x189 keep their operands)
-  local revision = version == "platinum" and "platinum-gym-fx-v1:platinum-scratch-off-v1:platinum-poke-motion-v1:platinum-egg-hatch-v1:platinum-geometry-v17:platinum-field-fx-v1:platinum-library-tv-v1:platinum-spear-pillar-v1:platinum-effect-pal-v1:ds-back-throw-v1:pal-park-v1:" or ""
+  -- and the gym ops 0x185/0x187-0x189 keep their operands; v3: the music
+  -- commands 0x098/0x09E/0x09F/0x0A1/0x0A2, 0x25F and 0x1EA; v4: the Royal
+  -- Unova 0x1A5..0x1AC, the gate boards 0x17E, the camera preset 0x146, and
+  -- 0x0CD / 0x0CE read the right way round (time of day / card level), plus
+  -- constants.gen5GateBoards and constants.gen5CameraPresets)
+  -- 2026-11-01 (pt_cmd audit): platinum-tv-script-v1 -- map_scripts decodes
+  -- CallTVBroadcast / CallTVInterview / ScrCmd_27C / DoGroupConnectionAction
+  -- through (Gen4ScriptOps.VARIABLE_SPEC; every TV and three Amity Square
+  -- scripts stopped there), and gen4_pt_tv, the /arc/tv.narc timetable
+  -- (Gen4PtTvSchedule) PtTvBroadcast reads
+  -- 2026-11-02 (pt slots): platinum-slot-app-v1 -- gen4_pt_slot_art, the
+  -- Game Corner slot machine app's art from /data/slot.narc (Gen4PtSlotArt;
+  -- overlay 101, played by src/ui/PtSlotMachineApp.lua)
+  -- 2026-11-02 (pt capsules): platinum-capsule-app-v1 -- gen4_pt_capsule_art,
+  -- the Ball Capsule app's art from cb_data.narc (Gen4PtCapsuleArt;
+  -- capsule_menu, played by src/ui/PtCapsuleMenu.lua)
+  -- gen4-light-mask-v1 (both Gen 4 families): gen4_terrain / gen4_models
+  -- shapes carry their material's light mask, polyAttr bits 0..3
+  -- (Gen4ModelPack `lights`), which Gen4Shade lights per material -- what
+  -- darkens Platinum's nights; gen4_pt_capsule_art gains `trainerCapsules`
+  -- (pl_cb_data.narc / gs_cb_data) for the trainers' Ball Capsules
+  -- 2026-11-02 (menu parity): gen4-female-sprites-v1 (Platinum and HGSS) --
+  -- species_sprites also writes the female sheet in the shiny palette
+  -- (spriteFrontFemaleShiny / spriteBackFemaleShiny) and the female two-frame
+  -- strips (picAnim.femaleSheet / femaleShinySheet), so females animate and
+  -- shiny females are right (Sprites.path, PicAnim.sheetFor)
+  -- hgss-otherpoke-v1 (HGSS): the form pictures read /a/1/1/4 with its own
+  -- numbering (Gen4Otherpoke.layout: palettes +4, Pichu 154..157 / 252..255,
+  -- Substitute 256..258, shadows 259/260) -- Unown letters and Deoxys formes
+  -- were missing and Castform / Burmy / Rotom etc. wore the wrong colours;
+  -- adds the Spiky-eared Pichu (def.forms.spiky)
+  -- 2026-11-03 (menu parity): platinum-zukan-enc-v1 / hgss-zukan-enc-v1 --
+  -- gen4_zukan_enc (Gen4ZukanEnc): the Pokedex AREA map's places per species
+  -- and time of day out of zukan_enc (Platinum zukan_enc_platinum.narc, HGSS
+  -- /a/1/3/3) with the map's pieces and markers, drawn by Gen4DexAreaMap /
+  -- HgssDexDetails in place of the encounter-table scan
+  local revision = version == "platinum" and "platinum-back-throw-v1:gen4-trainer-ai-v1:platinum-zukan-enc-v1:gen4-female-sprites-v1:platinum-ug-cursor-v1:platinum-ug-top-v1:platinum-ug-fx-v1:platinum-ug-trap-art-v1:platinum-dressup-photo-v2:gen4-light-mask-v1:platinum-capsule-app-v1:platinum-slot-app-v1:platinum-tv-script-v1:platinum-boat-cutscene-v1:platinum-gym-fx-v1:platinum-scratch-off-v1:platinum-poke-motion-v1:platinum-egg-hatch-v1:platinum-geometry-v17:platinum-field-fx-v1:platinum-library-tv-v1:platinum-spear-pillar-v1:platinum-effect-pal-v1:ds-back-throw-v1:pal-park-v1:" or ""
   -- gen5-trades-v5: constants.gen5Trades, gen5_trade_art and the trade
   -- commands' operands in map_scripts (Gen5Trades / Gen5TradeArt)
   -- gen5-starter-v6: gen5_starter_art, the gift box app (Gen5StarterArt)
@@ -1263,6 +1323,11 @@ local function markerFor(version)
   -- the prop pictures (Gen5Subway, Gen5Facilities, Gen5MusicalData), the
   -- facility commands' operands in map_scripts (0x15A, 0x1F3-0x1F8, 0x25C,
   -- 0x167-0x16E, 0x05D now four bytes wide)
+  -- gen5-musical-v2 (2026-11-02, the Musical's pass): constants.gen5Musical
+  -- gains `poses` (each species' standing pose from the Musical's own MCSS
+  -- archive /a/0/5/2, its picture bw_musical/poke_NNN.png and its nine prop
+  -- points from member +8's anchor records) and each show's `script` (member
+  -- 2 of /a/1/1/x, the stage's choreography threads) -- Gen5MusicalData
   -- gen5-field-fx-v1: gen4_emotes / gen5_field_effects / the fldeff set from
   -- /a/0/7/5 (Gen5FieldEffects), the bike / surf / rod player forms, the
   -- zones' field flags (gen5Flags) and the wild tables' phenomenon byte
@@ -1284,12 +1349,83 @@ local function markerFor(version)
   -- gen5-windows-v1: the font record's `frames` (the menu window, /a/0/0/5 tileset 9
   -- palette 3) and the menu cursor glyph (`symbols`, src/import/Gen5Cursor.lua)
   -- gen5-gym-fx-v1: gen5_gym_fx (Gen5GymFxArt), the gym gimmicks' models
-  if version == "black" or version == "white" then revision = "gen5-npc-ranges-v1:gen5-script-link-v2:gen5-gym-fx-v1:gen5-starter-v6:gen5-moveanim-v2:gen5-facilities-v1:gen5-field-fx-v1:gen5-title-v1:gen5-naming-v1:gen5-maps-v1:gen5-battle-bag-v1:gen5-town-map-v2:gen5-xtransceiver-v1:gen5-shop-art-v1:gen5-windows-v1:ds-back-throw-v1:gen5-encounter-fx-v4:gen5-floor-layers-v2:gen5-money-v12:gen5-egg-moves-v1:gen5-buyer-v1:gen5-egg-hatch-v1:" end
+  -- gen5-building-anim-v1: the building packs' animations (Gen5BuildingAnim:
+  -- set.animations / set.bw / BTP0 frames) and the 0x127..0x12E link names
+  -- gen5-door-camera-v1: constants.gen5DoorCameras, the door camera's zone
+  -- records from /a/1/7/9 (Gen5DoorCameras)
+  -- gen5-field-parts-v1: constants.gen5MusicParts (/a/1/4/7, Gen5MusicParts),
+  -- gen5NPortrait + bw_nportrait/*.png (/a/1/8/7, Gen5NPortrait),
+  -- gen5Passerby (ov10's survey tables, Gen5Passerby) and gen5BlackCity
+  -- (/a/1/5/4, Gen5BlackCity); gen5-script-link-v5: the link names for
+  -- 0x0A3..0x0A5, 0x1D3..0x1D5, 0x1BD, 0x1EE / 0x1EF, 0x063, 0x210..0x21F and
+  -- 0x1C2..0x1C9 (Gen5ScriptLink)
+  -- gen5-field-parts-v2: gen5BlackCity's types carry White Forest's species /
+  -- +0x24; gen5-script-link-v6: 0x1BC, 0x1C5 / 0x1C6 / 0x1C8, 0x21C, 0x0DC /
+  -- 0x0C8 and the named no-ops 0x252 / 0x033 / 0x076
+  -- gen5-field-parts-v3: constants.gen5Weather (Gen5Weather: the zones'
+  -- weather and the day calendar); gen5-script-link-v7: 0x1A4 (Gen5ZoneSounds)
+  -- gen5-field-parts-v4: constants.gen5SeasonArt + bw_season/*.png (Gen5SeasonArt)
+  -- gen5-field-parts-v5: constants.gen5MapVariants (/a/0/1/0, Gen5MapVariants)
+  -- gen5-field-parts-v6: gen5MapVariants.chunks (the swapped-in chunks' own
+  -- heights), constants.gen5ZoneModels + bw_zone_models/*.png (/a/1/9/0, the
+  -- Abyssal Ruins' overlay models, Gen5ZoneModels), constants.gen5WeatherArt
+  -- + bw_weather/*.png (/a/0/5/6 and ov25's snow sway, Gen5WeatherArt);
+  -- gen5-script-link-v8: 0x135 (Gen5ZoneModels)
+  -- gen5-field-parts-v7: constants.gen5Walkers (/a/1/8/6, the street crowds,
+  -- Gen5Walkers); gen5-script-link-v9: 0x134 (Gen5Walkers)
+  -- gen5-field-parts-v8: gen5WeatherArt.lights (/a/0/6/2, the weathers' fog
+  -- colours); gen5-script-link-v10: 0x112 / 0x236 (Gen5PartyChecks)
+  -- gen5-script-link-v11: 0x231 / 0x11A / 0x238 / 0x0E6..0x0E8 / 0x1ED /
+  -- 0x20C / Unity Tower 0x1DA..0x1E3 (Gen5SideCommands)
+  -- gen5-script-link-v12: 0x229 the event key items (Gen5SideCommands); 0x1ED
+  -- is the easy-chat word entry (src/pokemon/Gen5EasyChat.lua)
+  -- gen5-script-link-v13: 0x0BD / 0x10E / 0x10F / 0x11B / 0x11E / 0x11F /
+  -- 0x20D / 0x05A / 0x0E9 (Gen5FieldChecks)
+  -- gen5-field-parts-v9: constants.gen5FieldFx + bw_illusion/*.png and
+  -- bw_castle/*.png (/a/2/0/4 + /a/2/1/9, Gen5IllusionFx);
+  -- gen5-script-link-v14: 0x221..0x224, 0x23F, 0x255..0x258, 0x136
+  -- gen5-field-parts-v10: constants.gen5FlightPaths (/a/2/0/3, the paths
+  -- 0x15D flies an object along); gen5-script-link-v15: 0x15B..0x15E
+  -- gen5-script-link-v16: 0x225 / 0x226 (an object raised in place,
+  -- Meloetta's dance)
+  -- gen5-script-link-v17: 0x227 / 0x228 (the Zorua story), 0x24B (the zone's
+  -- music back), 0x242 / 0x139 / 0x23C / 0x25E
+  -- gen5-field-parts-v11: constants.gen5Cameras (every /a/0/6/0 record);
+  -- gen5-script-link-v18: 0x1A3 (an Elite Four room's camera)
+  -- gen5-script-link-v19: 0x0DE (a species registered as seen)
+  -- gen5-script-link-v20: 0x0E1 is the player's gender (`getplayergender`,
+  -- not a badge count); 0x0D7 the badge count (`bwcountbadges`)
+  -- gen5-marts-bp-v1: constants.gen5Marts.bp, the Battle Subway's BP
+  -- Exchange Service Corner lists (shops 0xFE / 0xFD, Gen5Marts)
+  -- gen5-script-link-v21: 0x0DA the story swaps (`bwstoryswap`, was a noop
+  -- without operands), 0x0D9 `bwwarpid`, 0x0E4 `bwclearbits` (Gen5StorySwaps)
+  -- gen5-cgear-v1: gen5_cgear_art (Gen5CGearArt, /a/0/3/0: the C-Gear's frame,
+  -- top bar, honeycomb cells, message screen and OBJ cells per gender and skin,
+  -- drawn on the lower screen by src/ui/Gen5CGear.lua); gen5-script-link-v22:
+  -- 0x19B `bwcgearon`, the C-Gear given and turned on (Gen5MiscFieldOps)
+  -- gen5-script-link-v23: 0x103 `partycountnotegg` keeps its mode operand
+  -- (was `{ 1 }`, the var only): mode 4 is the link counters' "how many can't
+  -- be taken in", answered 0 by Gen45LinkRooms (src/script)
+  -- and 0x01D is `end` (was a no-op: the counters' 2105 / 2106 walks ran twice)
+  -- gen5-dex-area-v1: gen5_dex_art's AREA page -- the markers (area_<n>, c28 /
+  -- g15 / p5 of /a/1/5/9), the /a/1/7/8 records (`area`), ov208's zone order
+  -- (`areaZones`) and anim -> cell table (`areaSeqCell`) (Gen5DexArt)
+  -- gen5-form-sprites-v1: gen4_species_sprites .forms / def.gen5FormSprites --
+  -- the alternate forms' pictures, shiny pairs and animation bundles from
+  -- /a/0/0/4 slots 652 + formSpriteIndex, Arceus's types as palettes
+  -- (Gen5BattleSprites); read by Sprites.path / Gen5MonAnimPlayer by `form`
+  -- gen5-form-personal-v1: gen5_forms rows (personal 650+, reached through
+  -- the species record's +0x1C, arm9 0x0201AFD4) carry their own learnsets
+  -- from /a/0/1/8; read by Gen45FormData through Gen4Forms.definition
+  if version == "black" or version == "white" then revision = "gen5-form-personal-v1:gen5-form-sprites-v1:gen5-dex-area-v1:gen5-cgear-v1:gen5-field-parts-v11:gen5-script-link-v23:gen5-marts-bp-v1:gen5-door-camera-v1:gen5-building-anim-v1:gen5-npc-ranges-v1:gen5-gym-fx-v1:gen5-starter-v6:gen5-moveanim-v2:gen5-facilities-v1:gen5-musical-v2:gen5-field-fx-v1:gen5-title-v1:gen5-naming-v1:gen5-maps-v1:gen5-battle-bag-v1:gen5-town-map-v2:gen5-xtransceiver-v1:gen5-shop-art-v1:gen5-windows-v1:ds-back-throw-v1:gen5-encounter-fx-v4:gen5-floor-layers-v2:gen5-money-v12:gen5-egg-moves-v1:gen5-buyer-v1:gen5-egg-hatch-v1:" end
   -- emerald-trade-scene-v3 / firered-trade-scene-v1: the in-game trade
   -- sequence's art (extractTradeScene, gen3_trade_art) -- without it special
   -- 257 falls back to the bare swap, so both Gen 3 caches re-import once
   if version == "emerald" then revision = "emerald-trade-scene-v3:" end
-  if version == "firered" then revision = "firered-trade-scene-v1:" end
+  -- firered-multichoice-v2: constants.gen3Multichoice runs past FireRed's
+  -- unreadable MULTICHOICE_48 (65 lists, was 48): the Direct Corner's TRADE /
+  -- COLOSSEUM (50) and JOIN / LEAD (63) lists, the Seagallop ferries
+  if version == "firered" then revision = "firered-trade-scene-v1:firered-multichoice-v2:" end
   if version == "polishedcrystal" then revision = "polished-stored-unown-forms-v7:" end
   if version == "prism" then revision = "prism-events-art-v2:" end
   -- hgss-phone-call-v1: gen4_hgss_phone_call (Gen4HgssPhoneCall), the
@@ -1311,7 +1447,39 @@ local function markerFor(version)
   -- table (Gen4HgssBattle.EFFECT_BG_MEMBERS) -- 84 pictures, not 22
   -- hgss-field-fx-v1: gen4_hgss_field_fx (Cut / Rock Smash / Headbutt, /a/1/3/4)
   -- and gen4_hgss_mart_art again (installs updated stage by stage never got it)
-  if version == "heartgold" or version == "soulsilver" then revision = "hgss-special-marts-v1:hgss-tmhm-v1:hgss-athlon-rooms-v1:hgss-athlon-team-v1:hgss-athlon-common-v1:hgss-disc-catch-v1:hgss-lamp-jump-v1:hgss-ring-drop-v1:hgss-snow-throw-v1:hgss-goal-roll-v1:hgss-circle-push-v1:hgss-pennant-v1:hgss-relay-run-v1:hgss-block-smash-v1:hgss-athlon-rivals-v1:hgss-hurdle-dash-v1:hgss-athlon-courses-v1:hgss-athlon-perf-v1:hgss-fly-map-v1:hgss-scratch-off-v1:hgss-legend-wing-v1:hgss-hideout-fx-v1:hgss-alph-panel-v1:hgss-poke-motion-v1:hgss-egg-hatch-v1:hgss-egg-moves-v1:hgss-gear-dex-v1:hgss-summary-v2:hgss-effect-bg-v1:hgss-field-fx-v1:hgss-pc-anim-v1:ds-back-throw-v1:pal-park-v1:hgss-enc-effects-v1:hgss-frontier-v2:" end
+  -- hgss-safari-apps-v1: gen4_hgss_safari_apps (Gen4HgssSafariAppArt), the
+  -- Safari Zone's area customizer / decoration app art (overlay 108)
+  -- hgss-lighthouse-v1: gen4_legend_art's `lighthouse` part (/a/1/7/4 0..2)
+  -- and the Mystri Stage's three (`sinjoh1..3`, 101..109)
+  -- and gen4_arealight from HGSS's own loose light files (0..4; the narc is
+  -- Platinum's), member 4 the lit lighthouse, for ScrCmd_459
+  -- hgss-soundplates-v1: gen4_hgss_soundplates (Gen4HgssSoundplates), the
+  -- land chunks' ambient-sound plates
+  -- hgss-mail-v1: gen4_mail_gra for HGSS (Gen4MailGra.build, /a/0/7/9), the
+  -- mail stationery the mail screen / mailbox / bag CHECK draw on
+  -- hgss-capsule-app-v1: gen4_pt_capsule_art for HGSS (Gen4PtCapsuleArt's
+  -- HGSS layout, /a/0/8/7, overlay 57), the Ball Capsule app's art
+  -- platinum-ug-cursor-v1: gen4_ug_top_art gains `cursor`, the base
+  -- decoration cursor model /data/ug_base_cur.nsbmd and its picture
+  -- platinum-ug-top-v1: gen4_ug_top_art (Gen4UgTopArt), the Underground's
+  -- top screen -- its map and the radar / player / base markers by sequence
+  -- platinum-ug-fx-v1: gen4_gym_fx gains the Digger Drill and its smoke
+  -- (fldeff 91 + 163, 58 + 162: Gen4GymFxArt.MODELS), played by Gen4UgBase
+  -- platinum-ug-trap-art-v1: gen4_ug_trap_art (Gen4UgTrapArt), the
+  -- Underground's trap effects drawn in the palettes traps.c loads them with
+  -- (the generic underground/*.png pass paired the smoke and flames wrongly)
+  -- hgss-dressup-photo-v1 / platinum-dressup-photo-v1: gen4_dressup gains the
+  -- photo studio's screens and the 18 backdrops (Gen4DressUp; HGSS reads the
+  -- same archive as /a/0/2/6, overlay 41) for the dress-up photos; v2 adds
+  -- the overlay's sprites (buttons, Accessory hearts, the viewer's name
+  -- plate, the backdrop icons) and the other screen's BG 224..226
+  -- hgss-gear-markings-v1: gen4_hgss_pokegear_art gains map_marks_<skin> /
+  -- map_marks_bg_<skin>, the Pokegear map's markings panel (pgmap NSCR 38 /
+  -- 44 + skin over char 26 + skin; Gen4HgssPokegearExtra, HgssGearMarkings)
+  if version == "heartgold" or version == "soulsilver" then revision = "gen4-trainer-ai-v1:hgss-gear-markings-v1:hgss-zukan-enc-v1:hgss-otherpoke-v1:gen4-female-sprites-v1:hgss-dressup-photo-v2:gen4-light-mask-v1:hgss-capsule-app-v1:hgss-lighthouse-v1:hgss-soundplates-v1:hgss-mail-v1:hgss-safari-apps-v1:hgss-phone-ring-v1:hgss-unown-report-v1:hgss-special-marts-v1:hgss-tmhm-v1:hgss-athlon-rooms-v1:hgss-athlon-team-v1:hgss-athlon-common-v1:hgss-disc-catch-v1:hgss-lamp-jump-v1:hgss-ring-drop-v1:hgss-snow-throw-v1:hgss-goal-roll-v1:hgss-circle-push-v1:hgss-pennant-v1:hgss-relay-run-v1:hgss-block-smash-v1:hgss-athlon-rivals-v1:hgss-hurdle-dash-v1:hgss-athlon-courses-v1:hgss-athlon-perf-v1:hgss-fly-map-v1:hgss-scratch-off-v1:hgss-legend-wing-v1:hgss-hideout-fx-v1:hgss-alph-panel-v1:hgss-poke-motion-v1:hgss-egg-hatch-v1:hgss-egg-moves-v1:hgss-gear-dex-v1:hgss-summary-v2:hgss-effect-bg-v1:hgss-field-fx-v1:hgss-pc-anim-v1:ds-back-throw-v1:pal-park-v1:hgss-enc-effects-v1:hgss-frontier-v2:hgss-phone-groups-v1:" end
+  -- hgss-phone-groups-v1: gen4_hgss_phone_call's book carries callGroup
+  -- (pmtel_book unkF); caches imported before it rang group 0 only
+  -- (HgssPhoneRing.CALL_GROUPS is the runtime fallback for them)
   -- Include version-specific field encounters, sleep, swarm and rate tables.
   -- Only these three caches need rebuilding; other markers remain stable.
   -- v8: field.gen2TradeAnim, GSC's own trade movie art (Gen2TradeArt).
@@ -1669,6 +1837,8 @@ local REQUIRED_FILES_GEN4 = {
 }
 
 local function requiredFiles(version)
+  -- a Zelda cache is judged by its module's isReady (readyReport), not a list
+  if GameVersion.isZelda and GameVersion.isZelda(version) then return {} end
   local gen = GameVersion.generation(version)
   if gen == 4 then
     -- HeartGold / SoulSilver open with HgssOakIntro (gen4_hgss_oak_art); their
@@ -2005,6 +2175,10 @@ function RomImporter.readyReport(version)
                why = "the tileset registry does not look like a Gen 2 one" }
     end
   end
+  if GameVersion.isZelda and GameVersion.isZelda(version) then
+    local zok, zwhy = require("src.zelda.ZeldaImport").moduleReady(version)
+    if not zok then return { ok = false, missing = {}, why = zwhy } end
+  end
   return { ok = true, missing = {}, gaps = gaps }
 end
 
@@ -2059,6 +2233,11 @@ end
 
 local function blockedImportReason(version, manifest)
   local info = GameVersion.info(version)
+  -- Zelda: no game module in this build yet (src/zelda/<dir>/init.lua)
+  if info and info.engine == "zelda" then
+    local why = require("src.zelda.ZeldaImport").blockedReason(version)
+    if why then return why end
+  end
   if info and info.importable == false and not unlockedByEnv(version) then
     return (info.launcherName or info.displayName or version)
       .. " is not ready to play yet"
@@ -2877,7 +3056,14 @@ function RomImporter.new(onComplete, opts)
     -- so every one of them leaned entirely on the romImportMode fallback
     -- beside it; naming the platform once makes those reads mean something.
     isNX = require("src.core.Platform").isNX(),
-    ios = mobileOS == "iOS",
+    -- THE PICKER THAT ANSWERS BY POLLING, not only iOS: Xbox's works the same
+    -- way (love.system.getPickedFile, one file a trip), and every read of this
+    -- field is about that flow. Xbox never reached its picker before this,
+    -- because nothing polled for the answer and the launcher said to copy files.
+    ios = mobileOS == "iOS" or (mobileOS == "UWP"
+      and require("src.import.XboxPicker").install() ~= nil
+      and type(love.system.pickFile) == "function"
+      and type(love.system.getPickedFile) == "function"),
     -- love-nx reports "NX".  Nothing in this tree knew that string, so the
     -- Switch fell through every platform branch to the desktop one and was
     -- told to use a file picker it does not have.
@@ -3146,6 +3332,13 @@ end
 -- _pollPickedFiles must stay armed so it consumes the file when it lands
 -- moments later (it clears pickPending itself once something is found).
 function RomImporter:focus(f)
+  -- back from a picker (releaseForPicker): the background game may return
+  if f then
+    pcall(function()
+      local B = package.loaded["src.import.LauncherBackdrop"]
+      if B and B.releaseHold then B.releaseHold() end
+    end)
+  end
   if f and love.filesystem.getInfo('pick_done.flag','file') then
     local picked=love.filesystem.read('pick_done.flag')
     love.filesystem.remove('pick_done.flag')
@@ -3379,7 +3572,8 @@ function RomImporter:startData(data, displayName, sourcePath, verified)
     end
     self:setError(("Unsupported ROM (SHA-1 %s). This needs a clean US Pokemon "
       .. "Red, Blue, Yellow, Gold, Silver, Crystal, FireRed, Emerald, "
-      .. "Platinum, HeartGold, SoulSilver, Black or White dump; patched or "
+      .. "Platinum, HeartGold, SoulSilver, Black or White dump, or Zelda: A "
+      .. "Link to the Past & Four Swords or The Minish Cap (USA); patched or "
       .. "\"fixed\" dumps "
       .. "(tagged [b] or [BF]) never verify."):format(actualHash))
     return
@@ -3426,7 +3620,9 @@ function RomImporter:startData(data, displayName, sourcePath, verified)
     self.status = "Preparing private game data"
     coroutine.yield()
 
-    local manifest = decodeManifest(version)
+    local zeldaImport = GameVersion.isZelda and GameVersion.isZelda(version)
+    local manifest = zeldaImport and { zelda = true, romPath = self.romPath }
+      or decodeManifest(version)
     local blocked = blockedImportReason(version, manifest)
     if blocked then
       self:setError(blocked, version)
@@ -3437,7 +3633,7 @@ function RomImporter:startData(data, displayName, sourcePath, verified)
     local modules={[1]='src.import.RomExtractor',[2]='src.import.RomExtractorGen2',
       [3]='src.import.RomExtractorGen3',[4]='src.import.RomExtractorGen4',[5]='src.import.RomExtractorGen5'}
     local task=require('src.import.RomImportTask').new({action='extract',version=version,
-      generation=info.generation,module=modules[info.generation],manifest=manifest,
+      generation=info.generation,module=zeldaImport and 'src.zelda.ZeldaImport' or modules[info.generation],manifest=manifest,
       prefix=info.cachePrefix,root=CacheFs.root(),path=self.romPath,bytes=info.generation<4 and self.romData or nil,clear=true,recovery=self.importRecovery})
     if task then
       self.romData=nil
@@ -3496,6 +3692,9 @@ function RomImporter:startData(data, displayName, sourcePath, verified)
               takesPath = true },
     }
     local choice = EXTRACTORS[info.generation]
+    if zeldaImport then
+      choice = { module = "src.zelda.ZeldaImport", takesVersion = true }
+    end
     if not choice then
       error(("no extractor for %s (generation %s)")
             :format(tostring(version), tostring(info.generation)))
@@ -4574,6 +4773,7 @@ end
 -- Android mirrors ROM / mod import via love.system.pickFile("sav").
 function RomImporter:chooseSaveImport(version)
   if self.workState == "working" then return end
+  if GameVersion.isZelda(version) then return end
   if self.ios and love.system.getPickedFile then
     self.iosPendingKind = "sav"
     self.iosPendingVersion = version
@@ -4670,6 +4870,7 @@ end
 
 function RomImporter:exportSave(version)
   if self.workState == "working" then return end
+  if GameVersion.isZelda(version) then return end
   local ok, res = require("src.import.SaveFileIO").exportActiveSlot(version)
   if not ok then
     self.saveNotice[version] = { ok = false, text = tostring(res) }
@@ -4691,6 +4892,7 @@ function RomImporter:exportSave(version)
       return
     end
     self.androidPendingExportVersion = version
+    if love.system.createFile then releaseForPicker() end
     if love.system.createFile and love.system.createFile(suggested, love.filesystem.getSaveDirectory()) then
       self.pickPending = true
       self.pickTimer = 0
@@ -6736,7 +6938,13 @@ function RomImporter:draw()
   end
 
   -- Gamepad virtual cursor (drawn last so it sits above the CRT overlay).
-  if self._padCursorActive then
+  self:_drawPadCursor()
+end
+
+-- The sidebar paints its settings page after draw() returns, so while that page
+-- is up it sets _padCursorDeferred and draws the pointer itself, on top.
+function RomImporter:_drawPadCursor()
+  if self._padCursorActive and not self._padCursorDeferred then
     local x, y = self._padCursor.x, self._padCursor.y
     local hot = self._anyHover
     love.graphics.push("all")
@@ -7806,6 +8014,13 @@ function RomImporter:_drawTabBar(x, y, w, h, chip)
     { id = "white", letter = "W", top = PAL.chipWhiteTop,
       bot = PAL.chipWhiteBot, under = PAL.chipWhiteTop,
       label = Strings("WHITE"), ink = PAL.chipInkSilver },
+    -- Zelda (engine "zelda"): cartridges, so before the hacks, as in ORDER
+    { id = "alttp", letter = "LP", top = PAL.chipEmeraldTop,
+      bot = PAL.chipEmeraldBot, under = PAL.chipEmeraldTop,
+      label = Strings("ZELDA LTTP"), ink = PAL.chipInkSilver },
+    { id = "minishcap", letter = "MC", top = PAL.chipEmeraldTop,
+      bot = PAL.chipEmeraldBot, under = PAL.chipEmeraldTop,
+      label = Strings("MINISH CAP"), ink = PAL.chipInkSilver },
     -- Prism sits after Crystal: it is a Crystal romhack, so it belongs at the
     -- end of the Gen 2 run rather than beside the official carts.
     { id = "prism", letter = "P", top = PAL.chipPrismTop, bot = PAL.chipPrismBot,
@@ -8025,6 +8240,13 @@ function RomImporter:_drawGamePanel(version, x, y, w, h, paged)
   -- disabled and the pill still reads COMING SOON.
   local withheld = info ~= nil and info.importable == false
                    and not unlockedByEnv(version)
+  -- ZELDA: Pokemon-only tools (map editor, save editor, translate, .sav
+  -- import/export) stay off its page, and a build with no game module for it
+  -- says COMING SOON here rather than after the player picks a ROM
+  local zelda = info ~= nil and info.engine == "zelda"
+  if zelda and not withheld and not self.ready[version] then
+    withheld = not require("src.zelda.ZeldaRegistry").supported(version)
+  end
   local locked = info == nil or withheld
   local partial = withheld
   -- A VERSION THAT IMPORTS BUT HAS NOT BEEN PROVEN.
@@ -8203,6 +8425,7 @@ function RomImporter:_drawGamePanel(version, x, y, w, h, paged)
     for _, sl in ipairs(self.slots[version] or {}) do
       if sl.id == activeId and sl.exists then sfExportEnabled = true; break end
     end
+    if zelda then sfImportEnabled, sfExportEnabled = false, false end
   end
   local sfNotice = (not locked) and self.saveNotice[version] or nil
   local sfHintText, sfHintCol
@@ -8210,6 +8433,8 @@ function RomImporter:_drawGamePanel(version, x, y, w, h, paged)
     sfHintText, sfHintCol = sfNotice.text, (sfNotice.ok and PAL.green or PAL.red)
   elseif locked then
     sfHintText, sfHintCol = "Not available yet.", PAL.warning
+  elseif zelda then
+    sfHintText, sfHintCol = "Saves for this game live in the save slots.", PAL.warning
   elseif self.android then
     sfHintText, sfHintCol =
       "Import or export a .sav with the system file picker.", PAL.warning
@@ -8243,7 +8468,7 @@ function RomImporter:_drawGamePanel(version, x, y, w, h, paged)
   -- The precondition itself has not moved: with no imported cache the editor
   -- opens on an empty map list, which looks broken rather than absent.
   local canMapEdit = (ready and not locked) and true or false
-  local showMapBtn = self.onEditMaps and true or false
+  local showMapBtn = (self.onEditMaps and not zelda) and true or false
   -- The row is reserved when EITHER button wants it. Keying the height off
   -- onEditTouchControls alone left touchY equal to playY on a build without
   -- it, which drew the map button straight over Play.
@@ -8346,6 +8571,7 @@ function RomImporter:_drawGamePanel(version, x, y, w, h, paged)
   -- Map Editor beside it when this game is imported: the two share the row,
   -- each taking half, so adding the second button did not push Play down.
   local tools={{rect="translateGameRect",label="Translate",enabled=true}}
+  if zelda then tools={} end
   if self.onEditTouchControls then table.insert(tools,1,{rect="touchControlsRect",label="Touch Controls",enabled=true})end
   if showMapBtn then table.insert(tools,#tools,{rect="mapEditorRect",label=MAP_EDITOR_LABEL,enabled=canMapEdit})end
   local toolW=(colW-(#tools-1)*10*s)/#tools
@@ -8750,6 +8976,46 @@ function RomImporter:_launcherSettingsRows()
   add({kind="action",label="TRANSLATE IMPORTED GAMES",value="START",action="translateAll"})
   add({kind="progress",label="TRANSLATION STATUS"})
 
+  -- ------- online (docs/online-design.md WS10).  The same save.options.online
+  -- every game's OPTIONS > ONLINE screen edits (src/ui/online/OnlineSettings);
+  -- the switches and numbers are here, the typed fields are shown and edited
+  -- in game, because this drawer has no text editor.
+  do
+    local okOS, OnlineSettings = pcall(require, "src.ui.online.OnlineSettings")
+    if okOS then
+      local okP, info = pcall(function() return require("src.core.Platform").online() end)
+      info = okP and info or {}
+      local status = info.available and "READY" or (info.relayOnly and "RELAY ONLY" or "OFF")
+      add({ kind = "section", label = "ONLINE",
+            note = "Linking, worlds and codes. Hub, address and name are set in a game: OPTIONS, ONLINE." })
+      add({ kind = "action", label = "THIS DEVICE", value = status, action = "none",
+            note = info.reason })
+      local onOff = { false, true }
+      local onOffLabels = { [false] = "OFF", [true] = "ON" }
+      add({ kind = "option", scope = "online", label = "PORT",
+            row = { id = "port", type = "number", min = OnlineSettings.Model.PORT_MIN,
+                    max = OnlineSettings.Model.PORT_MAX, default = 7777 } })
+      add({ kind = "option", scope = "online", label = "ROUTER PORT OPENING",
+            row = { id = "portMap", values = onOff, labels = onOffLabels } })
+      add({ kind = "option", scope = "online", label = "RELAY FOR SHORT CODES",
+            row = { id = "allowRelay", values = onOff, labels = onOffLabels } })
+      add({ kind = "option", scope = "online", label = "ADDRESS FINDER (STUN)",
+            row = { id = "stun", values = onOff, labels = onOffLabels } })
+      add({ kind = "option", scope = "online", label = "LIST ON THIS NETWORK",
+            row = { id = "lanBeacon", values = onOff, labels = onOffLabels } })
+      add({ kind = "option", scope = "online", label = "WORLD PLAYERS",
+            row = { id = "worldCap", type = "number", min = OnlineSettings.Model.CAP_MIN,
+                    max = OnlineSettings.Model.CAP_MAX, default = 8 } })
+      local s = OnlineSettings.Model.read(self:_settings())
+      add({ kind = "action", label = "LINK HUB", value = s.hubAddress or "DEFAULT RELAY", action = "none" })
+      add({ kind = "action", label = "MY PUBLIC ADDRESS", value = s.manualAddress or "AUTO", action = "none" })
+      add({ kind = "action", label = "DISPLAY NAME", value = s.displayName or "TRAINER NAME", action = "none",
+            note = OnlineSettings.Model.codesShowIp(s)
+              and "Direct codes can show your internet address to whoever you give them to."
+              or "Direct codes stay on your own network (router and finder off, no address)." })
+    end
+  end
+
   -- ------- where games are installed
   add({ kind = "section", label = "GAME DATA FOLDER",
         note = self:_dataDirNote() })
@@ -8804,6 +9070,21 @@ function RomImporter:_launcherSettingsRows()
           action = "none",
           note = "This platform has no folder to point at; games stay in the "
               .. "app's own storage." })
+  end
+
+  -- ------- a second display: the Thor's lower panel, or a TV being cast to.
+  -- The same choice as every game's OPTIONS > TV / CAST (src/ui/CastDisplay
+  -- .lua), and only where an Android host that reads it is running.
+  do
+    local okCast, CastDisplay = pcall(require, "src.ui.CastDisplay")
+    if okCast and CastDisplay.supported() then
+      local labels = {}
+      for _, m in ipairs(CastDisplay.MODES) do labels[m] = CastDisplay.LABELS[m] end
+      add({ kind = "section", label = "TV / CAST", note = CastDisplay.note() })
+      add({ kind = "option", scope = "cast", label = CastDisplay.ROW_LABEL,
+            row = { id = "castDisplay", values = CastDisplay.MODES,
+                    labels = labels } })
+    end
   end
 
   -- ------- how the launcher looks
@@ -8957,7 +9238,14 @@ end
 
 -- The current value of one entry, whichever scope it lives in.
 function RomImporter:_settingValue(entry)
+  -- TV / CAST lives beside the Android host, not in the options file
+  if entry.scope == "cast" then
+    return require("src.ui.CastDisplay").effective()
+  end
   local opts = self:_settings()
+  if entry.scope == "online" then -- save.options.online (OnlineSettings.Model)
+    return require("src.ui.online.OnlineSettings").Model.read(opts)[entry.row.id]
+  end
   if entry.scope=="translation" then
     local per=opts.translationPerGame and opts.translationPerGame[entry.version] or {}
     return per[entry.row.id] or (entry.row.id=="target" and "inherit" or opts.translationSource or "en")
@@ -8993,7 +9281,21 @@ function RomImporter:_settingValue(entry)
 end
 
 function RomImporter:_setSettingValue(entry, value)
+  if entry.scope == "cast" then
+    require("src.ui.CastDisplay").set(value)
+    -- the section's note names the display that was found; re-lay it
+    self._settingsRowCache = nil
+    return
+  end
   local opts = self:_settings()
+  if entry.scope == "online" then
+    local Model = require("src.ui.online.OnlineSettings").Model
+    local s = Model.read(opts)
+    s[entry.row.id] = value
+    Model.write(opts, s)
+    self._settingsRowCache = nil
+    return
+  end
   if entry.scope=="launcher" and entry.row.id=="launcherLanguage"then
     opts.launcherLanguage=value
     require("src.translation.Service").setLauncher(opts)
@@ -9148,6 +9450,9 @@ function RomImporter:_stepSetting(entry, dir)
   -- options file, where a future build would have to decide what a stale one
   -- means.
   if entry.scope == "settingsGen" then return end
+  -- second_display/mode.txt was written by the set above; nothing of this
+  -- row is in the options file
+  if entry.scope == "cast" then return end
   local opts = self:_settings()
   local ok = pcall(function()
     require("src.core.SaveData").saveOptions(opts)
@@ -9754,7 +10059,7 @@ function RomImporter:_drawSaveSlotPanel(version, x, y, w, h, paged)
         -- this slot's file. Only when the host supplied onEditSave and the
         -- slot actually holds a save.
         local erect = nil
-        if self.onEditSave and slot.exists then
+        if self.onEditSave and slot.exists and not GameVersion.isZelda(version) then
           local edW = self.hintFont:getWidth("Edit") + 24 * s
           local edX = delX - btnGap - edW
           erect = self:_chipButton(edX, delY, "Edit", {
@@ -9818,6 +10123,8 @@ function RomImporter:_drawSaveSlotPanel(version, x, y, w, h, paged)
           -- files are there but none decodes: NOT an empty slot (a click on
           -- Play must not read as "start over here")
           metaTxt = Strings("unreadable - Restore picks a backup")
+        elseif slot.exists and slot.meta and slot.meta.line then
+          metaTxt = slot.meta.line
         elseif slot.exists and slot.meta then
           metaTxt = Strings("%d badges - %s - %d caught", slot.meta.badges or 0, slot.meta.timeText or "0:00",
             slot.meta.dexCount or 0)

@@ -229,17 +229,27 @@ find "$STAGE" -type f \( \
 # mods panel.  The failure mode of an absent CONTENT entry is one line in a
 # build log ("skipping absent mods") and no other sign at all, which is how
 # that lasted.  A contract entry turns it into a failed build.
+# EMERALD_3DS_VOXEL's lib/bake (and its recipe) is how a release, which has
+# no Python and no generated/, builds the voxels from the player's ROM in
+# game: without it the E3DS 3D row draws nothing.
 for required in main.lua conf.lua src/core/Version.lua \
                 tools/save-editor/App.lua tools/save-editor/Kit.lua \
                 tools/save-editor/panels/Party.lua \
                 tools/map-editor/MapEdits.lua \
                 tools/map-editor/ModExport.lua \
                 tools/map-editor/panels/Preview.lua \
+                src/online/hub/Hub.lua \
+                src/online/hub/HubThread.lua \
+                src/online/LauncherHub.lua \
                 mods/DRAMATIC_SHAPE/manifest.json \
                 mods/DRAMATIC_SHAPE/main.lua \
                 mods/EMERALD_3DS_VOXEL/manifest.json \
                 mods/EMERALD_3DS_VOXEL/main.lua \
-                mods/EMERALD_3DS_VOXEL/bake/bake.py; do
+                mods/EMERALD_3DS_VOXEL/bake/bake.py \
+                mods/EMERALD_3DS_VOXEL/lib/BakeJob.lua \
+                mods/EMERALD_3DS_VOXEL/lib/BakeThread.lua \
+                mods/EMERALD_3DS_VOXEL/lib/bake/Bake.lua \
+                mods/EMERALD_3DS_VOXEL/lib/bake/recipes/BPEE.vtree; do
   [ -e "$STAGE/$required" ] || fail "payload is missing $required"
 done
 
