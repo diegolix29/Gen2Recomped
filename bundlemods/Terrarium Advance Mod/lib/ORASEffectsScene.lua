@@ -420,6 +420,49 @@ function S.busy()
   return ok and b == true
 end
 
+-- The cartridge's own ball / send-out scripts (Gen 1/2 animation names, the
+-- engine's BALL_ANIMS less the pic hide/show rows): they are not the move,
+-- and nothing 3D draws them, so they keep their 2D layer.
+S.NATIVE_KEEP = {
+  TOSS_ANIM = true, GREATTOSS_ANIM = true, ULTRATOSS_ANIM = true,
+  BLOCKBALL_ANIM = true, POOF_ANIM = true, SHAKE_ANIM = true, SHINY_ANIM = true,
+}
+
+-- A 3D model stands on the staged field (3D-3D: ORAS / Colosseum / Stadium
+-- per species through ChainBattleMon).
+local function modelOut(battle)
+  local okS, Stadium = pcall(V.require, "Stadium")
+  if not (okS and Stadium) then return false end
+  for _, side in ipairs({ "player", "enemy" }) do
+    local ok, c = pcall(Stadium.covers, battle, side)
+    if ok and c then return true end
+  end
+  local ok, st = pcall(Stadium.standing)
+  return ok and st == true
+end
+
+-- Whether the cartridge's 2D move-animation layer stays off this frame.
+-- Before, it was cut only while an ORAS run was busy, so the GB particles
+-- showed whenever the native animation outlived the ORAS timeline, started
+-- after it, or the move had no ORAS timeline at all. Now, on a staged 3D-BTL
+-- with ORAS FX on and a 3D model out, every native MOVE animation is cut for
+-- its whole length (ball throws keep theirs); on the sprite rungs it is still
+-- cut while an ORAS run plays.
+function S.cutsNativeAnim(battle)
+  if not (battle and battle.dramaticShapeShot) then return false end
+  if S.busy() then return true end
+  local okA, on = pcall(function() return Effects().active() end)
+  if not (okA and on) then return false end
+  if not modelOut(battle) then return false end
+  -- the resting ball after a catch, and the ball scripts themselves
+  if battle.animPlaying then
+    if battle.animName and S.NATIVE_KEEP[tostring(battle.animName)] then return false end
+  elseif battle.lockedBall and not battle.gen3AnimPlaying then
+    return false
+  end
+  return true
+end
+
 -- BattleScene.render, after the 3D pass resolved into `canvas` (pw x ph)
 function S.draw(canvas, pw, ph, vp)
   if not (canvas and vp and S.busy()) then return false end
@@ -470,7 +513,7 @@ function S.install()
   local innerAnim = BattleState.drawAnimLayer
   if type(innerAnim) == "function" then
     function BattleState:drawAnimLayer(...)
-      if self.dramaticShapeShot and S.busy() then return end
+      if S.cutsNativeAnim(self) then return end
       return innerAnim(self, ...)
     end
   end

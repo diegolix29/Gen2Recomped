@@ -1611,6 +1611,37 @@ function OverworldBattle.install()
     Gen3Battle.__cbeTexPlacementHook = true
   end)
 
+  -- Gen 3's two move-animation draws that reach past every seam above.
+  -- Gen3Battle.draw calls them itself, so on a staged shot they put flat 2D
+  -- copies of the Pokemon and the GBA particles straight over the 3D frame:
+  --   * drawGen3MonBg: the "monbg" copies of a battler's PIC (the target of
+  --     most hits, the attacker of many moves) at its old screen slot. The
+  --     mons are geometry here and their pics are cut, so the copies are too.
+  --   * Gen3Battle.drawMoveOamObjects: battlers and particles sorted as one
+  --     OAM list, the particles drawn directly. Declined while staged, so
+  --     Gen3Battle.draw takes its plain path (drawPicsLayer, cut above) and
+  --     the particles come through drawAnimLayer, where the ORAS cut and the
+  --     staging offset apply (lib/ORASEffectsScene.lua).
+  pcall(function()
+    local Gen3Battle = require("src.battle.Gen3Battle")
+    if Gen3Battle and type(Gen3Battle.drawMoveOamObjects) == "function"
+       and not Gen3Battle.__stagedOamHook then
+      local innerOam = Gen3Battle.drawMoveOamObjects
+      function Gen3Battle.drawMoveOamObjects(battle, ...)
+        if battle and battle.dramaticShapeShot then return false, "staged-3d" end
+        return innerOam(battle, ...)
+      end
+      Gen3Battle.__stagedOamHook = true
+    end
+  end)
+  if type(BattleState.drawGen3MonBg) == "function" then
+    local innerMonBg = BattleState.drawGen3MonBg
+    function BattleState:drawGen3MonBg(...)
+      if self.dramaticShapeShot then return end
+      return innerMonBg(self, ...)
+    end
+  end
+
   -- ------- the shiny arrival sparkle, on every rung this file draws
   --
   -- Called from BOTH branches below, because both are a complete battle
