@@ -63,6 +63,30 @@ FreeMove.RADIUS = 5.5
 FreeMove.WALK = 1.0
 FreeMove.BIKE = 2.0
 
+-- ------- the run, asked of the engine
+--
+-- The free walk replaces the grid step, so it must ask the same pace rule
+-- the grid step does: Player:applyPace.  That covers every game -- Hoenn /
+-- Sinnoh / Unova shoes and their gates, Prism's B, and on Gen 1/2 the QoL
+-- "hold B to run" jog, which rides the movement.speed hook (the engine's
+-- runFrames answers nil there).  It used to read a `holdBToRun` option that
+-- nothing defines, so B did nothing here and Player.running was never set:
+-- no run, and no run animation on the player model.
+--
+-- Returns the run speed in world px per frame, or nil to walk.
+function FreeMove.runSpeed(state)
+  local Game = require("src.core.Game")
+  if Game.save and Game.save.onBike then return nil end
+  local p = state and state.player
+  -- FREE FLY owns the pace in the air (its own movement.speed wrap)
+  if not p or p.surfing or p.freeFlying or not p.applyPace then return nil end
+  local walk = p.stepFrames or 16
+  local ok, frames = pcall(p.applyPace, p, Game.save, walk)
+  if not ok or type(frames) ~= "number" or frames <= 0 then return nil end
+  if frames >= walk then return nil end   -- no faster than a walk is no run
+  return FreeMove.WALK * walk / frames
+end
+
 local EPS = 0.01
 
 -- the free position (player centre, world px) and the px/py we last wrote
@@ -394,7 +418,10 @@ function FreeMove.tick(state)
     end
   end
 
-  if not moving then return end
+  if not moving then
+    p.running = false   -- standing still is not running
+    return
+  end
 
   -- and once there IS a direction of travel, the body may point along it
   -- rather than along the head: on the boom (3RD) you can see yourself, so
@@ -408,12 +435,14 @@ function FreeMove.tick(state)
   -- the rung was picked
   state.bumpCooldown = math.max(0, (state.bumpCooldown or 0) - 1)
 
-  local speed = (Game.save and Game.save.onBike) and FreeMove.BIKE
+  -- the bike's own speed, else the engine's run, else the walk
+  local sprint = FreeMove.runSpeed(state)
+  local speed = ((Game.save and Game.save.onBike) and FreeMove.BIKE)
+                or sprint
                 or FreeMove.WALK
-  -- Hold B to run: 2x movement speed when option enabled and B held
-  if Game.save and Game.save.options and Game.save.options.holdBToRun and input:isDown("b") then
-    speed = speed * 2
-  end
+  -- The player model (ORAS / 2D run sheet) reads Player.running.  The grid
+  -- step sets it; this walk replaces the grid step, so it sets it here.
+  p.running = sprint ~= nil
   local dx, dz = wx * speed, wz * speed
 
   -- AN EDDY IS NOT A WALL, WHICH IS WHY THE BLOCKED-PUSH LIST COULD NOT HOLD
