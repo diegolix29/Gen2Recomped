@@ -305,6 +305,25 @@ end
 
 -- --------------------------------------------------------------- shader
 
+-- Shadows: the battlers are in the sun pass (ShadowMap, filled by
+-- BattleScene.castShadows over S.shadowBox); the stage only receives. The
+-- stage casts nothing, so the bias only has to clear the map's own depth
+-- steps and a shadow starts at the feet.
+S.SHADOW = 0.5            -- how far into black a shadowed stage texel goes
+S.SHADOW_BIAS = 0.12      -- world px of slack at the comparison
+S.SHADOW_REACH = 44       -- half the side of the sun pass's box, world px
+S.SHADOW_HEIGHT = 48      -- and its height over the ground
+
+-- The box the sun pass covers for this arena: both bases and what stands on
+-- them, as ShadowMap.begin's `box`. Tight on purpose: the battle view's own
+-- box is three times as wide, for a third of the texels under each Pokemon.
+function S.shadowBox(arena, groundY)
+  if not (arena and arena.mid) then return nil end
+  local r, g = S.SHADOW_REACH, groundY or 0
+  return { arena.mid[1] - r, arena.mid[2] - r, arena.mid[1] + r, arena.mid[2] + r,
+           g - 4, g + S.SHADOW_HEIGHT }
+end
+
 local SHADER = [[
 uniform mat4 vp;
 uniform mat4 model;
@@ -312,30 +331,69 @@ uniform vec4 kc;
 uniform float cutout;
 uniform vec4 uvA;
 uniform vec2 uvB;
+varying vec3 vSun;
 #ifdef VERTEX
-vec4 position(mat4 t, vec4 p) { return vp * model * p; }
+uniform highp mat4 sunVP;
+vec4 position(mat4 t, vec4 p) {
+  vec4 w = model * p;
+  vSun = (sunVP * w).xyz;
+  return vp * w;
+}
 #endif
 #ifdef PIXEL
+uniform Image sunMap;
+uniform float sunDark;
+uniform float sunBias;
+uniform vec2 sunTexel;
+// the two-channel depth ShadowMap writes: high byte, then low
+float sunDepth(vec2 uv) {
+  vec4 c = Texel(sunMap, uv);
+  return c.r + c.g * (1.0 / 255.0);
+}
+// 1.0 in the sun, 1.0 - sunDark in full shadow
+float sunShade(vec3 p) {
+  if (sunDark <= 0.0) return 1.0;
+  if (p.x < 0.0 || p.x > 1.0 || p.y < 0.0 || p.y > 1.0 || p.z > 1.0) return 1.0;
+  vec2 e = min(p.xy, 1.0 - p.xy);
+  float edge = smoothstep(0.0, 0.06, min(e.x, e.y));
+  float z = p.z - sunBias;
+#ifdef SUN_ONE_TAP
+  float lit = step(z, sunDepth(p.xy));
+#else
+  vec2 h = sunTexel * 0.5;
+  float lit = (step(z, sunDepth(p.xy + vec2(-h.x, -h.y)))
+             + step(z, sunDepth(p.xy + vec2( h.x, -h.y)))
+             + step(z, sunDepth(p.xy + vec2(-h.x,  h.y)))
+             + step(z, sunDepth(p.xy + vec2( h.x,  h.y)))) * 0.25;
+#endif
+  return 1.0 - sunDark * edge * (1.0 - lit);
+}
 vec4 effect(vec4 color, Image tex, vec2 uv, vec2 sc) {
   vec2 t = vec2(uv.x * uvA.x + uv.y * uvA.z + uvB.x, uv.x * uvA.y + uv.y * uvA.w + uvB.y);
   vec4 c = Texel(tex, t) * color * kc;
   if (c.a <= cutout + 0.004) discard;
+  c.rgb *= sunShade(vSun);
   return c;
 }
 #endif
 ]]
 
-local shader = nil
+-- two builds: SHADOWS LOW reads the map once, the others four times
+local shaders = {}
 local function getShader()
-  if shader == nil then
-    local ok, sh = pcall(love.graphics.newShader, SHADER)
-    shader = ok and sh or false
+  local oneTap = false
+  pcall(function() oneTap = not V.require("Quality").softShadows() end)
+  local key = oneTap and "one" or "four"
+  if shaders[key] == nil then
+    local src = (oneTap and "#define SUN_ONE_TAP 1\n" or "") .. SHADER
+    local ok, sh = pcall(love.graphics.newShader, src)
+    shaders[key] = ok and sh or false
     if not ok then
       local l = V.mod and V.mod.log
       if l and l.warn then pcall(l.warn, l, "ORAS ARENA: shader failed: %s", tostring(sh)) end
     end
   end
-  return shader or nil
+  return shaders[key] or nil
 end
 
 -- ------------------------------------------------------------------- draw
@@ -350,6 +408,7 @@ end
 -- Material animations: ORAS runs them at 30 fps and loops them.
 S.ANIM_FPS = 30
 local IDENT_A, IDENT_B = { 1, 0, 0, 1 }, { 0, 0 }
+local IDENT_M = Mat4.identity()
 
 -- the live texture matrix of an animated mesh, as the shader's uvA / uvB
 -- (PICA matrix, then v flipped for LOVE, which the bake left undone)
@@ -365,11 +424,13 @@ local function animUV(it, now)
   return { m.m11, -m.m12, m.m21, -m.m22 }, { m.m41, 1 - m.m42 }
 end
 
-local function drawList(sh, list, matrix, pass, now)
+local function drawList(sh, list, matrix, pass, now, dark)
   local g = love.graphics
   pcall(sh.send, sh, "model", "row", matrix)
   for _, it in ipairs(list) do
     if it.pass == pass then
+      -- light (additive) meshes take no shadow
+      pcall(sh.send, sh, "sunDark", it.blend == "add" and 0 or dark)
       pcall(sh.send, sh, "kc", it.kc)
       pcall(sh.send, sh, "cutout", it.cutout)
       local ua, ub = IDENT_A, IDENT_B
@@ -418,12 +479,26 @@ function S.draw(arena, groundY)
         end
       end
     end
+    -- the sun's frame, filled by BattleScene.castShadows before this pass.
+    -- The sampler is always bound (a blank stands in while there is no map).
+    local ShadowMap = V.require("ShadowMap")
+    local lit = ShadowMap.active() and true or false
+    local dark = lit and S.SHADOW or 0
+    local depth = ShadowMap.extent and ShadowMap.extent[3] or 400
+    local texel = 1 / math.max(1, ShadowMap.res or 1024)
+    pcall(sh.send, sh, "sunVP", "row", lit and ShadowMap.uvVP or IDENT_M)
+    local map = ShadowMap.texture()
+    if map then pcall(sh.send, sh, "sunMap", map) end
+    pcall(sh.send, sh, "sunBias", S.SHADOW_BIAS / math.max(1, depth))
+    pcall(sh.send, sh, "sunTexel", { texel, texel })
+    S.shadowState = lit and "on" or "off"
     local now = clock()
     for pass = 1, 3 do
       g.setDepthMode("lequal", pass == 1)
-      if F then drawList(sh, F, mStage, pass, now) end
-      drawList(sh, G, mStage, pass, now)
-      for _, mb in ipairs(bases) do drawList(sh, O, mb, pass, now) end
+      -- the far backdrop stands outside the sun pass's box
+      if F then drawList(sh, F, mStage, pass, now, 0) end
+      drawList(sh, G, mStage, pass, now, dark)
+      for _, mb in ipairs(bases) do drawList(sh, O, mb, pass, now, dark) end
     end
   end)
   g.setBlendMode("alpha", "alphamultiply")

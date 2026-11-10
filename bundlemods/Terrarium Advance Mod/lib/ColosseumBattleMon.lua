@@ -71,9 +71,9 @@
 --   no distinct "entrance" bank the way Stadium's context table does,
 --   so a send-out grows into the idle loop rather than a unique arrival
 --   pose -- see :play() below.
--- * No shadow-cast entry point exists on Actor yet, so Colosseum-mode
---   battlers cast no shadow (Stadium.cast's guard makes that a silent
---   no-op, never a crash).
+-- * Shadows: the rig's caster hands the sun pass to Actor:cast through the
+--   service's withCaster; a service without one casts nothing (Stadium.cast's
+--   guard makes that a silent no-op, never a crash).
 -- * worldRadius() is a flat fraction of worldHeight() (the same 0.4 ratio
 --   Stadium.captureBody already falls back to for a Stadium model with no
 --   measured radius), because Actor does not expose a measured footprint.
@@ -195,9 +195,22 @@ local function makeRig(mon)
     end, { eye = Voxel3D.eye })
     return ok and accepted ~= false
   end
-  function rig:caster(shadowMap, matrix) -- luacheck: ignore
-    -- see the file header: no shadow entry point on Actor yet
-    return false
+  -- The sun pass: the actor in its live pose through the service's caster
+  -- (PokemonActors Actor:cast). An older service without one casts nothing.
+  function rig:caster(shadowMap, matrix)
+    local actor = mon.actor
+    if not (actor and matrix and type(actor.cast) == "function") then
+      return false
+    end
+    local svc = service()
+    local lightVP = shadowMap and shadowMap.clipVP
+    if not (svc and lightVP and type(svc.withCaster) == "function") then
+      return false
+    end
+    local ok, cast = pcall(svc.withCaster, lightVP, function()
+      return actor:cast(matrix)
+    end)
+    return ok and cast == true
   end
   function rig:release()
     -- real teardown is ColosseumBattleMon:release(); Stadium.lua never

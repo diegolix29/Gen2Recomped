@@ -178,6 +178,25 @@ vec4 effect(vec4 color, Image texture, vec2 uv, vec2 screen) {
 }
 ]]
 
+-- The sun pass (ShadowMap): the same morph, drawn from the sun, writing the
+-- depth ShadowMap packs into two channels instead of a colour.
+local CASTER_VERTEX=VERTEX
+  :gsub("varying vec3 worldNormal;","varying vec3 worldNormal; varying float casterDepth;",1)
+  :gsub("return vp %* world;","vec4 lit = vp * world; casterDepth = lit.z * 0.5 + 0.5; return lit;",1)
+local CASTER_PIXEL=[[
+uniform vec4 materialColor;
+uniform float useTexture;
+uniform float opacity;
+varying float casterDepth;
+vec4 effect(vec4 color, Image texture, vec2 uv, vec2 screen) {
+  float a = mix(1.0, Texel(texture,uv).a, useTexture) * materialColor.a * opacity * color.a;
+  if (a < 0.5) discard;
+  float d = clamp(casterDepth, 0.0, 1.0) * 255.0;
+  return vec4(floor(d) / 255.0, fract(d), 0.0, 1.0);
+}
+]]
+local casterShader       -- nil = untried, false = unavailable
+
 local shader
 local scenes={}          -- [dex] = {groups,bounds,clip,morphFrames,...}
 local sceneErrors={}     -- transient diagnostic, never a permanent negative cache
@@ -1989,6 +2008,34 @@ function GLOW.flush()
   GLOW.flushing=false
 end
 
+-- How solid the actor is this frame: its own opacity through the send-out,
+-- recall and faint fades. Shared by the draw and the shadow cast.
+local function fadeOpacity(self,spawn)
+  local opacity=self.opacity or 1
+  if spawn<1 and not self.recallAge and not self.faintAge then
+    opacity=opacity*(0.34+spawn*0.66)
+  end
+  if self.recallAge then
+    local u=self.recallScale~=nil and (1-clamp(self.recallScale,0,1))
+      or clamp(self.recallAge/RECALL_DURATION,0,1)
+    opacity=opacity*(1-u)
+  elseif self.faintAge then
+    local clip=self:stateDuration("faint")
+    if self.nativeSlotSampled then
+      -- Preserve the complete authored faint clip. 1.5.29 began fading the
+      -- model at 62% of the native animation, which visually amputated the
+      -- death performance before Colosseum's source pose had finished. Only
+      -- after the final authored frame do we run CBE's short removal tail.
+      local tail=clamp((self.faintAge-clip)/FAINT_REMOVAL_TAIL,0,1)
+      opacity=opacity*(1-tail)
+    else
+      local u=clamp(self.faintAge/clip,0,1)
+      if u>0.72 then opacity=opacity*(1-(u-0.72)/0.28) end
+    end
+  end
+  return opacity
+end
+
 function Actor:draw(matrix,mode)
   local sc=self.scene
   if not (sc and shader) then return false end
@@ -2023,28 +2070,7 @@ function Actor:draw(matrix,mode)
   shader:send("shinyRouteR",rows[1]);shader:send("shinyRouteG",rows[2]);shader:send("shinyRouteB",rows[3])
   shader:send("shinyGain",self.shinyGain or (Shiny and Shiny.identityGain) or {1,1,1})
 
-  local opacity=self.opacity or 1
-  if spawn<1 and not self.recallAge and not self.faintAge then
-    opacity=opacity*(0.34+spawn*0.66)
-  end
-  if self.recallAge then
-    local u=self.recallScale~=nil and (1-clamp(self.recallScale,0,1))
-      or clamp(self.recallAge/RECALL_DURATION,0,1)
-    opacity=opacity*(1-u)
-  elseif self.faintAge then
-    local clip=self:stateDuration("faint")
-    if self.nativeSlotSampled then
-      -- Preserve the complete authored faint clip. 1.5.29 began fading the
-      -- model at 62% of the native animation, which visually amputated the
-      -- death performance before Colosseum's source pose had finished. Only
-      -- after the final authored frame do we run CBE's short removal tail.
-      local tail=clamp((self.faintAge-clip)/FAINT_REMOVAL_TAIL,0,1)
-      opacity=opacity*(1-tail)
-    else
-      local u=clamp(self.faintAge/clip,0,1)
-      if u>0.72 then opacity=opacity*(1-(u-0.72)/0.28) end
-    end
-  end
+  local opacity=fadeOpacity(self,spawn)
   shader:send("opacity",clamp(opacity,0,1))
   -- Spawn uses a brief white materialization flash through spawnFlash above.
   -- This is intentionally a generic lifecycle cue, not mislabeled as a
@@ -2125,6 +2151,42 @@ function Actor:draw(matrix,mode)
   setEyeCell({},0)
   if love.graphics.setDepthMode then love.graphics.setDepthMode("lequal",true) end
   love.graphics.setShader()
+  return true
+end
+
+-- The actor into the sun pass, in the pose it is drawn in. Only inside
+-- A.withCaster. Flames, effect meshes and see-through helpers cast nothing;
+-- neither does an actor that has mostly faded out.
+function Actor:cast(matrix)
+  local sc=self.scene
+  local sh=casterShader
+  if not (sc and sh and A._casting and matrix) then return false end
+  local spawn=clamp(self.spawnScale==nil and 1 or self.spawnScale,0,1)
+  local opacity=clamp(fadeOpacity(self,spawn),0,1)
+  if opacity<0.5 then return false end
+  local w=self:frameWeights()
+  sh:send("model","row",matrix)
+  local playback=self:playbackBank()
+  local drawGroups=(not self.forceBasePlayback and playback and playback.groups) or sc.groups
+  if self.forceBasePlayback then
+    sh:send(W_UNIFORM[0],1)
+    for i=1,12 do sh:send(W_UNIFORM[i],0) end
+  else
+    for i=0,12 do sh:send(W_UNIFORM[i],w[i+1]) end
+  end
+  pcall(sh.send,sh,"opacity",opacity)
+  local hiddenGroups=(sc.source=="ORAS") and self:orasHiddenGroups() or nil
+  love.graphics.setColor(1,1,1,1)
+  for i,grp in ipairs(drawGroups) do
+    if grp.mesh and not (grp.glow or grp.effect or grp.noz or grp.shadow)
+        and not (hiddenGroups and hiddenGroups[i]) then
+      MATERIAL_RGBA[1],MATERIAL_RGBA[2],MATERIAL_RGBA[3]=1,1,1
+      MATERIAL_RGBA[4]=grp.alpha or 1
+      pcall(sh.send,sh,"materialColor",MATERIAL_RGBA)
+      pcall(sh.send,sh,"useTexture",grp.textured and 1 or 0)
+      pcall(love.graphics.draw,grp.mesh)
+    end
+  end
   return true
 end
 
@@ -2772,6 +2834,36 @@ function A.withRenderer(vp,callback,opts)
   pcall(g.setDepthMode)
   pcall(g.pop)
   A.drewThisFrame=true
+  if not ok then return false,result end
+  return result
+end
+
+-- The sun pass's counterpart of withRenderer: `lightVP` is ShadowMap.clipVP
+-- and the pass is already open on its canvas. The callback calls
+-- actor:cast(matrix). Everything it changes is put back, the pass's own
+-- shader included.
+function A.withCaster(lightVP,callback)
+  if casterShader==nil then
+    local ok,sh=pcall(love.graphics.newShader,CASTER_VERTEX,CASTER_PIXEL)
+    casterShader=(ok and sh) or false
+    if not ok then perf.casterShaderError=tostring(sh) end
+  end
+  local sh=casterShader
+  if not (sh and lightVP) then return false end
+  local g=love.graphics
+  if not pcall(g.push,"all") then return false end
+  A._casting=true
+  local ok,result=pcall(function()
+    g.setShader(sh)
+    g.setDepthMode("lequal",true)
+    if g.setMeshCullMode then g.setMeshCullMode("none") end
+    -- replace, not alpha blend: these are packed depths, not colours
+    g.setBlendMode("replace","premultiplied")
+    sh:send("vp","row",lightVP)
+    return callback()
+  end)
+  A._casting=false
+  pcall(g.pop)
   if not ok then return false,result end
   return result
 end
@@ -4299,6 +4391,7 @@ A.service={
   acquireCached=function(source,dex,variant,opts) return A.acquireCached(source,dex,variant,opts) end,
   acquire=function(source,dex,variant,opts) return A.acquire(source,dex,variant,opts) end,
   withRenderer=function(vp,cb,opts) return A.withRenderer(vp,cb,opts) end,
+  withCaster=function(lightVP,cb) return A.withCaster(lightVP,cb) end,
   status=function() return A.status() end,
 }
 

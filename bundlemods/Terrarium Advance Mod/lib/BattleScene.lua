@@ -307,7 +307,15 @@ local function castShadows(state, arena, terrain, nbMesh, cx, cy, vw, vh,
   if not ShadowMap.available() then return end
   local sig = shadowSignature(state, arena, terrain, nbMesh, token)
   if not ShadowMap.stale(sig) then return end
-  if not ShadowMap.begin(cx, cy, vw, vh) then return end
+  -- an ORAS arena only shadows what stands on its two bases: a tight box
+  -- there instead of the whole view (ORASArenaStage.shadowBox)
+  local box = nil
+  if arena._oras then
+    pcall(function()
+      box = V.require("ORASArenaStage").shadowBox(arena, groundY or 0)
+    end)
+  end
+  if not ShadowMap.begin(cx, cy, vw, vh, box) then return end
 
   local discs = arena.discs and true or false
   if drawTerrain == nil then
@@ -322,8 +330,8 @@ local function castShadows(state, arena, terrain, nbMesh, cx, cy, vw, vh,
         fxCast = Port.castArena(ShadowMap, arena, groundY or 0) and true or false
       end
     end)
-    -- an ORAS arena's ground is not in the sun pass (its own shader does not
-    -- read the shadow map), and its discs are not drawn at all
+    -- an ORAS arena's ground casts nothing (its own shader only reads the
+    -- shadow map), and its discs are not drawn at all
     if not fxCast and not arena._oras then
       pcall(function()
         V.require("StadiumStage").cast(ShadowMap, arena, groundY or 0)
