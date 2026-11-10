@@ -141,6 +141,28 @@ function M.bakeModel(raw, writeTexture, opts)
       local mat = mats[mesh.materialIndex + 1]
       if mat and mat.tex and model.nodeVisible[mesh.nodeIndex] ~= false then
         local bind = H.bindPose(model, mesh)
+        -- opts.raw: true = the vertices as stored; "collapsed" = the bind
+        -- pose, except for a mesh whose bone shrinks it to nothing (the arena
+        -- bases wait at scale 1e-9 for their intro animation). A stage's
+        -- rocks, walls and gates are one mesh per bone, all modelled at the
+        -- origin: stored as-is they pile up in the middle of the arena.
+        local useRaw = opts.raw == true
+        if opts.raw == "collapsed" then
+          local function span(get)
+            local lo, hi = { math.huge, math.huge, math.huge }, { -math.huge, -math.huge, -math.huge }
+            for i = 1, #bind do
+              local q = get(i)
+              for a = 1, 3 do
+                if q[a] < lo[a] then lo[a] = q[a] end
+                if q[a] > hi[a] then hi[a] = q[a] end
+              end
+            end
+            return math.max(hi[1] - lo[1], hi[2] - lo[2], hi[3] - lo[3], 0)
+          end
+          local posed = span(function(i) return bind[i].position end)
+          local stored = span(function(i) return mesh.vertices[i].position or bind[i].position end)
+          useRaw = posed < stored * 1e-3
+        end
         local colors = mesh.vertices[1] and mesh.vertices[1].color ~= nil
         local v, idx = {}, {}
         -- the bone each vertex follows (first model only: 0x50 motions pose
@@ -160,7 +182,7 @@ function M.bakeModel(raw, writeTexture, opts)
             vbone[i] = bone or 1
           end
           local raw0 = mesh.vertices[i].uv0 or { 0, 0 }
-          local p = opts.raw and mesh.vertices[i].position or b.position
+          local p = useRaw and mesh.vertices[i].position or b.position
           v[#v + 1], v[#v + 2], v[#v + 3] = p[1], p[2], p[3]
           v[#v + 1], v[#v + 2] = raw0[1] or 0, raw0[2] or 0
           if colors then

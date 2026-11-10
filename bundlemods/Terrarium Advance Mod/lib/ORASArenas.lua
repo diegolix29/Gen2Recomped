@@ -41,7 +41,7 @@ local A = { ID = "oras_arenas", LABEL = "ORAS ARENAS" }
 
 A.ROOT = "oras/arenas"
 A.INDEX = A.ROOT .. "/index.lua"
-A.STAMP = "oras-arena=3"   -- 2: material animations (texture scroll / rotation); 3: ETC1 red / blue fix (PICA)
+A.STAMP = "oras-arena=4"   -- 2: material animations (texture scroll / rotation); 3: ETC1 red / blue fix (PICA); 4: stage meshes placed by their bones
 A.CHOICE = A.ROOT .. "/choice.txt"
 A.GARC_PATH = "a/1/3/6"
 A.IMPORT_ID = "pokemon_oras"
@@ -494,7 +494,7 @@ local function bake()
         end
         return key
       end
-      local okB, m, whyB = pcall(EM.bakeModel, bch, writeTexture, { raw = true, maxSpan = math.huge, const = true })
+      local okB, m, whyB = pcall(EM.bakeModel, bch, writeTexture, { raw = "collapsed", maxSpan = math.huge, const = true })
       local name = okB and m and m.name
       if name and name:match("^btl_[GFO]_") then
         local okU, uv = pcall(packUV, files)
