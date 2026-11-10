@@ -76,6 +76,9 @@ end
 local function worldCovered()
   local okG, Game = pcall(require, "src.core.Game")
   local ow = okG and type(Game) == "table" and Game.overworld or nil
+  -- the warm-up loader (lib/WarmUpScreen.lua) hides the world while it fills
+  local top = okG and type(Game) == "table" and Game.stack and Game.stack:top() or nil
+  if type(top) == "table" and top.coversWorld == true then return true end
   return (ow and ow.transitioning) and true or false
 end
 

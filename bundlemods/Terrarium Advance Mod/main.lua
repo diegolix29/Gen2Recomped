@@ -671,6 +671,11 @@ mod.content.render_pipelines:register(PIPE_VOXEL, {
     pcall(function()
       V.require("ORASTrainers").pump()
     end)
+    -- a first-time world bake the player skipped on the warm-up screen keeps
+    -- draining in quiet overworld frames (lib/WarmUpScreen.lua)
+    pcall(function()
+      V.require("WarmUpScreen").pumpBackground()
+    end)
     -- and the ORAS trainers in battle (lib/ORASBattleTrainers.lua): its
     -- performMove hook, installed once
     pcall(function()
@@ -3473,6 +3478,10 @@ mod.events:on("save.loaded", function()
   -- pinEngineFx). Answered here rather than only when the menu opens, so a
   -- player who never opens it is not left playing under one.
   pinEngineFx()
+  -- The warm-up loader (lib/WarmUpScreen.lua): build what this mod would
+  -- otherwise build in the first minute of play, before handing over.
+  -- Pushed here, inside restoreSave, so no frame of the cold world shows.
+  pcall(function() V.require("WarmUpScreen").onSaveLoaded() end)
 end)
 
 mod.events:on("save.created", function()
@@ -4312,6 +4321,8 @@ end
     StandaloneHost = loadColosseumModule("StandaloneHost")
     StadiumBridge = loadColosseumModule("StadiumBridge")
     ResidentPrewarm = loadColosseumModule("ResidentPrewarm")
+    -- the warm-up screen (lib/WarmUpScreen.lua) drains this same instance
+    V.ResidentPrewarm = ResidentPrewarm
     namespace.OverworldStadium = V.require("Stadium")
     V.ColosseumMoveFX = loadColosseumModule("ColosseumMoveFX")
     BattleRuntime = loadColosseumModule("BattleRuntime")

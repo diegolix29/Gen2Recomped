@@ -693,6 +693,22 @@ function S.pump(game,viewerOnly)
   return lastOk,#queue,lastLabel,totalMs
 end
 
+-- The warm-up screen's drain (lib/WarmUpScreen.lua): the same rows in the same
+-- order as pump, but back to back -- the quarter-second cooldown between rows
+-- exists to hide hitches during play, and behind the loader there is nothing
+-- to hide them from. Returns how many rows are still queued.
+function S.pumpNow(game,seconds)
+  local deadline=(clockNow() or 0)+(tonumber(seconds) or .008)
+  local rounds=0
+  repeat
+    nextAt=0
+    local _,left=S.pump(game)
+    rounds=rounds+1
+    if (tonumber(left) or #queue)==0 then break end
+  until rounds>=16 or (clockNow() or 0)>=deadline
+  return #queue
+end
+
 -- Leaving an information screen must not leave its suspended decoder holding
 -- the source lock while a battle waits on the shared model queue. Retire ONLY
 -- viewer jobs/leases; retain background catalog, arena and registry work.

@@ -2070,8 +2070,12 @@ end
 local lastSpend = 0    -- seconds this module burned last pump
 local avgOther = nil   -- smoothed seconds the REST of the frame costs
 
+-- A covering screen that still ANIMATES (lib/WarmUpScreen.lua) sets this to
+-- the slice its frame can spare; nil means the full covered slice.
+ChunkMesher.coveredSlice = nil
+
 local function sliceFor(urgent, covered)
-  if covered then return COVERED_SLICE end
+  if covered then return ChunkMesher.coveredSlice or COVERED_SLICE end
   local cap = urgent and URGENT_SLICE or IDLE_SLICE
   local dt = (love and love.timer and love.timer.getDelta
               and love.timer.getDelta()) or ChunkMesher.frameTarget
