@@ -149,8 +149,14 @@ local function piece(name)
           pcall(mesh.setVertexMap, mesh, ms.idx)
           mesh:setTexture(tex)
           local blend = ms.blend or "alpha"
+          -- Opaque (blend ONE / ZERO) meshes ignore their alpha on the 3DS:
+          -- no blend, and no alpha test unless the material turns it on. Many
+          -- of their textures carry alpha anyway (the bases' tops), which here
+          -- made holes that showed what lies behind (bluish beach bases).
+          local solid = blend == "opaque"
           list[#list + 1] = {
-            mesh = mesh, blend = blend, cutout = ms.cutout or 0, kc = ms.kc or { 1, 1, 1, 1 },
+            mesh = mesh, blend = blend, solid = solid and 1 or 0,
+            cutout = ms.cutout or (solid and -1 or 0), kc = ms.kc or { 1, 1, 1, 1 },
             -- a material animation (raw uvs + the material's texture matrix)
             uvt = ms.anim and ms.uvt or nil, uv = ms.anim and m.uv and m.uv[ms.mat] or nil,
             -- opaque first, then blended ones, additive last
@@ -329,6 +335,7 @@ uniform mat4 vp;
 uniform mat4 model;
 uniform vec4 kc;
 uniform float cutout;
+uniform float solid;
 uniform vec4 uvA;
 uniform vec2 uvB;
 varying vec3 vSun;
@@ -372,6 +379,7 @@ vec4 effect(vec4 color, Image tex, vec2 uv, vec2 sc) {
   vec2 t = vec2(uv.x * uvA.x + uv.y * uvA.z + uvB.x, uv.x * uvA.y + uv.y * uvA.w + uvB.y);
   vec4 c = Texel(tex, t) * color * kc;
   if (c.a <= cutout + 0.004) discard;
+  c.a = mix(c.a, 1.0, solid);
   c.rgb *= sunShade(vSun);
   return c;
 }
@@ -433,6 +441,7 @@ local function drawList(sh, list, matrix, pass, now, dark)
       pcall(sh.send, sh, "sunDark", it.blend == "add" and 0 or dark)
       pcall(sh.send, sh, "kc", it.kc)
       pcall(sh.send, sh, "cutout", it.cutout)
+      pcall(sh.send, sh, "solid", it.solid)
       local ua, ub = IDENT_A, IDENT_B
       if it.uvt and it.uv then
         local ok, a, b = pcall(animUV, it, now)

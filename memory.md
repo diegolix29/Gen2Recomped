@@ -531,3 +531,12 @@ Open questions for the user before writing: battle-model coverage is only 15 cha
 - Offline (lovec, real dump, real ORASArenas._packFiles / _packUV / _finish, old pack as reference): 132 pieces, 113 unchanged (every btl_O base), 19 changed: btl_G bike, city, do_0, do_s, gym6, sea, soko; btl_F akai, as_c, asas, city, hama, hm_c, kaza, kusa, mizu, saba, sea, yama (floors 12-49 cm, saba 135). Worst pull over the orbit after: do_0 / do_s 0.63, gym6 1.00, soko 0.54, sea 1.00. Renders: gym6 clear, do_0 an open cave, soko a cave with coral.
 - No change to S.clampEye. Caves still sit at 0.66 on the canonical shot (the wall ring ~7 m out): by design.
 - Next on the list: fragment lighting (bluish sand / water floors), then effect details.
+
+## 2026-11-10 — "Fragment lighting" item: was opaque materials drawn with alpha (uncommitted, untested in game)
+- The 2026-11-09 stage placement fix (camera do_0 / do_s / gym6) is confirmed in game by the user.
+- Survey of every btl_G / btl_F material in a/1/3/6: 1069 of 1070 use the plain combiner tex0 x vertex colour (stage 0) x constant (stage 1); one uses fragP. No fragment lighting, no second texture, no LUTs: the shader's math was already right. The desert now renders warm (the 2026-11-03 ETC1 R/B fix covered that part).
+- The bluish look was holes: 365 materials (every btl_O base top 'bon', saba ji1_2 / ji1_3 / ji3, kusa trees and flowers ...) are blend ONE / ZERO with alpha test off (0x104 = 0x10), so the 3DS ignores their alpha; our shader discarded alpha <= 0.004 and alpha-blended them, and their textures carry alpha (beach / grass base centres nearly clear), showing what lies behind.
+- Fix (ORASArenaStage only, no rebake): piece entries get solid = 1 for blend "opaque", cutout = -1 unless the material has an alpha test; shader uniform solid, c.a = mix(c.a, 1, solid) after the discard.
+- Offline renders (lovec, real dump, fresh bake, magenta clear): hama / kusa bases solid, mizu rock bank and kusa tree edges lose their fringes, saba / city / yama unchanged.
+- Noted, not changed: btl_G_saba mesh of btl_G_saba_fa1 has vertex colours averaging ~6.9 (clamped to 1 by the bake); 0x107 confirms our passes (blended: depth test LEQUAL, no depth write; opaque: depth write).
+- Next on the list: effect details (child emitters, ops 0x75 / 0x3A, Fly turn 1 snap), needs F12s. Small open one: ORAS trainers cast no shadow.
