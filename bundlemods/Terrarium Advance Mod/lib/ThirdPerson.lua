@@ -245,9 +245,33 @@ end
 --   ON the ground that the height field does not describe: house walls,
 --   trees, signs, counters. Held to CLEAR above that cell's ground so the
 --   short furniture of the world is passed over rather than bumped into.
-local function occupied(ow, wx, y, wz)
+-- THE CEILING. Indoors, with a lid drawn (lib/Ceiling.lua), the room is a
+-- closed box: the eye may not rise through the lid, and a riser -- a wall
+-- grown up to the lid -- stops the boom at any height, where outdoors CLEAR
+-- would let the eye pass over it. nil whenever no lid is on screen
+-- (outdoors, ceiling off, 3RD CEILING = NONE), which leaves the boom free.
+local function liveLid(ow)
+  if not (ow and ow.map) then return nil end
+  local okC, Ceiling = pcall(V.require, "Ceiling")
+  if not (okC and type(Ceiling) == "table" and Ceiling.lid) then return nil end
+  local ok, lid = pcall(Ceiling.lid, ow.map)
+  return (ok and lid) or nil
+end
+ThirdPerson.liveLid = liveLid
+
+-- The highest the eye may stand under a lid: PAD below it, so the near
+-- plane never clips the ceiling, and never lower than a short wall.
+local function lidCap(lid)
+  return math.max(lid.H - ThirdPerson.PAD, 8)
+end
+
+local function occupied(ow, wx, y, wz, lid)
   local map, cx, cy = cellAt(ow, wx, wz)
   if not map then return true end
+  if lid and map == lid.map then
+    local okS, solid = pcall(lid.solid, cx, cy)
+    if okS and solid then return true end
+  end
   local VoxelScene = V.require("VoxelScene")
   local okG, gh = pcall(VoxelScene.groundAt, map, cx, cy)
   gh = (okG and gh) or 0
@@ -267,9 +291,14 @@ ThirdPerson._occupied = occupied       -- named for the suite
 -- off whatever survives.
 function ThirdPerson.reach(ow, pivot, bx, by, bz, want)
   if not ow or want <= 0 then return math.max(0, want) end
+  -- under a lid the eye slides along the ceiling rather than rising
+  -- through it, so the march samples the same clamped path place() uses
+  local lid = liveLid(ow)
+  local cap = lid and lidCap(lid) or nil
   local function clear(t)
-    return not occupied(ow, pivot[1] + bx * t, pivot[2] + by * t,
-                        pivot[3] + bz * t)
+    local y = pivot[2] + by * t
+    if cap and y > cap then y = cap end
+    return not occupied(ow, pivot[1] + bx * t, y, pivot[3] + bz * t, lid)
   end
   local lo = 0
   local steps = math.ceil(want / ThirdPerson.STEP)
@@ -366,7 +395,8 @@ function ThirdPerson.place(pivot, lx, ly, lz, focus)
 
   local want = ThirdPerson.reachFor() * e
   ThirdPerson.want = want
-  local room = ThirdPerson.reach(overworld(), orbit, -lx, -ly, -lz, want)
+  local ow = overworld()
+  local room = ThirdPerson.reach(ow, orbit, -lx, -ly, -lz, want)
   -- in instantly, out only as fast as update() allows
   ThirdPerson.len = math.min(ThirdPerson.len, room)
   local len = ThirdPerson.len
@@ -390,6 +420,14 @@ function ThirdPerson.place(pivot, lx, ly, lz, focus)
   local eye = { orbit[1] - lx * len + sx,
                 orbit[2] - ly * len,
                 orbit[3] - lz * len + sz }
+  -- the ceiling stops the eye: it slides along under the lid instead of
+  -- rising through it (the aim stays put, so the shot tilts to keep the
+  -- player framed)
+  local lid = liveLid(ow)
+  if lid then
+    local cap = lidCap(lid)
+    if eye[2] > cap then eye[2] = cap end
+  end
   local aim = focus and { focus[1] + sx, focus[2] + up, focus[3] + sz }
               or nil
   return eye, aim

@@ -4,9 +4,9 @@
 -- v1/v2 proved the concept: a flat lid at wall height (16) closed the
 -- room in first person.  v3 is the liveable version:
 --
---   HEADROOM   the ceiling rides at 32 by default (AIRY; MID 24 and SNUG
---              16 are options), so the eye at 13 stands in a room rather
---              than a crawlspace.
+--   HEADROOM   the lid height, set per generation (HEADROOM-GEN1/2/3
+--              rows, a pixel ladder each), so the eye at 13 stands in a
+--              room rather than a crawlspace on every cartridge.
 --
 --   RISERS     walls rise to meet it.  Every wall-height cell grows side
 --              faces from its own top up to the ceiling, textured with
@@ -69,8 +69,53 @@ local Ceiling = {}
 -- fallback rows, governing only when the companion mod is absent
 Ceiling.setting = ModSetting.new("fpceiling", "FP CEILING",
                                  { true, false }, { "ON", "OFF" })
-Ceiling.headroom = ModSetting.new("fpheadroom", "HEADROOM",
-                                  { 32, 24, 16 }, { "AIRY", "MID", "SNUG" })
+-- HEADROOM, ONE ROW PER GENERATION.  Each cartridge draws its rooms at its
+-- own scale (Gen 2's interiors read cramped at Gen 1's lid, FRLG's tall
+-- furniture wants more again), so a single shared ladder with per-gen
+-- multipliers could never be set right for all of them.  Every generation
+-- now owns a plain pixel ladder, starting at its own default and cycling
+-- upward, wrapping to the low end.  Rows read "HEADROOM-GEN<n>".
+Ceiling.HEADROOM_STEPS = { 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 100, 128 }
+Ceiling.HEADROOM_DEFAULT = { [1] = 32, [2] = 100, [3] = 32 }
+Ceiling.HEADROOM_GENS = { 1, 2, 3 }
+local function headroomLadder(default)
+  local steps, start = Ceiling.HEADROOM_STEPS, 1
+  for i, v in ipairs(steps) do if v == default then start = i end end
+  local values, labels = {}, {}
+  for k = 0, #steps - 1 do
+    local v = steps[(start - 1 + k) % #steps + 1]
+    values[#values + 1] = v
+    labels[#labels + 1] = tostring(v) .. "PX"
+  end
+  return values, labels
+end
+Ceiling.headroomByGen = {}
+for _, g in ipairs(Ceiling.HEADROOM_GENS) do
+  local values, labels = headroomLadder(Ceiling.HEADROOM_DEFAULT[g] or 32)
+  Ceiling.headroomByGen[g] = ModSetting.new("fpheadroom_gen" .. g,
+    "HEADROOM-GEN" .. g, values, labels)
+end
+
+-- The live cartridge's generation, clamped to the rows that exist.
+function Ceiling.generation()
+  local ok, GameVersion = pcall(require, "src.core.GameVersion")
+  if ok and GameVersion and type(GameVersion.generation) == "function" then
+    local okGen, value = pcall(GameVersion.generation)
+    local n = okGen and tonumber(value)
+    if n and Ceiling.headroomByGen[n] then return n end
+  end
+  return 1
+end
+
+-- The lid height in pixels for a generation (the live one by default).
+function Ceiling.headroomFor(gen)
+  gen = gen or Ceiling.generation()
+  local s = Ceiling.headroomByGen[gen] or Ceiling.headroomByGen[1]
+  local ok, v = pcall(s.get, s)
+  v = ok and tonumber(v) or nil
+  return v or Ceiling.HEADROOM_DEFAULT[gen] or 32
+end
+
 Ceiling.cutaway = ModSetting.new("fpcutaway", "CUTAWAY",
                                  { true, false }, { "ON", "OFF" })
 
@@ -100,7 +145,7 @@ local function config()
   end
   return {
     ceiling = Ceiling.setting:get() == true,
-    headroom = Ceiling.headroom:get() or 32,
+    headroom = Ceiling.headroomFor(),
     cutaway = Ceiling.cutaway:get() == true,
   }
 end
@@ -204,8 +249,28 @@ local function borderTiles(map)
   local def = map.def
   local block = def and def.borderBlock
   local blocks = map.tileset and map.tileset.blocks
-  -- Gen3 tilesets don't have blocks field
-  if not blocks then return set end
+  -- Gen 3 has no block table: the border is a 2x2 patch of METATILES
+  -- (def.border, little-endian u16s, or a single def.borderBlock), and
+  -- map:tileAt answers the synthetic id metatile*4 + quadrant.  Without
+  -- this every FRLG/Hoenn room had an empty border set, so the black void
+  -- around it counted as WALL -- and the plainness test, which rewards the
+  -- fewest colours, crowned pure black as the ceiling's material.
+  if not blocks then
+    local metas = {}
+    local b = def and def.border
+    if type(b) == "string" and #b >= 8 then
+      for i = 0, 3 do
+        local lo, hi = b:byte(i * 2 + 1), b:byte(i * 2 + 2)
+        metas[#metas + 1] = (lo + hi * 256) % 1024
+      end
+    elseif block then
+      metas[1] = block
+    end
+    for _, m in ipairs(metas) do
+      for q = 0, 3 do set[m * 4 + q] = true end
+    end
+    return set
+  end
   local row = block and blocks[block + 1]
   for _, t in ipairs(row or {}) do set[t] = true end
   return set
@@ -252,13 +317,14 @@ local function scoreTiles(map, tex, candidates)
   local dw, dh = data:getWidth(), data:getHeight()
   local ts = map.tileset or {}
   local perRow = ts.tilesPerRow or 16
-  local scores = {}
+  local scores, dark = {}, {}
   for _, t in ipairs(candidates) do
     local ax = (t % perRow) * 8
     local ay = math.floor(t / perRow) * 8
     if ax + 8 <= dw and ay + 8 <= dh then
       local seen, distinct, edges = {}, 0, 0
       local prevRow = {}
+      local lum = 0
       for y = 0, 7 do
         local prev = nil
         for x = 0, 7 do
@@ -266,6 +332,7 @@ local function scoreTiles(map, tex, candidates)
             local rr, gg, bb = data:getPixel(ax + x, ay + y)
             return rr, gg, bb
           end)
+          if okP then lum = lum + ((r or 0) + (g or 0) + (b or 0)) / 3 end
           local key = okP and
             (math.floor((r or 0) * 15) .. "," .. math.floor((g or 0) * 15)
              .. "," .. math.floor((b or 0) * 15)) or "0"
@@ -275,11 +342,17 @@ local function scoreTiles(map, tex, candidates)
           prev, prevRow[x] = key, key
         end
       end
-      scores[t] = distinct * 3 + edges
+      -- a near-black tile is the void (or a shadow), never a material:
+      -- it scores as perfectly "plain" and must not win
+      if lum / 64 < 0.12 then
+        dark[t] = true
+      else
+        scores[t] = distinct * 3 + edges
+      end
     end
   end
   pcall(function() data:release() end)
-  return scores
+  return scores, dark
 end
 
 -- ------- the atlas UV of one 8px tile (ChunkMesher's uvRect, inset half
@@ -592,7 +665,18 @@ local function build(map, H, mode, pcx, pcy, tex)
   table.sort(candidates)
   local ceilTile = commonest
   local plainScore = nil
-  local scores = tex and scoreTiles(map, tex, candidates) or nil
+  local scores, dark = nil, nil
+  if tex then scores, dark = scoreTiles(map, tex, candidates) end
+  -- the commonest fallback must not be a dark tile either
+  if dark and ceilTile and dark[ceilTile] then
+    ceilTile = nil
+    for _, t in ipairs(candidates) do
+      if not dark[t] and (not ceilTile or tally[t] > tally[ceilTile]) then
+        ceilTile = t
+      end
+    end
+    ceilTile = ceilTile or commonest
+  end
   if scores then
     for _, t in ipairs(candidates) do
       local s = scores[t]
@@ -1254,7 +1338,16 @@ local function build(map, H, mode, pcx, pcy, tex)
   note = note .. ((lamps > 0) and (", %d fittings"):format(lamps) or "")
   note = note .. ((rocks > 0) and (", %d rock, %d spikes")
                                   :format(rocks, spikes) or "")
-  return mesh, note, pMesh, posterImg, gMesh, dMesh
+  -- what the third-person boom needs to collide with the room as built:
+  -- the void ring and the risers (wall cells grown to the lid, minus the
+  -- cutaway's melted rows)
+  local facts = {
+    solid = function(cx, cy)
+      if outside(cx, cy) then return true end
+      return isWall[cy][cx] and h[cy][cx] >= WALL_H and not melted(cy)
+    end,
+  }
+  return mesh, note, pMesh, posterImg, gMesh, dMesh, facts
 end
 
 -- ------- SELF-UNINSTALL.
@@ -1392,8 +1485,32 @@ local function guarded(fn)
   if pushed then pcall(g.pop) end
 end
 
+-- ------- THE LIVE LID, for the third-person boom.
+-- Set each frame the room is actually drawn with a lid and cleared on any
+-- frame it is not, so the camera only stops at a ceiling that is on
+-- screen: 3RD CEILING = NONE (or outdoors, or the ceiling switched off)
+-- leaves the boom free.  The camera is placed BEFORE the scene draws, so
+-- it reads the previous frame's answer; a short staleness window covers
+-- that and drops the lid if the scene stops drawing altogether.
+local live = nil
+local function now()
+  local ok, t = pcall(function() return love.timer.getTime() end)
+  return ok and t or os.clock()
+end
+Ceiling.LIVE_STALE = 0.5
+
+-- { H = lid height, solid = fn(cx, cy) } for `map` while its lid is live
+function Ceiling.lid(map)
+  if not live or (map and live.map ~= map) then return nil end
+  if now() - (live.t or 0) > Ceiling.LIVE_STALE then return nil end
+  local facts = live.facts
+  return { map = live.map, H = live.H, mode = live.mode,
+           solid = facts and facts.solid or function() return false end }
+end
+
 -- ------- the draw, from inside the scene pass (depth live, camera placed)
 function Ceiling.draw(state, atlasFor)
+  live = nil
   if abandoned() then return end
   local cfg = config()
   if not cfg.ceiling then
@@ -1457,12 +1574,15 @@ function Ceiling.draw(state, atlasFor)
   local key = table.concat({ mode, H, pcx or "-", pcy or "-" }, ":")
   if not cache or cache.map ~= map or cache.key ~= key then
     if cache and cache.mesh then pcall(cache.mesh.release, cache.mesh) end
-    local mesh, note, pMesh, pImg, gMesh, dMesh =
+    local mesh, note, pMesh, pImg, gMesh, dMesh, facts =
       build(map, H, mode, pcx, pcy, tex)
     cache = { map = map, key = key, mesh = mesh, note = tostring(note),
-              posters = pMesh, sheet = pImg, glow = gMesh, doors = dMesh }
+              posters = pMesh, sheet = pImg, glow = gMesh, doors = dMesh,
+              facts = facts }
   end
   if cache.mesh then
+    live = { map = map, H = H, mode = mode, facts = cache.facts,
+             t = now() }
     status(mapId .. ": DRAWING " .. cache.note
            .. (tex and ", textured" or ", untextured"))
     guarded(function()
@@ -1497,6 +1617,7 @@ function Ceiling.invalidate()
   if cache and cache.glow then pcall(cache.glow.release, cache.glow) end
   if cache and cache.doors then pcall(cache.doors.release, cache.doors) end
   cache = nil
+  live = nil
 end
 
 return Ceiling

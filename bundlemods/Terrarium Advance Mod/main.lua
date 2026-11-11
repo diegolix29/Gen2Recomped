@@ -1635,8 +1635,16 @@ local SETTINGS = {
     .. "ceilings with configurable headroom, and proper doors. The diorama "
     .. "rungs use a Sims-style cutaway view.",
     cat = "world" },
-  { Ceiling.headroom,
-    "Ceiling height: AIRY (32px), MID (24px), or SNUG (16px).",
+  { Ceiling.headroomByGen[1],
+    "Gen 1 (Red/Blue/Yellow) interior ceiling height in pixels. The eye "
+    .. "stands at 13px; walls are 16px.",
+    cat = "world" },
+  { Ceiling.headroomByGen[2],
+    "Gen 2 (Gold/Silver/Crystal) interior ceiling height in pixels.",
+    cat = "world" },
+  { Ceiling.headroomByGen[3],
+    "Gen 3 (FireRed/LeafGreen/Ruby/Sapphire/Emerald) interior ceiling "
+    .. "height in pixels.",
     cat = "world" },
   { Ceiling.cutaway,
     "Sims-style cutaway in diorama view: near walls melt away so you can "
@@ -1985,38 +1993,9 @@ SettingsMenu.define(SETTINGS)
 -- mod (ds_fp_ceiling) to publish configuration via _G.__ds_ceiling_config.
 -- Since we've integrated those modules directly, we provide this bridge
 -- so they can read from our own options instead.
--- AIRY raised 32 -> 50: general interiors read too low-ceilinged at the
--- old figure. Caves don't get a separate row here -- this function isn't
--- told which room the player is standing in, so it can't tell a cave
--- from a Mart. Cave.lua's build() *does* know the room (it has the map),
--- so it doubles whatever headroom comes back from here when the room is
--- a cave, and lifts it a further 25% on Gen3 -- 50 becomes 100 in a
--- Gen1/Gen2 cave, 125 in a Gen3 one. Change AIRY here and both follow.
--- Now supports independent headroom values per generation.
-local HEADROOM = {
-  GEN1 = { AIRY = 32, MID = 24, SNUG = 16 },
-  GEN2 = { AIRY = 100, MID = 32, SNUG = 24 },
-  GEN3 = { AIRY = 32, MID = 24, SNUG = 16 },
-  GEN4 = { AIRY = 32, MID = 24, SNUG = 16 }
-}
--- Ceiling.headroom:get() returns the option VALUE (100/50/24), not the
--- label (AIRY/MID/SNUG). Map both so generation tables can be keyed by name.
-local HEADROOM_KEY = {
-  AIRY = "AIRY", MID = "MID", SNUG = "SNUG",
-  [32] = "AIRY", [24] = "MID", [16] = "SNUG",
-}
-local function ceilingGeneration()
-  -- GenerationCompat is a Colosseum local loaded much later and never
-  -- published on _G, so looking it up here always missed and fell to GEN1.
-  -- GameVersion.generation() is the live cartridge generation.
-  local ok, GameVersion = pcall(require, "src.core.GameVersion")
-  if ok and GameVersion and type(GameVersion.generation) == "function" then
-    local okGen, value = pcall(GameVersion.generation)
-    local n = okGen and tonumber(value)
-    if n == 1 or n == 2 or n == 3 or n == 4 then return n end
-  end
-  return 1
-end
+-- HEADROOM is per generation: one HEADROOM-GEN<n> row each (lib/Ceiling.lua
+-- owns the ladders and Ceiling.headroomFor reads the live cartridge's row).
+-- The old shared AIRY/MID/SNUG row with a per-gen multiplier table is gone.
 _G.__ds_ceiling_config = function()
   -- Use the actual setting objects where available
   local ceilingOn = true
@@ -2026,20 +2005,9 @@ _G.__ds_ceiling_config = function()
     local ok, v = pcall(function() return Ceiling.setting:get() end)
     if ok then ceilingOn = (v ~= false) end
   end
-  if Ceiling and Ceiling.headroom then
-    local ok, v = pcall(function() return Ceiling.headroom:get() end)
-    if ok and v then
-      local generation = ceilingGeneration()
-      local headroomTable = HEADROOM["GEN" .. tostring(generation)] or HEADROOM.GEN1
-      local key = HEADROOM_KEY[v]
-      if key and headroomTable[key] then
-        headroomVal = headroomTable[key]
-      elseif headroomTable[v] then
-        headroomVal = headroomTable[v]
-      else
-        headroomVal = headroomTable.AIRY or 32
-      end
-    end
+  if Ceiling and Ceiling.headroomFor then
+    local ok, v = pcall(Ceiling.headroomFor)
+    if ok and tonumber(v) then headroomVal = tonumber(v) end
   end
   if Ceiling and Ceiling.cutaway then
     local ok, v = pcall(function() return Ceiling.cutaway:get() end)
