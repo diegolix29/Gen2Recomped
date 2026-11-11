@@ -388,6 +388,21 @@ end
 
 function Screen:current() return self.tasks[self.at] end
 
+-- THE SURFACE THIS DRAWS IN, declared. A state with no uiSize is taken for a
+-- 160x144 Game Boy layout and shifted into the middle of a wider surface
+-- (Game:_draw's homeOffset) -- which pushed a loader laid out across the
+-- whole GBA / DS surface off to the bottom right. Asking for the same size
+-- the overworld uses makes it own the surface: drawn at (0, 0), centred by
+-- its own arithmetic below.
+function Screen:uiSize()
+  local ok, Theme = pcall(require, "src.ui.Theme")
+  if ok and Theme and Theme.uiSize then
+    local okS, w, h = pcall(Theme.uiSize)
+    if okS and tonumber(w) and tonumber(h) then return w, h end
+  end
+  return 160, 144
+end
+
 local function call(task, name, ...)
   local fn = task and task[name]
   if type(fn) ~= "function" then return true end
@@ -420,16 +435,77 @@ local function setCovered(slice)
   if CM then CM.coveredSlice = slice end
 end
 
+-- THE BARS. The plate is drawn into the UI canvas, which the engine
+-- letterboxes into the middle of the window (Renderer.uiPresentation); the
+-- world canvas behind it spans the whole window. So in a window wider (or
+-- taller) than the UI surface the world showed at the edges of the loader.
+-- render.hud runs after the frame is composed, in window units: paint the
+-- plate over everything outside the UI rectangle there.
+--
+-- Liveness is by frames, not time (memory: ui-liveness-frames): draw() arms
+-- `barsAlpha`, the hud consumes it, so a frame where the loader did not draw
+-- paints no bars and a stutter cannot leave stale ones up.
+local unwrapHud
+
+local function paintBars(viewport)
+  local a = W.barsAlpha
+  W.barsAlpha = nil
+  if not a or a <= 0 then return end
+  local g = love and love.graphics
+  if not g then return end
+  local okR, Renderer = pcall(require, "src.render.Renderer")
+  local ui = okR and Renderer and Renderer.uiPresentation
+  if not ui then return end
+  local vw = viewport and tonumber(viewport.width)
+  local vh = viewport and tonumber(viewport.height)
+  if not (vw and vh) then vw, vh = g.getDimensions() end
+  local x0, y0 = math.max(0, ui.x), math.max(0, ui.y)
+  local x1, y1 = math.min(vw, ui.x + ui.w), math.min(vh, ui.y + ui.h)
+  if x0 <= 0 and y0 <= 0 and x1 >= vw and y1 >= vh then return end
+  g.push("all")
+  g.origin()
+  g.setCanvas()
+  g.setScissor()
+  g.setShader()
+  g.setBlendMode("alpha")
+  g.setColor(W.PLATE[1], W.PLATE[2], W.PLATE[3], a)
+  -- +1 overlap on the inner edges hides a sub-pixel seam at fractional DPI
+  if y0 > 0 then g.rectangle("fill", 0, 0, vw, y0 + 1) end
+  if y1 < vh then g.rectangle("fill", 0, y1 - 1, vw, vh - y1 + 1) end
+  if x0 > 0 then g.rectangle("fill", 0, y0, x0 + 1, y1 - y0) end
+  if x1 < vw then g.rectangle("fill", x1 - 1, y0, vw - x1 + 1, y1 - y0) end
+  g.pop()
+end
+
+local function wrapHud()
+  if unwrapHud then return end
+  local hooks = V.mod and V.mod.hooks
+  if not (hooks and hooks.wrap) then return end
+  local ok, un = pcall(hooks.wrap, hooks, "render.hud", function(next, ...)
+    next(...)
+    local _, viewport = ...
+    pcall(paintBars, viewport)
+  end, 30000)
+  if ok and type(un) == "function" then unwrapHud = un end
+end
+
+local function unwrapHudNow()
+  W.barsAlpha = nil
+  if unwrapHud then pcall(unwrapHud) end
+  unwrapHud = nil
+end
+
 function Screen:finish()
   if self.finished then return end
   self.finished = true
   self.coversWorld = false
   setCovered(nil)
+  unwrapHudNow()
   local stack = self.game and self.game.stack
   if stack and stack:top() == self then stack:pop() end
 end
 
-function Screen:exit() setCovered(nil) end
+function Screen:exit() setCovered(nil); unwrapHudNow() end
 
 function Screen:work()
   local budget = frameBudget()
@@ -575,6 +651,7 @@ end
 
 local DARK = { 0.06, 0.05, 0.09 }
 local PLATE = { 0.93, 0.94, 0.90 }
+W.PLATE = PLATE
 
 local function drawBall(cx, cy, r, angle, a)
   local g = love.graphics
@@ -599,16 +676,12 @@ end
 function Screen:draw()
   self.drawn = true
   local g = love.graphics
-  local okR, Renderer = pcall(require, "src.render.Renderer")
-  local SW, SH = 160, 144
-  if okR and Renderer and Renderer.uiSize then
-    local ok, w, h = pcall(Renderer.uiSize, Renderer)
-    if ok and w and h then SW, SH = w, h end
-  end
+  local SW, SH = self:uiSize()
   local a = 1
   if self.fade then a = 1 - self.fade / FADE_FRAMES end
   local t = self.t
 
+  W.barsAlpha = a
   g.push("all")
   -- the plate, a little past every edge, and slow bands drifting across it
   g.setColor(PLATE[1], PLATE[2], PLATE[3], a)
@@ -674,9 +747,10 @@ function W.onSaveLoaded()
   if not W.enabled then return false end
   local Game = engineGame()
   if not (Game and Game.stack and Game.overworld) then return false end
-  local list = collect(Game)
+  local list = W._collect(Game)
   if #list == 0 then return false end
   Game.stack:push(Screen.new(Game, list))
+  wrapHud()
   log("%d task(s) after continue", #list)
   return true
 end
