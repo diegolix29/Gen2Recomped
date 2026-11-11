@@ -2,7 +2,11 @@
 --
 -- Out of a world:  HOST A WORLD (name, players 2-16 (8), public/friends,
 --                  co-op on/off, a world GTS on/off),
---                  JOIN A WORLD (WS2's LongCodeEntry), RECENT WORLDS (re-host
+--                  JOIN A WORLD (worlds on this Wi-Fi, or ENTER A CODE:
+--                  WS2's LongCodeEntry), INTERNET HELP (Tailscale / open a
+--                  port / Link Hub; also opened by itself when a hosted
+--                  world is Wi-Fi only or a join can't reach its host),
+--                  RECENT WORLDS (re-host
 --                  one this game hosted before: same name, members and bans)
 -- In a world:      CHAT, EMOTE, PLAYERS (co-op: TRADE / BATTLE from any
 --                  map; host: KICK / BAN), BANS (host),
@@ -34,19 +38,38 @@ function WorldMenu.open(game, opts)
   self.hostPublic = false
   self.hostGts = true
   self.hostCoop = true
-  self.stage = world().current() and "inworld" or "root"
+  local cur = world().current()
+  self.stage = cur and ((cur.client and cur.client.state ~= "in" and not cur.host) and "joining" or "inworld")
+               or "root"
   game.stack:push(self)
   return self
 end
 
 function WorldMenu:uiSize() return self.width, self.height end
 
+function WorldMenu:closeListener()
+  if self.listener then pcall(self.listener.close, self.listener) self.listener = nil end
+end
+
 function WorldMenu:close()
+  self:closeListener()
   if self.game.stack:top() == self then self.game.stack:pop() end
 end
 
 function WorldMenu:go(stage, index)
   if stage == "root" then self.recent = nil end
+  if stage == "nearby" then
+    -- worlds hosted on this Wi-Fi (their LAN beacons)
+    if not self.listener then
+      local okB, LanBeacon = pcall(require, "src.online.net.LanBeacon")
+      if okB then
+        local ok, l = pcall(LanBeacon.newListener, {})
+        if ok then self.listener = l end
+      end
+    end
+  else
+    self:closeListener()
+  end
   self.stage = stage
   self.index = index or 1
   self.notice = nil
@@ -68,8 +91,9 @@ function WorldMenu:rows()
     local recent = self.recent
     return {
       { label = "HOST A WORLD", go = "hostSetup" },
-      { label = "JOIN A WORLD", go = "join" },
+      { label = "JOIN A WORLD", go = "nearby" },
       { label = "RECENT WORLDS", go = "recent", disabled = #recent == 0 },
+      { label = "INTERNET HELP", act = "internetHelp" },
       { label = "BACK", back = true },
     }
   elseif st == "hostSetup" then
@@ -102,6 +126,8 @@ function WorldMenu:rows()
     if s.host then
       rows[#rows + 1] = { label = "BANS", go = "bans" }
       rows[#rows + 1] = { label = "SHOW CODE", act = "code" }
+      rows[#rows + 1] = { label = "INTERNET HELP", act = "internetHelp",
+                          value = W.lanOnly() and "WI-FI ONLY" or nil }
     end
     if c:hasService("gts") then rows[#rows + 1] = { label = "GTS", act = "gts" } end
     -- the 4-player multi over the world's relay (the same rows as the Union Room)
@@ -111,6 +137,20 @@ function WorldMenu:rows()
     end
     rows[#rows + 1] = { label = s.host and "CLOSE WORLD" or "LEAVE", go = "confirmLeave" }
     rows[#rows + 1] = { label = "BACK", back = true }
+    return rows
+  elseif st == "nearby" then
+    local rows = {}
+    local LanBeacon = require("src.online.net.LanBeacon")
+    for _, h in ipairs(self.listener and self.listener:hosts() or {}) do
+      if LanBeacon.isWorld(h) then
+        local value = not h.compatible and "OTHER VER" or (h.coop and "CO-OP")
+                      or (h.game and tostring(h.game):upper()) or nil
+        rows[#rows + 1] = { label = tostring(h.world or h.name or h.ip or "?"), value = value,
+                            nearby = h, disabled = not h.compatible }
+      end
+    end
+    rows[#rows + 1] = { label = "ENTER A CODE", go = "join" }
+    rows[#rows + 1] = { label = "BACK", go = "root" }
     return rows
   elseif st == "emote" then
     local rows = {}
@@ -206,7 +246,7 @@ function WorldMenu:join()
       end
       menu:go("joining")
     end,
-    onCancel = function() menu:go("root") end,
+    onCancel = function() menu:go("nearby") end,
   })
 end
 
@@ -222,6 +262,22 @@ function WorldMenu:activate(row)
   end
   if row.world then
     self:startHosting({ worldId = row.world.id })
+    return
+  end
+  if row.nearby then
+    if not row.nearby.compatible then
+      self.notice = "That world runs a different\nversion of the app."
+      return
+    end
+    local invite = require("src.online.net.LanBeacon").toWorldInvite(row.nearby)
+    self:closeListener()
+    local s2, why = W.joinWorld(self.game, invite)
+    if not s2 then
+      self:go("nearby")
+      self.notice = tostring(why)
+      return
+    end
+    self:go("joining")
     return
   end
   if row.emote and c then
@@ -272,6 +328,8 @@ function WorldMenu:activate(row)
     else
       self:go("players")
     end
+  elseif act == "internetHelp" then
+    require("src.ui.online.InternetHelp").open(self.game, { role = (s and s.host and W.lanOnly()) and "host" or "info" })
   elseif act == "chat" then
     require("src.ui.online.ChatOverlay").open(self.game)
   elseif act == "code" then
@@ -318,14 +376,31 @@ function WorldMenu:update(dt)
   local s = W.current()
   local c = s and s.client
   local input = self.game.input
-  if self.stage ~= "root" and self.stage ~= "hostSetup" and self.stage ~= "recent" and not s then
+  if self.listener then self.listener:update() end
+  if self.stage ~= "root" and self.stage ~= "hostSetup" and self.stage ~= "recent"
+     and self.stage ~= "nearby" and not s then
+    local wasJoining = self.stage == "joining"
     self:go("root")
     if W.lastEnded and W.lastEnded.text then self.notice = W.lastEnded.text end
+    if wasJoining and W.lastEnded and W.lastEnded.unreachable then
+      self.notice = "Couldn't reach that world."
+      require("src.ui.online.InternetHelp").open(self.game, { role = "join" })
+      return
+    end
   end
   if self.stage == "opening" then
     if s and s.host then
       local code = W.inviteCode()
-      if code then self:go("inworld") self:showCode() return end
+      if code then
+        self:go("inworld")
+        self:showCode()
+        -- only this Wi-Fi can reach it: say so once, with the fixes
+        if W.lanOnly() and not s.internetHelpShown then
+          s.internetHelpShown = true
+          require("src.ui.online.InternetHelp").open(self.game, { role = "host" })
+        end
+        return
+      end
       if s.host.state == "failed" then self:go("root") return end
     end
     if input and input:wasPressed("b") then W.leave() self:go("root") end
@@ -361,7 +436,7 @@ function WorldMenu:update(dt)
   elseif input:wasPressed("b") then
     if self.stage == "root" or self.stage == "inworld" then self:close()
     elseif self.stage == "member" then self:go("players")
-    elseif self.stage == "hostSetup" or self.stage == "recent" then self:go("root")
+    elseif self.stage == "hostSetup" or self.stage == "recent" or self.stage == "nearby" then self:go("root")
     else self:go("inworld") end
   end
 end
@@ -390,7 +465,7 @@ end
 -- ------------------------------------------------------------ draw
 
 local TITLES = {
-  root = "WORLDS", hostSetup = "HOST A WORLD", recent = "RECENT WORLDS",
+  root = "WORLDS", hostSetup = "HOST A WORLD", recent = "RECENT WORLDS", nearby = "JOIN A WORLD",
   emote = "EMOTE", players = "PLAYERS", member = "PLAYER", bans = "BANS",
   confirmLeave = "LEAVE THE WORLD?",
 }

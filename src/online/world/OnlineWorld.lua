@@ -157,6 +157,21 @@ function OnlineWorld.hostWorld(game, spec)
   -- LINK screen's direct-code host uses them -- never the relay
   for k, v in pairs(OnlineWorld.settingsOptions(game)) do copts[k] = v end
   for k, v in pairs(spec.connector or {}) do copts[k] = v end
+  -- the LAN beacon: the world's name and this game's id, so the nearby
+  -- lists (WORLDS > JOIN, LINK > JOIN, the launcher) show it and join it
+  -- as a world rather than a one-to-one link
+  if copts.beaconInfo == nil then
+    local info = {}
+    local okL, LinkState = pcall(require, "src.link.LinkState")
+    if okL and type(LinkState) == "table" and LinkState.beaconInfo then
+      local okB, b = pcall(LinkState.beaconInfo, game)
+      if okB and type(b) == "table" then for k, v in pairs(b) do info[k] = v end end
+    end
+    info.name = tostring(world.name)
+    info.world = tostring(world.name)
+    info.coop = world.coop or nil
+    copts.beaconInfo = info
+  end
   local host = WorldHost.new({ world = world, store = store, hello = hello, data = game.data,
                                connector = copts })
   client.net = host:localClientNet()
@@ -199,6 +214,18 @@ function OnlineWorld.joinWorld(game, invite, opts)
   return OnlineWorld.session
 end
 
+-- the hosted world is reachable from this network only: the router opening
+-- failed and there is no public address, typed address or Link Hub (the
+-- WORLDS screen then offers the internet help)
+function OnlineWorld.lanOnly()
+  local s = OnlineWorld.session
+  local c = s and s.host and s.host.connector
+  if not c or c.pending or c.state == "starting" or c.state == "failed" then return false end
+  local i = c.info or {}
+  local hub = (c.opts and c.opts.hub) or i.hubTicket
+  return not (i.public or i.address or hub)
+end
+
 function OnlineWorld.inviteCode()
   local s = OnlineWorld.session
   if not (s and s.host) then return nil end
@@ -224,7 +251,11 @@ function OnlineWorld.finish(text)
   OnlineWorld.syncGtsProvider()
   if s.host then pcall(s.host.close, s.host) end
   if s.client and s.client.state ~= "closed" then pcall(s.client.close, s.client, "left") end
-  OnlineWorld.lastEnded = { text = text, at = os.time() }
+  -- a join that never reached its host (every rung of the ladder failed):
+  -- the WORLDS screen offers the internet help for it
+  local c = s.client
+  local unreachable = (not s.host and c and c.job and not c.net and c.job.state == "failed") or false
+  OnlineWorld.lastEnded = { text = text, at = os.time(), unreachable = unreachable }
   if text and s.game and not s.quiet then OnlineWorld.say(s.game, text) end
 end
 

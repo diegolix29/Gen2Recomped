@@ -963,7 +963,8 @@ function S:drawNearby(x, y, w)
   local bh = 56 * s
   for _, hst in ipairs(hosts) do
     local isHub = hst.hub == true or (type(hst.v) == "string" and hst.v:sub(1, 4) == "hub:")
-    local label = ("%s  %s  (%s)"):format(isHub and "HUB" or "GAME", tostring(hst.name or "?"),
+    local isWorld = not isHub and (hst.world ~= nil or hst.kind == 1)
+    local label = ("%s  %s  (%s)"):format(isHub and "HUB" or (isWorld and "WORLD" or "GAME"), tostring(hst.name or "?"),
                                           isHub and hst.address or tostring(hst.game or "?"):upper())
     local kind = isHub and "accent" or (hst.compatible and "good" or nil)
     self:button(x, y, w, bh, label, function() self:pickNearby(hst, isHub) end, kind)
@@ -984,6 +985,19 @@ function S:pickNearby(hst, isHub)
   end
   if not hst.compatible then
     self:say("That game is a different version of the app", 3)
+    return
+  end
+  local LanBeacon = require("src.online.net.LanBeacon")
+  if LanBeacon.isWorld(hst) then
+    -- a world on this Wi-Fi: the game joins it as a world (LINK > WORLDS)
+    local code = InviteCode.encode({ kind = "world", lan = hst.ip, port = hst.port, nonce = hst.nonce or 0, lanFull = true })
+    if not code then return end
+    self.code = code
+    self:examine(false)
+    self:pickGame("Join the world with", function(v)
+      LH.setPending({ kind = "world", code = code })
+      self:launch(v)
+    end, hst.game)
     return
   end
   local display = InviteCode.encode({ kind = "session", lan = hst.ip, port = hst.port, nonce = hst.nonce or 0, lanFull = true })

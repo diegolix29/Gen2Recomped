@@ -679,8 +679,18 @@ function LinkState:update(dt)
       self:backToMenu(self:menuIndexOf("join"))
     elseif input:wasPressed("a") then
       local item = items[self.index]
+      local LanBeacon = require("src.online.net.LanBeacon")
       if item.id == "code" then
         self:openJoinEntry()
+      elseif item.host and item.host.compatible and LanBeacon.isWorld(item.host) then
+        -- a world on this Wi-Fi: join it as a world, not a one-to-one link
+        local game = self.game
+        local invite = LanBeacon.toWorldInvite(item.host)
+        self:exitWith(nil)
+        local OnlineWorld = require("src.online.world.OnlineWorld")
+        local okJ, why = OnlineWorld.joinWorld(game, invite)
+        if okJ then pcall(OnlineWorld.openMenu, game)
+        else game.stack:push(TextBox.new(game, tostring(why or Strings("Can't join that world.")))) end
       elseif item.host and item.host.compatible then
         local invite = require("src.online.net.LanBeacon").toInvite(item.host)
         invite.type, invite.kind = "direct", "session"
@@ -1363,6 +1373,7 @@ function LinkState:joinListItems()
   for _, host in ipairs(l and l:hosts() or {}) do
     local label = tostring(host.name or host.ip or "?")
     if host.game then label = label .. " (" .. tostring(host.game):upper() .. ")" end
+    if host.world ~= nil or host.kind == 1 then label = Strings("WORLD") .. " " .. label end
     items[#items + 1] = { id = "lan", host = host, label = label, dim = not host.compatible }
   end
   return items

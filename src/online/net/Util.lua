@@ -196,6 +196,24 @@ function Util.lanIP(towards)
   return nil
 end
 
+-- 100.64.0.0/10: Tailscale's addresses (and carrier-grade NAT's)
+function Util.isCgnatRange(ip)
+  local a, b = tostring(ip or ""):match("^(%d+)%.(%d+)%.%d+%.%d+$")
+  a, b = tonumber(a), tonumber(b)
+  return a == 100 and b ~= nil and b >= 64 and b <= 127
+end
+
+-- this device's Tailscale address, or nil: the source address of the route
+-- to Tailscale's own resolver (100.100.100.100).  A phone on mobile data can
+-- hold a 100.64/10 address from its carrier too, but then that address is
+-- also the default route's, so an address equal to lanIP() is not counted.
+function Util.tailscaleIP()
+  local ip = Util.lanIP("100.100.100.100")
+  if not (ip and Util.isCgnatRange(ip)) then return nil end
+  if ip == Util.lanIP() then return nil end
+  return ip
+end
+
 -- 32-bit big-endian helpers (LuaJIT: no string.pack)
 function Util.u16(n)
   n = math.floor(n) % 65536

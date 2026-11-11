@@ -202,4 +202,14 @@ function LanBeacon.toInvite(info)
   return { kind = info.kind or 0, lan = info.ip, port = info.port, nonce = info.nonce }
 end
 
+-- a world's host (Connector kind 1; its beacon also names the world)
+function LanBeacon.isWorld(info)
+  return type(info) == "table" and (info.kind == 1 or info.world ~= nil)
+end
+
+-- a discovered world as the invite OnlineWorld.joinWorld takes
+function LanBeacon.toWorldInvite(info)
+  return { kind = "world", kindId = 1, lan = info.ip, port = info.port, nonce = info.nonce }
+end
+
 return LanBeacon
