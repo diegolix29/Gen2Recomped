@@ -7,6 +7,8 @@
 --                                           public, gts (default on),
 --                                           filter (chat filter; nil = on
 --                                           when public),
+--                                           coop (trade/battle invites reach
+--                                           any member, whatever map),
 --                                           worldId (re-host),
 --                                           connector = Connector.host opts }
 --   OnlineWorld.joinWorld(game, invite|code, opts)
@@ -142,10 +144,11 @@ function OnlineWorld.hostWorld(game, spec)
     if spec.name then world.name = P.cleanText(spec.name, P.WORLD_NAME_MAX) or world.name end
     if spec.public ~= nil then world.public = spec.public and true or false end
     if spec.filter ~= nil then world.filter = spec.filter and true or false end
+    if spec.coop ~= nil then world.coop = spec.coop and true or false end
     store:saveWorld(world)
   else
     world = store:create({ name = spec.name, cap = spec.cap, public = spec.public, id = spec.worldId,
-                           filter = spec.filter })
+                           filter = spec.filter, coop = spec.coop })
   end
   local client, hello = newClient(game, {})
   local copts = {}

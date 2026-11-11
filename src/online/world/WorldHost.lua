@@ -8,6 +8,10 @@
 -- their own save -- the world is an overlay, like the Union Room, not a
 -- shared save -- so nothing here touches anyone's progress.
 --
+-- CO-OP (world.coop): the same overlay, but a trade or battle invite
+-- reaches any member wherever they stand (an ordinary world asks for the
+-- same map), so partners progressing apart can still link at any moment.
+--
 -- TOPOLOGY: a star over one Transport (src/online/net/Transport.lua).
 -- Members connect to the host only; the host forwards.  The host's OWN
 -- player is a member too, joined over an in-memory pair (WorldHost.localPair)
@@ -190,6 +194,7 @@ function WorldHost:infoMessage()
   table.sort(services)
   return { type = "w_info", world = { id = self.world.id, name = self.world.name,
                                       cap = self.world.cap, public = self.world.public or false,
+                                      coop = self.world.coop or false,
                                       services = services } }
 end
 
@@ -489,7 +494,10 @@ function WorldHost:onInvite(member, msg)
   if not P.MODES[msg.mode] then return no("bad mode") end
   if not to or to == member then return no("not here") end
   if member.busy or to.busy then return no("busy") end
-  if not (member.pos and to.pos and member.pos.m == to.pos.m) then return no("too far") end
+  -- a co-op world: partners trade and battle from wherever each one is
+  if not self.world.coop and not (member.pos and to.pos and member.pos.m == to.pos.m) then
+    return no("too far")
+  end
   for _, inv in pairs(self.invites) do
     if inv.from == member.pid then return no("already asking") end
     if inv.to == to.pid then return no("busy") end

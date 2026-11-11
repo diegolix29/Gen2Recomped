@@ -253,6 +253,9 @@ end
 
 function WorldClient:isHost() return self.you == P.HOST_PID end
 
+-- a co-op world: invites reach members on any map
+function WorldClient:isCoop() return (self.world and self.world.coop) == true end
+
 local function rosterSet(self, list)
   self.members = {}
   for _, m in ipairs(list or {}) do

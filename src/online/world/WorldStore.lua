@@ -15,7 +15,7 @@
 --
 --   local store = WorldStore.new{ fs = WorldStore.loveFs() | WorldStore.memoryFs() }
 --   store:list()                    -> { {id, name, cap, public, created}, ... }
---   store:open(worldId) / store:create{ name, cap, public } -> world record
+--   store:open(worldId) / store:create{ name, cap, public, coop } -> world record
 --   store:readJson(worldId, name) / store:writeJson(worldId, name, value)
 --   store:file(worldId, name)       -> { read() -> text, write(text) } (WS7)
 --   store:members(worldId) / store:saveMembers(worldId, m)
@@ -145,6 +145,7 @@ function WorldStore:create(spec)
     cap = P.clampCap(spec.cap),
     public = spec.public and true or false,
     filter = spec.filter,
+    coop = spec.coop and true or false,
     created = os.time(),
     version = P.VERSION,
   }
@@ -160,13 +161,14 @@ function WorldStore:open(worldId)
   w.cap = P.clampCap(w.cap)
   w.public = w.public == true
   if w.filter ~= true and w.filter ~= false then w.filter = nil end
+  w.coop = w.coop == true
   return w
 end
 
 function WorldStore:saveWorld(world)
   return self:writeJson(world.id, "world", {
     id = world.id, name = world.name, cap = world.cap, public = world.public,
-    filter = world.filter, created = world.created, version = P.VERSION,
+    filter = world.filter, coop = world.coop, created = world.created, version = P.VERSION,
   })
 end
 

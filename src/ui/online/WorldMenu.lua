@@ -1,10 +1,11 @@
 -- THE WORLDS SCREEN (docs/online-design.md 2.6 "WORLDS", workstream WS8).
 --
 -- Out of a world:  HOST A WORLD (name, players 2-16 (8), public/friends,
---                  a world GTS on/off),
+--                  co-op on/off, a world GTS on/off),
 --                  JOIN A WORLD (WS2's LongCodeEntry), RECENT WORLDS (re-host
 --                  one this game hosted before: same name, members and bans)
--- In a world:      CHAT, EMOTE, PLAYERS (host: KICK / BAN), BANS (host),
+-- In a world:      CHAT, EMOTE, PLAYERS (co-op: TRADE / BATTLE from any
+--                  map; host: KICK / BAN), BANS (host),
 --                  SHOW CODE (host), GTS (when the world runs one), LEAVE
 --                  (host: CLOSE WORLD)
 --
@@ -32,6 +33,7 @@ function WorldMenu.open(game, opts)
   self.hostCap = world().defaultCap(game)
   self.hostPublic = false
   self.hostGts = true
+  self.hostCoop = true
   self.stage = world().current() and "inworld" or "root"
   game.stack:push(self)
   return self
@@ -75,6 +77,7 @@ function WorldMenu:rows()
       { label = "NAME", value = self.hostName, act = "name" },
       { label = "PLAYERS", value = tostring(self.hostCap), act = "cap" },
       { label = "WHO", value = self.hostPublic and "ANYONE" or "FRIENDS", act = "public" },
+      { label = "CO-OP", value = self.hostCoop and "ON" or "OFF", act = "coop_toggle" },
       { label = "GTS", value = self.hostGts and "ON" or "OFF", act = "gts_toggle" },
       { label = "FILTER", act = "filter_toggle",
         value = (self.hostFilter == nil and (self.hostPublic and "ON" or "OFF"))
@@ -129,11 +132,18 @@ function WorldMenu:rows()
     rows[#rows + 1] = { label = "BACK", go = "inworld" }
     return rows
   elseif st == "member" then
-    return {
-      { label = "KICK", act = "kick" },
-      { label = "BAN", act = "ban" },
-      { label = "BACK", go = "players" },
-    }
+    local rows = {}
+    -- a co-op world links partners on any map (an ordinary one: walk up
+    -- to their ghost and press A)
+    if c and c:isCoop() then
+      rows[#rows + 1] = { label = "TRADE / BATTLE", act = "link" }
+    end
+    if s and s.host then
+      rows[#rows + 1] = { label = "KICK", act = "kick" }
+      rows[#rows + 1] = { label = "BAN", act = "ban" }
+    end
+    rows[#rows + 1] = { label = "BACK", go = "players" }
+    return rows
   elseif st == "bans" then
     local rows = {}
     if s and s.host then
@@ -219,7 +229,7 @@ function WorldMenu:activate(row)
     self:close()
     return
   end
-  if row.member and s and s.host and row.member.pid ~= c.you then
+  if row.member and c and row.member.pid ~= c.you and (s.host or c:isCoop()) then
     self.target = row.member
     self:go("member")
     return
@@ -238,6 +248,8 @@ function WorldMenu:activate(row)
     self.hostPublic = not self.hostPublic
   elseif act == "gts_toggle" then
     self.hostGts = not self.hostGts
+  elseif act == "coop_toggle" then
+    self.hostCoop = not self.hostCoop
   elseif act == "filter_toggle" then
     local on = self.hostFilter
     if on == nil then on = self.hostPublic end
@@ -251,7 +263,15 @@ function WorldMenu:activate(row)
       end
     end
     self:startHosting({ name = self.hostName, cap = self.hostCap, public = self.hostPublic,
-                        gts = self.hostGts, filter = self.hostFilter })
+                        gts = self.hostGts, filter = self.hostFilter, coop = self.hostCoop })
+  elseif act == "link" then
+    -- GhostInteract's own TRADE / BATTLE window over this menu; an accepted
+    -- invite pops every world screen (this one too) for the link screen
+    if self.target and c and c.members[self.target.pid] then
+      require("src.ui.online.GhostInteract").open(self.game, self.target.pid)
+    else
+      self:go("players")
+    end
   elseif act == "chat" then
     require("src.ui.online.ChatOverlay").open(self.game)
   elseif act == "code" then
@@ -329,6 +349,8 @@ function WorldMenu:update(dt)
       self.hostPublic = not self.hostPublic
     elseif row.act == "gts_toggle" then
       self.hostGts = not self.hostGts
+    elseif row.act == "coop_toggle" then
+      self.hostCoop = not self.hostCoop
     elseif row.act == "filter_toggle" then
       self:activate(row)
     end
