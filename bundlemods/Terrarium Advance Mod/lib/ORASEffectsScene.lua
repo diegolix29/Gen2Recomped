@@ -269,6 +269,27 @@ function S.adjustMatrix(side, m, fx, fy, fz)
   return m, pose
 end
 
+-- Whether `side`'s Pokemon is off the field this frame (op 0x09): Fly's
+-- user from frame 9 (so its jump home at 10 is not seen), Dive, Bounce,
+-- Phantom Force... A hide the move keeps to its end always counts; one the
+-- move takes back only clears ORAS's own camera shot (Flamethrower hides the
+-- target while the shot looks past it), so it counts only while that move
+-- camera drives the view (OPTIONS -> ORAS CAMERA). Stadium (models and their
+-- shadows) and BattleScene's 2D cards skip a hidden side.
+function S.hidden(side)
+  local run, f, attacker = stageNow()
+  if not run then return false end
+  local who = (side == attacker) and 0 or 1
+  local okS, on, vanishes = pcall(Stage().shown, run.entry, who, f)
+  if not okS or on ~= false then return false end
+  local hide = vanishes or (run.camFrame ~= nil and run.frame - run.camFrame <= 1)
+  if hide then
+    run.hideNote = ("%s hidden at frame %d (%s)"):format(side, run.frame,
+      vanishes and "leaves the field" or "clears the move camera")
+  end
+  return hide
+end
+
 -- Stage colour {r, g, b, a}: the arena fades to it (the Pokemon do not).
 function S.tint()
   local run, f = stageNow()
@@ -401,6 +422,7 @@ function S.camera(cam)
     c.eye[1], c.eye[2], c.eye[3], c.look[1], c.look[2], c.look[3], c.weight, t,
     okK and blockNote and (", " .. blockNote) or "")
   cam.eye, cam.focus = c.eye, c.look
+  run.camFrame = run.frame        -- S.hidden: the move camera drives this frame
   -- ORAS frames every move with an 11.3 degree lens (op 0x63, all moves),
   -- opened up when the eye was pulled in
   -- OPTIONS -> ORAS CAM ZOOM: how big the subject is against ORAS's own

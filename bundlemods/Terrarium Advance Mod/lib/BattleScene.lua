@@ -215,11 +215,15 @@ local function monCards(arena, groundY, textures)
           model)
       end
       -- ORAS move timelines move the card too (Double Team's hops, Minimize)
+      -- and take it off the field (Fly, Dive: op 0x09)
+      local hidden = false
       pcall(function()
-        local m = V.require("ORASEffectsScene").adjustMatrix(side, model, cell[1], groundY, cell[2])
+        local FXS = V.require("ORASEffectsScene")
+        local m = FXS.adjustMatrix(side, model, cell[1], groundY, cell[2])
         if m then model = m end
+        hidden = FXS.hidden(side) == true
       end)
-      out[#out + 1] = { tex = tex.canvas, model = model }
+      if not hidden then out[#out + 1] = { tex = tex.canvas, model = model } end
     end
   end
   return out
@@ -298,6 +302,11 @@ local function shadowSignature(state, arena, terrain, nbMesh, token)
     parts[#parts + 1] = okSig and sig or "cap"
   end
   for i = 1, #nbMesh do parts[#parts + 1] = tostring(nbMesh[i]) end
+  -- a side an ORAS move took off the field (op 0x09) drops its shadow
+  pcall(function()
+    local FXS = V.require("ORASEffectsScene")
+    parts[#parts + 1] = (FXS.hidden("player") and "hp" or "") .. (FXS.hidden("enemy") and "he" or "")
+  end)
   return table.concat(parts, ",")
 end
 

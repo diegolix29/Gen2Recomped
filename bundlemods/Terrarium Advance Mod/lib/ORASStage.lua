@@ -110,6 +110,21 @@ function St.actor(entry, who, f)
   return out
 end
 
+-- Whether side `who` is shown at frame f (op 0x09), and whether the move
+-- ends with it hidden (Fly, Dive, Bounce, Phantom Force: it has left the
+-- field; the other hides only clear ORAS's own camera shots).
+function St.shown(entry, who, f)
+  if not St.has(entry) then return true, false end
+  local on, last = true, true
+  for _, op in ipairs(entry.stage) do
+    if op.k == "show" and op.w == who then
+      if op[1] <= f then on = op.on ~= 0 end
+      last = op.on ~= 0
+    end
+  end
+  return on, not last
+end
+
 -- stage colour {r, g, b, a} at frame f, or nil when clear
 function St.tint(entry, f)
   if not St.has(entry) then return nil end

@@ -540,3 +540,11 @@ Open questions for the user before writing: battle-model coverage is only 15 cha
 - Offline renders (lovec, real dump, fresh bake, magenta clear): hama / kusa bases solid, mizu rock bank and kusa tree edges lose their fringes, saba / city / yama unchanged.
 - Noted, not changed: btl_G_saba mesh of btl_G_saba_fa1 has vertex colours averaging ~6.9 (clamped to 1 by the bake); 0x107 confirms our passes (blended: depth test LEQUAL, no depth write; opaque: depth write).
 - Next on the list: effect details (child emitters, ops 0x75 / 0x3A, Fly turn 1 snap), needs F12s. Small open one: ORAS trainers cast no shadow.
+
+## 2026-11-11 — Effect details: Fly snap (0x09 visibility), camera slots (0x3A) (stamp oras-fx=15; uncommitted, untested in game)
+- Read from the dump offline (lovec harness on pokemon_oras.3ds, ORASWazaSeq): Fly (19) = 0x09 (0,1) at 0, rise 200 cm 4-8, 0x09 (0,0) at 9, 0x04 home at 10. 0x09 (who, on) is actor visibility; 10 moves end with a side hidden, the rest show it again (camera clearing).
+- 0x3A (d, 1, 0) sits on 262 slots none of which is attached: speed lines / flashes / *_ca_* sets = on the camera, d cm in front. Lens guessed from ea003_line's 16x9 ring meeting the screen edge at d 27: Player.CAM_FOV 37 (tunable).
+- Changes: ORASEffects stageRecord 0x09 + item.cam, STAMP oras-fx=15 (ORAS EFFECTS must be rebuilt); ORASStage.shown; ORASEffectsScene.hidden + run.camFrame; Stadium draw/cast, BattleScene monCards + shadowSignature skip hidden; ORASEffectsPlayer slotTurn / cameraSpace, lens slots drawn last.
+- Checked offline: all six files parse; St.shown gives Fly hidden from 9, Flamethrower target = camera-only hide. Not rendered offline.
+- Still open: 0x75 (likely backdrop colour), CGFX child emitters (updater 0x4000000), Fly reappearing at home after the run.
+

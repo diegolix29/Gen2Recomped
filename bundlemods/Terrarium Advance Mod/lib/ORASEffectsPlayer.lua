@@ -165,7 +165,7 @@ function Player.start(moveId, host, space)
   run.hitFrame = entry.hit
   for _, r in ipairs(run.hitFrame and {} or entry.fx) do
     local role = idx.members and idx.members[r[4]]
-    if role == "defender" or (role == nil and r[3] == 1) then run.hitFrame = r[1]; break end
+    if not r.cam and (role == "defender" or (role == nil and r[3] == 1)) then run.hitFrame = r[1]; break end
   end
   active[#active + 1] = run
   while #active > MAX_ACTIVE do table.remove(active, 1) end
@@ -201,8 +201,9 @@ local function spawn(run, rec)
   local role = (rec.role == 0 and "attacker") or (rec.role == 1 and "defender")
     or fx.role or (target == 1 and "defender" or "attacker")
   local slot = POINT_SLOT[rec.point or -1] or (role == "attacker" and "mouth" or "center")
+  if rec.cam then slot = "camera" end
   run.live[#run.live + 1] = {
-    fx = fx, role = role, slot = slot,
+    fx = fx, role = role, slot = slot, cam = rec.cam,
     sim = Sim().new(fx, { seed = run.id * 977 + m }),
     stopAt = math.max(1, e - s + 1), age = 0,
     scales = rec.scale, off = rec.off, travel = rec.travel, point = rec.point,
@@ -529,6 +530,55 @@ local function gapScale(run)
   return k
 end
 
+-- the slot's turn (0x35) at this age, radians, or nil when unturned
+local function slotTurn(run, l)
+  if not l.rots then return nil end
+  local age = l.age + (run.acc or 0)
+  local x, y, z = 0, 0, 0
+  for _, k in ipairs(l.rots) do
+    if age < k[1] then break end
+    local span = k[2] - k[1]
+    if span <= 0 or age >= k[2] then x, y, z = k[3], k[4], k[5]
+    else
+      local u = (age - k[1]) / span
+      x, y, z = x + (k[3] - x) * u, y + (k[4] - y) * u, z + (k[5] - z) * u
+    end
+  end
+  if x ~= 0 or y ~= 0 or z ~= 0 then return math.rad(x), math.rad(y), math.rad(z) end
+end
+
+-- Camera-attached slots (0x3A, l.cam = cm in front of the lens): speed
+-- lines, hit flashes, the *_ca_* boards. They belong to the screen, not the
+-- field, so they skip the battle's projection: effect space is the lens's
+-- own (x right, y up, the lens looking down -z), the slot sits l.cam in
+-- front of it, and a fixed lens maps that onto the canvas whatever the
+-- battle camera does. CAM_FOV (vertical, degrees): ORAS's speed-line ring
+-- (ea003_line, a 16 x 9 cm ellipse at 25-27 cm) meets the screen edge near
+-- 37; the 11.3 of op 0x63 is not the lens these see (ORAS CAM ZOOM needed
+-- 4x wider for the field too).
+Player.CAM_FOV = 37
+local function cameraSpace(g, run, l)
+  local W, H
+  local cv = g.getCanvas and g.getCanvas()
+  if type(cv) == "table" and cv[1] then cv = cv[1] end
+  if cv and cv.getWidth then W, H = cv:getWidth(), cv:getHeight() else W, H = g.getWidth(), g.getHeight() end
+  if not (W and H and W > 0 and H > 0) then return nil end
+  local F = (H * 0.5) / math.tan(math.rad(Player.CAM_FOV) * 0.5)
+  local d = l.cam
+  local qx, qy, qz = slotTurn(run, l)
+  local function toCam(x, y, z)
+    if qx then x, y, z = rotate(qx, qy, qz, x, y, z) end
+    return x, y, z - d
+  end
+  local function project(x, y, z)
+    local depth = -z
+    if depth < 0.5 then return nil end
+    return W * 0.5 + x * F / depth, H * 0.5 - y * F / depth, depth
+  end
+  l.lastUnit = 1
+  return toCam, project
+end
+
 local function placement(run, l)
   local host = run.host
   local anchor = bodyPoint(host, l.role, l.slot)
@@ -619,20 +669,7 @@ local function placement(run, l)
   -- Psybeam, Aurora Beam, Tri Attack, Horn Drill...) spawn half their beam
   -- copies with a 180 deg Y turn, which otherwise fired them backwards
   local qx, qy, qz
-  if l.rots and not aimed then
-    local age = l.age + (run.acc or 0)
-    local x, y, z = 0, 0, 0
-    for _, k in ipairs(l.rots) do
-      if age < k[1] then break end
-      local span = k[2] - k[1]
-      if span <= 0 or age >= k[2] then x, y, z = k[3], k[4], k[5]
-      else
-        local u = (age - k[1]) / span
-        x, y, z = x + (k[3] - x) * u, y + (k[4] - y) * u, z + (k[5] - z) * u
-      end
-    end
-    if x ~= 0 or y ~= 0 or z ~= 0 then qx, qy, qz = math.rad(x), math.rad(y), math.rad(z) end
-  end
+  if not aimed then qx, qy, qz = slotTurn(run, l) end
   local function toWorld(x, y, z)
     if qx then x, y, z = rotate(qx, qy, qz, x, y, z) end
     return ax + (Rx * x + Ux * y + Fx * z) * unit, ay + (Ry * x + Uy * y + Fy * z) * unit,
@@ -652,7 +689,14 @@ end
 
 -- one live particle file of one run
 local function drawLive(g, run, l, project)
-  local toWorld, unit, _, toWorldPos = placement(run, l)
+  local toWorld, unit, _, toWorldPos
+  if l.cam then
+    -- on the lens, not the field (0x3A): no gap fit, no body point
+    toWorld, project = cameraSpace(g, run, l)
+    unit, toWorldPos = 1, toWorld
+  else
+    toWorld, unit, _, toWorldPos = placement(run, l)
+  end
   if not toWorld then return end
   local function scr(x, y, z)
     local ok, sx, sy = pcall(project, x, y, z)
@@ -671,7 +715,7 @@ local function drawLive(g, run, l, project)
     local rw, rh = q.w * grow, q.h * grow   -- unscaled: oriented quads scale after their turn
     -- stage-sized quads (Hyper Beam's 40 m speed-line backdrop, built for
     -- ORAS's own camera shot) are left out, as stage-sized effect models are
-    local big = math.max(q.w, q.h) * math.max(ksx, ksy, ksz) > Player.MAX_QUAD_CM
+    local big = not l.cam and math.max(q.w, q.h) * math.max(ksx, ksy, ksz) > Player.MAX_QUAD_CM
     q.x, q.y, q.z = q.x * ksx, q.y * ksy, q.z * ksz
     q.w, q.h = q.w * ksx * grow, q.h * ksy * grow
     local key = q.texture and textures[q.texture]
@@ -896,11 +940,17 @@ function Player.draw(project, space)
           else drew = true; sp.tris = n end
         end
       end
-      for _, l in ipairs(run.live) do
-      local ok, err = pcall(drawLive, g, run, l, project)
-      if not ok then Player.lastError = tostring(err) else drew = true end
-      run.drawn = (run.drawn or 0) + 1
-    end end
+      -- field effects first, then the lens's own (0x3A) over them
+      for pass = 1, 2 do
+        for _, l in ipairs(run.live) do
+          if (pass == 2) == (l.cam ~= nil) then
+            local ok, err = pcall(drawLive, g, run, l, project)
+            if not ok then Player.lastError = tostring(err) else drew = true end
+            run.drawn = (run.drawn or 0) + 1
+          end
+        end
+      end
+    end
   end
   g.pop()
   return drew

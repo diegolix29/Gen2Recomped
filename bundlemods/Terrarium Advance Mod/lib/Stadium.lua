@@ -756,12 +756,21 @@ function Stadium.drawGhosts(side, mon, matrix, pull)
   a.opacity, a.ghostDraw = was, nil
 end
 
+-- an ORAS move timeline has taken this side off the field (op 0x09: Fly's
+-- user from frame 9, Dive, Phantom Force), lib/ORASEffectsScene.lua
+local function orasHidden(side)
+  local okFx, FXS = pcall(V.require, "ORASEffectsScene")
+  if not (okFx and FXS and FXS.hidden) then return false end
+  local ok, h = pcall(FXS.hidden, side)
+  return ok and h == true
+end
+
 function Stadium.draw(pull, worldShift)
   if not session then return end
   local Mat4 = worldShift and V.require("Mat4") or nil
   for _, side in ipairs({ "enemy", "player" }) do
     local mon = session[side]
-    if mon.rig and mon.visible and mon.model_matrix then
+    if mon.rig and mon.visible and mon.model_matrix and not orasHidden(side) then
       Stadium.guard(side, mon, "draw", function()
         local matrix = mon.model_matrix
         if Mat4 and worldShift then
@@ -781,7 +790,7 @@ function Stadium.cast(shadowMap)
   if not session then return end
   for _, side in ipairs({ "enemy", "player" }) do
     local mon = session[side]
-    if mon.rig and mon.visible and mon.model_matrix then
+    if mon.rig and mon.visible and mon.model_matrix and not orasHidden(side) then
       Stadium.guard(side, mon, "cast", function()
         mon.rig:caster(shadowMap, mon.model_matrix)
       end)

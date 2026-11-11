@@ -27,11 +27,12 @@ local E = { ID = "oras_fx", LABEL = "ORAS EFFECTS" }
 
 E.ROOT = "oras/movefx"
 E.INDEX = E.ROOT .. "/index.lua"
-E.STAMP = "oras-fx=14"   -- 2: per-effect scale (0x34) and side (0x2F); 3: body point + offset, hit cue (0x0C);
+E.STAMP = "oras-fx=15"   -- 2: per-effect scale (0x34) and side (0x2F); 3: body point + offset, hit cue (0x0C);
                         -- 5: stage records (actor moves / scale, stage tint, camera); 6: body motion kind (0x0D);
                         -- 7: move sounds; 8: sound placement (0x68) for pan; 9: effect models (0x3F); 10: model sprays (0x7B); 11: model motions (0x50); 12: aim 0x32/0x46, slot turn 0x35;
                         -- 13: particle UV coordinator + mirrored wrap (round glows);
-                        -- 14: exact integer flags (fixed / cone launch, drag)
+                        -- 14: exact integer flags (fixed / cone launch, drag);
+                        -- 15: actor visibility 0x09 (Fly turn 1), camera-attached slots 0x3A (speed lines, flashes)
 E.SETTING = E.ROOT .. "/battle.txt"
 E.IMPORT_ID = "pokemon_oras"
 
@@ -348,6 +349,14 @@ end
 --   0x08 (who, sx, sy, sz)                 stretch / squash to that size
 --   0x76 (r, g, b, a)                      fade the stage (not the actors) to that colour
 --   0x17 (who, point, eye xyz, look xyz cm) camera, in that side's frame
+--   0x09 (who, on)                         show (1) / hide (0) that Pokemon; group 0
+--                                          only (41 / 42 / 20 / 21 are extra actors).
+--                                          Fly hides the user at 9, before 0x04 sends
+--                                          it home at 10; 10 moves end with a side
+--                                          hidden (Fly, Dive, Bounce, Phantom Force,
+--                                          Shadow Force, Sky Drop, Teleport, Whirlwind,
+--                                          Roar, Ally Switch), the rest clear ORAS's
+--                                          own camera shots for a while
 -- Double Team is 0x02 hops of +-50 cm every frame: three places at once.
 local function stageRecord(S, r)
   local a, n = r.args, #r.args
@@ -367,6 +376,8 @@ local function stageRecord(S, r)
     base.k, base.w, base.point = "cam", u(a, 1), u(a, 5)
     base.eye = { f(a, 9), f(a, 13), f(a, 17) }
     base.look = { f(a, 21), f(a, 25), f(a, 29) }
+  elseif r.op == 0x09 and n >= 8 and r.group == 0 and u(a, 1) <= 1 then
+    base.k, base.w, base.on = "show", u(a, 1), u(a, 5) ~= 0 and 1 or 0
   else
     return nil
   end
@@ -516,6 +527,17 @@ local function bake(onProgress)
           local m = S.u32(r.args, 1)
           if m < fxG.count then
             local item = { r.start, r.finish, r.target, m }
+            -- 0x3A (f32 distance cm, u32 1, u32 0) on the slot at its spawn:
+            -- the slot rides on the camera, that far in front of the lens.
+            -- 262 records, none with an attach (0x2F / 0x32): speed lines
+            -- (ea003_line, a 16 x 9 ring), hit flashes, the *_ca_* sets
+            for _, q in ipairs(recs) do
+              if q.start > r.start + 1 then break end
+              if q.op == 0x3A and q.target == r.target and q.start >= r.start and #q.args >= 4 then
+                local d = S.f32(q.args, 1)
+                if d == d and d > 0 and d < 1e4 then item.cam = d end
+              end
+            end
             -- the same effect slot (record target field) carries its side
             -- (0x2F: u32 0 attacker / 1 target, u32 body point, vec3 offset)
             -- and its scale (0x34: vec3), set at the spawn and later
