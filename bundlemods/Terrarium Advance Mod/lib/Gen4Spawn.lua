@@ -238,9 +238,40 @@ end
 -- a Gen 4 def does not have, so it says "indoors" everywhere. This reads
 -- whatever the def says about itself and only then falls back on the engine
 -- answer; when the def says nothing a big open map is taken as outdoors.
+-- THE CARTRIDGE'S OWN ANSWER, read off the live native ground first.
+-- Gen4Ground stores `outdoors` per map: Platinum/HGSS from the area light
+-- archive (members 0 and 3 are outdoor -- AreaDataManager_IsOutdoorsLighting),
+-- Black/White from the zone's matrix; B/W also files every area >= 210 in its
+-- INDOOR building pack (Gen5Field.packFor), which is the same fact stated
+-- twice. Without this, the size fallback at the bottom of isOutdoor called
+-- every 32x32-chunk room "outdoors" -- night tint, fireflies, rain, haze and
+-- the sky all ran inside houses.
+local function nativeOutdoor(map)
+  local ground = map and map.renderer and map.renderer.gen4Ground
+  if not ground then
+    local okG, Game = pcall(require, "src.core.Game")
+    local ow = okG and type(Game) == "table" and Game.overworld or nil
+    local cur = ow and ow.map
+    if cur and (cur == map or (cur.def and map and cur.def == map.def)) then
+      ground = cur.renderer and cur.renderer.gen4Ground
+    end
+  end
+  if type(ground) ~= "table" then return nil end
+  local def = ground.def or (map and map.def)
+  local maps = ground.terrain and ground.terrain.maps
+  local rec = maps and def and (maps[def.sourceId or def.id] or maps[def.id])
+  if type(rec) == "table" and rec.buildingKind == "indoor" then return false end
+  if ground.outdoors ~= nil then return ground.outdoors and true or false end
+  if type(rec) == "table" and rec.outdoors ~= nil then return rec.outdoors and true or false end
+  return nil
+end
+Spawn.nativeOutdoor = nativeOutdoor
+
 function Spawn.isOutdoor(map)
   local def = map and map.def
   if type(def) ~= "table" then return false end
+  local native = nativeOutdoor(map)
+  if native ~= nil then return native end
   if def.outdoor ~= nil then return def.outdoor and true or false end
   if def.isOutdoor ~= nil then return def.isOutdoor and true or false end
   for _, field in ipairs({ "mapType", "type", "environment", "kind", "category" }) do

@@ -168,6 +168,11 @@ local function outdoorNow()
   if okS and type(Spawn) == "table" and Spawn.isOutdoor then
     local ok, r = pcall(Spawn.isOutdoor, map)
     if ok and r then return true end
+    -- the cartridge says this is a room: lights on, no night, no canopy guess
+    if Spawn.nativeOutdoor then
+      local okN, n = pcall(Spawn.nativeOutdoor, map)
+      if okN and n == false then return false end
+    end
   end
   local okC, canopy = pcall(DayNight.isCanopy, map)
   return okC and canopy and true or false

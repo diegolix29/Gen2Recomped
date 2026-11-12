@@ -2887,6 +2887,12 @@ function Flora.drawGen4Life(state, ground, yaw, outdoor, project, sink)
   local p = state and state.player
   if not (map and p and ground) then return end
   if cfg.particles == false then return end
+  -- indoors there are no fireflies, gnats, seeds or blowing leaves: the
+  -- host hands us Gen4Spawn.isOutdoor and this used to ignore it
+  if outdoor == false then
+    parts, swarms = nil, nil
+    return
+  end
   local okS, Spawn = pcall(V.require, "Gen4Spawn")
   if not (okS and type(Spawn) == "table") then Spawn = nil end
 
