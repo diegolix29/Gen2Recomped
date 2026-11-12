@@ -266,6 +266,13 @@ local function installNativeWorldFx()
   pcall(function()
     Gen4Bridge.register("hd_pokemon", V.require("Gen4HdPokemon").draw)
   end)
+  -- interior ceilings + upper walls, and the 3RD eye kept under them
+  -- (lib/Gen4Ceiling.lua; the lid height is HEADROOM-GEN4 / HEADROOM-GEN5)
+  pcall(function()
+    local C = V.require("Gen4Ceiling")
+    Gen4Bridge.register("ceiling", C.draw)
+    C.install()
+  end)
   -- hide Platinum's own grass cards, water, and tree cards where the 3D versions draw
   pcall(function() V.require("Gen4Hide").install() end)
   pcall(function() V.require("Gen4Lawn").install() end)
@@ -1645,6 +1652,13 @@ local SETTINGS = {
   { Ceiling.headroomByGen[3],
     "Gen 3 (FireRed/LeafGreen/Ruby/Sapphire/Emerald) interior ceiling "
     .. "height in pixels.",
+    cat = "world" },
+  { Ceiling.headroomByGen[4],
+    "Gen 4 (Platinum/HeartGold/SoulSilver) interior ceiling height in DS "
+    .. "units. The eye stands at 26; the 3RD camera at about 40.",
+    cat = "world" },
+  { Ceiling.headroomByGen[5],
+    "Gen 5 (Black/White) interior ceiling height in DS units.",
     cat = "world" },
   { Ceiling.cutaway,
     "Sims-style cutaway in diorama view: near walls melt away so you can "

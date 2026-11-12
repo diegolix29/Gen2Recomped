@@ -76,8 +76,11 @@ Ceiling.setting = ModSetting.new("fpceiling", "FP CEILING",
 -- now owns a plain pixel ladder, starting at its own default and cycling
 -- upward, wrapping to the low end.  Rows read "HEADROOM-GEN<n>".
 Ceiling.HEADROOM_STEPS = { 16, 20, 24, 28, 32, 40, 48, 56, 64, 80, 100, 128 }
-Ceiling.HEADROOM_DEFAULT = { [1] = 32, [2] = 100, [3] = 32 }
-Ceiling.HEADROOM_GENS = { 1, 2, 3 }
+-- Gen 4/5 are DS units (eye at 26, 3RD camera at about 40): their lid is
+-- drawn by lib/Gen4Ceiling.lua, which reads the same rows through the
+-- config bridge.
+Ceiling.HEADROOM_DEFAULT = { [1] = 32, [2] = 100, [3] = 32, [4] = 64, [5] = 64 }
+Ceiling.HEADROOM_GENS = { 1, 2, 3, 4, 5 }
 local function headroomLadder(default)
   local steps, start = Ceiling.HEADROOM_STEPS, 1
   for i, v in ipairs(steps) do if v == default then start = i end end
